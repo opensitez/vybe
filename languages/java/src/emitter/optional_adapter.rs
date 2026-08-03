@@ -10,7 +10,7 @@ use vybe_compiler::primitives::strings;
 
 pub fn emit_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_bool_const(false, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     collections::emit_array_new(chunks, current, 2, line);
 }
 
@@ -94,7 +94,7 @@ pub fn emit_if_present(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -202,7 +202,7 @@ pub fn emit_if_present_or_else(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_or(chunks: &mut [Chunk], current: usize, call_supplier: bool, line: u32) {
@@ -324,7 +324,7 @@ pub fn emit_or_else_throw(chunks: &mut [Chunk], current: usize, has_supplier: bo
     if has_supplier {
         chunks[current].emit_op_u16(Op::LOCAL_SET, supplier_slot, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, supplier_slot, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, optional_slot, line);
@@ -340,7 +340,7 @@ pub fn emit_or_else_throw(chunks: &mut [Chunk], current: usize, has_supplier: bo
         chunks[current].emit_op_u16(Op::LOCAL_GET, supplier_slot, line);
         chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
     } else {
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         chunks[current].emit_dup(line);
         chunks[current].emit_string_const("", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(

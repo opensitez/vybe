@@ -101,7 +101,7 @@ fn test_js_regexp_unicode_property_punctuation() {
 const re = /\p{Punctuation}/gu;
 console.log("Hello, world!".match(re).join(","));
 "#;
-    assert_eq!(run_js(src), vec![",,!"]);
+    assert_eq!(run_js(src), vec![", !"]);
 }
 
 #[test]

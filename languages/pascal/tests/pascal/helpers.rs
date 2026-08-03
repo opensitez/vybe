@@ -63,8 +63,7 @@ pub fn run_pascal(src: &str) -> Vec<String> {
                         String::new()
                     }
                 }
-                _ => String::new(),
-            };
+                _ => String::new() };
 
             let mut pending = stdout.lock().unwrap();
             pending.push_str(&text);
@@ -112,8 +111,7 @@ fn pascal_test_cwd_lock() -> &'static Mutex<()> {
 
 struct PascalTestCwd {
     previous: std::path::PathBuf,
-    current: std::path::PathBuf,
-}
+    current: std::path::PathBuf }
 
 impl PascalTestCwd {
     fn new() -> Self {

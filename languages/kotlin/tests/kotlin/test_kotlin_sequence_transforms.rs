@@ -119,5 +119,4 @@ kotlin_run_cases! {
             val seq2 = generateSequence(1) { if (it < 3) it + 1 else null }
             println(seq2.toList().sum().toString())
         }
-    "##, vec![String::from("3"), String::from("6")]),
-}
+    "##, vec![String::from("3"), String::from("6")]) }

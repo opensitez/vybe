@@ -219,7 +219,7 @@ echo implode('', $parts) . '|' . strlen(implode('', $parts));
 fn test_php_string_explode_array_and_join_unicode() {
     let out = run_prints(
         r#"<?php
-$text = "a,b,,c,,";
+$text = "a,b, c, ";
 $items = explode(',', $text);
 $joined = implode('|', $items);
 echo count($items) . '|' . substr($joined, 0, 12);

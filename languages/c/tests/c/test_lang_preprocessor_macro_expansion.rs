@@ -282,8 +282,7 @@ c_run_cases! {
         decls: "#define OK 1",
         body: "if(OK) printf(\"yes\\n\"); else printf(\"no\\n\"); return 0;",
         expect: ["yes"]
-    },
-}
+    } }
 
 c_compile_cases! {
     macro_multiline_backslash_compile => {
@@ -295,5 +294,4 @@ c_compile_cases! {
         includes: ["<stdio.h>"],
         decls: "#define TYPEDEF_NAME counter\nint TYPEDEF_NAME = 0;",
         body: "return TYPEDEF_NAME;"
-    },
-}
+    } }

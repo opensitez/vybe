@@ -50,8 +50,7 @@ pub fn emit_helper(
             chunks[current].emit_op_u16(Op::LOCAL_GET, base, line); // pat
             host::emit(&mut chunks[current], "ecma:regexp", "split", 2, line);
         }
-        _ => return false,
-    }
+        _ => return false }
     true
 }
 

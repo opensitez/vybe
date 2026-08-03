@@ -58,5 +58,4 @@ lua_print! {
     repeat_nested_outer_break_exits_correctly => {
         "local result = 0\nlocal i = 0\nrepeat\n  i = i + 1\n  repeat\n    result = result + 1\n    break\n  until true\nuntil i == 3\nprint(result)\n",
         "3"
-    },
-}
+    } }

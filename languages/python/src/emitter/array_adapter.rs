@@ -32,7 +32,7 @@ const ITEMSIZES: &[(&str, i32)] = &[
 
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
     let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, k, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -88,7 +88,7 @@ pub fn emit_array_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // reverse and the operation is a no-op — but it has to EXIST, since
     // `hasattr(a, 'byteswap')` asks the object.
     chunk.emit_dup(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     struct_set(chunk, "byteswap", line);
 }
 
@@ -150,5 +150,5 @@ pub fn emit_frombytes(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_op_u16(Op::LOCAL_SET, i, line);
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, state, line);
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

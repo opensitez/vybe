@@ -25,11 +25,6 @@ pub fn profile_source() -> &'static str {
 /// (vybex) calls this at startup; when the crate becomes a dylib this is the
 /// exported entry point the host invokes after `dlopen`.
 pub fn register() {
-    // The JDK class libraries are a PLATFORM this language consumes — same
-    // relationship csharp/vb have with `vybe_platform_dotnet` and dart has with
-    // `vybe_platform_flutter`. Registering it here mounts the `java.*` root at
-    // language-registration time, so it exists before the first compile.
-    vybe_platform_jvm::register();
     vybe_runtime::registry::register_language(vybe_runtime::registry::LanguageDef {
         name: "java",
         parse,

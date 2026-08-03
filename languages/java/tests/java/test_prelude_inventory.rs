@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use vybe_ast::{
     ArrayElement, CaseCondition, ClassMember, ExprKind, Expression, ObjectProperty, Statement,
-    StmtKind,
-};
+    StmtKind };
 
 #[test]
 #[ignore]
@@ -85,8 +84,7 @@ fn java_prelude_inventory_report() {
                     println!("                  unresolved: {}", unresolved.join(", "));
                 }
             }
-            Err(err) => println!("{label:>16}: parse failed: {err}"),
-        }
+            Err(err) => println!("{label:>16}: parse failed: {err}") }
     }
 }
 
@@ -123,8 +121,7 @@ fn is_prelude_stmt(stmt: &Statement, names: &BTreeSet<String>) -> bool {
         StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|decl| {
             matches!(&decl.pattern, vybe_ast::BindingPattern::Ident(name) if names.contains(name))
         }),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn top_level_names(stmts: &[Statement]) -> BTreeSet<String> {
@@ -181,8 +178,7 @@ fn prelude_family(name: &str) -> &'static str {
         _ if name.contains("_fmt") || name.contains("_printf") || name == "__j_sprintf" => "format",
         _ if name.contains("_object") || name.contains("_objects") => "objects",
         _ if name.contains("_prop") || name.contains("_system") => "system",
-        _ => "misc",
-    }
+        _ => "misc" }
 }
 
 fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
@@ -210,7 +206,7 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
             }
         }
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => collect_expr_refs(expr, out),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 collect_expr_refs(target, out);
             }
@@ -224,8 +220,7 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             collect_expr_refs(cond, out);
             for stmt in then_body {
                 collect_stmt_refs(stmt, out);
@@ -245,8 +240,7 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             collect_expr_refs(cond, out);
             for stmt in body {
                 collect_stmt_refs(stmt, out);
@@ -267,8 +261,7 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 collect_stmt_refs(init, out);
             }
@@ -301,8 +294,7 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             collect_expr_refs(expr, out);
             for case in cases {
                 for condition in &case.conditions {
@@ -346,8 +338,7 @@ fn collect_stmt_refs(stmt: &Statement, out: &mut BTreeSet<String>) {
         }
         StmtKind::Throw {
             expr: Some(expr),
-            cause,
-        } => {
+            cause } => {
             collect_expr_refs(expr, out);
             if let Some(cause) = cause {
                 collect_expr_refs(cause, out);

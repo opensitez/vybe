@@ -541,16 +541,15 @@ pub fn emit_collect(chunks: &mut [Chunk], current: usize, line: u32) {
     let prefix_slot = chunks[current].alloc_scratch(1);
     let suffix_slot = chunks[current].alloc_scratch(1);
     let result_slot = chunks[current].alloc_scratch(1);
+    let handled_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, collector_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, array_slot, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_bool_const(false, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, handled_slot, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
-    chunks[current].emit_i32_const(0, line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].emit_string_const("joining", line);
-    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "joining", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
     chunks[current].emit_i32_const(1, line);
@@ -573,16 +572,18 @@ pub fn emit_collect(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, suffix_slot, line);
     super::string_adapter::emit_concat(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
+
     emit_collect_non_joining(
         chunks,
         current,
         collector_slot,
         array_slot,
         result_slot,
+        handled_slot,
         line,
     );
-    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
 }
 
@@ -592,24 +593,24 @@ fn emit_collect_non_joining(
     collector_slot: u16,
     array_slot: u16,
     result_slot: u16,
+    handled_slot: u16,
     line: u32,
 ) {
-    emit_collector_kind_eq(chunks, current, collector_slot, "toSet", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "toSet", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     emit_distinct(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "counting", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "counting", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     collections::emit_len(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "summingInt", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "summingInt", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, collector_slot, line);
     chunks[current].emit_i32_const(1, line);
@@ -617,10 +618,10 @@ fn emit_collect_non_joining(
     emit_map(chunks, current, line);
     emit_sum(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "averagingInt", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "averagingInt", line);
     emit_collect_averaging_int(
         chunks,
         current,
@@ -629,10 +630,10 @@ fn emit_collect_non_joining(
         result_slot,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "toMap", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "toMap", line);
     emit_collect_to_map(
         chunks,
         current,
@@ -641,10 +642,10 @@ fn emit_collect_non_joining(
         result_slot,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "toCollection", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "toCollection", line);
     emit_collect_to_collection(
         chunks,
         current,
@@ -653,10 +654,10 @@ fn emit_collect_non_joining(
         result_slot,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "mapping", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "mapping", line);
     emit_collect_mapping(
         chunks,
         current,
@@ -665,10 +666,10 @@ fn emit_collect_non_joining(
         result_slot,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "filtering", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "filtering", line);
     emit_collect_filtering(
         chunks,
         current,
@@ -677,10 +678,10 @@ fn emit_collect_non_joining(
         result_slot,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "collectingAndThen", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "collectingAndThen", line);
     emit_collect_collecting_and_then(
         chunks,
         current,
@@ -689,10 +690,10 @@ fn emit_collect_non_joining(
         result_slot,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "reducing", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "reducing", line);
     emit_collect_reducing(
         chunks,
         current,
@@ -701,10 +702,10 @@ fn emit_collect_non_joining(
         result_slot,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "minBy", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "minBy", line);
     emit_collect_min_max_by(
         chunks,
         current,
@@ -714,10 +715,10 @@ fn emit_collect_non_joining(
         true,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "maxBy", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "maxBy", line);
     emit_collect_min_max_by(
         chunks,
         current,
@@ -727,10 +728,10 @@ fn emit_collect_non_joining(
         false,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "partitioningBy", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "partitioningBy", line);
     emit_collect_grouping(
         chunks,
         current,
@@ -740,10 +741,10 @@ fn emit_collect_non_joining(
         true,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
-    emit_collector_kind_eq(chunks, current, collector_slot, "groupingBy", line);
-    chunks[current].emit_if(line);
+    emit_collect_case_guard(chunks, current, collector_slot, handled_slot, "groupingBy", line);
     emit_collect_grouping(
         chunks,
         current,
@@ -753,24 +754,47 @@ fn emit_collect_non_joining(
         false,
         line,
     );
-    chunks[current].emit_else(line);
+    emit_collect_mark_handled(chunks, current, handled_slot, line);
+    emit_collect_case_end(chunks, current, line);
 
+    chunks[current].emit_op_u16(Op::LOCAL_GET, handled_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
+    chunks[current].emit_end(line);
+}
 
+fn emit_collect_case_guard(
+    chunks: &mut [Chunk],
+    current: usize,
+    collector_slot: u16,
+    handled_slot: u16,
+    tag: &str,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, handled_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    emit_collector_kind_eq(chunks, current, collector_slot, tag, line);
+    chunks[current].emit_if(line);
+}
+
+fn emit_collect_case_end(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
-    chunks[current].emit_end(line);
+}
+
+fn emit_collect_mark_handled(
+    chunks: &mut [Chunk],
+    current: usize,
+    handled_slot: u16,
+    line: u32,
+) {
+    chunks[current].emit_bool_const(true, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, handled_slot, line);
 }
 
 fn emit_collector_kind_eq(

@@ -159,7 +159,7 @@ fn emit_null_if_nan(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_call(is_nan, 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
     chunks[current].emit_end(line);

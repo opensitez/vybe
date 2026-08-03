@@ -196,7 +196,7 @@ console.log([...grouped.keys()].join(","));
 #[test]
 fn test_js_object_groupby_sparse_array_holes_visited() {
     let src = r#"
-const sparse = [1, , 3];
+const sparse = [1,  3];
 const grouped = Object.groupBy(sparse, item => item === undefined ? "undef" : "def");
 console.log(grouped.def.join(",") + "|countUndef=" + grouped.undef.length);
 "#;

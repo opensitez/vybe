@@ -50,5 +50,4 @@ c_run_cases! {
     typeof_preserves_value => { includes: ["<stdio.h>"], decls: "", body: "int x=3; typeof(x) y=x; printf(\"%d\\n\", y); return 0;", expect: ["3"] },
     empty_for_init => { includes: ["<stdio.h>"], decls: "", body: "int i=0; for(;i<1;i++){} printf(\"%d\\n\", i); return 0;", expect: ["1"] },
     switch_char_case => { includes: ["<stdio.h>"], decls: "", body: "switch('a'){case 'a': printf(\"a\\n\"); break;} return 0;", expect: ["a"] },
-    goto_backward => { includes: ["<stdio.h>"], decls: "", body: "int i=0; L: if(++i<2) goto L; printf(\"%d\\n\", i); return 0;", expect: ["2"] },
-}
+    goto_backward => { includes: ["<stdio.h>"], decls: "", body: "int i=0; L: if(++i<2) goto L; printf(\"%d\\n\", i); return 0;", expect: ["2"] } }

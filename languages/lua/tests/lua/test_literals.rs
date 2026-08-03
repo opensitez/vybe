@@ -69,5 +69,4 @@ lua_print! {
     hex_float_with_fractional_part => {
         "print(0x1.8p1)\n",
         "3.0"
-    },
-}
+    } }

@@ -23,8 +23,7 @@ pub fn emit_helper(
         "go.binary_put_uint64_parts" => emit_put_uint64_parts(chunks, current, argc, line),
         "go.binary_append_uint16" => emit_append_uint16(chunks, current, argc, line),
         "go.binary_append_uint32" => emit_append_uint32(chunks, current, argc, line),
-        _ => return false,
-    }
+        _ => return false }
     true
 }
 
@@ -88,7 +87,7 @@ fn emit_empty_array(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {
 
 pub fn emit_put_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 3 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let base = chunks[current].alloc_scratch(argc as u16);
@@ -124,12 +123,12 @@ pub fn emit_put_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             );
         },
     );
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_put_int16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 3 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let base = chunks[current].alloc_scratch(argc as u16);
@@ -165,7 +164,7 @@ pub fn emit_put_int16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
             );
         },
     );
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -205,7 +204,7 @@ pub fn emit_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 pub fn emit_put_uint32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 3 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let base = chunks[current].alloc_scratch(argc as u16);
@@ -241,7 +240,7 @@ pub fn emit_put_uint32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             );
         },
     );
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_uint32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -297,7 +296,7 @@ pub fn emit_int32(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 pub fn emit_put_uint64_parts(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc < 4 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let base = chunks[current].alloc_scratch(argc as u16);
@@ -336,7 +335,7 @@ pub fn emit_put_uint64_parts(chunks: &mut [Chunk], current: usize, argc: u8, lin
             );
         },
     );
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_append_uint16(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

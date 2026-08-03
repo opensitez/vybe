@@ -40,5 +40,4 @@ lua_print! {
     match_iterative_offsets => {
         "local s = \"one two three\"\nlocal words = {}\nfor w in string.gmatch(s, \"%a+\") do\n  words[#words+1] = w\nend\nprint(table.concat(words, \"-\"))\n",
         "one-two-three"
-    },
-}
+    } }

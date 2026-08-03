@@ -294,5 +294,4 @@ c_run_cases! {
         decls: "",
         body: "char b[16]; snprintf(b,16,\"%.1Lf\",3.5L); printf(\"%s\\n\", b); return 0;",
         expect: ["3.5"]
-    },
-}
+    } }

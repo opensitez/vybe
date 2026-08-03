@@ -8,8 +8,7 @@
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use vybe_ast::class_normalize::{
     NormalMembers,
-    access_from_visibility, from_method_stmt, types::*,
-};
+    access_from_visibility, from_method_stmt, types::* };
 
 pub fn normalize_class(
     span: Span,
@@ -38,8 +37,7 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::from(modifiers.visibility),
-                    readonly: modifiers.is_readonly,
-                };
+                    readonly: modifiers.is_readonly };
                 m.push_field(modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -64,8 +62,7 @@ pub fn normalize_class(
                     m.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name,
-                        source_name: source_name.clone(),
-                    });
+                        source_name: source_name.clone() });
                 }
                 m.push_method(modifiers.is_static, method);
             }
@@ -86,10 +83,8 @@ pub fn normalize_class(
                                 .map(|arg| vybe_ast::Argument::positional(arg.clone()))
                                 .collect(),
                         ),
-                        None => BaseCall::None,
-                    },
-                    named_name: name.clone(),
-                });
+                        None => BaseCall::None },
+                    named_name: name.clone() });
             }
             ClassMember::Property {
                 name,
@@ -97,8 +92,7 @@ pub fn normalize_class(
                 getter,
                 setter,
                 is_auto,
-                modifiers,
-            } => {
+                modifiers } => {
                 let (canonical_name, _) = crate::protocol::canonical_method(name);
                 m.properties.push(NormalProperty {
                     span: span.clone(),
@@ -115,8 +109,7 @@ pub fn normalize_class(
                             handles: Vec::new(),
                             is_async: false,
                             is_generator: false,
-                            is_sub: false,
-                        });
+                            is_sub: false });
                         from_method_stmt(
                             span.clone(),
                             &stmt,
@@ -134,8 +127,7 @@ pub fn normalize_class(
                             handles: Vec::new(),
                             is_async: false,
                             is_generator: false,
-                            is_sub: true,
-                        });
+                            is_sub: true });
                         from_method_stmt(
                             span.clone(),
                             &stmt,
@@ -143,16 +135,14 @@ pub fn normalize_class(
                             Access::from(modifiers.visibility),
                         )
                     }),
-                    auto_field: if *is_auto { Some(name.clone()) } else { None },
-                });
+                    auto_field: if *is_auto { Some(name.clone()) } else { None } });
             }
             // Lua composition is metatable assignment at runtime, not a
             // declaration, so the walker never produces this.
             ClassMember::Augment(_) => {}
             other @ (ClassMember::Event { .. }
             | ClassMember::Const { .. }
-            | ClassMember::NestedType(_)) => m.raw_extra_members.push(other.clone()),
-        }
+            | ClassMember::NestedType(_)) => m.raw_extra_members.push(other.clone()) }
     }
 
     NormalClass {

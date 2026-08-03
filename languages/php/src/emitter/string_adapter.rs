@@ -21,7 +21,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
@@ -370,7 +370,7 @@ pub fn emit_ucwords(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lset(chunk, code_slot, line);
 
     lget(chunk, delims_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
@@ -2074,7 +2074,7 @@ pub fn emit_preg_quote(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lset(chunk, n_slot, line);
 
     // Metacharacter codes: . 46, \\ 92, + 43, * 42, ? 63, [ 91, ^ 94,
-    // ] 93, $ 36, ( 40, ) 41, { 123, } 125, = 61, ! 33, < 60, > 62,
+    // ] 93, $ 36, ( 40, ) 41, { 123 } 125, = 61, ! 33, < 60, > 62,
     // | 124, : 58, - 45, # 35.
     let metas: &[u32] = &[
         46, 92, 43, 42, 63, 91, 94, 93, 36, 40, 41, 123, 125, 61, 33, 60, 62, 124, 58, 45, 35,
@@ -2484,7 +2484,7 @@ pub fn emit_preg_split(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
             c.emit_if(line);
             let index_k = c.add_constant(Value::String(std::sync::Arc::from("index")));
             lget(c, match_slot, line);
-            c.emit_op_u16(Op::STRUCT_GET, index_k, line);
+            c.emit_struct_field_op(Op::STRUCT_GET, 0, index_k, line);
             lget(c, match_slot, line);
             push_const(c, Value::F64(0.0), line);
             c.emit_op(Op::ARRAY_GET, line);
@@ -2879,7 +2879,7 @@ pub fn emit_preg_match_all_groups(chunks: &mut [Chunk], current: usize, _argc: u
     let groups_key = chunk.add_constant(Value::String(Arc::from("groups")));
     let groups_slot = alloc_local(chunk);
     lget(chunk, exec_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, groups_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, groups_key, line);
     lset(chunk, groups_slot, line);
 
     // if groups is not null: copy named entries
@@ -3110,7 +3110,7 @@ pub fn emit_preg_match_groups(chunks: &mut [Chunk], current: usize, _argc: u8, l
     // groups = result.groups
     let groups_key = chunk.add_constant(Value::String(Arc::from("groups")));
     lget(chunk, result_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, groups_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, groups_key, line);
     lset(chunk, groups_slot, line);
 
     // if groups is non-null: copy each named entry
@@ -3253,7 +3253,7 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
     // pos = m.index
     lget(chunk, m_slot, line);
     let index_key = chunk.add_constant(Value::String(Arc::from("index")));
-    chunk.emit_op_u16(Op::STRUCT_GET, index_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, index_key, line);
     lset(chunk, pos_slot, line);
 
     // match_str = m[0]
@@ -3411,7 +3411,7 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         // always have these slots populated when bound).
         let line = line;
         lget(chunk, obj_slot, line);
-        chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
         // Stack: [val]. Skip the SET if val is null/undefined (no
         // method to copy). REF_IS_NULL returns i32: 1=null, 0=non-null.
         // emit_if enters then-block when 1 (null), else-block when 0 (non-null).
@@ -3425,7 +3425,7 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunk.emit_op_u16(Op::LOCAL_SET, val_slot, line);
         lget(chunk, copy_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
-        chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
         chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line); // end null check
     };
@@ -3492,7 +3492,7 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
     // Check for __clone method on the copy.
     lget(chunk, copy_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, clone_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, clone_key, line);
     lset(chunk, clone_fn_slot, line);
 
     // function test: not null AND not number AND not string AND not boolean
@@ -5068,7 +5068,7 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         line,
         |c| c.emit_op_u16(Op::LOCAL_GET, out_slot, line),
     );
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_end(line);
 }
 
@@ -5379,7 +5379,7 @@ pub fn emit_preg_grep(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let _ = chunk;
     call_import(chunks, current, "ecma:regexp", "exec", 2, line);
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     lset(chunk, matched_slot, line);
@@ -7046,7 +7046,7 @@ pub fn emit_parse_url(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         call_import(chunks, current, "ecma:map", "get", 2, line);
         chunks[current].emit_else(line);
     }
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     for _ in PHP_URL_SELECTOR {
         chunks[current].emit_end(line);
     }

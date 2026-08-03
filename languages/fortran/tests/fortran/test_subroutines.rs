@@ -69,13 +69,10 @@ fn procedure_dummy_param_is_stamped_callable() {
                         {
                             Some(params)
                         }
-                        _ => None,
-                    },
-                    _ => None,
-                })
+                        _ => None },
+                    _ => None })
             }
-            _ => None,
-        })
+            _ => None })
         .expect("missing step params");
 
     let rhs = step
@@ -140,12 +137,9 @@ fn array_field_assignment_is_lowered_to_element_loop() {
                             matches!(&stmt.kind, StmtKind::Block(stmts) if stmts.iter().any(|inner| matches!(inner.kind, StmtKind::For { .. })))
                         }))
                     }
-                    _ => None,
-                },
-                _ => None,
-            }),
-            _ => None,
-        })
+                    _ => None },
+                _ => None }),
+            _ => None })
         .expect("missing rk4_step body");
 
     assert!(

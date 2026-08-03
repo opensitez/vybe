@@ -175,8 +175,7 @@ pub fn extract_imports(wasm: &[u8]) -> Vec<(String, String)> {
                         let (_, read) = read_leb(wasm, cursor);
                         cursor += read;
                     }
-                    _ => break,
-                }
+                    _ => break }
                 out.push((module, name));
             }
         }

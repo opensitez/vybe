@@ -14,8 +14,7 @@ go_run_cases! {
     higher_order_map => ("package main; import \"fmt\"; func mapInts(xs []int, f func(int) int) []int { out := make([]int, len(xs)); for i, v := range xs { out[i] = f(v) }; return out }; func main() { fmt.Println(mapInts([]int{1,2}, func(x int) int { return x*2 })[1]) }", vec!["4"]),
     method_call_passed_as_value => ("package main; import \"fmt\"; type S struct{}; func (S) ID() int { return 7 }; func main() { var s S; fmt.Println(s.ID()) }", vec!["7"]),
     init_before_main_order => ("package main; import \"fmt\"; var n = func() int { return 3 }(); func main() { fmt.Println(n) }", vec!["3"]),
-    package_level_func_forward_ref => ("package main; import \"fmt\"; func main() { fmt.Println(g()) }; func g() int { return 5 }", vec!["5"]),
-}
+    package_level_func_forward_ref => ("package main; import \"fmt\"; func main() { fmt.Println(g()) }; func g() int { return 5 }", vec!["5"]) }
 
 go_compile_cases! {
     return_discard_values_compile => "package main; func f() (int, int) { return 1, 2 }; func main() { f() }",
@@ -23,5 +22,4 @@ go_compile_cases! {
     func_literal_type_inference => "package main; func main() { _ = func(x int) int { return x } }",
     call_nil_func_compile => "package main; func main() { var f func(); f() }",
     defer_call_args_evaluated_early => "package main; func main() { defer func(int) {}(func() int { return 1 }()) }",
-    method_expression_with_instantiation => "package main; type T int; func (T) M() {}; func main() { _ = T.M }",
-}
+    method_expression_with_instantiation => "package main; type T int; func (T) M() {}; func main() { _ = T.M }" }

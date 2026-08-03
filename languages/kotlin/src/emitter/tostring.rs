@@ -68,7 +68,7 @@ fn emit_has_dict_keys(chunks: &mut [Chunk], current: usize, slot: u16, line: u32
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let key =
         chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
 }
@@ -108,7 +108,7 @@ fn emit_is_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     let key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
         SET_MARKER,
     )));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
 }
@@ -280,7 +280,7 @@ fn emit_separated_text(
 /// `ToString` slot path as `println`.
 pub fn emit_join_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc != 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let sep = chunks[current].alloc_scratch(1);

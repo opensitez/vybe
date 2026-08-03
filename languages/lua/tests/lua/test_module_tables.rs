@@ -60,5 +60,4 @@ lua_print! {
     module_local_alias_for_nested_function => {
         "local M = {}\nlocal math_floor = math.floor\nfunction M.truncate(x) return math_floor(x) end\nprint(M.truncate(3.9))\n",
         "3"
-    },
-}
+    } }

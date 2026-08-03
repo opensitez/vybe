@@ -43,13 +43,13 @@ fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, a
 /// `obj[key] = <value on stack>`. Stack: `[obj, value] -> []`.
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 
 /// Stash `argc` call arguments into consecutive scratch slots, arg0 at `base`.
@@ -84,8 +84,7 @@ fn algo_sizes(algo: &str) -> Option<(i32, i32)> {
         "sha3_512" => (64, 72),
         "blake2b" => (64, 128),
         "blake2s" => (32, 64),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Widen a data argument in `slot` to something `bytes_from_value` accepts:
@@ -255,7 +254,7 @@ pub fn emit_update_slots(chunks: &mut [Chunk], current: usize, recv: u16, src: u
     push_widened(chunks, current, src, line);
     hmac_or_hash(chunks, current, recv, "_hmacUpdate", "_hashUpdate", line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `h.copy()` with the receiver in `recv` — an independent digest object
@@ -287,7 +286,7 @@ fn hmac_or_hash(
 ) {
     lget(&mut chunks[current], recv, line);
     struct_get_key(&mut chunks[current], "__key", line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);

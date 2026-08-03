@@ -33,5 +33,4 @@ lua_print! {
     fn_vararg_sum => {
         "local function f(...) return select(\"#\", ...) end\nprint(f(1, 2, 3))\n",
         "3"
-    },
-}
+    } }

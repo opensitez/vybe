@@ -31,12 +31,10 @@ fn namespace_pattern() {
 const App = {
     utils: {
         add: (a, b) => a + b,
-        multiply: (a, b) => a * b,
-    },
+        multiply: (a, b) => a * b },
     config: {
         version: "1.0",
-        debug: false,
-    },
+        debug: false },
     init() {
         return `App v${this.config.version} initialized`;
     }
@@ -135,8 +133,7 @@ const Counter = (() => {
         inc: () => ++count,
         dec: () => --count,
         reset: () => { count = 0; return count; },
-        value: () => count,
-    };
+        value: () => count };
 })();
 Counter.inc();
 Counter.inc();

@@ -4,8 +4,7 @@ use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::{
     collections,
-    instructions::{core_wasm, host},
-};
+    instructions::{core_wasm, host} };
 
 const NAMES_KEY: &str = "__java_enum_names";
 const CLASS_KEY: &str = "__java_class_name";

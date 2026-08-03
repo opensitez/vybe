@@ -8,6 +8,8 @@ name = "lua"
 extensions = ["lua"]
 
 [compiler]
+# Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
+global_namespace = "_G"
 function_return = "explicit"
 self_keyword = "self"
 constructor_name = "constructor"
@@ -28,6 +30,11 @@ allow_trailing_comma = true
 supports_spread_arguments = true
 for_loop_per_iteration_binding = true
 multi_value_tuple_returns = true
+# A packed multi-value row is marked so normalize.rs can tell it from a table.
+multi_value_row_marker = "__lua_multi_row"
+# `t:f(x)` is desugared to `__lua_method_call(t, "f", x)` by the walker, so the
+# shared call path must not also inject a bound receiver.
+explicit_method_receiver_argument = true
 uses_normalize_class = true
 
 [builtins]
@@ -206,6 +213,9 @@ __lua_newindex = { emit = "common:lua.metamethod_newindex", min_args = 3, max_ar
 
 # os.* — wall clock via ecma:date + PHP strftime/getdate (see normalize.rs desugar)
 "os.time" = { emit = "host:ecma:date:nowSeconds", min_args = 0, max_args = 1 }
+# os.exit(code) — was unbound, so `os.exit(8)` raised "undefined is not
+# callable" instead of ending the run with status 8.
+"os.exit" = { emit = "common:control_flow.exit", min_args = 0, max_args = 2 }
 "__lua_strftime" = { emit = "common:php.strftime", min_args = 1, max_args = 2 }
 "__lua_getdate" = { emit = "common:php.getdate", min_args = 0, max_args = 1 }
 "__lua_monotonic_now" = { emit = "host:wasi:clocks/monotonic-clock:now", min_args = 0, max_args = 0 }

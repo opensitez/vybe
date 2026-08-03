@@ -9,6 +9,8 @@ name = "php"
 extensions = ["php", "phtml"]
 
 [compiler]
+# Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
+global_namespace = "$GLOBALS"
 separate_property_method_namespace = true   # $o->foo (property) and $o->foo() (method) coexist
 # namespaceplan.md (PHP phase): namespace-shaped entry points (package-root
 # `\Vybe\...` chains, wildcard namespace member access) resolve through the
@@ -48,10 +50,12 @@ self_keyword = "$this"              # PHP variables canonicalize with the $
                                     # the canonical form is required for
                                     # `$this->prop` resolution inside methods.
 constructor_name = "__construct"
-case_sensitive = true              # PHP function/class names are case-INSENSITIVE,
-                                    # but variables are case-sensitive. We treat
-                                    # the language as case-sensitive overall and
-                                    # rely on user-side normalization.
+case_sensitive = true              # VARIABLES are case-sensitive.
+fold_callable_names = true         # FUNCTION and CLASS names are not. Declaring
+                                    # the two halves separately replaced a
+                                    # `profile.name == "php"` check inside
+                                    # `LanguageProfile::lookup_builtin` — a
+                                    # language-name gate living in the VM crate.
 string_indexing = "zero_based"
 switch_fallthrough = true           # PHP switch falls through like JS/C unless break/return/throw exits.
 # PHP-specific

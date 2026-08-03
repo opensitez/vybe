@@ -127,5 +127,4 @@ kotlin_run_cases! {
             println(flat.joinToString(","))
             println(unique.joinToString(","))
         }
-    "##, vec![String::from("1,2,2,3,3"), String::from("1,2,3")]),
-}
+    "##, vec![String::from("1,2,2,3,3"), String::from("1,2,3")]) }

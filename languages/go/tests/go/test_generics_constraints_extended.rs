@@ -171,8 +171,7 @@ go_run_cases! {
     generic_comparable_delete_key => (
         "package main; import \"fmt\"; func Del[K comparable, V any](m map[K]V, k K) { delete(m, k) }; func main() { m := map[int]string{1: \"a\", 2: \"b\"}; Del(m, 1); fmt.Println(len(m)) }",
         vec!["1"]
-    ),
-}
+    ) }
 
 go_compile_cases! {
     generic_comparable_chan_key => "package main; func KeyType[K comparable]() K { var z K; return z }; func main() { _ = KeyType[chan int]() }",
@@ -198,5 +197,4 @@ go_compile_cases! {
     generic_interface_constraint_two_methods => "package main; type RW interface { Read() int; Write(int) }; func Use[T RW](v T) { v.Write(1); _ = v.Read() }; type S struct { n int }; func (s *S) Read() int { return s.n }; func (s *S) Write(n int) { s.n = n }; func main() { var x S; Use(&x) }",
     generic_method_on_constraint_interface => "package main; import \"cmp\"; type Sorter[T cmp.Ordered] interface { Sort() }; type Ints []int; func (s Ints) Sort() { for i := 0; i < len(s); i++ { for j := i+1; j < len(s); j++ { if s[j] < s[i] { s[i], s[j] = s[j], s[i] } } } }; func Run[T cmp.Ordered, S Sorter[T]](s S) { s.Sort() }; func main() { data := Ints{3, 1, 2}; Run(data) }",
     generic_tilde_slice_to_custom => "package main; type Names []string; func First[N ~[]string](n N) string { if len(n) == 0 { return \"\" }; return n[0] }; func main() { _ = First(Names{\"go\"}) }",
-    generic_comparable_func_not_allowed_compile => "package main; func Bad[K comparable]() {}; func main() { type F func(); _ = F }",
-}
+    generic_comparable_func_not_allowed_compile => "package main; func Bad[K comparable]() {}; func main() { type F func(); _ = F }" }

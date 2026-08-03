@@ -282,7 +282,7 @@ fn implode_skips_array_values_with_numeric_keys() {
 fn implode_stringifies_booleans_and_nulls() {
     assert_eq!(
         run_prints(r#"<?php echo implode(',', [true, false, null]); "#),
-        vec!["1,,"]
+        vec!["1, "]
     );
 }
 
@@ -476,7 +476,7 @@ fn str_starts_ends_with_false_path() {
 fn str_getcsv_like_split() {
     assert_eq!(
         run_prints(
-            r#"<?php $parts = str_getcsv('a,b,,c'); echo count($parts); echo '|'; echo $parts[2] === '' ? 'empty' : 'value'; "#
+            r#"<?php $parts = str_getcsv('a,b, c'); echo count($parts); echo '|'; echo $parts[2] === '' ? 'empty' : 'value'; "#
         ),
         vec!["4|empty"]
     );

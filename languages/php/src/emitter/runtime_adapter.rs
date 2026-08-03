@@ -1,7 +1,6 @@
 //! PHP runtime-surface helpers routed via `common:php.*`.
 
 use vybe_runtime::Chunk;
-use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
 use vybe_compiler::primitives::collections;
 
@@ -90,8 +89,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     let global = match name {
         "php.isnumeric" => "__vybe_isnumeric",
         "php.sort_in_place" => "__vybe_sort_in_place",
-        _ => return false,
-    };
+        _ => return false };
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
 }
@@ -147,8 +145,7 @@ fn emit_php_strcasecmp(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 fn push_str(chunk: &mut Chunk, s: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(std::sync::Arc::from(s)));
-    chunk.emit_op_u16(Op::CONST, idx, line);
+    chunk.emit_string_const(s, line);
 }
 
 fn emit_php_gz_encode(
@@ -170,8 +167,7 @@ fn emit_php_gz_encode(
             chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
             let len = chunk.add_import("wasm:js-string", "length");
             chunk.emit_call(len, 1, line);
-            let limit_idx = chunk.add_constant(Value::F64(40.0));
-            chunk.emit_op_u16(Op::CONST, limit_idx, line);
+            chunk.emit_f64_const(40.0, line);
             vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
             vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
             chunk.emit_if_value(line);
@@ -208,8 +204,7 @@ fn emit_php_gz_decode(chunks: &mut [Chunk], current: usize, argc: u8, prefix: &s
         let replace_all = chunk.add_import("ecma:string", "replaceAll");
         chunk.emit_call(replace_all, 3, line);
         chunk.emit_else(line);
-        let false_idx = chunk.add_constant(Value::Bool(false));
-        chunk.emit_op_u16(Op::CONST, false_idx, line);
+        chunk.emit_bool_const(false, line);
         chunk.emit_end(line);
     }
 }
@@ -310,6 +305,5 @@ fn emit_php_password_needs_rehash(chunks: &mut [Chunk], current: usize, argc: u8
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    let false_idx = chunk.add_constant(Value::Bool(false));
-    chunk.emit_op_u16(Op::CONST, false_idx, line);
+    chunk.emit_bool_const(false, line);
 }

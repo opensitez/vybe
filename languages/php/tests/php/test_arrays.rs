@@ -752,7 +752,7 @@ fn array_key_collision_between_false_null_and_empty_string_runtime() {
 #[test]
 fn array_destructure_with_skipped_slot_runtime() {
     let out = run_prints(
-        "<?php\n$tuple = [10, 20, 30, 40];\n[$first, , $third, $fourth] = $tuple;\necho $first . '|' . $third . '|' . $fourth;\n",
+        "<?php\n$tuple = [10, 20, 30, 40];\n[$first,  $third, $fourth] = $tuple;\necho $first . '|' . $third . '|' . $fourth;\n",
     );
     assert_eq!(out, vec!["10|30|40"]);
 }

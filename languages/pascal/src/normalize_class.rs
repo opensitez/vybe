@@ -17,8 +17,7 @@ use std::collections::{HashMap, HashSet};
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
     Argument, CaseCondition, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers,
-    PropertySetter, Span, Statement, StmtKind,
-};
+    PropertySetter, Span, Statement, StmtKind };
 
 const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";
 
@@ -42,10 +41,8 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                         .contains(&field.to_ascii_lowercase())
                         .then(|| field.clone())
                 }
-                _ => None,
-            },
-            _ => None,
-        },
+                _ => None },
+            _ => None },
         StmtKind::Expr(expr) => match &expr.kind {
             ExprKind::Assign { target, value } if matches!(value.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("value")) => {
                 match &target.kind {
@@ -59,8 +56,7 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                     ExprKind::Ident(field) => field_names
                         .contains(&field.to_ascii_lowercase())
                         .then(|| field.clone()),
-                    _ => None,
-                }
+                    _ => None }
             }
             ExprKind::Call { callee, args, .. } if args.len() == 1 => match &callee.kind {
                 ExprKind::Member { object, field, .. }
@@ -71,12 +67,9 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                         .contains(&field.to_ascii_lowercase())
                         .then(|| field.clone())
                 }
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    }
+                _ => None },
+            _ => None },
+        _ => None }
 }
 
 fn rewrite_property_getter_body(
@@ -90,8 +83,7 @@ fn rewrite_property_getter_body(
         ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: field_name,
-            null_safe: false,
-        },
+            null_safe: false },
     ))))]
 }
 
@@ -106,18 +98,15 @@ fn rewrite_property_setter_body(
         targets: vec![Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: field_name,
-            null_safe: false,
-        })],
-        value: Expression::ident("value"),
-    })]
+            null_safe: false })],
+        value: Expression::ident("value"), by_ref: false })]
 }
 
 fn self_member_expr(name: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::This)),
         field: name.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn rewrite_implicit_self_members_in_methods(
@@ -170,8 +159,7 @@ fn rewrite_implicit_self_members_in_constructors(
 fn static_access_expr(class_name: &str, member_name: &str) -> Expression {
     Expression::new(ExprKind::StaticAccess {
         class: Box::new(Expression::ident(class_name)),
-        member: Box::new(Expression::ident(member_name)),
-    })
+        member: Box::new(Expression::ident(member_name)) })
 }
 
 fn rewrite_static_value_members_in_methods(
@@ -247,7 +235,7 @@ fn rewrite_static_value_members_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_static_value_members_expr(target, class_name, member_names, shadowed);
             }
@@ -265,8 +253,7 @@ fn rewrite_static_value_members_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
             rewrite_static_value_members_in_body(
                 then_body,
@@ -305,8 +292,7 @@ fn rewrite_static_value_members_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = shadowed.clone();
             if let Some(init) = init {
                 rewrite_static_value_members_stmt(init, class_name, member_names, &mut scoped);
@@ -434,8 +420,7 @@ fn normalize_destructor_inherited_calls(body: &mut [Statement], has_parent: bool
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 normalize_destructor_inherited_calls(body, has_parent);
                 for catch in catches {
                     normalize_destructor_inherited_calls(&mut catch.body, has_parent);
@@ -529,7 +514,7 @@ fn rewrite_implicit_self_members_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_implicit_self_members_expr(target, member_names, shadowed, true);
             }
@@ -547,8 +532,7 @@ fn rewrite_implicit_self_members_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_implicit_self_members_expr(cond, member_names, shadowed, false);
             let mut scoped = shadowed.clone();
             rewrite_implicit_self_members_in_body(then_body, member_names, &mut scoped);
@@ -566,8 +550,7 @@ fn rewrite_implicit_self_members_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = shadowed.clone();
             if let Some(init) = init {
                 rewrite_implicit_self_members_stmt(init, member_names, &mut scoped);
@@ -603,8 +586,7 @@ fn rewrite_implicit_self_members_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_implicit_self_members_expr(cond, member_names, shadowed, false);
             let mut scoped = shadowed.clone();
             rewrite_implicit_self_members_in_body(body, member_names, &mut scoped);
@@ -621,8 +603,7 @@ fn rewrite_implicit_self_members_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_implicit_self_members_expr(expr, member_names, shadowed, false);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -649,8 +630,7 @@ fn rewrite_implicit_self_members_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut scoped = shadowed.clone();
             rewrite_implicit_self_members_in_body(body, member_names, &mut scoped);
             for catch in catches {
@@ -791,11 +771,9 @@ fn gcl_accessor_call(
         callee: Box::new(Expression::new(ExprKind::Index {
             object: Box::new(object),
             index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(key)))),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: explicit_args,
-        optional: false,
-    })
+        optional: false })
 }
 
 fn rewrite_gcl_property_accessors_in_methods(
@@ -827,7 +805,7 @@ fn rewrite_gcl_property_accessors_in_body(
 
 fn rewrite_gcl_property_accessors_stmt(stmt: &mut Statement, property_names: &HashSet<String>) {
     let setter_rewrite = match &mut stmt.kind {
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             rewrite_gcl_property_accessors_expr(value, property_names);
             rewrite_gcl_property_setter_target(&mut targets[0], value.clone(), property_names)
         }
@@ -840,15 +818,14 @@ fn rewrite_gcl_property_accessors_stmt(stmt: &mut Statement, property_names: &Ha
                 None
             }
         }
-        _ => None,
-    };
+        _ => None };
     if let Some(rewritten) = setter_rewrite {
         *stmt = Statement::new(StmtKind::Expr(rewritten));
         return;
     }
 
     match &mut stmt.kind {
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_gcl_property_accessors_target_object(target, property_names);
             }
@@ -875,8 +852,7 @@ fn rewrite_gcl_property_accessors_stmt(stmt: &mut Statement, property_names: &Ha
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_gcl_property_accessors_expr(cond, property_names);
             rewrite_gcl_property_accessors_in_body(then_body, property_names);
             for (cond, body) in elifs {
@@ -936,8 +912,7 @@ fn rewrite_gcl_property_accessors_stmt(stmt: &mut Statement, property_names: &Ha
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_gcl_property_accessors_expr(expr, property_names);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -975,8 +950,7 @@ fn rewrite_gcl_property_accessors_stmt(stmt: &mut Statement, property_names: &Ha
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_gcl_property_accessors_in_body(body, property_names);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -1016,8 +990,7 @@ fn gcl_with_receiver_member(receiver: &str, name: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident(receiver)),
         field: name.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn rewrite_gcl_with_receiver_body(
@@ -1039,7 +1012,7 @@ fn rewrite_gcl_with_receiver_stmt(
         StmtKind::Expr(expr) => {
             rewrite_gcl_with_receiver_expr(expr, receiver, property_names, false)
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_gcl_with_receiver_expr(target, receiver, property_names, true);
             }
@@ -1066,8 +1039,7 @@ fn rewrite_gcl_with_receiver_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_gcl_with_receiver_expr(cond, receiver, property_names, false);
             rewrite_gcl_with_receiver_body(then_body, receiver, property_names);
             for (cond, body) in elifs {
@@ -1081,8 +1053,7 @@ fn rewrite_gcl_with_receiver_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_gcl_with_receiver_expr(cond, receiver, property_names, false);
             rewrite_gcl_with_receiver_body(body, receiver, property_names);
             if let Some(body) = else_body {
@@ -1093,8 +1064,7 @@ fn rewrite_gcl_with_receiver_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_gcl_with_receiver_stmt(init, receiver, property_names);
             }
@@ -1125,8 +1095,7 @@ fn rewrite_gcl_with_receiver_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_gcl_with_receiver_expr(expr, receiver, property_names, false);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -1161,8 +1130,7 @@ fn rewrite_gcl_with_receiver_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_gcl_with_receiver_body(body, receiver, property_names);
             for catch in catches {
                 if let Some(when_clause) = &mut catch.when_clause {
@@ -1281,8 +1249,7 @@ fn rewrite_gcl_property_accessors_target_object(
             rewrite_gcl_property_accessors_expr(object, property_names);
             rewrite_gcl_property_accessors_expr(index, property_names);
         }
-        _ => rewrite_gcl_property_accessors_expr(target, property_names),
-    }
+        _ => rewrite_gcl_property_accessors_expr(target, property_names) }
 }
 
 fn rewrite_gcl_property_accessors_expr(expr: &mut Expression, property_names: &HashSet<String>) {
@@ -1349,8 +1316,7 @@ fn call_self_form_create_body() -> Vec<Statement> {
             args: vec![vybe_ast::Argument::positional(Expression::new(
                 ExprKind::This,
             ))],
-            optional: false,
-        },
+            optional: false },
     )))]
 }
 
@@ -1369,8 +1335,7 @@ fn stmt_calls_method(stmt: &Statement, method_name: &str) -> bool {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             expr_calls_method(cond, method_name)
                 || then_body
                     .iter()
@@ -1387,8 +1352,7 @@ fn stmt_calls_method(stmt: &Statement, method_name: &str) -> bool {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             init.as_ref()
                 .is_some_and(|stmt| stmt_calls_method(stmt, method_name))
                 || cond
@@ -1403,7 +1367,7 @@ fn stmt_calls_method(stmt: &Statement, method_name: &str) -> bool {
             expr_calls_method(iter, method_name)
                 || body.iter().any(|stmt| stmt_calls_method(stmt, method_name))
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             targets
                 .iter()
                 .any(|expr| expr_calls_method(expr, method_name))
@@ -1412,8 +1376,7 @@ fn stmt_calls_method(stmt: &Statement, method_name: &str) -> bool {
         StmtKind::CompoundAssign { target, value, .. } => {
             expr_calls_method(target, method_name) || expr_calls_method(value, method_name)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn expr_calls_method(expr: &Expression, method_name: &str) -> bool {
@@ -1454,8 +1417,7 @@ fn expr_calls_method(expr: &Expression, method_name: &str) -> bool {
                     .iter()
                     .any(|arg| expr_calls_method(&arg.value, method_name))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 pub fn normalize_class(
@@ -1473,8 +1435,7 @@ pub fn normalize_class(
             ClassMember::Field {
                 name, modifiers, ..
             } if !modifiers.is_static => Some(name.to_ascii_lowercase()),
-            _ => None,
-        })
+            _ => None })
         .collect();
     let static_value_member_names: HashSet<String> = members
         .iter()
@@ -1490,10 +1451,8 @@ pub fn normalize_class(
                 StmtKind::FunctionDecl {
                     name, modifiers, ..
                 } if modifiers.is_static => Some(name.to_ascii_lowercase()),
-                _ => None,
-            },
-            _ => None,
-        })
+                _ => None },
+            _ => None })
         .collect();
     let mut implicit_self_member_names = instance_field_names.clone();
 
@@ -1514,8 +1473,7 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility.clone()),
-                    readonly: m.is_readonly,
-                };
+                    readonly: m.is_readonly };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -1593,8 +1551,7 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,
-                        source_name: src_name.clone(),
-                    });
+                        source_name: src_name.clone() });
                 }
                 // An instance method's name is what a bare identifier inside
                 // another method can resolve to as `Self.<name>` — a Pascal
@@ -1655,8 +1612,7 @@ pub fn normalize_class(
                     // constructors as a different callable surface, so keep
                     // Pascal variants primary until constructor roles are
                     // represented as protocol slots.
-                    named_name: None,
-                });
+                    named_name: None });
             }
             ClassMember::Property {
                 name: pname,
@@ -1705,8 +1661,7 @@ pub fn normalize_class(
                     is_static: m.is_static,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
-                });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
             }
             // Object Pascal has single inheritance plus interfaces; class
             // helpers extend a type from outside and are the prototype-fallback
@@ -1834,8 +1789,7 @@ pub fn normalize_class(
 #[derive(Clone)]
 struct PascalOverloadCase {
     arity: usize,
-    hidden_name: String,
-}
+    hidden_name: String }
 
 fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec<NormalMethod> {
     let mut groups: HashMap<String, Vec<NormalMethod>> = HashMap::new();
@@ -1875,8 +1829,7 @@ fn lower_pascal_method_overloads(methods: Vec<NormalMethod>, span: &Span) -> Vec
             );
             cases.push(PascalOverloadCase {
                 arity: method.params.len(),
-                hidden_name: hidden_name.clone(),
-            });
+                hidden_name: hidden_name.clone() });
             hidden_methods.push(build_normal_method(
                 method.span.clone(),
                 &hidden_name,
@@ -1933,8 +1886,7 @@ fn build_pascal_overload_dispatch(
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(&first.hidden_name)),
         args: call_args,
-        optional: false,
-    });
+        optional: false });
     let invoke_stmt = if is_sub {
         Statement::new(StmtKind::Expr(call_expr))
     } else {
@@ -1949,18 +1901,15 @@ fn build_pascal_overload_dispatch(
     let is_null = Expression::new(ExprKind::Binary {
         op: vybe_ast::BinOp::Eq,
         left: Box::new(Expression::ident(gate_param)),
-        right: Box::new(Expression::null()),
-    });
+        right: Box::new(Expression::null()) });
     let is_undefined = Expression::new(ExprKind::Binary {
         op: vybe_ast::BinOp::Eq,
         left: Box::new(Expression::ident(gate_param)),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
-    });
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))) });
     let cond = Expression::new(ExprKind::Binary {
         op: vybe_ast::BinOp::Or,
         left: Box::new(is_null),
-        right: Box::new(is_undefined),
-    });
+        right: Box::new(is_undefined) });
 
     vec![Statement::new(StmtKind::If {
         cond,
@@ -1970,8 +1919,7 @@ fn build_pascal_overload_dispatch(
             &cases[1..],
             wrapper_params,
             is_sub,
-        )),
-    })]
+        )) })]
 }
 
 fn has_duplicate_arities<I>(arities: I) -> bool
@@ -2017,8 +1965,7 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        })))
+            is_sub: false })))
     }
 
     fn make_method_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
@@ -2033,8 +1980,7 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        })))
+            is_sub: false })))
     }
 
     fn make_field_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
@@ -2046,8 +1992,7 @@ mod tests {
             init: None,
             modifiers,
             with_events: false,
-            array_bounds: None,
-        }
+            array_bounds: None }
     }
 
     fn make_property_with_visibility(src_name: &str, visibility: Visibility) -> ClassMember {
@@ -2061,8 +2006,7 @@ mod tests {
             )))]),
             setter: None,
             is_auto: false,
-            modifiers,
-        }
+            modifiers }
     }
 
     #[test]
@@ -2157,8 +2101,7 @@ mod tests {
                 body: vec![],
                 base_args: None,
                 initializer_target: ConstructorInitializerTarget::Base,
-                visibility: Visibility::Public,
-            }],
+                visibility: Visibility::Public }],
             &ClassModifiers::default(),
         );
         assert_eq!(nc.constructors.len(), 1);
@@ -2202,8 +2145,7 @@ mod tests {
                 body: vec![],
                 base_args: Some(vec![Expression::new(ExprKind::Lit(Literal::Int(1)))]),
                 initializer_target: ConstructorInitializerTarget::This,
-                visibility: Visibility::Public,
-            }],
+                visibility: Visibility::Public }],
             &ClassModifiers::default(),
         );
         assert!(matches!(nc.constructors[0].base_call, BaseCall::This(_)));

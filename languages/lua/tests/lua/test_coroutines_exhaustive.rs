@@ -40,5 +40,4 @@ lua_print! {
     co_exh_nested_yield => {
         "local function inner() coroutine.yield(\"inner\") end\nlocal co = coroutine.create(function() inner(); return \"outer\" end)\nlocal _, v1 = coroutine.resume(co)\nlocal _, v2 = coroutine.resume(co)\nprint(v1, v2)\n",
         "inner\touter"
-    },
-}
+    } }

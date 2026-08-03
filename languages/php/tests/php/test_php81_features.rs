@@ -147,8 +147,7 @@ enum Suit { case Hearts; case Diamonds; case Clubs; case Spades; }
 $s = Suit::Hearts;
 echo match($s) {
     Suit::Hearts, Suit::Diamonds => 'red',
-    default => 'black',
-};
+    default => 'black' };
 "#
         ),
         vec!["red"]

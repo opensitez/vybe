@@ -118,13 +118,11 @@ go_run_cases! {
     pointer_to_keyed_struct_literal => (
         "package main; import \"fmt\"; type metric struct { name string; value int }; func main() { m := &metric{value: 42, name: \"latency\"}; fmt.Println(m.name); fmt.Println(m.value); }",
         vec!["latency", "42"]
-    ),
-}
+    ) }
 
 go_compile_cases! {
     array_of_maps_keyed_inner_entries => "package main; func main() { _ = [2]map[string]int{{\"a\": 1}, {\"b\": 2}} }",
     map_of_arrays_keyed_slice_values => "package main; func main() { _ = map[string][3]int{\"row\": {0: 1, 2: 3}} }",
     struct_with_keyed_map_and_array_fields => "package main; type bundle struct { tags map[string]int; ids [2]int }; func main() { _ = bundle{tags: map[string]int{\"x\": 1}, ids: [2]int{1: 9}} }",
     nested_anonymous_struct_all_keyed_compile => "package main; func main() { _ = struct { outer struct { n int } }{outer: struct { n int }{n: 5}} }",
-    slice_keyed_struct_elements_compile => "package main; type node struct { id int }; func main() { _ = []node{{id: 1}, {id: 2}} }",
-}
+    slice_keyed_struct_elements_compile => "package main; type node struct { id int }; func main() { _ = []node{{id: 1}, {id: 2}} }" }

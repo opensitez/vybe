@@ -71,5 +71,4 @@ lua_print! {
     generic_for_three_value_protocol_used_directly => {
         "local function stateless(state, i)\n  i = i + 1\n  if i <= state then return i end\nend\nlocal sum = 0\nfor i in stateless, 5, 0 do sum = sum + i end\nprint(sum)\n",
         "15"
-    },
-}
+    } }

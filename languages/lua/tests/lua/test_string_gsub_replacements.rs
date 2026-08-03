@@ -44,5 +44,4 @@ lua_print! {
     gsub_whole_match => {
         "local r = string.gsub(\"cat\", \"%a+\", \"[%0]\")\nprint(r)\n",
         "[cat]"
-    },
-}
+    } }

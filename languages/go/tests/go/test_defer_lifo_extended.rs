@@ -59,8 +59,7 @@ go_run_cases! {
     defer_in_defer_registers_inner_first_on_pop => ("package main; import \"fmt\"; func main() { defer func() { defer fmt.Println(2); fmt.Println(1) }(); }", vec!["1", "2"]),
     defer_before_return_zero_value => ("package main; import \"fmt\"; func work() int { defer fmt.Println(\"d\"); return 0 }; func main() { fmt.Println(work()) }", vec!["d", "0"]),
     defer_with_slice_arg_copy => ("package main; import \"fmt\"; func main() { s := []int{1, 2}; defer fmt.Println(len(s)); s = append(s, 3); }", vec!["2"]),
-    defer_closure_modifies_slice_header => ("package main; import \"fmt\"; func main() { s := []int{1}; defer func() { fmt.Println(len(s)) }(); s = append(s, 2); }", vec!["2"]),
-}
+    defer_closure_modifies_slice_header => ("package main; import \"fmt\"; func main() { s := []int{1}; defer func() { fmt.Println(len(s)) }(); s = append(s, 2); }", vec!["2"]) }
 
 go_compile_cases! {
     defer_after_panic_without_recover_compile => "package main; func run() { defer func() {}(); panic(\"x\"); defer func() { _ = 1 }() }; func main() { run() }",
@@ -72,5 +71,4 @@ go_compile_cases! {
     defer_in_select_with_fallthrough_compile => "package main; func main() { ch := make(chan int); select { case <-ch: defer func() {}(); default: } }",
     defer_register_in_init_with_panic_compile => "package main; func init() { defer func() { recover() }(); panic(\"init\") }; func main() {}",
     defer_method_on_nil_pointer_compile => "package main; type T struct{}; func (t *T) f() {}; func main() { var t *T; defer t.f() }",
-    defer_in_go_statement_compile => "package main; func main() { defer func() { go func() {}() }() }",
-}
+    defer_in_go_statement_compile => "package main; func main() { defer func() { go func() {}() }() }" }

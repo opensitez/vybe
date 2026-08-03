@@ -29,8 +29,7 @@
 
 use vybe_ast::{ClassMember, ClassModifiers, ExprKind, Literal, PropertySetter, Span, StmtKind};
 use vybe_ast::class_normalize::{
-    NormalMembers, build_normal_method, from_method_stmt, types::*,
-};
+    NormalMembers, build_normal_method, from_method_stmt, types::* };
 
 pub fn normalize_class(
     span: Span,
@@ -59,8 +58,7 @@ pub fn normalize_class(
                     init: init.clone().or_else(|| vb_default_field_init(type_hint)),
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
-                    readonly: m.is_readonly,
-                };
+                    readonly: m.is_readonly };
                 out.push_field(m.is_static || m.is_shared, field);
             }
             ClassMember::Method(stmt) => {
@@ -107,8 +105,7 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,
-                        source_name: src_name.clone(),
-                    });
+                        source_name: src_name.clone() });
                 }
                 // VB treats `Shared` as "static" and `Static` is
                 // separately for locals — both compile paths land on
@@ -137,8 +134,7 @@ pub fn normalize_class(
                                 args.iter()
                                     .map(|e| vybe_ast::Argument::positional(e.clone()))
                                     .collect(),
-                            ),
-                        },
+                            ) },
                         // The VB walker injects `MyBase.New()` at the start
                         // of the body when the class DECLARATION itself
                         // has an `Inherits` clause. For partial classes,
@@ -159,8 +155,7 @@ pub fn normalize_class(
                             }
                         }
                     },
-                    named_name: None,
-                };
+                    named_name: None };
                 out.push_constructor(normalized);
             }
             ClassMember::Property {
@@ -210,8 +205,7 @@ pub fn normalize_class(
                     is_static: m.is_static || m.is_shared,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
-                });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
             }
             // VB.NET has single inheritance plus interfaces and no trait/mixin
             // mechanism, so the walker never produces this.
@@ -296,8 +290,7 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        })))
+            is_sub: false })))
     }
 
     #[test]

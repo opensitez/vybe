@@ -21,8 +21,7 @@
 
 use vybe_ast::{ClassMember, ClassModifiers, Modifiers, PropertySetter, Span, StmtKind};
 use vybe_ast::class_normalize::{
-    NormalMembers, build_normal_method, from_method_stmt, types::*,
-};
+    NormalMembers, build_normal_method, from_method_stmt, types::* };
 
 /// Dart `class X with M` — the language's rules, stated once.
 ///
@@ -42,9 +41,7 @@ const DART_MIXIN: AugmentationPolicy = AugmentationPolicy {
         fields: true,
         statics: false,
         constructors: false,
-        abstract_members: true,
-    },
-};
+        abstract_members: true } };
 
 pub fn normalize_class(
     span: Span,
@@ -73,8 +70,7 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::Public, // Dart's `_name` convention isn't enforced
-                    readonly: field_modifiers.is_readonly,
-                };
+                    readonly: field_modifiers.is_readonly };
                 m.push_field(field_modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -95,8 +91,7 @@ pub fn normalize_class(
                     m.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical,
-                        source_name: src_name.clone(),
-                    });
+                        source_name: src_name.clone() });
                 }
                 m.push_method(method_modifiers.is_static, method);
             }
@@ -123,10 +118,8 @@ pub fn normalize_class(
                         // preamble C# and VB already use. A class with no
                         // parent has nothing to call.
                         None if !parents.is_empty() => BaseCall::Auto,
-                        None => BaseCall::None,
-                    },
-                    named_name: ctor_name.clone(),
-                };
+                        None => BaseCall::None },
+                    named_name: ctor_name.clone() };
                 // A class can declare an unnamed ctor AND several named ones
                 // (`Point(this.x)` + `Point.origin()`); they are distinct
                 // constructors, not overloads, and often share an arity. Every
@@ -180,8 +173,7 @@ pub fn normalize_class(
                     is_static: prop_modifiers.is_static,
                     getter: getter_method,
                     setter: setter_method,
-                    auto_field: if *is_auto { Some(pname.clone()) } else { None },
-                });
+                    auto_field: if *is_auto { Some(pname.clone()) } else { None } });
             }
             // Dart's `with M` is a HEADER clause, not a body member, so it is
             // read from the class header below rather than arriving here.
@@ -240,8 +232,7 @@ mod tests {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        })))
+            is_sub: false })))
     }
 
     #[test]

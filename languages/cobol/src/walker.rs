@@ -44,8 +44,7 @@ const COBOL_ARRAY_INDEXING: ArrayIndexSemantics = ArrayIndexSemantics::ONE_BASED
 struct CobolRecordField {
     name: String,
     numeric: bool,
-    decimal_places: usize,
-}
+    decimal_places: usize }
 
 #[derive(Clone)]
 struct CobolFileBinding {
@@ -54,8 +53,7 @@ struct CobolFileBinding {
     status_var: Option<String>,
     key_name: Option<String>,
     record_name: Option<String>,
-    record_fields: Vec<CobolRecordField>,
-}
+    record_fields: Vec<CobolRecordField> }
 
 struct CobolWalkerContext {
     file_bindings: HashMap<String, CobolFileBinding>,
@@ -69,8 +67,7 @@ struct CobolWalkerContext {
     // Elementary working-storage fields whose PICTURE gives a fixed display
     // width, so DISPLAY of the field pads to that width.
     field_pics: HashMap<String, CobolPicFmt>,
-    next_file_number: i32,
-}
+    next_file_number: i32 }
 
 /// Fixed-width DISPLAY format implied by an elementary field's PICTURE.
 #[derive(Clone, Copy)]
@@ -78,8 +75,7 @@ enum CobolPicFmt {
     /// Unsigned integer PIC 9(n): zero-pad to `n` digits.
     Numeric(usize),
     /// Alphanumeric PIC X(n)/A(n): space-pad (right) to `n` characters.
-    Alpha(usize),
-}
+    Alpha(usize) }
 
 impl CobolWalkerContext {
     fn new() -> Self {
@@ -91,8 +87,7 @@ impl CobolWalkerContext {
             condition_names: HashMap::new(),
             screen_items: HashSet::new(),
             field_pics: HashMap::new(),
-            next_file_number: 1,
-        }
+            next_file_number: 1 }
     }
 
     fn register_screen_item(&mut self, name: &str) {
@@ -140,8 +135,7 @@ impl CobolWalkerContext {
                 key_name: key_name
                     .or_else(|| existing.and_then(|binding| binding.key_name.clone())),
                 record_name,
-                record_fields,
-            },
+                record_fields },
         );
         self.next_file_number += 1;
     }
@@ -215,8 +209,7 @@ impl CobolWalkerContext {
                 CobolRecordField {
                     name: field.name.clone(),
                     numeric: field.numeric || previous.numeric,
-                    decimal_places: field.decimal_places.max(previous.decimal_places),
-                }
+                    decimal_places: field.decimal_places.max(previous.decimal_places) }
             })
             .collect()
     }
@@ -671,8 +664,7 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: start_line as u32,
         start_col: start_col as u32,
         end_line: end_line as u32,
-        end_col: end_col as u32,
-    }
+        end_col: end_col as u32 }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -689,8 +681,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Cobol,
         body: Vec::new(),
-        imports: Vec::new(),
-    };
+        imports: Vec::new() };
 
     for pair in program.into_inner() {
         match pair.as_rule() {
@@ -855,12 +846,9 @@ fn walk_repository_function_entry(pair: Pair<Rule>) -> Result<Option<Import>, St
             path,
             names: vec![ImportName {
                 name: imported_name,
-                alias,
-            }],
-            level: 0,
-        },
-        span,
-    }))
+                alias }],
+            level: 0 },
+        span }))
 }
 
 fn walk_repository_type_entry(pair: Pair<Rule>) -> Result<Option<Import>, String> {
@@ -883,10 +871,8 @@ fn walk_repository_type_entry(pair: Pair<Rule>) -> Result<Option<Import>, String
     Ok(Some(Import {
         kind: ImportKind::Simple {
             path: target,
-            alias: Some(alias),
-        },
-        span,
-    }))
+            alias: Some(alias) },
+        span }))
 }
 
 fn split_repository_member_spec(raw_specifier: &str, fallback_name: &str) -> (String, String) {
@@ -994,10 +980,8 @@ fn extract_cobol_data_item_name(pair: &Pair<Rule>) -> Option<String> {
         .find_map(|child| match child.as_rule() {
             Rule::regular_data_item => child.into_inner().find_map(|part| match part.as_rule() {
                 Rule::ident_name | Rule::ident_or_keyword => Some(part.as_str().to_string()),
-                _ => None,
-            }),
-            _ => None,
-        })
+                _ => None }),
+            _ => None })
 }
 
 fn collect_cobol_record_fields(pair: Pair<Rule>, fields: &mut Vec<CobolRecordField>) {
@@ -1058,8 +1042,7 @@ fn collect_cobol_record_fields(pair: Pair<Rule>, fields: &mut Vec<CobolRecordFie
                     numeric: cobol_type_hint(pic_str.as_deref(), usage_str.as_deref())
                         .as_deref()
                         .is_some_and(|hint| hint != "String" && hint != "Boolean"),
-                    decimal_places: pic_fractional_digits(pic_str.as_deref().unwrap_or_default()),
-                });
+                    decimal_places: pic_fractional_digits(pic_str.as_deref().unwrap_or_default()) });
             }
 
             for sibling in leaked_siblings {
@@ -1074,8 +1057,7 @@ fn cobol_file_status_assign(status_var: Option<&str>, value: &str) -> Option<Sta
     status_var.map(|name| {
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(name)],
-            value: Expression::string(value),
-        })
+            value: Expression::string(value), by_ref: false })
     })
 }
 
@@ -1321,9 +1303,7 @@ fn walk_screen_data_item(
                     ))
                 }),
                 array_bounds: None,
-                with_events: false,
-            }],
-        },
+                with_events: false }] },
         span,
     ));
     Ok(())
@@ -1381,9 +1361,7 @@ fn walk_level_88(pair: Pair<Rule>) -> Result<StmtKind, String> {
             type_hint: None,
             init: Some(value_expr),
             array_bounds: None,
-            with_events: false,
-        }],
-    })
+            with_events: false }] })
 }
 
 fn register_level_88_condition(
@@ -1550,8 +1528,7 @@ fn walk_regular_data_item(
                 Argument::positional(count_expr),
                 Argument::positional(element_init),
             ],
-            optional: false,
-        }))
+            optional: false }))
     } else {
         init_value.or_else(|| {
             Some(default_value_for_cobol_type(
@@ -1578,9 +1555,7 @@ fn walk_regular_data_item(
             type_hint,
             init,
             array_bounds: None,
-            with_events: false,
-        }],
-    };
+            with_events: false }] };
     body.push(Statement::with_span(stmt, span));
     for sibling in sibling_items {
         walk_data_item(sibling, body, ctx)?;
@@ -1625,8 +1600,7 @@ fn walk_data_clause(
                         Rule::number_literal => parse_number_literal(p.as_str()),
                         Rule::figurative_constant => walk_figurative_constant(p)?,
                         Rule::boolean_literal => walk_boolean_literal(p)?,
-                        _ => unreachable!(),
-                    });
+                        _ => unreachable!() });
                 } else if matches!(p.as_rule(), Rule::ident_name | Rule::ident_or_keyword) {
                     let name = p.as_str();
                     if name.eq_ignore_ascii_case("true") {
@@ -1696,8 +1670,7 @@ fn walk_data_clause(
                             Rule::number_literal => parse_number_literal(p.as_str()),
                             Rule::figurative_constant => walk_figurative_constant(p)?,
                             Rule::boolean_literal => walk_boolean_literal(p)?,
-                            _ => unreachable!(),
-                        });
+                            _ => unreachable!() });
                     } else if matches!(p.as_rule(), Rule::ident_name | Rule::ident_or_keyword) {
                         let name = p.as_str();
                         if name.eq_ignore_ascii_case("true") {
@@ -1844,8 +1817,7 @@ fn collect_group_children(
                             Argument::positional(count_expr),
                             Argument::positional(element_init),
                         ],
-                        optional: false,
-                    })
+                        optional: false })
                 } else {
                     field_init.unwrap_or_else(|| {
                         default_value_for_cobol_type(field_pic.as_deref(), field_usage.as_deref())
@@ -1854,8 +1826,7 @@ fn collect_group_children(
 
                 props.push(ObjectProperty::KeyValue {
                     key: Expression::string(&field_name),
-                    value,
-                });
+                    value });
 
                 for sibling in leaked_siblings {
                     collect_group_children(sibling, props, extra_stmts)?;
@@ -1961,8 +1932,7 @@ fn collect_object_record_fields(props: &[ObjectProperty], fields: &mut Vec<Cobol
             fields.push(CobolRecordField {
                 name: name.clone(),
                 numeric: !matches!(value.kind, ExprKind::Lit(Literal::Str(_))),
-                decimal_places: 0,
-            });
+                decimal_places: 0 });
         }
     }
 }
@@ -1984,8 +1954,7 @@ fn cobol_type_hint(pic: Option<&str>, usage: Option<&str>) -> Option<String> {
                     "Integer"
                 })
             }
-            _ => None,
-        };
+            _ => None };
         if let Some(hint) = hint {
             return Some(hint.to_string());
         }
@@ -2018,8 +1987,7 @@ fn default_value_for_cobol_type(pic: Option<&str>, usage: Option<&str>) -> Expre
         Some("Integer") | Some("Long") | Some("Single") | Some("Double") | Some("Decimal") => {
             Expression::int(0)
         }
-        Some(_) | None => Expression::null(),
-    }
+        Some(_) | None => Expression::null() }
 }
 
 /// Fixed-width DISPLAY format for an elementary PICTURE, if it is a plain
@@ -2034,8 +2002,7 @@ fn cobol_pic_format_expr(value: Expression, fmt: CobolPicFmt) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(fname)),
             args: args.into_iter().map(Argument::positional).collect(),
-            optional: false,
-        })
+            optional: false })
     };
     match fmt {
         CobolPicFmt::Numeric(digits) => {
@@ -2056,8 +2023,7 @@ fn cobol_pic_format_expr(value: Expression, fmt: CobolPicFmt) -> Expression {
                 Expression::int(width as i64),
                 Expression::string(" "),
             ],
-        ),
-    }
+        ) }
 }
 
 fn cobol_pic_display_fmt(pic: &str) -> Option<CobolPicFmt> {
@@ -2252,8 +2218,7 @@ fn walk_procedure_division(
             ExprKind::Call {
                 callee: Box::new(Expression::ident(&name)),
                 args: Vec::new(),
-                optional: false,
-            },
+                optional: false },
         ))));
     }
 
@@ -2306,8 +2271,7 @@ fn walk_paragraph(
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub: true,
-        },
+            is_sub: true },
         span,
     ));
     Ok(())
@@ -2355,8 +2319,7 @@ fn walk_section(
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub: true,
-        },
+            is_sub: true },
         span,
     ));
     Ok(())
@@ -2488,8 +2451,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(&name)),
                 args: Vec::new(),
-                optional: false,
-            }))
+                optional: false }))
         }
 
         // ── STOP RUN ────────────────────────────────────────────────────
@@ -2498,8 +2460,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
         Rule::stop_run_stmt => StmtKind::Expr(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__stop_run")),
             args: Vec::new(),
-            optional: false,
-        })),
+            optional: false })),
 
         Rule::stop_stmt => walk_stop_stmt(pair)?,
 
@@ -2573,8 +2534,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
                 .unwrap_or_default();
             StmtKind::Assign {
                 targets: vec![Expression::ident(&name)],
-                value: Expression::null(),
-            }
+                value: Expression::null(), by_ref: false }
         }
 
         // ── ALLOCATE ────────────────────────────────────────────────────
@@ -2588,8 +2548,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             let target = names.first().cloned().unwrap_or_default();
             StmtKind::Assign {
                 targets: vec![Expression::ident(&target)],
-                value: Expression::new(ExprKind::Object(Vec::new())),
-            }
+                value: Expression::new(ExprKind::Object(Vec::new())), by_ref: false }
         }
 
         // ── TYPEDEF ─────────────────────────────────────────────────────
@@ -2625,8 +2584,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__lock")),
                 args: vec![Argument::positional(Expression::ident(&name))],
-                optional: false,
-            }))
+                optional: false }))
         }
 
         // ── UNLOCK ──────────────────────────────────────────────────────
@@ -2640,8 +2598,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__unlock")),
                 args: vec![Argument::positional(Expression::ident(&name))],
-                optional: false,
-            }))
+                optional: false }))
         }
 
         // ── YIELD ───────────────────────────────────────────────────────
@@ -2656,8 +2613,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__exec_sql")),
                 args: vec![Argument::positional(Expression::string(&raw))],
-                optional: false,
-            }))
+                optional: false }))
         }
 
         // ── EXEC CICS ───────────────────────────────────────────────────
@@ -2666,8 +2622,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__exec_cics")),
                 args: vec![Argument::positional(Expression::string(&raw))],
-                optional: false,
-            }))
+                optional: false }))
         }
 
         // ── EXEC DLI ────────────────────────────────────────────────────
@@ -2676,8 +2631,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__exec_dli")),
                 args: vec![Argument::positional(Expression::string(&raw))],
-                optional: false,
-            }))
+                optional: false }))
         }
 
         // ── Nested program ──────────────────────────────────────────────
@@ -2825,8 +2779,7 @@ fn walk_accept_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
         Some("TIME") => ("__accept_time", Vec::new()),
         Some("COMMAND-LINE") => ("__accept_command_line", Vec::new()),
         Some("CONSOLE") => ("readline", Vec::new()),
-        _ => ("readline", Vec::new()),
-    };
+        _ => ("readline", Vec::new()) };
     args.extend(extra_args.into_iter().map(Argument::positional));
 
     // ACCEPT var → var = readline()
@@ -2835,9 +2788,7 @@ fn walk_accept_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
         value: Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(call_callee)),
             args,
-            optional: false,
-        }),
-    })
+            optional: false }), by_ref: false })
 }
 
 fn walk_cancel_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -2922,8 +2873,7 @@ fn walk_return_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
 
     let mut stmts = vec![Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(&target_name)],
-        value: return_call,
-    })];
+        value: return_call, by_ref: false })];
 
     if let Some(status_stmt) = cobol_file_status_assign(
         ctx.file_binding(&file_name)
@@ -2942,8 +2892,7 @@ fn walk_return_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
             ),
             then_body: fail_body,
             elifs: Vec::new(),
-            else_body: (!success_body.is_empty()).then_some(success_body),
-        }));
+            else_body: (!success_body.is_empty()).then_some(success_body) }));
     }
 
     Ok(if stmts.len() == 1 {
@@ -3197,8 +3146,7 @@ fn cobol_helper_call(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(name)),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
 }
 
 fn cobol_array(values: Vec<Expression>) -> Expression {
@@ -3209,8 +3157,7 @@ fn cobol_array(values: Vec<Expression>) -> Expression {
                 key: None,
                 value,
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     ))
 }
@@ -3221,8 +3168,7 @@ fn cobol_object(entries: Vec<(&str, Expression)>) -> Expression {
             .into_iter()
             .map(|(key, value)| ObjectProperty::KeyValue {
                 key: Expression::string(key),
-                value,
-            })
+                value })
             .collect(),
     ))
 }
@@ -3279,8 +3225,7 @@ fn cobol_sort_operand_expr(pair: Pair<Rule>) -> Result<Expression, String> {
     match inner.as_rule() {
         Rule::ident_name => Ok(Expression::string(inner.as_str())),
         Rule::string_literal => walk_string_literal(&inner),
-        _ => Ok(Expression::string(inner.as_str())),
-    }
+        _ => Ok(Expression::string(inner.as_str())) }
 }
 
 fn parse_cobol_copy_replacement(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -3290,8 +3235,7 @@ fn parse_cobol_copy_replacement(pair: Pair<Rule>) -> Result<Expression, String> 
             Rule::pseudo_text | Rule::string_literal | Rule::ident_name => {
                 values.push(match child.as_rule() {
                     Rule::string_literal => walk_string_literal(&child)?,
-                    _ => Expression::string(child.as_str()),
-                });
+                    _ => Expression::string(child.as_str()) });
             }
             _ => {}
         }
@@ -3322,8 +3266,7 @@ fn cobol_member_expr(base_name: &str, field_name: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident(base_name)),
         field: field_name.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn cobol_corresponding_fields(
@@ -3363,17 +3306,14 @@ fn build_cobol_corresponding_stmt(
             Some(compound_op) => StmtKind::CompoundAssign {
                 target: Expression::ident(dst_name),
                 op: compound_op,
-                value: Expression::ident(src_name),
-            },
+                value: Expression::ident(src_name) },
             None => StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__move_corresponding")),
                 args: vec![
                     Argument::positional(Expression::ident(src_name)),
                     Argument::positional(Expression::ident(dst_name)),
                 ],
-                optional: false,
-            })),
-        };
+                optional: false })) };
     }
 
     let mut stmts = Vec::new();
@@ -3384,13 +3324,10 @@ fn build_cobol_corresponding_stmt(
             Some(compound_op) => StmtKind::CompoundAssign {
                 target,
                 op: compound_op,
-                value,
-            },
+                value },
             None => StmtKind::Assign {
                 targets: vec![target],
-                value,
-            },
-        };
+                value, by_ref: false } };
         stmts.push(Statement::new(stmt));
     }
 
@@ -3458,14 +3395,12 @@ fn apply_cobol_rounding(expr: Expression, rounded_mode: Option<&str>) -> Express
         "TOWARD-LESSER" => "f64_floor",
         "AWAY-FROM-ZERO" => "__cobol_round_away_from_zero",
         "PROHIBITED" => return expr,
-        _ => "f64_nearest",
-    };
+        _ => "f64_nearest" };
 
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(callee)),
         args: vec![Argument::positional(expr)],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn wrap_cobol_size_error(
@@ -3485,16 +3420,14 @@ fn wrap_cobol_size_error(
             var_name: Some("__cobol_size_error".into()),
             stack_var: None,
             body: on_size_error,
-            when_clause: None,
-        }]
+            when_clause: None }]
     };
 
     StmtKind::Try {
         body: vec![Statement::new(stmt)],
         catches,
         else_body: (!not_on_size_error.is_empty()).then_some(not_on_size_error),
-        finally: None,
-    }
+        finally: None }
 }
 
 fn walk_move_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
@@ -3541,7 +3474,7 @@ fn walk_move_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
         }
 
         let value = src_expr.ok_or("MOVE missing source expression")?;
-        Ok(StmtKind::Assign { targets, value })
+        Ok(StmtKind::Assign { targets, value , by_ref: false })
     }
 }
 
@@ -3551,8 +3484,7 @@ fn extract_data_target_name(pair: Pair<Rule>) -> Option<String> {
         Rule::data_target | Rule::move_target | Rule::giving_clause | Rule::remainder_clause => {
             pair.into_inner().find_map(extract_data_target_name)
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn walk_assignment_target_expr(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
@@ -3569,8 +3501,7 @@ fn walk_assignment_target_expr(pair: Pair<Rule>) -> Result<Option<Expression>, S
         Rule::ident_name | Rule::ident_or_keyword | Rule::kw_sd => {
             Ok(Some(Expression::ident(pair.as_str())))
         }
-        _ => Ok(None),
-    }
+        _ => Ok(None) }
 }
 
 // ── ADD ─────────────────────────────────────────────────────────────────────
@@ -3686,8 +3617,7 @@ fn walk_add_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind,
         };
         StmtKind::Assign {
             targets: vec![Expression::ident(&giving)],
-            value: apply_cobol_rounding(total, rounded_mode.as_deref()),
-        }
+            value: apply_cobol_rounding(total, rounded_mode.as_deref()), by_ref: false }
     } else if let Some(to) = to_name {
         if rounded_mode.is_some() {
             StmtKind::Assign {
@@ -3695,14 +3625,12 @@ fn walk_add_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind,
                 value: apply_cobol_rounding(
                     binary(BinOp::Add, Expression::ident(&to), sum_expr),
                     rounded_mode.as_deref(),
-                ),
-            }
+                ), by_ref: false }
         } else {
             StmtKind::CompoundAssign {
                 target: Expression::ident(&to),
                 op: CompoundOp::Add,
-                value: sum_expr,
-            }
+                value: sum_expr }
         }
     } else {
         StmtKind::Empty
@@ -3811,8 +3739,7 @@ fn walk_subtract_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
             value: apply_cobol_rounding(
                 binary(BinOp::Sub, from_expr, src),
                 rounded_mode.as_deref(),
-            ),
-        }
+            ), by_ref: false }
     } else if let Some(from) = from_name {
         if rounded_mode.is_some() {
             StmtKind::Assign {
@@ -3820,14 +3747,12 @@ fn walk_subtract_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
                 value: apply_cobol_rounding(
                     binary(BinOp::Sub, Expression::ident(&from), src),
                     rounded_mode.as_deref(),
-                ),
-            }
+                ), by_ref: false }
         } else {
             StmtKind::CompoundAssign {
                 target: Expression::ident(&from),
                 op: CompoundOp::Sub,
-                value: src,
-            }
+                value: src }
         }
     } else {
         StmtKind::Empty
@@ -3915,8 +3840,7 @@ fn walk_multiply_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
         });
         StmtKind::Assign {
             targets: vec![Expression::ident(&giving)],
-            value: apply_cobol_rounding(binary(BinOp::Mul, src, by_expr), rounded_mode.as_deref()),
-        }
+            value: apply_cobol_rounding(binary(BinOp::Mul, src, by_expr), rounded_mode.as_deref()), by_ref: false }
     } else if let Some(by) = by_name {
         if rounded_mode.is_some() {
             StmtKind::Assign {
@@ -3924,14 +3848,12 @@ fn walk_multiply_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
                 value: apply_cobol_rounding(
                     binary(BinOp::Mul, Expression::ident(&by), src),
                     rounded_mode.as_deref(),
-                ),
-            }
+                ), by_ref: false }
         } else {
             StmtKind::CompoundAssign {
                 target: Expression::ident(&by),
                 op: CompoundOp::Mul,
-                value: src,
-            }
+                value: src }
         }
     } else {
         StmtKind::Empty
@@ -4034,12 +3956,10 @@ fn walk_divide_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
             value: apply_cobol_rounding(
                 binary(BinOp::IDiv, dividend.clone(), divisor.clone()),
                 rounded_mode.as_deref(),
-            ),
-        });
+            ), by_ref: false });
         let rem_assign = Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&rem_name)],
-            value: binary(BinOp::Mod, dividend, divisor),
-        });
+            value: binary(BinOp::Mod, dividend, divisor), by_ref: false });
         StmtKind::Block(vec![div_assign, rem_assign])
     } else {
         StmtKind::Assign {
@@ -4047,8 +3967,7 @@ fn walk_divide_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
             value: apply_cobol_rounding(
                 binary(BinOp::Div, dividend, divisor),
                 rounded_mode.as_deref(),
-            ),
-        }
+            ), by_ref: false }
     };
 
     Ok(wrap_cobol_size_error(
@@ -4101,8 +4020,7 @@ fn walk_compute_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
             value: apply_cobol_rounding(
                 expr.unwrap_or(Expression::int(0)),
                 rounded_mode.as_deref(),
-            ),
-        },
+            ), by_ref: false },
         on_size_error,
         not_on_size_error,
     ))
@@ -4146,8 +4064,7 @@ fn walk_if_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, 
         cond: cond.unwrap_or(Expression::bool(true)),
         then_body,
         elifs: Vec::new(),
-        else_body,
-    })
+        else_body })
 }
 
 // ── EVALUATE ────────────────────────────────────────────────────────────────
@@ -4197,8 +4114,7 @@ fn walk_evaluate_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
     Ok(StmtKind::Switch {
         expr: subject_expr,
         cases,
-        default,
-    })
+        default })
 }
 
 fn walk_when_clause(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<SwitchCase, String> {
@@ -4252,8 +4168,7 @@ fn walk_when_value(
     if exprs.len() >= 2 {
         Ok(Some(CaseCondition::Range {
             from: exprs[0].clone(),
-            to: exprs[1].clone(),
-        }))
+            to: exprs[1].clone() }))
     } else if let Some(expr) = exprs.into_iter().next() {
         Ok(Some(CaseCondition::Value(expr)))
     } else {
@@ -4286,8 +4201,7 @@ fn convert_evaluate_true_to_if(
         cond,
         then_body,
         elifs,
-        else_body: default,
-    })
+        else_body: default })
 }
 
 /// Extract the condition expression from WHEN clause conditions for EVALUATE TRUE.
@@ -4305,8 +4219,7 @@ fn case_conditions_to_expr(conditions: &[CaseCondition]) -> Expression {
                 binary(BinOp::LtEq, to.clone(), to.clone()),
             )
         }
-        CaseCondition::Comparison { op: _, expr } => expr.clone(),
-    }
+        CaseCondition::Comparison { op: _, expr } => expr.clone() }
 }
 
 // ── PERFORM ─────────────────────────────────────────────────────────────────
@@ -4330,8 +4243,7 @@ fn walk_perform_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
                 Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(&name)),
                     args: Vec::new(),
-                    optional: false,
-                }),
+                    optional: false }),
             )))))
         }
         Rule::perform_thru => {
@@ -4348,8 +4260,7 @@ fn walk_perform_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
                     ExprKind::Call {
                         callee: Box::new(Expression::ident(name)),
                         args: Vec::new(),
-                        optional: false,
-                    },
+                        optional: false },
                 ))));
             }
             Ok(StmtKind::Block(stmts))
@@ -4364,8 +4275,7 @@ fn walk_perform_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
             Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(&name)),
                 args: Vec::new(),
-                optional: false,
-            })))
+                optional: false })))
         }
         Rule::perform_inline => {
             let mut body = Vec::new();
@@ -4379,8 +4289,7 @@ fn walk_perform_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
         other => Err(format!(
             "COBOL walker: unhandled perform variant {:?}",
             other
-        )),
-    }
+        )) }
 }
 
 fn walk_perform_varying(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
@@ -4439,20 +4348,17 @@ fn walk_perform_varying(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<St
     // hanging forever.
     let init = Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(&var_name)],
-        value: from,
-    });
+        value: from, by_ref: false });
 
     let update = Expression::new(ExprKind::Assign {
         target: Box::new(Expression::ident(&var_name)),
-        value: Box::new(binary(BinOp::Add, Expression::ident(&var_name), by)),
-    });
+        value: Box::new(binary(BinOp::Add, Expression::ident(&var_name), by)) });
 
     Ok(StmtKind::For {
         init: Some(Box::new(init)),
         cond: Some(cond),
         update: Some(update),
-        body,
-    })
+        body })
 }
 
 fn walk_perform_until(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
@@ -4490,14 +4396,12 @@ fn walk_perform_until(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
         Ok(StmtKind::DoWhile {
             body,
             cond,
-            until: false,
-        })
+            until: false })
     } else {
         Ok(StmtKind::While {
             cond,
             body,
-            else_body: None,
-        })
+            else_body: None })
     }
 }
 
@@ -4534,8 +4438,7 @@ fn walk_perform_paragraph_until(
         ExprKind::Call {
             callee: Box::new(Expression::ident(&paragraph_name.unwrap_or_default())),
             args: Vec::new(),
-            optional: false,
-        },
+            optional: false },
     )))];
 
     let cond = negate_expr(until_cond.unwrap_or(Expression::bool(false)));
@@ -4544,14 +4447,12 @@ fn walk_perform_paragraph_until(
         Ok(StmtKind::DoWhile {
             body,
             cond,
-            until: false,
-        })
+            until: false })
     } else {
         Ok(StmtKind::While {
             cond,
             body,
-            else_body: None,
-        })
+            else_body: None })
     }
 }
 
@@ -4580,8 +4481,7 @@ fn walk_perform_times(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
 
     let init = Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(counter)],
-        value: Expression::int(0),
-    });
+        value: Expression::int(0), by_ref: false });
     let cond = binary(BinOp::Lt, Expression::ident(counter), n);
     let update = Expression::new(ExprKind::Assign {
         target: Box::new(Expression::ident(counter)),
@@ -4589,15 +4489,13 @@ fn walk_perform_times(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
             BinOp::Add,
             Expression::ident(counter),
             Expression::int(1),
-        )),
-    });
+        )) });
 
     Ok(StmtKind::For {
         init: Some(Box::new(init)),
         cond: Some(cond),
         update: Some(update),
-        body,
-    })
+        body })
 }
 
 // ── STRING ──────────────────────────────────────────────────────────────────
@@ -4636,18 +4534,16 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
                 }
                 let Some(mut e) = src_expr else { continue };
                 if by_size {
-                    if let ExprKind::Ident(n) = &e.kind {
-                        if let Some(CobolPicFmt::Alpha(w)) = ctx.field_pic(n) {
-                            e = Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::ident("__pad_end")),
-                                args: vec![
-                                    Argument::positional(e),
-                                    Argument::positional(Expression::int(w as i64)),
-                                    Argument::positional(Expression::string(" ")),
-                                ],
-                                optional: false,
-                            });
-                        }
+                    // DELIMITED BY SIZE sends the WHOLE field, i.e. its
+                    // PICTURE representation — the same rendering DISPLAY
+                    // uses. Only the alphanumeric half was implemented, so a
+                    // numeric field arrived as its bare value: cobc produced
+                    // `lit 005 abcd` where Vybe gave `lit 5 abcd`.
+                    // `cobol_pic_format_expr` is exactly what DISPLAY applies.
+                    if let ExprKind::Ident(n) = &e.kind
+                        && let Some(fmt) = ctx.field_pic(n)
+                    {
+                        e = cobol_pic_format_expr(e, fmt);
                     }
                 } else if let Some(d) = delim_expr {
                     // take chars up to the first delimiter: split(d)[0]
@@ -4656,14 +4552,11 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(e),
                                 field: "split".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![Argument::positional(d)],
-                            optional: false,
-                        })),
+                            optional: false })),
                         index: Box::new(Expression::int(0)),
-                        null_safe: false,
-                    });
+                        null_safe: false });
                 }
                 source_exprs.push(e);
             }
@@ -4723,13 +4616,11 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
                     Expression::int(1),
                 )),
             ],
-            optional: false,
-        });
+            optional: false });
         let len = Expression::new(ExprKind::Member {
             object: Box::new(val.clone()),
             field: "length".to_string(),
-            null_safe: false,
-        });
+            null_safe: false });
         return Ok(StmtKind::Block(vec![
             Statement::new(StmtKind::VarDecl {
                 kind: VarDeclKind::Dim,
@@ -4738,24 +4629,19 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
                     type_hint: None,
                     init: Some(concat_expr),
                     array_bounds: None,
-                    with_events: false,
-                }],
-            }),
+                    with_events: false }] }),
             Statement::new(StmtKind::Assign {
                 targets: vec![Expression::ident(&into_name)],
-                value: binary(BinOp::Concat, prefix, val),
-            }),
+                value: binary(BinOp::Concat, prefix, val), by_ref: false }),
             Statement::new(StmtKind::Assign {
                 targets: vec![Expression::ident(&ptr)],
-                value: binary(BinOp::Add, Expression::ident(&ptr), len),
-            }),
+                value: binary(BinOp::Add, Expression::ident(&ptr), len), by_ref: false }),
         ]));
     }
 
     let assign = Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(&into_name)],
-        value: concat_expr,
-    });
+        value: concat_expr, by_ref: false });
 
     // ON OVERFLOW fires when the assembled string is longer than the receiving
     // field's PICTURE width — the classic "doesn't fit" condition.
@@ -4764,8 +4650,7 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
             let len = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&into_name)),
                 field: "length".to_string(),
-                null_safe: false,
-            });
+                null_safe: false });
             let cond = binary(BinOp::Gt, len, Expression::int(width as i64));
             return Ok(StmtKind::Block(vec![
                 assign,
@@ -4773,8 +4658,7 @@ fn walk_string_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
                     cond,
                     then_body: overflow_body.unwrap_or_default(),
                     elifs: Vec::new(),
-                    else_body: not_overflow_body,
-                }),
+                    else_body: not_overflow_body }),
             ]));
         }
     }
@@ -4869,21 +4753,17 @@ fn walk_unstring_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
                 Argument::positional(Expression::int(w as i64)),
                 Argument::positional(Expression::string(" ")),
             ],
-            optional: false,
-        }),
-        _ => Expression::ident(&src_name),
-    };
+            optional: false }),
+        _ => Expression::ident(&src_name) };
     let split_call = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(src_expr),
             field: "split".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(
             delimiter.unwrap_or(Expression::string(" ")),
         )],
-        optional: false,
-    });
+        optional: false });
 
     // DELIMITED BY ALL collapses runs of the delimiter, so the empty tokens the
     // plain split leaves between adjacent delimiters are dropped via .filter —
@@ -4898,25 +4778,21 @@ fn walk_unstring_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(binary(
                 BinOp::StrictNotEq,
                 Expression::ident("__t"),
                 Expression::string(""),
             ))),
             is_async: false,
-            captures: vec![],
-        });
+            captures: vec![] });
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(split_call),
                 field: "filter".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(predicate)],
-            optional: false,
-        })
+            optional: false })
     } else {
         split_call
     };
@@ -4929,16 +4805,13 @@ fn walk_unstring_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
             type_hint: None,
             init: Some(source_tokens),
             array_bounds: None,
-            with_events: false,
-        }],
-    }));
+            with_events: false }] }));
 
     for (i, target) in target_exprs.iter().enumerate() {
         let token = Expression::new(ExprKind::Index {
             object: Box::new(Expression::ident("__split_result")),
             index: Box::new(Expression::int(i as i64)),
-            null_safe: false,
-        });
+            null_safe: false });
         // Receiver gets the token truncated to its field width (left-justified).
         let value = match target_names
             .get(i)
@@ -4954,14 +4827,11 @@ fn walk_unstring_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
                     Argument::positional(Expression::int(0)),
                     Argument::positional(Expression::int(w as i64)),
                 ],
-                optional: false,
-            }),
-            _ => token.clone(),
-        };
+                optional: false }),
+            _ => token.clone() };
         stmts.push(Statement::new(StmtKind::Assign {
             targets: vec![target.clone()],
-            value,
-        }));
+            value, by_ref: false }));
         // COUNT IN = the token's actual length.
         if let Some(Some(cv)) = count_vars.get(i) {
             stmts.push(Statement::new(StmtKind::Assign {
@@ -4969,9 +4839,7 @@ fn walk_unstring_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
                 value: Expression::new(ExprKind::Member {
                     object: Box::new(token),
                     field: "length".to_string(),
-                    null_safe: false,
-                }),
-            }));
+                    null_safe: false }), by_ref: false }));
         }
     }
 
@@ -4982,17 +4850,14 @@ fn walk_unstring_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Stmt
         let split_len = Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident("__split_result")),
             field: "length".to_string(),
-            null_safe: false,
-        });
+            null_safe: false });
         let count = Expression::new(ExprKind::Ternary {
             cond: Box::new(binary(BinOp::Gt, split_len.clone(), Expression::int(n))),
             then: Box::new(Expression::int(n)),
-            else_: Box::new(split_len),
-        });
+            else_: Box::new(split_len) });
         stmts.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&tv)],
-            value: count,
-        }));
+            value: count, by_ref: false }));
     }
 
     Ok(StmtKind::Block(stmts))
@@ -5010,8 +4875,7 @@ fn walk_inspect_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
         other => Err(format!(
             "COBOL walker: unhandled inspect variant {:?}",
             other
-        )),
-    }
+        )) }
 }
 
 fn walk_inspect_tallying(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -5051,13 +4915,11 @@ fn walk_inspect_tallying(pair: Pair<Rule>) -> Result<StmtKind, String> {
         let len_expr = Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&var)),
             field: "length".to_string(),
-            null_safe: false,
-        });
+            null_safe: false });
 
         return Ok(StmtKind::Assign {
             targets: vec![Expression::ident(&counter)],
-            value: len_expr,
-        });
+            value: len_expr, by_ref: false });
     }
 
     // counter = split(var, target).length - 1
@@ -5065,22 +4927,18 @@ fn walk_inspect_tallying(pair: Pair<Rule>) -> Result<StmtKind, String> {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&var)),
             field: "split".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(target_expr)],
-        optional: false,
-    });
+        optional: false });
 
     let len_expr = Expression::new(ExprKind::Member {
         object: Box::new(split_call),
         field: "length".to_string(),
-        null_safe: false,
-    });
+        null_safe: false });
 
     Ok(StmtKind::Assign {
         targets: vec![Expression::ident(&counter)],
-        value: binary(BinOp::Sub, len_expr, Expression::int(1)),
-    })
+        value: binary(BinOp::Sub, len_expr, Expression::int(1)), by_ref: false })
 }
 
 fn walk_inspect_replacing(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind, String> {
@@ -5114,12 +4972,10 @@ fn walk_inspect_replacing(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<
                 let fill_expr = match fill {
                     Some(rp) if rp.as_rule() == Rule::string_literal => walk_string_literal(&rp)?,
                     Some(rp) => Expression::ident(rp.as_str()),
-                    None => Expression::string(" "),
-                };
+                    None => Expression::string(" ") };
                 let width = match ctx.field_pic(&var) {
                     Some(CobolPicFmt::Alpha(w)) | Some(CobolPicFmt::Numeric(w)) => w as i64,
-                    None => 0,
-                };
+                    None => 0 };
                 let filled = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__pad_end")),
                     args: vec![
@@ -5127,12 +4983,10 @@ fn walk_inspect_replacing(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<
                         Argument::positional(Expression::int(width)),
                         Argument::positional(fill_expr),
                     ],
-                    optional: false,
-                });
+                    optional: false });
                 return Ok(StmtKind::Assign {
                     targets: vec![Expression::ident(&var)],
-                    value: filled,
-                });
+                    value: filled, by_ref: false });
             }
             let mut found_by = false;
             for rp in p.clone().into_inner() {
@@ -5162,19 +5016,16 @@ fn walk_inspect_replacing(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&var)),
             field: "replace".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional(old_expr),
             Argument::positional(new_expr),
         ],
-        optional: false,
-    });
+        optional: false });
 
     Ok(StmtKind::Assign {
         targets: vec![Expression::ident(&var)],
-        value: replace_call,
-    })
+        value: replace_call, by_ref: false })
 }
 
 fn walk_inspect_converting(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -5225,37 +5076,30 @@ fn walk_inspect_converting(pair: Pair<Rule>) -> Result<StmtKind, String> {
     const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let str_lit = |e: &Expression| match &e.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
-        _ => None,
-    };
+        _ => None };
     let value = match (str_lit(&from_expr), str_lit(&to_expr)) {
         (Some(f), Some(t)) if f == LOWER && t == UPPER => Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("UPPER-CASE")),
             args: vec![Argument::positional(Expression::ident(&var))],
-            optional: false,
-        }),
+            optional: false }),
         (Some(f), Some(t)) if f == UPPER && t == LOWER => Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("LOWER-CASE")),
             args: vec![Argument::positional(Expression::ident(&var))],
-            optional: false,
-        }),
+            optional: false }),
         _ => Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&var)),
                 field: "replace".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![
                 Argument::positional(from_expr),
                 Argument::positional(to_expr),
             ],
-            optional: false,
-        }),
-    };
+            optional: false }) };
 
     Ok(StmtKind::Assign {
         targets: vec![Expression::ident(&var)],
-        value,
-    })
+        value, by_ref: false })
 }
 
 // ── CALL ────────────────────────────────────────────────────────────────────
@@ -5301,14 +5145,12 @@ fn walk_call_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(&callee_name)),
         args,
-        optional: false,
-    });
+        optional: false });
 
     if let Some(ret_var) = returning_var {
         Ok(StmtKind::Assign {
             targets: vec![Expression::ident(&ret_var)],
-            value: call_expr,
-        })
+            value: call_expr, by_ref: false })
     } else {
         Ok(StmtKind::Expr(call_expr))
     }
@@ -5330,8 +5172,7 @@ fn walk_initialize_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     for name in names {
         stmts.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&name)],
-            value: Expression::string(""),
-        }));
+            value: Expression::string(""), by_ref: false }));
     }
 
     Ok(if stmts.len() == 1 {
@@ -5382,20 +5223,17 @@ fn walk_set_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         Ok(StmtKind::CompoundAssign {
             target: Expression::ident(&target),
             op: CompoundOp::Add,
-            value: value.unwrap_or(Expression::int(1)),
-        })
+            value: value.unwrap_or(Expression::int(1)) })
     } else if is_down {
         // SET var DOWN BY n → var -= n
         Ok(StmtKind::CompoundAssign {
             target: Expression::ident(&target),
             op: CompoundOp::Sub,
-            value: value.unwrap_or(Expression::int(1)),
-        })
+            value: value.unwrap_or(Expression::int(1)) })
     } else {
         Ok(StmtKind::Assign {
             targets: vec![Expression::ident(&target)],
-            value: value.unwrap_or(Expression::bool(true)),
-        })
+            value: value.unwrap_or(Expression::bool(true)), by_ref: false })
     }
 }
 
@@ -5429,9 +5267,7 @@ fn walk_xml_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             value: Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("xml_generate")),
                 args: vec![Argument::positional(source.unwrap_or(Expression::null()))],
-                optional: false,
-            }),
-        })
+                optional: false }), by_ref: false })
     } else if has_parse {
         let mut source: Option<Expression> = None;
         let mut handler = String::new();
@@ -5456,8 +5292,7 @@ fn walk_xml_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 Argument::positional(source.unwrap_or(Expression::null())),
                 Argument::positional(Expression::ident(&handler)),
             ],
-            optional: false,
-        })))
+            optional: false })))
     } else {
         Ok(StmtKind::Empty)
     }
@@ -5484,9 +5319,7 @@ fn walk_json_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             value: Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("json_encode")),
                 args: vec![Argument::positional(Expression::ident(&src))],
-                optional: false,
-            }),
-        })
+                optional: false }), by_ref: false })
     } else if has_parse {
         // JSON PARSE src INTO dst → dst = json_decode(src)
         let src = idents.first().cloned().unwrap_or_default();
@@ -5496,9 +5329,7 @@ fn walk_json_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
             value: Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("json_decode")),
                 args: vec![Argument::positional(Expression::ident(&src))],
-                optional: false,
-            }),
-        })
+                optional: false }), by_ref: false })
     } else {
         Ok(StmtKind::Empty)
     }
@@ -5536,13 +5367,11 @@ fn walk_open_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
                             status_var: None,
                             key_name: None,
                             record_name: None,
-                            record_fields: Vec::new(),
-                        });
+                            record_fields: Vec::new() });
                 stmts.push(Statement::new(StmtKind::OpenFile {
                     path: binding.path,
                     mode: current_mode,
-                    file_number: Expression::int(binding.file_number as i64),
-                }));
+                    file_number: Expression::int(binding.file_number as i64) }));
                 if let Some(status_stmt) =
                     cobol_file_status_assign(binding.status_var.as_deref(), "00")
                 {
@@ -5673,8 +5502,7 @@ fn walk_read_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
             status_var: None,
             key_name: None,
             record_name: Some(target_name.clone()),
-            record_fields: Vec::new(),
-        });
+            record_fields: Vec::new() });
 
     let record_fields = if binding.record_fields.is_empty() {
         ctx.record_fields_for_name(&target_name)
@@ -5721,13 +5549,11 @@ fn walk_read_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
                 .map(|field| field.name.clone())
                 .collect(),
             key_index: keyed_read.then_some(key_index),
-            key_value,
-        })
+            key_value })
     } else {
         Statement::new(StmtKind::LineInput {
             file_number: Expression::int(binding.file_number as i64),
-            variable: target_name.clone(),
-        })
+            variable: target_name.clone() })
     };
 
     Ok(StmtKind::Block(vec![
@@ -5736,8 +5562,7 @@ fn walk_read_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKind
             cond: eof_cond,
             then_body: fail_body,
             elifs: Vec::new(),
-            else_body,
-        }),
+            else_body }),
     ]))
 }
 
@@ -5781,14 +5606,12 @@ fn walk_write_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKin
             items: record_fields
                 .iter()
                 .map(|field| Expression::ident(&field.name))
-                .collect(),
-        })
+                .collect() })
     } else {
         let data_expr = source_expr.unwrap_or_else(|| Expression::ident(&record_name));
         let group_items = match &data_expr.kind {
             ExprKind::Ident(name) => ctx.group_layout_for_name(name),
-            _ => Vec::new(),
-        };
+            _ => Vec::new() };
         let flattened_expr = if group_items.is_empty() {
             data_expr
         } else {
@@ -5801,8 +5624,7 @@ fn walk_write_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKin
         };
         Statement::new(StmtKind::PrintFile {
             file_number,
-            items: vec![flattened_expr],
-        })
+            items: vec![flattened_expr] })
     };
 
     let mut stmts = vec![write_stmt];
@@ -5862,11 +5684,9 @@ fn walk_rewrite_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtK
                 .iter()
                 .map(|field| {
                     field.numeric.then_some(RecordFieldFormat {
-                        decimal_places: field.decimal_places,
-                    })
+                        decimal_places: field.decimal_places })
                 })
-                .collect(),
-        })
+                .collect() })
     } else {
         return walk_write_stmt(fallback_pair, ctx);
     };
@@ -5921,8 +5741,7 @@ fn walk_start_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKin
         file_number: Expression::int(binding.file_number as i64),
         key_index,
         key_value: Expression::ident(&key_name),
-        relation,
-    })];
+        relation })];
     if let Some(status_stmt) = cobol_file_status_assign(binding.status_var.as_deref(), "00") {
         stmts.push(status_stmt);
     }
@@ -5966,11 +5785,9 @@ fn walk_write_source(pair: Pair<Rule>) -> Result<Expression, String> {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(part_expr),
                     field: "repeat".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![Argument::positional(Expression::int(80))],
-                optional: false,
-            });
+                optional: false });
         }
         parts.push(part_expr);
     }
@@ -6054,8 +5871,7 @@ fn walk_search_stmt(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<StmtKi
         cond: first_cond,
         then_body: first_body,
         elifs,
-        else_body,
-    })
+        else_body })
 }
 
 // ── INVOKE (OO COBOL) ──────────────────────────────────────────────────────
@@ -6103,17 +5919,14 @@ fn walk_invoke_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&obj)),
             field: method,
-            null_safe: false,
-        })),
+            null_safe: false })),
         args,
-        optional: false,
-    });
+        optional: false });
 
     if let Some(ret_var) = returning_var {
         Ok(StmtKind::Assign {
             targets: vec![Expression::ident(&ret_var)],
-            value: call_expr,
-        })
+            value: call_expr, by_ref: false })
     } else {
         Ok(StmtKind::Expr(call_expr))
     }
@@ -6180,8 +5993,7 @@ fn walk_run_unit_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(&name)),
         args,
-        optional: false,
-    })))
+        optional: false })))
 }
 
 // ── EXEC body extraction ────────────────────────────────────────────────────
@@ -6243,8 +6055,7 @@ fn walk_class_id(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), Stri
             interfaces,
             members,
             modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     ));
     Ok(())
@@ -6268,8 +6079,7 @@ fn walk_class_body(pair: Pair<Rule>, members: &mut Vec<ClassMember>) -> Result<(
                                     init: decl.init.clone(),
                                     modifiers: Modifiers::default(),
                                     with_events: false,
-                                    array_bounds: None,
-                                });
+                                    array_bounds: None });
                             }
                         }
                     }
@@ -6311,8 +6121,7 @@ fn walk_class_body(pair: Pair<Rule>, members: &mut Vec<ClassMember>) -> Result<(
                                                 init: decl.init.clone(),
                                                 modifiers: Modifiers::default(),
                                                 with_events: false,
-                                                array_bounds: None,
-                                            });
+                                                array_bounds: None });
                                         }
                                     }
                                 }
@@ -6434,8 +6243,7 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<Statement, String> {
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub,
-        },
+            is_sub },
         span,
     ))
 }
@@ -6461,8 +6269,7 @@ fn walk_using_params(pair: Pair<Rule>) -> Vec<Param> {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false,
-                });
+                    is_nullable: false });
             }
             _ => {}
         }
@@ -6509,8 +6316,7 @@ fn walk_interface_id(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), 
             name,
             parents,
             members,
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     ));
     Ok(())
@@ -6548,8 +6354,7 @@ fn walk_method_signature(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
         params,
         return_type: return_type.clone(),
         is_sub: return_type.is_none(),
-        signature_source: None,
-    })
+        signature_source: None })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -6561,6 +6366,43 @@ fn walk_condition(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Expressi
     Ok(rewrite_condition_names(walk_or_condition(inner)?, ctx))
 }
 
+/// COBOL compares a numeric DISPLAY item against an alphanumeric literal by
+/// its CHARACTER representation, not its value: a `PIC 9(3)` holding 6 equals
+/// `"006"`. Without this the value 6 is compared against the string "006" and
+/// the condition is false, where `cobc` says true — measured, and it silently
+/// inverted every such test.
+///
+/// Only NUMERIC pictures are realigned. An alphanumeric field already compares
+/// correctly (`PIC X(10)` holding "hi" equals `"hi"`, because COBOL pads the
+/// shorter operand), and padding it here would break that.
+fn cobol_align_pic_comparison(
+    op: BinOp,
+    left: Expression,
+    right: Expression,
+    ctx: &CobolWalkerContext,
+) -> (Expression, Expression) {
+    if !matches!(op, BinOp::Eq | BinOp::NotEq) {
+        return (left, right);
+    }
+    let numeric_pic = |e: &Expression| -> Option<CobolPicFmt> {
+        let ExprKind::Ident(name) = &e.kind else {
+            return None;
+        };
+        match ctx.field_pic(name) {
+            Some(fmt @ CobolPicFmt::Numeric(_)) => Some(fmt),
+            _ => None }
+    };
+    let is_text = |e: &Expression| matches!(&e.kind, ExprKind::Lit(Literal::Str(_)));
+
+    if is_text(&right) && let Some(fmt) = numeric_pic(&left) {
+        return (cobol_pic_format_expr(left, fmt), right);
+    }
+    if is_text(&left) && let Some(fmt) = numeric_pic(&right) {
+        return (left, cobol_pic_format_expr(right, fmt));
+    }
+    (left, right)
+}
+
 fn rewrite_condition_names(expr: Expression, ctx: &CobolWalkerContext) -> Expression {
     let span = expr.span;
     let kind = match expr.kind {
@@ -6570,20 +6412,22 @@ fn rewrite_condition_names(expr: Expression, ctx: &CobolWalkerContext) -> Expres
                 .map(|resolved| Expression::with_span(resolved.kind, span))
                 .unwrap_or_else(|| Expression::with_span(ExprKind::Ident(name), span));
         }
-        ExprKind::Binary { op, left, right } => ExprKind::Binary {
-            op,
-            left: Box::new(rewrite_condition_names(*left, ctx)),
-            right: Box::new(rewrite_condition_names(*right, ctx)),
-        },
+        ExprKind::Binary { op, left, right } => {
+            let left = rewrite_condition_names(*left, ctx);
+            let right = rewrite_condition_names(*right, ctx);
+            let (left, right) = cobol_align_pic_comparison(op, left, right, ctx);
+            ExprKind::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right) }
+        }
         ExprKind::Unary { op, expr } => ExprKind::Unary {
             op,
-            expr: Box::new(rewrite_condition_names(*expr, ctx)),
-        },
+            expr: Box::new(rewrite_condition_names(*expr, ctx)) },
         ExprKind::Call {
             callee,
             args,
-            optional,
-        } => ExprKind::Call {
+            optional } => ExprKind::Call {
             callee: Box::new(rewrite_condition_names(*callee, ctx)),
             args: args
                 .into_iter()
@@ -6592,37 +6436,29 @@ fn rewrite_condition_names(expr: Expression, ctx: &CobolWalkerContext) -> Expres
                     ..arg
                 })
                 .collect(),
-            optional,
-        },
+            optional },
         ExprKind::Member {
             object,
             field,
-            null_safe,
-        } => ExprKind::Member {
+            null_safe } => ExprKind::Member {
             object: Box::new(rewrite_condition_names(*object, ctx)),
             field,
-            null_safe,
-        },
+            null_safe },
         ExprKind::Index {
             object,
             index,
-            null_safe,
-        } => ExprKind::Index {
+            null_safe } => ExprKind::Index {
             object: Box::new(rewrite_condition_names(*object, ctx)),
             index: Box::new(rewrite_condition_names(*index, ctx)),
-            null_safe,
-        },
+            null_safe },
         ExprKind::Ternary { cond, then, else_ } => ExprKind::Ternary {
             cond: Box::new(rewrite_condition_names(*cond, ctx)),
             then: Box::new(rewrite_condition_names(*then, ctx)),
-            else_: Box::new(rewrite_condition_names(*else_, ctx)),
-        },
+            else_: Box::new(rewrite_condition_names(*else_, ctx)) },
         ExprKind::NullCoalesce { left, right } => ExprKind::NullCoalesce {
             left: Box::new(rewrite_condition_names(*left, ctx)),
-            right: Box::new(rewrite_condition_names(*right, ctx)),
-        },
-        other => other,
-    };
+            right: Box::new(rewrite_condition_names(*right, ctx)) },
+        other => other };
     Expression::with_span(kind, span)
 }
 
@@ -6666,8 +6502,7 @@ fn walk_not_condition(pair: Pair<Rule>) -> Result<Expression, String> {
     if has_not {
         Ok(Expression::new(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(expr),
-        }))
+            expr: Box::new(expr) }))
     } else {
         Ok(expr)
     }
@@ -6724,8 +6559,7 @@ fn walk_class_condition_test(pair: Pair<Rule>, expr: Expression) -> Result<Expre
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__is_numeric")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        })
+            optional: false })
     } else if children
         .iter()
         .any(|c| c.as_rule() == Rule::kw_alphabetic_lower)
@@ -6733,8 +6567,7 @@ fn walk_class_condition_test(pair: Pair<Rule>, expr: Expression) -> Result<Expre
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__is_alphabetic_lower")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        })
+            optional: false })
     } else if children
         .iter()
         .any(|c| c.as_rule() == Rule::kw_alphabetic_upper)
@@ -6742,8 +6575,7 @@ fn walk_class_condition_test(pair: Pair<Rule>, expr: Expression) -> Result<Expre
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__is_alphabetic_upper")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        })
+            optional: false })
     } else if let Some(class_name) = children.iter().find(|c| c.as_rule() == Rule::ident_name) {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__is_class")),
@@ -6751,14 +6583,12 @@ fn walk_class_condition_test(pair: Pair<Rule>, expr: Expression) -> Result<Expre
                 Argument::positional(expr),
                 Argument::positional(Expression::string(class_name.as_str())),
             ],
-            optional: false,
-        })
+            optional: false })
     } else {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__is_alphabetic")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        })
+            optional: false })
     };
 
     if is_negated {
@@ -6937,8 +6767,7 @@ fn walk_unary_expr(pair: Pair<Rule>) -> Result<Expression, String> {
         if op_text == "-" {
             return Ok(Expression::new(ExprKind::Unary {
                 op: UnaryOp::Neg,
-                expr: Box::new(expr),
-            }));
+                expr: Box::new(expr) }));
         }
         // + is a no-op
         return Ok(expr);
@@ -7015,8 +6844,7 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(fname)),
             args: cargs.into_iter().map(Argument::positional).collect(),
-            optional: false,
-        })
+            optional: false })
     };
     let sum = |vals: &[Expression]| -> Expression {
         let mut it = vals.iter().cloned();
@@ -7030,8 +6858,7 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
             Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(fname)),
                 args: vec![Argument::positional(arg)],
-                optional: false,
-            })
+                optional: false })
         };
         // Binary floats can't represent e.g. 1.10 exactly, so raw truncation of
         // 1.0999999 yields 1.09. Round to 6 dp first to erase that noise, then
@@ -7055,8 +6882,7 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
                 Argument::positional(back),
                 Argument::positional(Expression::int(2)),
             ],
-            optional: false,
-        })
+            optional: false })
     };
     // Population variance: mean of squared deviations from the mean.
     let pop_variance = |vals: &[Expression]| -> Expression {
@@ -7132,8 +6958,7 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
             Some(fmt2(Expression::new(ExprKind::Ternary {
                 cond: Box::new(binary(BinOp::Eq, rate, Expression::int(0))),
                 then: Box::new(zero_case),
-                else_: Box::new(general),
-            })))
+                else_: Box::new(general) })))
         }
         // PRESENT-VALUE(rate, v1..vk): sum of vi / (1+rate)^i for i = 1..k
         "PRESENT-VALUE" if n >= 2 => {
@@ -7152,8 +6977,7 @@ fn desugar_cobol_math_intrinsic(name: &str, args: &[Argument]) -> Option<Express
                 .collect();
             Some(fmt2(sum(&terms)))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// COBOL integer-date intrinsics. Day 1 = 1601-01-01; the Unix epoch sits at
@@ -7165,8 +6989,7 @@ fn desugar_cobol_date_intrinsic(name: &str, args: &[Argument]) -> Option<Express
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(f)),
             args: a.into_iter().map(Argument::positional).collect(),
-            optional: false,
-        })
+            optional: false })
     }
     fn didiv(a: Expression, b: i64) -> Expression {
         dcall("f64_trunc", vec![binary(BinOp::Div, a, Expression::int(b))])
@@ -7190,8 +7013,7 @@ fn desugar_cobol_date_intrinsic(name: &str, args: &[Argument]) -> Option<Express
         Expression::new(ExprKind::Ternary {
             cond: Box::new(c),
             then: Box::new(t),
-            else_: Box::new(e),
-        })
+            else_: Box::new(e) })
     }
     // `lo <= v <= hi` violated → the out-of-range branch.
     fn out_of_range(v: Expression, lo: i64, hi: i64) -> Expression {
@@ -7325,8 +7147,7 @@ fn desugar_cobol_date_intrinsic(name: &str, args: &[Argument]) -> Option<Express
                 tern(bad_ddd, Expression::int(2), Expression::int(0)),
             ))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Reduce a COBOL intrinsic over a whole OCCURS table (`FUNCTION MAX(ALL VALS)`).
@@ -7339,15 +7160,13 @@ fn desugar_cobol_table_aggregate(name: &str, arr: Expression) -> Option<Expressi
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(fname)),
             args: vec![Argument::positional(a)],
-            optional: false,
-        })
+            optional: false })
     };
     let length = |a: Expression| -> Expression {
         Expression::new(ExprKind::Member {
             object: Box::new(a),
             field: "length".to_string(),
-            null_safe: false,
-        })
+            null_safe: false })
     };
 
     match name {
@@ -7373,8 +7192,7 @@ fn desugar_cobol_table_aggregate(name: &str, arr: Expression) -> Option<Expressi
             ),
             Expression::int(2),
         )),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -7467,14 +7285,12 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
             let helper = match dir.to_ascii_uppercase().as_str() {
                 "LEADING" => Some("__trim_start"),
                 "TRAILING" => Some("__trim_end"),
-                _ => None,
-            };
+                _ => None };
             if let Some(h) = helper {
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(h)),
                     args: vec![Argument::positional(args[0].value.clone())],
-                    optional: false,
-                }));
+                    optional: false }));
             }
         }
     }
@@ -7491,8 +7307,7 @@ fn walk_function_call(pair: Pair<Rule>) -> Result<Expression, String> {
     let mut expr = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(&func_name)),
         args,
-        optional: false,
-    });
+        optional: false });
 
     if let Some(sub_pair) = subscript_or_refmod {
         expr = apply_cobol_subscript_or_refmod(expr, sub_pair)?;
@@ -7528,8 +7343,7 @@ fn walk_new_expr(pair: Pair<Rule>) -> Result<Expression, String> {
 
     Ok(Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(&class_name)),
-        args,
-    }))
+        args }))
 }
 
 // ── Qualified identifiers ──────────────────────────────────────────────────
@@ -7579,8 +7393,7 @@ fn walk_qualified_ident(pair: Pair<Rule>) -> Result<Expression, String> {
         expr = Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&parent)),
             field: name,
-            null_safe: false,
-        });
+            null_safe: false });
     }
 
     Ok(expr)
@@ -7626,8 +7439,7 @@ fn walk_data_target_expr(pair: Pair<Rule>) -> Result<Expression, String> {
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(&parent)),
                     field: name,
-                    null_safe: false,
-                });
+                    null_safe: false });
             }
 
             Ok(expr)
@@ -7637,8 +7449,7 @@ fn walk_data_target_expr(pair: Pair<Rule>) -> Result<Expression, String> {
         _ => Err(format!(
             "COBOL walker: expected data_target, got {:?}",
             pair.as_rule()
-        )),
-    }
+        )) }
 }
 
 fn apply_cobol_subscript_or_refmod(
@@ -7680,8 +7491,7 @@ fn apply_cobol_subscript_or_refmod(
                 Argument::positional(adjusted_start),
                 Argument::positional(length_expr),
             ],
-            optional: false,
-        }));
+            optional: false }));
     }
 
     if !expr_children.is_empty() {
@@ -7690,8 +7500,7 @@ fn apply_cobol_subscript_or_refmod(
         expr = Expression::new(ExprKind::Index {
             object: Box::new(expr),
             index: Box::new(adjusted_index),
-            null_safe: false,
-        });
+            null_safe: false });
 
         for extra in expr_children.iter().skip(1) {
             let extra_idx = walk_expression((*extra).clone())?;
@@ -7699,8 +7508,7 @@ fn apply_cobol_subscript_or_refmod(
             expr = Expression::new(ExprKind::Index {
                 object: Box::new(expr),
                 index: Box::new(adjusted),
-                null_safe: false,
-            });
+                null_safe: false });
         }
     }
 
@@ -7722,8 +7530,7 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
         _ => Err(format!(
             "COBOL walker: unhandled literal rule {:?}",
             inner.as_rule()
-        )),
-    }
+        )) }
 }
 
 fn walk_figurative_constant(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -7775,8 +7582,7 @@ fn walk_boolean_literal(pair: Pair<Rule>) -> Result<Expression, String> {
     match inner.as_rule() {
         Rule::kw_true => Ok(Expression::bool(true)),
         Rule::kw_false => Ok(Expression::bool(false)),
-        _ => Ok(Expression::bool(false)),
-    }
+        _ => Ok(Expression::bool(false)) }
 }
 
 fn parse_number_literal(s: &str) -> Expression {
@@ -7790,13 +7596,11 @@ fn parse_number_literal(s: &str) -> Expression {
     if normalized.contains('.') {
         match normalized.parse::<f64>() {
             Ok(f) => Expression::float(f),
-            Err(_) => Expression::int(0),
-        }
+            Err(_) => Expression::int(0) }
     } else {
         match normalized.parse::<i64>() {
             Ok(n) => Expression::int(n),
-            Err(_) => Expression::int(0),
-        }
+            Err(_) => Expression::int(0) }
     }
 }
 
@@ -7836,8 +7640,7 @@ fn cobol_data_item_level(pair: &Pair<Rule>) -> u32 {
             .into_inner()
             .find_map(|child| match child.as_rule() {
                 Rule::regular_data_item => Some(cobol_data_item_level(&child)),
-                _ => None,
-            })
+                _ => None })
             .unwrap_or(0),
         Rule::regular_data_item => pair
             .clone()
@@ -7845,8 +7648,7 @@ fn cobol_data_item_level(pair: &Pair<Rule>) -> u32 {
             .find(|child| child.as_rule() == Rule::level_number)
             .and_then(|child| child.as_str().trim().parse::<u32>().ok())
             .unwrap_or(0),
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 /// Create a binary expression.
@@ -7854,16 +7656,14 @@ fn binary(op: BinOp, left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right),
-    })
+        right: Box::new(right) })
 }
 
 /// Negate an expression (wrap in NOT).
 fn negate_expr(expr: Expression) -> Expression {
     Expression::new(ExprKind::Unary {
         op: UnaryOp::Not,
-        expr: Box::new(expr),
-    })
+        expr: Box::new(expr) })
 }
 
 /// Build a sum expression from a list of expressions.

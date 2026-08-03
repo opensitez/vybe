@@ -56,8 +56,7 @@ run_cases! {
     slice_alias_after_assignment_runtime => ("package main; import \"fmt\"; func main() { left := []int{1, 2}; right := left; right[0] = 8; fmt.Println(left[0]); }", vec!["8"]),
     slice_append_preserves_prefix_runtime => ("package main; import \"fmt\"; func main() { values := []int{2, 4}; values = append(values, 6); fmt.Println(values[0]); fmt.Println(values[2]); }", vec!["2", "6"]),
     slice_len_after_copy_runtime => ("package main; import \"fmt\"; func main() { dst := make([]int, 3); copy(dst, []int{1, 2}); fmt.Println(len(dst)); }", vec!["3"]),
-    slice_subslice_of_subslice_runtime => ("package main; import \"fmt\"; func main() { values := []int{1, 2, 3, 4}; part := values[1:4]; next := part[1:]; fmt.Println(next[1]); }", vec!["4"]),
-}
+    slice_subslice_of_subslice_runtime => ("package main; import \"fmt\"; func main() { values := []int{1, 2, 3, 4}; part := values[1:4]; next := part[1:]; fmt.Println(next[1]); }", vec!["4"]) }
 
 compile_cases! {
     subslice_shares_backing_array_compile => "package main; func main() { values := []int{1, 2, 3}; part := values[1:]; part[0] = 9; _ = values[1] }",
@@ -85,5 +84,4 @@ compile_cases! {
     append_nil_slice_spread_compile => "package main; func main() { var values []int; extra := []int{1, 2}; values = append(values, extra...); _ = values }",
     copy_result_used_compile => "package main; func main() { dst := make([]int, 2); src := []int{1}; n := copy(dst, src); _ = n }",
     slice_of_structs_compile => "package main; type point struct { x int }; func main() { _ = []point{{x: 1}} }",
-    slice_of_maps_compile => "package main; func main() { _ = []map[string]int{{\"a\": 1}} }",
-}
+    slice_of_maps_compile => "package main; func main() { _ = []map[string]int{{\"a\": 1}} }" }

@@ -71,5 +71,4 @@ kotlin_run_cases! {
             val empty = a.slice(0..-1)
             println(empty.toString())
         }
-    "#, vec![String::from("[]")]),
-}
+    "#, vec![String::from("[]")]) }

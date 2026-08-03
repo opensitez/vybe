@@ -32,12 +32,10 @@ fn bundle(sources: Vec<(&str, &str)>) -> Bundle {
             .into_iter()
             .map(|(path, code)| SourceFile {
                 path: PathBuf::from(path),
-                code: code.to_string(),
-            })
+                code: code.to_string() })
             .collect(),
         wasm_files: Vec::new(),
-        entry_point: EntryPoint::Auto,
-    }
+        entry_point: EntryPoint::Auto }
 }
 
 /// Declarations cross file boundaries: every source's top-level declarations
@@ -56,8 +54,7 @@ fn declarations_from_every_source_reach_the_merged_module() {
         .iter()
         .filter_map(|stmt| match &stmt.kind {
             vybe_ast::StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
-            _ => None,
-        })
+            _ => None })
         .collect();
     let a_at = names.iter().position(|n| n == "fromA");
     let b_at = names.iter().position(|n| n == "fromB");
@@ -81,7 +78,6 @@ fn single_source_reaches_the_module_body() {
         vybe_ast::StmtKind::VarDecl { declarations, .. } => declarations.iter().any(|d| {
             matches!(&d.pattern, vybe_ast::BindingPattern::Ident(n) if n == "onlyFileMarker")
         }),
-        _ => false,
-    });
+        _ => false });
     assert!(has_decl, "single source must still reach the module body");
 }

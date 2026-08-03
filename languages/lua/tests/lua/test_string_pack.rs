@@ -60,5 +60,4 @@ lua_print! {
     pack_zero_terminated_string_z => {
         "local s=string.pack(\"z\", \"end\")\nprint(string.unpack(\"z\", s))\n",
         "end	5"
-    },
-}
+    } }

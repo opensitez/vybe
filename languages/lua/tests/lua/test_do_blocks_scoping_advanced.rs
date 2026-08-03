@@ -12,5 +12,4 @@ lua_print! {
     do_block_for_branch => {
         "local s = 0\nfor i = 1, 2 do\n  do\n    local x = i * 10\n    s = s + x\n  end\nend\nprint(s)\n",
         "30"
-    },
-}
+    } }

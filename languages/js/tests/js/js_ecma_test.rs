@@ -510,7 +510,7 @@ fn test_destructure_array() {
 #[test]
 fn test_destructure_array_skip() {
     let code = r#"
-        let [a, , c] = [10, 20, 30];
+        let [a,  c] = [10, 20, 30];
         console.log(a, c);
     "#;
     assert_eq!(run_js_one(code), "10 30");

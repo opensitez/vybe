@@ -16,5 +16,4 @@ lua_print! {
     xpcall_custom_class => {
         "local function handler(e) return {msg = e.msg, code = e.code} end\nlocal ok, err = xpcall(function() error({msg=\"bad\", code=500}) end, handler)\nprint(ok, err.msg, err.code)\n",
         "false\tbad\t500"
-    },
-}
+    } }

@@ -82,5 +82,4 @@ lua_print! {
     numeric_for_with_pcall_protection_on_error_in_body => {
         "local ok, err = pcall(function()\n  for i = 1, 5 do\n    if i == 3 then error('stop at 3') end\n  end\nend)\nprint(ok)\n",
         "false"
-    },
-}
+    } }

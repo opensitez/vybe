@@ -28,5 +28,4 @@ lua_print! {
     inherit_cycle_fails => {
         "local t1 = {}\nlocal t2 = setmetatable({}, {__index = t1})\nsetmetatable(t1, {__index = t2})\nlocal ok, err = pcall(function() return t1.x end)\nprint(ok)\n",
         "false"
-    },
-}
+    } }

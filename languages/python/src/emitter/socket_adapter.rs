@@ -86,7 +86,7 @@ pub fn emit_inet_aton(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 /// Stack: `[bytes] -> [str]`.
 pub fn emit_inet_ntoa(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc == 0 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     let base = stash_args(chunks, current, argc, line);
     let out = chunks[current].alloc_scratch(1);

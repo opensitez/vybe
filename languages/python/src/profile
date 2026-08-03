@@ -7,6 +7,26 @@ name = "python"
 extensions = ["py", "pyw"]
 
 [compiler]
+# NameError on an unresolvable read is NOT enabled yet: `resolvable` in
+# bindings.rs consults only this file's own declarations, never the common
+# resolver, so host builtins look undeclared. Enabling it cost 47 tests with the
+# strict-mode carve-out removed and 1 with it kept. The error type/message are
+# already profile-driven and ready:
+#   unresolved_reference_throws = true
+#   unresolved_reference_error = "NameError"
+#   unresolved_reference_message = "name '{}' is not defined"
+# Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
+global_namespace = "globals"
+global_namespace_is_call = true
+# `|`/`&`/`-`/`^` on sets are set algebra (Pascal spells the same algebra
+# `+`/`*`/`-`, declared as set_arithmetic_operators).
+set_bitwise_operators = true
+# Empty collections, "" and 0 are falsy; `__bool__`/`__len__` override.
+truthiness_via_dunder_or_length = true
+# `gen.send(v)` / `gen.throw(e)` / `gen.close()`.
+generator_send_throw_close = true
+# `a[i:j] = v` and `del a[i:j]` splice the sequence.
+slice_assignment_splices = true
 # Python `__call__` — an object is callable, so a call site probes the Call slot.
 callable_objects = true
 function_return = "explicit"
@@ -771,7 +791,11 @@ open            = { emit = "common:python.file_open",        min_args = 1, max_a
 
 # ── sys module ───────────────────────────────────────────────────────────────
 
-"sys.exit"       = { emit = "host:wasi:cli:exit",             min_args = 0, max_args = 1 }
+# The interface is `wasi:cli/exit`, not `wasi:cli` — the short spelling matched
+# no registration at all, so `sys.exit(3)` died as `Unresolved import` before the
+# program produced any output. `exit-with-code` is the arm that carries a status;
+# plain `exit` takes a result<(),()> and can only say 0 or 1.
+"sys.exit"       = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
 "sys.argv"       = { emit = "host:wasi:cli:args",             min_args = 0, max_args = 0 }
 "sys.platform"   = { emit = "host:wasi:cli:platform",         min_args = 0, max_args = 0 }
 # Dotted `sys.x(...)` does NOT consult the namespace tree (only `from sys
@@ -855,7 +879,7 @@ rstrip          = { emit = "common:str_trim_end_chars",       min_args = 0, max_
 split           = { emit = "common:python.str_split",         min_args = 0, max_args = 2 }
 rsplit          = { emit = "common:python.str_rsplit",        min_args = 0, max_args = 2 }
 splitlines      = { emit = "common:python.str_splitlines",    min_args = 0, max_args = 1 }
-join            = { emit = "common:collections.join",          min_args = 1, max_args = 1 }
+join            = { emit = "common:strings.join_iterable",     min_args = 1, max_args = 1 }
 replace         = { emit = "common:python.str_replace", min_args = 2, max_args = 3 }
 # Python string indices count CODE POINTS (Axis 1, unit `scalar`), and
 # `find`/`rfind` take optional start/end — the raw bindings did neither.
@@ -994,6 +1018,8 @@ __len__         = { emit = "str_length",                       min_args = 0, max
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespace_constants]
+__debug__ = true
+__name__ = "__main__"
 "math.pi"       = 3.141592653589793
 "math.e"        = 2.718281828459045
 "math.tau"      = 6.283185307179586

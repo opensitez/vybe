@@ -72,5 +72,4 @@ lua_print! {
     function_identity_returns_its_argument => {
         "local function identity(x) return x end\nlocal val = {key = 'ok'}\nprint(identity(val).key)\n",
         "ok"
-    },
-}
+    } }

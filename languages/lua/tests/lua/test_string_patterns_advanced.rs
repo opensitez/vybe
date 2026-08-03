@@ -4,7 +4,7 @@ use super::helpers::run_lua_one;
 fn test_string_gmatch_empty_matches() {
     assert_eq!(
         run_lua_one("local s='' for w in string.gmatch('a', '.*') do s=s..w..',' end print(s)"),
-        "a,,"
+        "a, "
     );
 }
 

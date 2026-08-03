@@ -276,5 +276,4 @@ lua_print! {
     pcall_with_function_returning_multiple_values => {
         "local ok, a, b, c = pcall(function() return 10, 20, 30 end)\nprint(tostring(ok) .. ',' .. a .. ',' .. b .. ',' .. c)\n",
         "true,10,20,30"
-    },
-}
+    } }

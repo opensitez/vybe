@@ -40,5 +40,4 @@ lua_print! {
     sort_uses_lt => {
         "local mt = {__lt = function(a, b) return a.v < b.v end}\nlocal function W(n) return setmetatable({v=n}, mt) end\nlocal t = {W(3), W(1), W(2)}\ntable.sort(t)\nprint(t[1].v .. \",\" .. t[2].v .. \",\" .. t[3].v)\n",
         "1,2,3"
-    },
-}
+    } }

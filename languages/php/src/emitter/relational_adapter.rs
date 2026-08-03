@@ -25,7 +25,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
@@ -427,7 +427,7 @@ fn maybe_unbox_datetime(chunk: &mut Chunk, slot: u16, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     let time_key = chunk.add_constant(Value::String(Arc::from("__time")));
-    chunk.emit_op_u16(Op::STRUCT_GET, time_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, time_key, line);
     let time_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, time_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, time_slot, line);

@@ -122,8 +122,7 @@ const Direction = {
     UP: Symbol("UP"),
     DOWN: Symbol("DOWN"),
     LEFT: Symbol("LEFT"),
-    RIGHT: Symbol("RIGHT"),
-};
+    RIGHT: Symbol("RIGHT") };
 function move(dir) {
     switch(dir) {
         case Direction.UP: return "going up";

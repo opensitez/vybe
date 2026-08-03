@@ -12,8 +12,7 @@ use vybe_compiler::primitives::instructions::core_wasm;
 #[derive(Clone, Copy, PartialEq)]
 pub enum Side {
     Left,
-    Right,
-}
+    Right }
 
 /// The insertion point for `x` in the sorted `a[lo..hi]`.
 ///
@@ -55,8 +54,7 @@ fn emit_search(
     chunk.emit_op_u16(Op::LOCAL_GET, x, line);
     match side {
         Side::Left => vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line),
-        Side::Right => vybe_compiler::primitives::ops::emit_dyn_le(chunk, line),
-    }
+        Side::Right => vybe_compiler::primitives::ops::emit_dyn_le(chunk, line) }
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, mid, line);
     core_wasm::i32_const(chunk, line, 1);
@@ -129,7 +127,7 @@ fn emit_insort(chunks: &mut [Chunk], current: usize, argc: u8, side: Side, line:
     let splice = chunks[current].add_import("ecma:array", "splice");
     chunks[current].emit_call(splice, 4, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_insort_left(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

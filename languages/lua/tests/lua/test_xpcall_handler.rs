@@ -32,5 +32,4 @@ lua_print! {
     xpcall_no_error_no_handler => {
         "local called = false\nlocal ok = xpcall(function() return 1 end, function() called = true end)\nprint(ok, called)\n",
         "true\tfalse"
-    },
-}
+    } }

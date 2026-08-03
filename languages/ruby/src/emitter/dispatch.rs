@@ -15,8 +15,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "ruby.to_s" => emit_to_s(&mut chunks[current], line),
         name if crate::emitter::runtime_adapter::emit_helper(name, chunks, current, argc, line) => {
         }
-        _ => return false,
-    }
+        _ => return false }
     true
 }
 
@@ -30,7 +29,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 /// the wrapping block if so.
 fn emit_dig(chunk: &mut Chunk, argc: u8, line: u32) {
     if argc == 0 {
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     if argc == 1 {

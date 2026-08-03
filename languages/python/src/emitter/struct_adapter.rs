@@ -130,7 +130,7 @@ fn emit_tuple_from_top(chunks: &mut [Chunk], current: usize, n: u16, line: u32) 
 }
 
 fn emit_throw_exception(chunk: &mut Chunk, message: &str, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(message, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "Exception", line);
@@ -139,7 +139,7 @@ fn emit_throw_exception(chunk: &mut Chunk, message: &str, line: u32) {
 
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
     let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -455,7 +455,7 @@ pub fn emit_struct_unpack_from(chunks: &mut Vec<Chunk>, current: usize, argc: u8
 
 pub fn emit_struct_pack_into(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc < 4 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let base = chunks[current].alloc_scratch(argc as u16);
@@ -489,7 +489,7 @@ pub fn emit_struct_pack_into(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
     }
     chunks[current].emit_else(line);
     chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_struct_iter_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -521,12 +521,12 @@ pub fn emit_struct_iter_unpack(chunks: &mut Vec<Chunk>, current: usize, argc: u8
 
 pub fn emit_struct_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc < 1 {
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         return;
     }
     let fmt = chunks[current].alloc_scratch(1);
     lset(&mut chunks[current], fmt, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     lget(&mut chunks[current], fmt, line);
     struct_set(&mut chunks[current], "format", line);

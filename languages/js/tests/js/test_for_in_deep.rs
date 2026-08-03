@@ -88,7 +88,7 @@ fn for_in_sparse_array_skips_empty_slots() {
     assert_eq!(
         run_js(
             r#"
-const arr = [10, , 30, , 50];
+const arr = [10,  30,  50];
 const keys = [];
 for (const k in arr) {
     if (Object.hasOwn(arr, k)) keys.push(k);

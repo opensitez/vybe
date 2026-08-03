@@ -116,5 +116,4 @@ wat_exec! {
   stringview_wtf8.slice
   string.measure_utf8
   call $log)
-"#, "2" },
-}
+"#, "2" } }

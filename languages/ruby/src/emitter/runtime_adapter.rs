@@ -104,7 +104,7 @@ fn emit_ruby_inspect_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, 
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
     call_import(chunks, current, "ecma:value", "typeof", 1, line);
@@ -116,7 +116,7 @@ fn emit_ruby_inspect_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, 
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let msg_key = chunks[current].add_constant(Value::String(Arc::from("message")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, msg_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, msg_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, msg_s, line);
     chunks[current].emit_string_const("#<", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
@@ -501,11 +501,11 @@ fn emit_ruby_exception_inspect(chunks: &mut [Chunk], current: usize, argc: u8, l
     let msg_s = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let msg_key = chunks[current].add_constant(Value::String(Arc::from("message")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, msg_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, msg_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, msg_s, line);
     chunks[current].emit_string_const("#<", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
@@ -537,7 +537,7 @@ fn emit_ruby_print(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_center(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let s_slot = slots[0];
@@ -566,7 +566,7 @@ fn emit_ruby_center(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_ljust_rjust(chunks: &mut [Chunk], current: usize, argc: u8, right: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
@@ -696,7 +696,7 @@ fn emit_nil_if_unchanged_from_slots(
     chunks[current].emit_op_u16(Op::LOCAL_GET, original_s, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
     chunks[current].emit_end(line);
@@ -705,7 +705,7 @@ fn emit_nil_if_unchanged_from_slots(
 fn emit_ruby_chomp_bang(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let result_s = chunks[current].alloc_scratch(1);
@@ -722,7 +722,7 @@ fn emit_ruby_chomp_bang(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 fn emit_ruby_chop_bang(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let result_s = chunks[current].alloc_scratch(1);
@@ -1043,7 +1043,7 @@ fn emit_ruby_is_wrapped_string_slot(chunks: &mut [Chunk], current: usize, slot: 
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_s, line);
     chunks[current].emit_string_const("String", line);
@@ -1199,7 +1199,7 @@ fn emit_ruby_squeeze(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 fn emit_ruby_squeeze_bang(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let result_s = chunks[current].alloc_scratch(1);
@@ -1481,7 +1481,7 @@ fn emit_ruby_tr(chunks: &mut [Chunk], current: usize, argc: u8, squeeze: bool, l
 fn emit_ruby_tr_bang(chunks: &mut [Chunk], current: usize, argc: u8, squeeze: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 3 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let (out_s, str_s) = emit_ruby_tr_result_from_slots(chunks, current, &slots, squeeze, line);
@@ -1491,7 +1491,7 @@ fn emit_ruby_tr_bang(chunks: &mut [Chunk], current: usize, argc: u8, squeeze: bo
 fn emit_ruby_insert(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let s = slots[0];
@@ -1589,7 +1589,7 @@ fn emit_ruby_array_insert_from_slots(
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_s, line);
@@ -1706,7 +1706,7 @@ fn emit_ruby_fill_loop(
     chunks[current].emit_op(Op::I32_GT_S, line);
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_br(0, line);
@@ -1724,7 +1724,7 @@ fn emit_ruby_fill_loop(
     } else if let Some(value_slot) = value_s {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -1743,7 +1743,7 @@ fn emit_ruby_fill_loop(
 fn emit_ruby_fill(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let arr_s = slots[0];
@@ -1831,7 +1831,7 @@ fn emit_ruby_fill(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_push(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let arr_s = slots[0];
@@ -1847,7 +1847,7 @@ fn emit_ruby_push(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_unshift(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let arr_s = slots[0];
@@ -1904,7 +1904,7 @@ fn emit_ruby_copy_array_range(
 fn emit_ruby_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let arr_s = slots[0];
@@ -1932,7 +1932,7 @@ fn emit_ruby_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_shift(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let arr_s = slots[0];
@@ -1957,7 +1957,7 @@ fn emit_ruby_shift(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_delete_at(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let arr_s = slots[0];
@@ -1981,7 +1981,7 @@ fn emit_ruby_array_delete_from_slots(
     line: u32,
 ) {
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let arr_s = slots[0];
@@ -2044,7 +2044,7 @@ fn emit_ruby_array_delete_from_slots(
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
         chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_end(line);
 }
@@ -2056,7 +2056,7 @@ fn emit_ruby_enumerator_from_items_slot_with_type(
     type_name: &'static str,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(type_name, line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -2083,7 +2083,7 @@ fn emit_ruby_enumerator_from_cont_slot(
     cont_s: u16,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Enumerator", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -2105,7 +2105,7 @@ fn emit_ruby_yielder_from_items_slot(
     items_s: u16,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Yielder", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -2329,7 +2329,7 @@ fn emit_ruby_enum_rewind(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         emit_time_set_prop_from_slot(chunks, current, *enum_s, "__index", line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, *enum_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -2410,7 +2410,7 @@ fn emit_ruby_enum_with_index(chunks: &mut [Chunk], current: usize, argc: u8, lin
 fn emit_ruby_enum_with_object(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 3 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let enum_s = slots[0];
@@ -2459,7 +2459,7 @@ fn emit_ruby_bsearch(
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     if slots.len() < 2 {
@@ -2526,7 +2526,7 @@ fn emit_ruby_bsearch(
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op(Op::I32_LT_S, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     if return_index {
         chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
@@ -2559,7 +2559,7 @@ fn emit_ruby_call_block_with_array_row(
 fn emit_ruby_zip(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
 
@@ -2601,7 +2601,7 @@ fn emit_ruby_zip(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].patch_loop(loop_patch);
         chunks[current].emit_end(line);
         chunks[current].patch_block(block);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 
         chunks[current].emit_else(line);
         for slot in &slots {
@@ -2738,7 +2738,7 @@ fn emit_ruby_product_core(chunks: &mut [Chunk], current: usize, slots: &[u16], l
 fn emit_ruby_product(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     if slots.len() >= 2 {
@@ -2799,7 +2799,7 @@ fn emit_ruby_product(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 fn emit_ruby_clear(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     emit_is_string_slot(chunks, current, slots[0], line);
@@ -2816,7 +2816,7 @@ fn emit_ruby_clear(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     emit_ruby_is_callable_wrapper_slot(chunks, current, slots[0], line);
@@ -2825,7 +2825,7 @@ fn emit_ruby_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_if_value(line);
     emit_ruby_proc_compose_from_slots(chunks, current, slots[0], slots[1], false, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     emit_is_string_slot(chunks, current, slots[0], line);
@@ -2907,7 +2907,7 @@ fn emit_ruby_concat_like(chunks: &mut [Chunk], current: usize, argc: u8, prepend
 fn emit_ruby_shl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     emit_ruby_is_callable_wrapper_slot(chunks, current, slots[0], line);
@@ -2962,7 +2962,7 @@ fn emit_ruby_shl(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_shr(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     emit_ruby_is_callable_wrapper_slot(chunks, current, slots[0], line);
@@ -3169,7 +3169,7 @@ fn emit_ruby_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_delete(chunks: &mut [Chunk], current: usize, argc: u8, bang: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     emit_is_string_slot(chunks, current, slots[0], line);
@@ -3227,7 +3227,7 @@ fn emit_ruby_delete(chunks: &mut [Chunk], current: usize, argc: u8, bang: bool, 
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
         ops::emit_dyn_eq(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
         chunks[current].emit_end(line);
@@ -3258,7 +3258,7 @@ fn emit_ruby_time_utc(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
 fn emit_time_set_const(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
     let key_idx = chunks[current].add_constant(Value::String(Arc::from(key)));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, key_idx, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
@@ -3271,7 +3271,7 @@ fn emit_time_object_from_ms(
 ) {
     let ms_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Time", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3289,7 +3289,7 @@ fn emit_time_object_from_ms(
 fn emit_date_object_from_ms(chunks: &mut [Chunk], current: usize, line: u32) {
     let ms_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, ms_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Date", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3336,7 +3336,7 @@ fn emit_ruby_env(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::GLOBAL_GET, env_g, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::GLOBAL_SET, env_g, line);
     chunks[current].emit_else(line);
@@ -3346,7 +3346,7 @@ fn emit_ruby_env(chunks: &mut [Chunk], current: usize, line: u32) {
 
 fn emit_ruby_random_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Random", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3411,7 +3411,7 @@ fn emit_ruby_dir_children(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
 fn emit_ruby_dir_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Dir", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3433,7 +3433,7 @@ fn emit_ruby_dir_each(
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let items_s = chunks[current].alloc_scratch(1);
@@ -3475,11 +3475,11 @@ fn emit_ruby_dir_each(
     chunks[current].patch_loop(loop_patch);
     chunks[current].emit_end(line);
     chunks[current].patch_block(block);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn emit_ruby_io_pipe(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("IO", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3492,7 +3492,7 @@ fn emit_ruby_io_pipe(chunks: &mut [Chunk], current: usize, line: u32) {
 
 fn emit_ruby_io_popen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("IO", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3514,7 +3514,7 @@ fn emit_ruby_io_obj_write(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         emit_time_set_const(chunks, current, "buffer", line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -3611,7 +3611,7 @@ fn emit_ruby_io_select(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     collections::emit_array_new(chunks, current, 0, line);
     collections::emit_array_new(chunks, current, 3, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -3739,7 +3739,7 @@ fn emit_ruby_max_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunks[current].emit_op_u16(Op::LOCAL_GET, max_s, line);
         chunks[current].emit_end(line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -3751,7 +3751,7 @@ fn emit_ruby_set_max(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         emit_time_set_const(chunks, current, "__max", line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -3773,7 +3773,7 @@ fn emit_ruby_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         emit_time_set_const(chunks, current, "__closed", line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, *recv_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -3801,7 +3801,7 @@ fn emit_ruby_join(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 
 fn emit_ruby_thread_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Thread", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3812,13 +3812,13 @@ fn emit_ruby_thread_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     if let Some(block_s) = slots.first() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *block_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     emit_time_set_const(chunks, current, "__block", line);
 }
 
 fn emit_ruby_thread_current(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Thread", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3841,7 +3841,7 @@ fn emit_ruby_thread_value(chunks: &mut [Chunk], current: usize, argc: u8, line: 
         emit_time_prop_from_slot(chunks, current, *recv_s, "__block", line);
         chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -3851,7 +3851,7 @@ fn emit_ruby_thread_join(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         emit_ruby_set_bool_prop(chunks, current, *recv_s, "__alive", false, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, *recv_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -3880,7 +3880,7 @@ fn emit_ruby_thread_status(chunks: &mut [Chunk], current: usize, argc: u8, line:
 }
 
 fn emit_ruby_mutex_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Mutex", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3895,7 +3895,7 @@ fn emit_ruby_lock_like(chunks: &mut [Chunk], current: usize, argc: u8, lock: boo
         emit_ruby_set_bool_prop(chunks, current, *recv_s, "__locked", lock, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, *recv_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -3921,12 +3921,12 @@ fn emit_ruby_synchronize(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunks[current].emit_op_u16(Op::LOCAL_GET, *block_s, line);
         chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
 fn emit_ruby_threadgroup_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("ThreadGroup", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -3947,7 +3947,7 @@ fn emit_ruby_threadgroup_add(chunks: &mut [Chunk], current: usize, argc: u8, lin
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[0], line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -4000,7 +4000,7 @@ fn emit_slot_is_any_set(chunks: &mut [Chunk], current: usize, type_s: u16, line:
 fn emit_ruby_collection_add(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let recv_s = slots[0];
@@ -4104,7 +4104,7 @@ fn emit_ruby_set_merge_args(
 fn emit_ruby_collection_merge(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let recv_s = slots[0];
@@ -4155,7 +4155,7 @@ fn emit_ruby_threadgroup_list(chunks: &mut [Chunk], current: usize, argc: u8, li
 }
 
 fn emit_ruby_regexp_marker(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Regexp", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4164,7 +4164,7 @@ fn emit_ruby_regexp_marker(chunks: &mut [Chunk], current: usize, line: u32) {
 fn emit_ruby_match(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let match_s = chunks[current].alloc_scratch(1);
@@ -4186,7 +4186,7 @@ fn emit_ruby_match_prop(chunks: &mut [Chunk], current: usize, argc: u8, key: &st
     if let Some(recv_s) = slots.first() {
         emit_time_prop_from_slot(chunks, current, *recv_s, key, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -4420,7 +4420,7 @@ fn emit_ruby_substring_from_slots(
 
 fn emit_ruby_b(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("String", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4466,7 +4466,7 @@ fn emit_ruby_encoded_string_from_slots(
     encoding_s: Option<u16>,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("String", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4486,10 +4486,10 @@ fn emit_ruby_encoded_string_from_slots(
 fn emit_ruby_freeze(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     let Some(recv_s) = slots.first().copied() else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     };
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("String", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -4530,7 +4530,7 @@ fn emit_ruby_frozen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 fn emit_ruby_taint(chunks: &mut [Chunk], current: usize, argc: u8, tainted: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     let Some(recv_s) = slots.first().copied() else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     };
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_s, line);
@@ -4553,7 +4553,7 @@ fn emit_ruby_tainted(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 fn emit_ruby_dup_clone(chunks: &mut [Chunk], current: usize, argc: u8, clone: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     let Some(recv_s) = slots.first().copied() else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     };
     if clone {
@@ -4568,7 +4568,7 @@ fn emit_ruby_encode(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if let Some(recv_s) = slots.first() {
         emit_ruby_encoded_string_from_slots(chunks, current, *recv_s, slots.get(1).copied(), line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -5012,7 +5012,7 @@ fn emit_ruby_string_index_from_slots(
 fn emit_ruby_index_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let obj_s = slots[0];
@@ -5095,7 +5095,7 @@ fn emit_ruby_encoding(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 fn emit_ruby_byteslice(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let str_s = chunks[current].alloc_scratch(1);
@@ -5194,7 +5194,7 @@ fn emit_ruby_byteslice(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         emit_ruby_substring_from_slots(chunks, current, str_s, start_s, end_s, line);
     }
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -6107,7 +6107,7 @@ fn emit_ruby_index_regex_scan(
 fn emit_ruby_index_like(chunks: &mut [Chunk], current: usize, argc: u8, reverse: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let str_s = chunks[current].alloc_scratch(1);
@@ -6183,7 +6183,7 @@ fn emit_ruby_index_like(chunks: &mut [Chunk], current: usize, argc: u8, reverse:
         core_wasm::i32_const(&mut chunks[current], line, -1);
         chunks[current].emit_op(Op::I32_EQ, line);
         chunks[current].emit_if(line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, offset_s, line);
@@ -6323,7 +6323,7 @@ fn emit_ruby_hash_gsub_scan(
         chunks[current].emit_if_value(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_end(line);
     } else {
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
@@ -6422,7 +6422,7 @@ fn emit_ruby_callable_gsub_scan(
         chunks[current].emit_if_value(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_end(line);
     } else {
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
@@ -6522,7 +6522,7 @@ fn emit_ruby_gsub_a_dot(
         chunks[current].emit_if_value(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_end(line);
     } else {
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_s, line);
@@ -6539,7 +6539,7 @@ fn emit_ruby_gsub_like(
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let str_s = chunks[current].alloc_scratch(1);
@@ -6555,7 +6555,7 @@ fn emit_ruby_gsub_like(
         chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, repl_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, repl_s, line);
     }
 
@@ -6653,7 +6653,7 @@ fn emit_ruby_gsub_like(
         chunks[current].emit_op_u16(Op::LOCAL_GET, str_s, line);
         ops::emit_dyn_eq(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
         chunks[current].emit_end(line);
@@ -6664,7 +6664,7 @@ fn emit_ruby_gsub_like(
 }
 
 fn emit_ruby_process_times(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Process::Tms", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -6675,7 +6675,7 @@ fn emit_ruby_process_wait2(chunks: &mut [Chunk], current: usize, argc: u8, line:
         chunks[current].emit_op(Op::DROP, line);
     }
     chunks[current].emit_string_const("pid", line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     core_wasm::i32_const(&mut chunks[current], line, 42);
     emit_time_set_const(chunks, current, "exitstatus", line);
@@ -6690,7 +6690,7 @@ fn emit_ruby_store(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
         collections::emit_set(chunks, current, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -6792,7 +6792,7 @@ fn emit_ruby_instance_variable_get(chunks: &mut [Chunk], current: usize, argc: u
         emit_ruby_ivar_key_from_slot(chunks, current, slots[1], line);
         collections::emit_get(chunks, current, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -6804,7 +6804,7 @@ fn emit_ruby_instance_variable_set(chunks: &mut [Chunk], current: usize, argc: u
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
         collections::emit_set(chunks, current, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -6852,7 +6852,7 @@ fn emit_ruby_const_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         );
         chunks[current].emit_end(line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -6864,7 +6864,7 @@ fn emit_ruby_const_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
         collections::emit_set(chunks, current, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -6951,7 +6951,7 @@ fn emit_ruby_is_callable_wrapper_slot(chunks: &mut [Chunk], current: usize, slot
 
 fn emit_ruby_proc_new(chunks: &mut [Chunk], current: usize, argc: u8, is_lambda: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Proc", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -6959,7 +6959,7 @@ fn emit_ruby_proc_new(chunks: &mut [Chunk], current: usize, argc: u8, is_lambda:
     if let Some(fn_s) = slots.first() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *fn_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     emit_time_set_const(chunks, current, "__fn", line);
     chunks[current].emit_dup(line);
@@ -6998,12 +6998,12 @@ fn emit_ruby_proc_compose_from_slots(
     reverse: bool,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Proc", line);
     emit_time_set_const(chunks, current, "__type", line);
     chunks[current].emit_dup(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     emit_time_set_const(chunks, current, "__fn", line);
     chunks[current].emit_dup(line);
     chunks[current].emit_bool_const(true, line);
@@ -7074,7 +7074,7 @@ fn emit_ruby_proc_compose_op(
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     emit_ruby_proc_compose_from_slots(chunks, current, slots[0], slots[1], reverse, line);
@@ -7087,12 +7087,12 @@ fn emit_ruby_proc_curry_object(
     value_s: Option<u16>,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Proc", line);
     emit_time_set_const(chunks, current, "__type", line);
     chunks[current].emit_dup(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     emit_time_set_const(chunks, current, "__fn", line);
     chunks[current].emit_dup(line);
     chunks[current].emit_bool_const(true, line);
@@ -7121,7 +7121,7 @@ fn emit_ruby_proc_curry(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     if let Some(target_s) = slots.first() {
         emit_ruby_proc_curry_object(chunks, current, *target_s, None, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 }
 
@@ -7148,7 +7148,7 @@ fn emit_ruby_method_fallback_call(
         chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
         ops::emit_dyn_add(&mut chunks[current], line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
@@ -7161,7 +7161,7 @@ fn emit_ruby_method_fallback_call(
         chunks[current].emit_f64_const(2.0, line);
         chunks[current].emit_op(Op::F64_MUL, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
@@ -7173,7 +7173,7 @@ fn emit_ruby_method_fallback_call(
         core_wasm::i32_const(&mut chunks[current], line, 1);
         ops::emit_dyn_add(&mut chunks[current], line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_s, line);
@@ -7186,7 +7186,7 @@ fn emit_ruby_method_fallback_call(
         core_wasm::i32_const(&mut chunks[current], line, 1);
     }
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -7196,7 +7196,7 @@ fn emit_ruby_method_fallback_call(
 fn emit_ruby_proc_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let recv_s = slots[0];
@@ -7205,7 +7205,7 @@ fn emit_ruby_proc_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     if let Some(value_s) = slots.get(1) {
         emit_ruby_yielder_push_from_slots(chunks, current, recv_s, *value_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_else(line);
     emit_ruby_is_proc_slot(chunks, current, recv_s, line);
@@ -7222,7 +7222,7 @@ fn emit_ruby_proc_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     if let Some(arg_s) = slots.get(1) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, second_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_s, line);
@@ -7254,7 +7254,7 @@ fn emit_ruby_proc_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     if let Some(arg_s) = slots.get(1) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, input_s, line);
     emit_time_prop_from_slot(chunks, current, recv_s, "__reverse", line);
@@ -7383,7 +7383,7 @@ fn emit_ruby_proc_binding(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Binding", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7391,7 +7391,7 @@ fn emit_ruby_proc_binding(chunks: &mut [Chunk], current: usize, argc: u8, line: 
 
 fn emit_ruby_method_object(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Method", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7407,7 +7407,7 @@ fn emit_ruby_method_object(chunks: &mut [Chunk], current: usize, argc: u8, line:
     if let Some(fn_s) = slots.get(1) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *fn_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     emit_time_set_const(chunks, current, "__fn", line);
     chunks[current].emit_dup(line);
@@ -7454,13 +7454,13 @@ fn emit_ruby_method_object(chunks: &mut [Chunk], current: usize, argc: u8, line:
     if let Some(receiver_s) = slots.get(7) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *receiver_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     emit_time_set_const(chunks, current, "__receiver", line);
 }
 
 fn emit_ruby_type_marker(chunks: &mut [Chunk], current: usize, ty: &str, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(ty, line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7478,7 +7478,7 @@ fn emit_ruby_method_receiver(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_s, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     emit_time_prop_from_slot(chunks, current, slots[0], "__receiver_class", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7502,7 +7502,7 @@ fn emit_ruby_method_unbind(chunks: &mut [Chunk], current: usize, argc: u8, line:
         emit_ruby_type_marker(chunks, current, "UnboundMethod", line);
         return;
     }
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("UnboundMethod", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7524,10 +7524,10 @@ fn emit_ruby_method_unbind(chunks: &mut [Chunk], current: usize, argc: u8, line:
 fn emit_ruby_method_super_method(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Method", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -7556,7 +7556,7 @@ fn emit_ruby_method_super_method(chunks: &mut [Chunk], current: usize, argc: u8,
     chunks[current].emit_string_const("A", line);
     emit_time_set_const(chunks, current, "owner", line);
     chunks[current].emit_dup(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     emit_time_set_const(chunks, current, "__fn", line);
 }
 
@@ -7580,7 +7580,7 @@ fn emit_ruby_error(
     message: &str,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const(message, line);
     errors::emit_exception_new_finalize(&mut chunks[current], ty, line);
@@ -7596,7 +7596,7 @@ fn emit_ruby_exception_object_const(
     msg_s: u16,
     line: u32,
 ) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, msg_s, line);
     errors::emit_exception_new_finalize(&mut chunks[current], ty, line);
@@ -7640,15 +7640,14 @@ fn emit_ruby_exception_ancestors(chunk: &mut Chunk, ty: &'static str, line: u32)
         ],
         "LocalJumpError" => vec!["LocalJumpError", "StandardError", "Exception"],
         "Exception" => vec!["Exception"],
-        _ => vec![ty, "StandardError", "Exception"],
-    };
+        _ => vec![ty, "StandardError", "Exception"] };
     chunk.emit_dup(line);
     for name in &chain {
         chunk.emit_string_const(name, line);
     }
     chunk.emit_array_new_fixed(0, chain.len() as u16, line);
     let key = chunk.add_constant(Value::String(Arc::from("__types")));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -7656,14 +7655,14 @@ fn emit_ruby_exception_backtrace_default(chunk: &mut Chunk, line: u32) {
     chunk.emit_dup(line);
     chunk.emit_array_new_fixed(0, 0, line);
     let key = chunk.add_constant(Value::String(Arc::from("backtrace")));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_ruby_exception_object(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     let Some(ty_s) = slots.first().copied() else {
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         return;
     };
     let msg_s = slots.get(1).copied().unwrap_or(ty_s);
@@ -7773,7 +7772,7 @@ fn emit_ruby_exception_object_fixed(
     line: u32,
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     if let Some(msg_s) = slots.first().copied() {
         chunks[current].emit_op_u16(Op::LOCAL_GET, msg_s, line);
@@ -7788,13 +7787,13 @@ fn emit_ruby_exception_object_fixed(
 fn emit_ruby_exception_set_backtrace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     let (Some(err_s), Some(backtrace_s)) = (slots.first().copied(), slots.get(1).copied()) else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     };
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, backtrace_s, line);
     let key = chunks[current].add_constant(Value::String(Arc::from("backtrace")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, backtrace_s, line);
 }
@@ -7802,12 +7801,12 @@ fn emit_ruby_exception_set_backtrace(chunks: &mut [Chunk], current: usize, argc:
 fn emit_ruby_exception_with_message(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     let (Some(err_s), Some(msg_s)) = (slots.first().copied(), slots.get(1).copied()) else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     };
     chunks[current].emit_op_u16(Op::LOCAL_GET, err_s, line);
     let type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, msg_s, line);
     emit_ruby_exception_object(chunks, current, 2, line);
 }
@@ -8083,7 +8082,7 @@ fn emit_time_both_check(chunks: &mut [Chunk], current: usize, left: u16, right: 
 fn emit_time_compare(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let left = slots[0];
@@ -8138,8 +8137,7 @@ fn emit_time_compare(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str,
             chunks[current].emit_end(line);
             chunks[current].emit_end(line);
         }
-        _ => chunks[current].emit_op(Op::NULL, line),
-    }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
     chunks[current].emit_else(line);
     match mode {
         "eq" => {
@@ -8148,7 +8146,7 @@ fn emit_time_compare(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str,
             ops::emit_dyn_eq(&mut chunks[current], line);
             ops::emit_i32_to_bool(&mut chunks[current], line);
         }
-        "cmp" => chunks[current].emit_op(Op::NULL, line),
+        "cmp" => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         _ => {
             chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
@@ -8278,7 +8276,7 @@ fn emit_ruby_rational(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 
 fn emit_ruby_complex(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Complex", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -8329,7 +8327,7 @@ fn emit_ruby_is_rational_slot(chunks: &mut [Chunk], current: usize, slot: u16, l
 fn emit_ruby_float_object(chunks: &mut [Chunk], current: usize, line: u32) {
     let value_s = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Float", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -8533,7 +8531,7 @@ fn emit_rational_object_from_numbers(chunks: &mut [Chunk], current: usize, line:
     math::emit_trunc(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, den_s, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("Rational", line);
     emit_time_set_const(chunks, current, "__type", line);
@@ -8592,7 +8590,7 @@ fn emit_ruby_complex_method(
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let slot = slots[0];
@@ -8651,8 +8649,7 @@ fn emit_ruby_complex_method(
             chunks[current].emit_op(Op::DROP, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
         }
-        _ => chunks[current].emit_op(Op::NULL, line),
-    }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
 }
 
 fn emit_complex_binary_from_slots(
@@ -8986,15 +8983,14 @@ fn emit_ruby_rational_method(
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let slot = slots[0];
     match method {
         "num" => emit_rational_part_from_slot(chunks, current, slot, "num", line),
         "den" => emit_rational_part_from_slot(chunks, current, slot, "den", line),
-        _ => emit_rational_to_s_from_slot(chunks, current, slot, line),
-    }
+        _ => emit_rational_to_s_from_slot(chunks, current, slot, line) }
 }
 
 fn emit_ruby_rationalize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -9104,7 +9100,7 @@ fn emit_ruby_numeric_pred(chunks: &mut [Chunk], current: usize, argc: u8, kind: 
         "nonzero" => {
             emit_ruby_zero_from_slot(chunks, current, slot, line);
             chunks[current].emit_if_value(line);
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunks[current].emit_else(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
             chunks[current].emit_end(line);
@@ -9144,7 +9140,7 @@ fn emit_ruby_numeric_pred(chunks: &mut [Chunk], current: usize, argc: u8, kind: 
             emit_ruby_number_from_slot(chunks, current, slot, line);
             call_import(chunks, current, "ecma:number", "isFinite", 1, line);
             chunks[current].emit_if_value(line);
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunks[current].emit_else(line);
             emit_ruby_number_from_slot(chunks, current, slot, line);
             chunks[current].emit_f64_const(0.0, line);
@@ -9156,8 +9152,7 @@ fn emit_ruby_numeric_pred(chunks: &mut [Chunk], current: usize, argc: u8, kind: 
             chunks[current].emit_end(line);
             chunks[current].emit_end(line);
         }
-        _ => chunks[current].emit_bool_const(false, line),
-    }
+        _ => chunks[current].emit_bool_const(false, line) }
 }
 
 fn emit_ruby_divmod(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -9920,7 +9915,7 @@ fn emit_ruby_number_upto_downto_from_slots(
 fn emit_ruby_hash_update(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let target_s = slots[0];
@@ -10098,7 +10093,7 @@ fn emit_ruby_string_upto_from_slots(
 
 fn emit_ruby_match_index(chunks: &mut [Chunk], current: usize, argc: u8, pred: bool, line: u32) {
     if argc < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     call_import(chunks, current, "ecma:regexp", "search", 2, line);
@@ -10125,7 +10120,7 @@ fn emit_ruby_casecmp_pred(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     ops::emit_dyn_eq(&mut chunks[current], line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -10142,14 +10137,14 @@ fn emit_ruby_casecmp(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     call_import(chunks, current, "ecma:string", "toLowerCase", 1, line);
     call_import(chunks, current, "wasm:js-string", "compare", 2, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
 fn emit_ruby_str_compare(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.len() < 2 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let cmp_s = chunks[current].alloc_scratch(1);
@@ -10185,10 +10180,9 @@ fn emit_ruby_str_compare(chunks: &mut [Chunk], current: usize, argc: u8, mode: &
             chunks[current].emit_op(Op::I32_GE_S, line);
             ops::emit_i32_to_bool(&mut chunks[current], line);
         }
-        _ => chunks[current].emit_op(Op::NULL, line),
-    }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -10362,7 +10356,7 @@ fn emit_ruby_case_transform_bang(
 ) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let original_s = slots[0];
@@ -10702,7 +10696,7 @@ fn emit_ruby_math_lgamma(chunks: &mut [Chunk], current: usize, argc: u8, line: u
 fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     emit_time_is_time_slot(chunks, current, slots[0], line);
@@ -10725,8 +10719,7 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
                 math::emit_floor(&mut chunks[current], line);
             }
             "ceil" => math::emit_ceil(&mut chunks[current], line),
-            _ => math::emit_floor(&mut chunks[current], line),
-        }
+            _ => math::emit_floor(&mut chunks[current], line) }
         if slots.len() >= 2 {
             chunks[current].emit_f64_const(10.0, line);
         } else {
@@ -10759,8 +10752,7 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
             "round_half_even" => emit_ruby_round_half_even_top(chunks, current, line),
             "ceil" => math::emit_ceil(&mut chunks[current], line),
             "truncate" => math::emit_trunc(&mut chunks[current], line),
-            _ => math::emit_floor(&mut chunks[current], line),
-        }
+            _ => math::emit_floor(&mut chunks[current], line) }
         chunks[current].emit_op_u16(Op::LOCAL_GET, scale_s, line);
         chunks[current].emit_op(Op::F64_DIV, line);
         let rounded_s = chunks[current].alloc_scratch(1);
@@ -10784,8 +10776,7 @@ fn emit_time_rounding(chunks: &mut [Chunk], current: usize, argc: u8, mode: &str
             "round_half_even" => emit_ruby_round_half_even_top(chunks, current, line),
             "ceil" => math::emit_ceil(&mut chunks[current], line),
             "truncate" => math::emit_trunc(&mut chunks[current], line),
-            _ => math::emit_floor(&mut chunks[current], line),
-        }
+            _ => math::emit_floor(&mut chunks[current], line) }
     }
     chunks[current].emit_end(line);
 }
@@ -10893,7 +10884,7 @@ fn emit_time_gmtoff(chunks: &mut [Chunk], current: usize, line: u32) {
 fn emit_time_mut_zone(chunks: &mut [Chunk], current: usize, argc: u8, utc: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     chunks[current].emit_bool_const(utc, line);
@@ -10912,7 +10903,7 @@ fn emit_time_mut_zone(chunks: &mut [Chunk], current: usize, argc: u8, utc: bool,
 fn emit_time_copy_zone(chunks: &mut [Chunk], current: usize, argc: u8, utc: bool, line: u32) {
     let slots = emit_store_args(chunks, current, argc, line);
     if slots.is_empty() {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     emit_time_ms_number_from_slot(chunks, current, slots[0], line);
@@ -11046,7 +11037,7 @@ fn emit_ruby_class_name(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let obj_type_key = chunks[current].add_constant(Value::String(Arc::from("__type")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, obj_type_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, obj_type_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_slot, line);
     call_import(chunks, current, "ecma:value", "typeof", 1, line);
@@ -11399,7 +11390,7 @@ fn emit_minus_one_to_null(chunk: &mut Chunk, line: u32) {
     core_wasm::i32_const(chunk, line, -1);
     chunk.emit_op(Op::I32_EQ, line);
     chunk.emit_if(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_end(line);
@@ -11753,7 +11744,7 @@ fn emit_array_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         call_import(chunks, current, "ecma:reflect", "isCallable", 1, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, callable_s, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, init_s, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, size_s, line);
         chunks[current].emit_bool_const(false, line);
@@ -12324,8 +12315,7 @@ fn emit_ruby_unpack_string_piece(
         "m0" => {
             call_import(chunks, current, "ecma:string", "btoa", 1, line);
         }
-        _ => chunks[current].emit_op(Op::NULL, line),
-    }
+        _ => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
     emit_array_with_slot(chunks, current, value_s, line);
 }
@@ -12482,7 +12472,7 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
         chunks[current].emit_op_u16(Op::LOCAL_GET, right_s, line);
         emit_ruby_enum_chain(chunks, current, 2, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_s, line);
@@ -12496,8 +12486,7 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
         "mul" => emit_array_repeat(chunks, current, line),
         "and" => emit_array_set_op(chunks, current, "intersection", line),
         "or" => emit_array_union(chunks, current, line),
-        _ => ops::emit_dyn_add(&mut chunks[current], line),
-    }
+        _ => ops::emit_dyn_add(&mut chunks[current], line) }
     chunks[current].emit_else(line);
     emit_ruby_is_complex_slot(chunks, current, left_s, line);
     chunks[current].emit_if_value(line);
@@ -12505,7 +12494,7 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
     chunks[current].emit_if_value(line);
     emit_complex_binary_from_slots(chunks, current, left_s, right_s, op, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     emit_ruby_is_rational_slot(chunks, current, left_s, line);
@@ -12553,7 +12542,7 @@ fn emit_ruby_binary_op(chunks: &mut [Chunk], current: usize, op: &str, line: u32
             chunks[current].emit_end(line);
         }
         _ => {
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
     }
     chunks[current].emit_else(line);
@@ -12972,7 +12961,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
                 emit_ruby_set_bool_prop(chunks, current, *recv_s, "__enclosed", true, line);
                 chunks[current].emit_op_u16(Op::LOCAL_GET, *recv_s, line);
             } else {
-                chunks[current].emit_op(Op::NULL, line);
+                chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             }
         }
         "ruby.threadgroup_enclosed" => {
@@ -13141,7 +13130,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
                     line,
                 );
             } else {
-                chunks[current].emit_op(Op::NULL, line);
+                chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             }
         }
         "ruby.freeze" => {
@@ -13961,7 +13950,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
         "ruby.min" => {
             let slots = emit_store_args(chunks, current, argc, line);
             if slots.is_empty() {
-                chunks[current].emit_op(Op::NULL, line);
+                chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             } else {
                 emit_time_is_time_slot(chunks, current, slots[0], line);
                 chunks[current].emit_if_value(line);
@@ -14336,7 +14325,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             let elem_s = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, fn_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, arr_s, line);
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
             core_wasm::i32_const(&mut chunks[current], line, 0);
             chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
@@ -14380,7 +14369,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             let elem_s = chunks[current].alloc_scratch(1);
             chunks[current].emit_op_u16(Op::LOCAL_SET, fn_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, arr_s, line);
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
             collections::emit_len(chunks, current, line);
@@ -14483,7 +14472,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_SET, pred_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, ifnone_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, arr_s, line);
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, result_s, line);
             chunks[current].emit_bool_const(false, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, found_s, line);
@@ -14955,7 +14944,6 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             let from_entries = chunks[current].add_import("ecma:object", "fromEntries");
             chunks[current].emit_call(from_entries, 1, line);
         }
-        _ => return false,
-    }
+        _ => return false }
     true
 }

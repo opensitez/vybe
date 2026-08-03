@@ -762,7 +762,7 @@ fn preg_split_no_empty_flag() {
     assert_eq!(
         run_prints(
             r#"<?php
-$parts = preg_split('/[\s,]+/', "one  two,,three   four", -1, PREG_SPLIT_NO_EMPTY);
+$parts = preg_split('/[\s,]+/', "one  two, three   four", -1, PREG_SPLIT_NO_EMPTY);
 echo count($parts);
 echo "\n";
 echo implode("|", $parts);
@@ -988,7 +988,7 @@ fn str_getcsv_limits_and_empty_fields_runtime() {
     assert_eq!(
         run_prints(
             r#"<?php
-$v = str_getcsv("a,,c,");
+$v = str_getcsv("a, c,");
 echo count($v);
 echo "|";
 echo $v[1];

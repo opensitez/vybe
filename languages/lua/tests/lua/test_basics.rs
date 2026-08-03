@@ -213,8 +213,7 @@ lua_print! {
     boolean_operator_and_returns_first_falsy => {
         "print(false and 10)\n",
         "false"
-    },
-}
+    } }
 
 #[test]
 fn nested_do_blocks_scoping_all_output() {

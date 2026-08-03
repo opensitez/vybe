@@ -15,12 +15,12 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 
 fn get_field(chunk: &mut Chunk, name: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 fn set_field(chunk: &mut Chunk, name: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -31,7 +31,7 @@ fn set_string_field(chunk: &mut Chunk, name: &str, value: &str, line: u32) {
 }
 
 fn emit_type_descriptor(chunk: &mut Chunk, name: &str, kind: reflection::ReflectKind, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     set_string_field(chunk, reflection::FIELD_TYPE, name, line);
     set_string_field(chunk, reflection::FIELD_TYPE_NAME, name, line);
     set_string_field(chunk, reflection::FIELD_KIND, kind.as_str(), line);
@@ -78,7 +78,7 @@ fn emit_type_descriptor_from_name_on_stack(
     let name_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
     let descriptor_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, descriptor_slot, line);
     reflection::emit_set_slot_field_from_local(
         chunk,

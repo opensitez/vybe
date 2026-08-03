@@ -89,8 +89,7 @@ function makeAccumulator(initial = 0) {
     return {
         add(n) { total += n; return this; },
         subtract(n) { total -= n; return this; },
-        result() { return total; },
-    };
+        result() { return total; } };
 }
 const acc = makeAccumulator(100);
 acc.add(50).add(25).subtract(30);

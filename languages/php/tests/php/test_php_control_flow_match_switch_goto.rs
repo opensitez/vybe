@@ -197,8 +197,7 @@ fn test_php_switch_subject_is_boolean_and_default() {
 $value = match (false) {
     true => 'true',
     false => 'false',
-    default => 'other',
-};
+    default => 'other' };
 echo $value;
 "#,
     );
@@ -339,8 +338,7 @@ for ($i = 0; $i < 4; $i++) {
     $out .= match ($i) {
         0, 1 => 'L',
         2 => 'M',
-        default => 'H',
-    };
+        default => 'H' };
 }
 echo $out;
 "#,
@@ -378,8 +376,7 @@ try {
     echo match (3) {
         1 => 'one',
         2 => 'two',
-        default => throw new RuntimeException('bad'),
-    };
+        default => throw new RuntimeException('bad') };
 } catch (RuntimeException $e) {
     echo 'caught';
 }
@@ -486,8 +483,7 @@ for ($i = 0; $i < 4; $i++) {
         '0' => 1,
         '1' => 2,
         '2' => 3,
-        default => 4,
-    };
+        default => 4 };
 }
 echo $sum;
 "#,

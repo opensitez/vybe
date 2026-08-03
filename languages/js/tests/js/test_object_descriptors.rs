@@ -197,8 +197,7 @@ const obj = Object.preventExtensions({});
 let threw = false;
 try {
     Object.defineProperties(obj, {
-        a: { value: 1 },
-    });
+        a: { value: 1 } });
 } catch {
     threw = true;
 }

@@ -106,7 +106,7 @@ pub fn emit_op_getitem(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
 pub fn emit_op_setitem(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     vybe_compiler::primitives::collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `operator.concat(a, b)` — sequence concatenation, so it has to serve both
@@ -167,8 +167,7 @@ pub fn emit_reduce(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 struct Filter {
     keep_when: bool,
     stop_at_first_false: bool,
-    skip_leading: bool,
-}
+    skip_leading: bool }
 
 fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u32) {
     let xs = chunks[current].alloc_scratch(1);
@@ -278,8 +277,7 @@ pub fn emit_filterfalse(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         Filter {
             keep_when: false,
             stop_at_first_false: false,
-            skip_leading: false,
-        },
+            skip_leading: false },
         line,
     );
 }
@@ -292,8 +290,7 @@ pub fn emit_takewhile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
         Filter {
             keep_when: true,
             stop_at_first_false: true,
-            skip_leading: false,
-        },
+            skip_leading: false },
         line,
     );
 }
@@ -306,8 +303,7 @@ pub fn emit_dropwhile(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
         Filter {
             keep_when: true,
             stop_at_first_false: false,
-            skip_leading: true,
-        },
+            skip_leading: true },
         line,
     );
 }
@@ -363,7 +359,7 @@ pub fn emit_zip_longest(chunks: &mut [Chunk], current: usize, _argc: u8, line: u
         chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
         chunks[current].emit_op(Op::ARRAY_GET, line);
         chunks[current].emit_else(line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_end(line);
     }
     vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 2, line);

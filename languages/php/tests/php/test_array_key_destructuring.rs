@@ -20,7 +20,7 @@ fn short_list_skip_elements() {
     assert_eq!(
         run_prints(
             r#"<?php
-[, $second, , $fourth] = [10, 20, 30, 40];
+[, $second,  $fourth] = [10, 20, 30, 40];
 echo "$second,$fourth";
 "#
         ),
@@ -33,7 +33,7 @@ fn short_list_only_last_element() {
     assert_eq!(
         run_prints(
             r#"<?php
-[,, $last] = ['a', 'b', 'c'];
+[,  $last] = ['a', 'b', 'c'];
 echo $last;
 "#
         ),

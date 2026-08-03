@@ -272,8 +272,7 @@ store.append({ type: "Created", name: "Alice" });
 store.append({ type: "Updated", field: "age", value: 30 });
 const state = store.replay({
     Created: (s, e) => ({ ...s, name: e.name }),
-    Updated: (s, e) => ({ ...s, [e.field]: e.value }),
-});
+    Updated: (s, e) => ({ ...s, [e.field]: e.value }) });
 console.log(state.name);
 console.log(state.age);
 "#

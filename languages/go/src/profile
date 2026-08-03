@@ -10,6 +10,8 @@ extensions = ["go"]
 
 [compiler]
 function_return = "explicit"
+# `func (r *T) M()` mutates the receiver; `func (r T) M()` gets a copy.
+pointer_receiver_methods = true
 self_keyword = "this"
 constructor_name = "constructor"
 # namespaceplan.md: namespace-shaped entry points resolve through the
@@ -229,6 +231,9 @@ materialize_bool_results = true
 "os.Remove"       = { emit = "host:wasi:filesystem:remove",    min_args = 1, max_args = 1 }
 
 # ── Environment ──────────────────────────────────────────────────────────────
+
+# os.Exit(code) — was unbound and threw. Ends the run with the status.
+"os.Exit"         = { emit = "common:control_flow.exit", min_args = 1, max_args = 1 }
 
 "os.Getenv"       = { emit = "host:wasi:cli:getEnv",         min_args = 1, max_args = 1 }
 "os.Setenv"       = { emit = "host:wasi:cli:setEnv",         min_args = 2, max_args = 2 }

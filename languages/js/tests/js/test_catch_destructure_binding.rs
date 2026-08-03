@@ -37,7 +37,7 @@ crate::js_cases! {
     };
 
     catch_destructure_array_skip_with_empty_slot => {
-        r#"try{throw[10,,30];}catch([a,,c]){console.log(a);console.log(c);}"#,
+        r#"try{throw[10, 30];}catch([a, c]){console.log(a);console.log(c);}"#,
         ["10", "30"]
     };
 

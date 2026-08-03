@@ -28,5 +28,4 @@ lua_print! {
     iterator_three_values_returned => {
         "local function iter(t, i)\n  i = i + 1\n  local v = t[i]\n  if v ~= nil then return i, v end\nend\nlocal last_i, last_v\nfor i, v in iter, {\"x\", \"y\", \"z\"}, 0 do last_i = i; last_v = v end\nprint(last_i .. \",\" .. last_v)\n",
         "3,z"
-    },
-}
+    } }

@@ -416,5 +416,4 @@ lua_print! {
     linked_list_traversal => {
         "local function make_node(val, next_node) return {val=val, next=next_node} end\nlocal list = make_node(1, make_node(2, make_node(3, nil)))\nlocal s = ''\nlocal node = list\nwhile node do s = s .. node.val; node = node.next end\nprint(s)\n",
         "123"
-    },
-}
+    } }

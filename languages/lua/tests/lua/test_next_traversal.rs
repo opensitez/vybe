@@ -36,5 +36,4 @@ lua_print! {
     next_empty_check => {
         "local function nonempty(t) return next(t) ~= nil end\nprint(nonempty({}))\n",
         "false"
-    },
-}
+    } }

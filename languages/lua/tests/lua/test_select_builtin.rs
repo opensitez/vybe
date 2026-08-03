@@ -92,5 +92,4 @@ lua_print! {
     select_count_with_many_arguments => {
         "print(select('#', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10))\n",
         "10"
-    },
-}
+    } }

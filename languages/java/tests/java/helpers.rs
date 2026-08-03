@@ -4,10 +4,8 @@ use std::sync::{Arc, Mutex};
 use vybe_runtime::{HostContext, VM, Value};
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_runtime::Chunk>, String> {
-    // Java is now its own crate; register it into the shared plugin registry
-    // so the compiler's emit-dispatch/normalize reach it.
     static REG: std::sync::Once = std::sync::Once::new();
-    REG.call_once(vybe_language_java::register);
+    REG.call_once(vybe_runtime::init_registered);
     let module = vybe_language_java::parse(src)?;
     let profile = vybe_compiler::profile::parse_profile(vybe_language_java::profile_source())
         .map_err(|e| format!("profile parse failed: {}", e))?;

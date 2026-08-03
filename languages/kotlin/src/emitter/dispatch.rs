@@ -75,6 +75,62 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             crate::emitter::tostring::emit_join_to_string(chunks, current, argc, line);
             true
         }
+        "kotlin.add" => {
+            crate::emitter::collections::emit_add(chunks, current, argc, line);
+            true
+        }
+        "kotlin.set_add" => {
+            crate::emitter::collections::emit_set_add(chunks, current, argc, line);
+            true
+        }
+        "kotlin.set_size" => {
+            crate::emitter::collections::emit_set_size(chunks, current, argc, line);
+            true
+        }
+        "kotlin.to_set" => {
+            crate::emitter::collections::emit_to_set(chunks, current, argc, line);
+            true
+        }
+        "kotlin.to_list" => {
+            crate::emitter::collections::emit_to_list(chunks, current, argc, line);
+            true
+        }
+        "kotlin.add_all" => {
+            crate::emitter::collections::emit_add_all(chunks, current, argc, line);
+            true
+        }
+        "kotlin.set_union" => {
+            crate::emitter::collections::emit_set_union(chunks, current, argc, line);
+            true
+        }
+        "kotlin.set_intersect" => {
+            crate::emitter::collections::emit_set_intersect(chunks, current, argc, line);
+            true
+        }
+        "kotlin.set_subtract" => {
+            crate::emitter::collections::emit_set_subtract(chunks, current, argc, line);
+            true
+        }
+        "kotlin.remove_all" => {
+            crate::emitter::collections::emit_remove_all(chunks, current, argc, line);
+            true
+        }
+        "kotlin.retain_all" => {
+            crate::emitter::collections::emit_retain_all(chunks, current, argc, line);
+            true
+        }
+        "kotlin.contains_all" => {
+            crate::emitter::collections::emit_contains_all(chunks, current, argc, line);
+            true
+        }
+        "kotlin.is_empty" => {
+            crate::emitter::collections::emit_is_empty(chunks, current, argc, line);
+            true
+        }
+        "kotlin.is_not_empty" => {
+            crate::emitter::collections::emit_is_not_empty(chunks, current, argc, line);
+            true
+        }
         "kotlin.not_null_assert" => {
             crate::emitter::nullability::emit_not_null_assert(chunks, current, argc, line);
             true

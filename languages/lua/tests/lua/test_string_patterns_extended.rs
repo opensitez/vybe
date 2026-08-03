@@ -38,5 +38,4 @@ lua_print! {
     pattern_nested_captures_values => {
         "local first, second = string.match(\"abc\", \"(a(b)c)\")\nprint(first .. \",\" .. second)\n",
         "abc,b"
-    },
-}
+    } }

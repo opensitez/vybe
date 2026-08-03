@@ -46,7 +46,7 @@ pub fn emit_sort(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         get(&mut chunks[current], slice, line);
         collections::emit_insert_range(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     } else if argc == 2 {
         collections::emit_sort_with_comparator(chunks, current, line);
     } else {
@@ -489,7 +489,7 @@ pub fn emit_set_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_parallel_prefix(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -549,7 +549,7 @@ pub fn emit_parallel_prefix(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_deep_equals(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -8,6 +8,9 @@ extensions = ["vb"]
 
 [compiler]
 field_hiding = true            # static-type field resolution: subclass field hides parent, distinct slots
+# `CInt("abc")` / `CLng("abc")` throw InvalidCastException.
+numeric_cast_invalid_error = "InvalidCastException"
+numeric_cast_invalid_message = "Conversion from string to type 'Integer' is not valid."
 # VB `For` gives the loop variable a fresh binding per iteration, so closures
 # capture the per-iteration value (like JS `let`-in-`for`).
 for_loop_per_iteration_binding = true
@@ -85,6 +88,12 @@ __vybe_type_get = { emit = "intrinsic:symbol_probe", min_args = 1, max_args = 1 
 "__vb_object_get" = { emit = "common:reflection.object_get", min_args = 2, max_args = 2 }
 "__vb_err_raise" = { emit = "throw", min_args = 1, max_args = 3 }
 "__dotnet_string_compare" = { emit = "common:dotnet.string_compare", min_args = 2, max_args = 3 }
+"__dotnet_string_contains" = { emit = "common:dotnet.string_contains", min_args = 3, max_args = 3 }
+"__dotnet_string_starts_with" = { emit = "common:dotnet.string_starts_with", min_args = 3, max_args = 3 }
+"__dotnet_string_ends_with" = { emit = "common:dotnet.string_ends_with", min_args = 3, max_args = 3 }
+"__dotnet_string_equals" = { emit = "common:dotnet.string_equals", min_args = 3, max_args = 3 }
+"__dotnet_string_index_of" = { emit = "common:dotnet.string_index_of", min_args = 2, max_args = 4 }
+"__dotnet_string_last_index_of" = { emit = "common:dotnet.string_last_index_of", min_args = 2, max_args = 4 }
 "__vb_string_contains" = { emit = "common:str_contains", min_args = 2, max_args = 2 }
 "__vb_task_delay" = { emit = "common:dotnet.task_delay", min_args = 1, max_args = 2 }
 "__vb_task_run" = { emit = "common:threading.task_run", min_args = 1, max_args = 1 }

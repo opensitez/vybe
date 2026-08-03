@@ -43,8 +43,7 @@ try {
 try {
     echo match (true) {
         true => throw new OverflowException('hot'),
-        false => 'cold',
-    };
+        false => 'cold' };
 } catch (OverflowException $e) { echo $e->getMessage(); }
 "#,
         ["hot"]
@@ -118,8 +117,7 @@ catch (RuntimeException $e) { echo $e->getMessage(); }
 try {
     $outer = match ('go') {
         'go' => match (0) { 1 => 'hit', default => throw new RuntimeException('inner') },
-        default => 'skip',
-    };
+        default => 'skip' };
     echo $outer;
 } catch (RuntimeException $e) { echo $e->getMessage(); }
 "#,
@@ -284,8 +282,7 @@ enum Status: string {
     public function label(): string {
         return match ($this) {
             self::On => 'enabled',
-            self::Off => throw new LogicException('hidden'),
-        };
+            self::Off => throw new LogicException('hidden') };
     }
 }
 try { echo Status::Off->label(); } catch (LogicException $e) { echo $e->getMessage(); }
@@ -517,8 +514,7 @@ try {
     echo match (true) {
         $n < 10 => 'low',
         $n < 20 => throw new RangeException('mid'),
-        default => 'high',
-    };
+        default => 'high' };
 } catch (RangeException $e) { echo $e->getMessage(); }
 "#,
         ["mid"]

@@ -112,5 +112,4 @@ lua_print! {
     error_with_level_two_removes_current_frame => {
         "local function f() error(\"my_err\", 2) end\nlocal ok, msg = pcall(f)\nprint(type(msg) == \"string\")\n",
         "true"
-    },
-}
+    } }

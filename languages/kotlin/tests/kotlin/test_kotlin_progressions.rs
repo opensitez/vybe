@@ -143,5 +143,4 @@ kotlin_run_cases! {
             val out = ('c' downTo 'a').toList()
             println(out.toList().joinToString(","))
         }
-    "##, vec![String::from("c,b,a")]),
-}
+    "##, vec![String::from("c,b,a")]) }

@@ -97,7 +97,7 @@ enum Shape {
 fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, shape: Shape, line: u32) {
     let chunk = &mut chunks[current];
     if argc == 0 {
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     let obj = chunk.alloc_scratch(1);
     let list = chunk.alloc_scratch(1);
@@ -172,13 +172,13 @@ fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, shape: Shape, line:
             // `Field` stand-in: the one attribute `fields()` callers read is
             // `.name` (plus `.default`, which the walker does not preserve).
             chunk.emit_op_u16(Op::LOCAL_GET, acc, line);
-            chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+            chunk.emit_struct_new(0, 0, line);
             chunk.emit_dup(line);
             chunk.emit_op_u16(Op::LOCAL_GET, key, line);
             let name_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
                 "name",
             )));
-            chunk.emit_op_u16(Op::STRUCT_SET, name_key, line);
+            chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
             chunk.emit_op(Op::DROP, line);
             let push = chunk.add_import("ecma:array", "push");
             chunk.emit_call(push, 2, line);

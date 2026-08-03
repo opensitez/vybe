@@ -72,5 +72,4 @@ lua_print! {
     do_block_with_return_statement_terminates_block => {
         "local function f()\n  do\n    return \"early\"\n  end\n  return \"late\"\nend\nprint(f())\n",
         "early"
-    },
-}
+    } }

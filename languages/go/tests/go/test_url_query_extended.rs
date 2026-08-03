@@ -80,8 +80,7 @@ go_run_cases! {
     url_raw_query_roundtrip_via_encode => (
         "package main; import \"fmt\"; import \"net/url\"; func main() { u, _ := url.Parse(\"https://h/?k=v\"); q := u.Query(); u.RawQuery = q.Encode(); fmt.Println(u.RawQuery) }",
         vec!["k=v"]
-    ),
-}
+    ) }
 
 go_compile_cases! {
     url_parse_request_uri_with_percent_encoded => "package main; import \"net/url\"; func main() { u, _ := url.ParseRequestURI(\"/files/hello%20world.txt\"); _ = u.Path }",
@@ -123,5 +122,4 @@ go_compile_cases! {
     url_parse_then_mutate_host => "package main; import \"net/url\"; func main() { u, _ := url.Parse(\"https://old.com/x\"); u.Host = \"new.com\"; _ = u.Host }",
     url_parse_then_mutate_scheme => "package main; import \"net/url\"; func main() { u, _ := url.Parse(\"http://h/\"); u.Scheme = \"https\"; _ = u.Scheme }",
     url_query_encode_then_parse_roundtrip => "package main; import \"net/url\"; func main() { q := url.Values{}; q.Set(\"z\", \"9\"); u, _ := url.Parse(\"https://h/?\" + q.Encode()); _ = u.Query().Get(\"z\") }",
-    url_join_path_three_deep_relative => "package main; import \"net/url\"; func main() { _, _ = url.JoinPath(\"a\", \"b/c\", \"d\") }",
-}
+    url_join_path_three_deep_relative => "package main; import \"net/url\"; func main() { _, _ = url.JoinPath(\"a\", \"b/c\", \"d\") }" }

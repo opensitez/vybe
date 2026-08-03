@@ -137,7 +137,7 @@ fn find_skips_empty_slots() {
     assert_eq!(
         run_js(
             r#"
-const arr = [, 1, , 3];
+const arr = [, 1,  3];
 let seen = [];
 const value = arr.find((value, index) => {
     seen.push(index);
@@ -306,7 +306,7 @@ fn for_of_visits_sparse_holes_as_undefined() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 3];
+const arr = [1,  3];
 const res = [];
 for (const x of arr) res.push(String(x));
 console.log(res.join(","));

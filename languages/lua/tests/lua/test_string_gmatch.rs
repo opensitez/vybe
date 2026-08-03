@@ -44,5 +44,4 @@ lua_print! {
     gmatch_empty_pattern => {
         "local n=0\nfor _ in string.gmatch(\"ab\", \"\") do n=n+1 end\nprint(n)\n",
         "3"
-    },
-}
+    } }

@@ -273,7 +273,7 @@ console.log(executed);
 fn test_js_for_of_loop_sparse_array_includes_undefined_hole() {
     let src = r#"
 const seen = [];
-for (const value of [1, , 3]) {
+for (const value of [1,  3]) {
     seen.push(value === undefined ? "u" : String(value));
 }
 console.log(seen.join(","));

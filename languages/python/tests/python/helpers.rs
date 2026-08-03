@@ -158,7 +158,6 @@ pub fn run_print(expr: &str) -> String {
             let last = &last[1..]; // drop the separating newline
             format!("{prelude}{stmts}\nprint({last})\n")
         }
-        None => format!("{prelude}print({rest})\n"),
-    };
+        None => format!("{prelude}print({rest})\n") };
     run_python_one(&src)
 }

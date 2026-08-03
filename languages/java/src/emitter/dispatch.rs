@@ -1412,7 +1412,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             if argc <= 1 {
                 super::stream_adapter::emit_get_optional_value(chunks, current, line);
             } else {
-                super::list_adapter::emit_get(chunks, current, line);
+                super::list_adapter::emit_get_or_map_get(chunks, current, line);
             }
         }
         "java.list_set" => {
@@ -1798,7 +1798,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks[current].emit_op(Op::DROP, line);
             }
             chunks[current].emit_op(Op::DROP, line);
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
         "java.collections_fill" => {
             super::arrays_adapter::emit_fill(chunks, current, 2, line);
@@ -1913,15 +1913,13 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             vybe_compiler::primitives::object::emit_non_null(&mut chunks[current], line);
         }
 
-        _ => return false,
-    }
+        _ => return false }
     true
 }
 
 enum JavaArrayDefault {
     IntZero,
-    BoolFalse,
-}
+    BoolFalse }
 
 fn emit_new_array_with_default(
     chunks: &mut [Chunk],
@@ -1941,8 +1939,7 @@ fn emit_new_array_with_default(
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     match default {
         JavaArrayDefault::IntZero => chunks[current].emit_i32_const(0, line),
-        JavaArrayDefault::BoolFalse => chunks[current].emit_bool_const(false, line),
-    }
+        JavaArrayDefault::BoolFalse => chunks[current].emit_bool_const(false, line) }
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
     collections::emit_fill(chunks, current, line);

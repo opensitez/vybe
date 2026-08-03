@@ -54,6 +54,5 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "operator>>" => ("rshift".into(), Some(RShift)),
         // C# resolves members case-sensitively at the source, but the vtable
         // key is lowercase.
-        _ => (name.to_lowercase(), None),
-    }
+        _ => (name.to_lowercase(), None) }
 }

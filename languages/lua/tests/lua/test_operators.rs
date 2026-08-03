@@ -191,5 +191,4 @@ lua_print! {
     comparison_between_booleans_not_allowed_for_lt => {
         "local ok = pcall(function() return true < false end)\nprint(ok)\n",
         "false"
-    },
-}
+    } }

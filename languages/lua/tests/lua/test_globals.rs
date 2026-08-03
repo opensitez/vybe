@@ -68,5 +68,4 @@ lua_print! {
     global_update_visible_to_subsequent_function_call => {
         "shared = 0\nlocal function inc() shared = shared + 1 end\nlocal function get() return shared end\ninc(); inc(); inc()\nprint(get())\n",
         "3"
-    },
-}
+    } }

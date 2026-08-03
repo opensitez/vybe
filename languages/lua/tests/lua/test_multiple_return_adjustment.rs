@@ -44,5 +44,4 @@ lua_print! {
     multi_return_loop_step_force_single => {
         "local function step() return 2, 99 end\nlocal s = 0\nfor i = 1, 6, (step()) do s = s + i end\nprint(s)\n",
         "12"
-    },
-}
+    } }

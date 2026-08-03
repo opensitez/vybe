@@ -89,8 +89,7 @@ fn lua_matrix_arithmetic_mod_negative_divisor() {
         match rem {
             0 => 0,
             1 => -2,
-            _ => -1,
-        }
+            _ => -1 }
     });
 }
 

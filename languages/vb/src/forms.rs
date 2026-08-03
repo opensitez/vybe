@@ -39,7 +39,7 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
     for stmt in init_body {
         match &stmt.kind {
             // Me.X = New SomeType(args) — register a control
-            StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
                 if let Some(field) = extract_me_field(&targets[0]) {
                     if let ExprKind::New { class: cls, .. } = &value.kind {
                         let type_name = expr_to_type_name(cls);
@@ -53,8 +53,7 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
                                 width: 100,
                                 height: 30,
                                 text: String::new(),
-                                props: Vec::new(),
-                            });
+                                props: Vec::new() });
                             continue;
                         }
                     }
@@ -98,8 +97,7 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
             StmtKind::AddHandler {
                 control,
                 event,
-                handler,
-            } => {
+                handler } => {
                 let ctrl_name = expr_to_control_name(control);
                 let handler_name = expr_to_handler_name(handler);
                 gui.register_event(
@@ -203,8 +201,7 @@ pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
         x: i32,
         y: i32,
         w: i32,
-        h: i32,
-    }
+        h: i32 }
     let mut snapshots: Vec<CtrlSnapshot> = Vec::new();
     for i in 0..gui.form.control_count() {
         if let Some(ctrl) = gui.form.control(i) {
@@ -219,8 +216,7 @@ pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
                 x: r.x as i32,
                 y: r.y as i32,
                 w: r.w as i32,
-                h: r.h as i32,
-            });
+                h: r.h as i32 });
         }
     }
 
@@ -317,8 +313,7 @@ struct ControlInfo {
     width: i32,
     height: i32,
     text: String,
-    props: Vec<(String, String)>,
-}
+    props: Vec<(String, String)> }
 
 /// Find the first ClassDecl in the module.
 fn find_class(module: &Module) -> Option<&StmtKind> {
@@ -439,8 +434,7 @@ fn arg_to_i32(arg: &Argument) -> Option<i32> {
     match &arg.value.kind {
         ExprKind::Lit(Literal::Int(n)) => Some(*n as i32),
         ExprKind::Lit(Literal::Float(f)) => Some(*f as i32),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Flatten an expression to a type name string (e.g. `System.Windows.Forms.Button` → "System.Windows.Forms.Button").
@@ -451,8 +445,7 @@ fn expr_to_type_name(expr: &Expression) -> String {
             let base = expr_to_type_name(object);
             format!("{}.{}", base, field)
         }
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 /// `"System.Windows.Forms.Button"` → `"Button"`
@@ -471,8 +464,7 @@ fn expr_to_control_name(expr: &Expression) -> String {
                 field.to_lowercase()
             }
         }
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 /// Extract handler name from an AddHandler handler expression.
@@ -481,8 +473,7 @@ fn expr_to_handler_name(expr: &Expression) -> String {
         ExprKind::Ident(s) => s.clone(),
         ExprKind::Member { field, .. } => field.clone(),
         ExprKind::AddressOf(s) => s.clone(),
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 /// Convert an expression to a string value for `set_property`.
@@ -520,8 +511,7 @@ fn expr_to_value_string(expr: &Expression) -> String {
             format!("{}({})", name, arg_strs.join(", "))
         }
         ExprKind::This => "Me".to_string(),
-        _ => format!("{:?}", expr.kind),
-    }
+        _ => format!("{:?}", expr.kind) }
 }
 
 /// Map a widget type back to a VB.NET type name for codegen.
@@ -594,6 +584,5 @@ fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-    }
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str() }
 }

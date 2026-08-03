@@ -508,7 +508,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
 
 fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
     let k = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, k, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
 }
 
 fn emit_i32_const(chunk: &mut Chunk, v: i32, line: u32) {
@@ -534,8 +534,7 @@ fn loop_start(chunk: &mut Chunk, line: u32) -> vybe_compiler::primitives::loops:
     vybe_compiler::primitives::loops::LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None,
-    }
+        body_block_patch: None }
 }
 fn loop_end(chunk: &mut Chunk, state: vybe_compiler::primitives::loops::LoopState, line: u32) {
     chunk.emit_br(0, line);

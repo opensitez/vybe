@@ -40,5 +40,4 @@ lua_print! {
     co_yield_main_error => {
         "local ok = pcall(coroutine.yield)\nprint(ok)\n",
         "false"
-    },
-}
+    } }

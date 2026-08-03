@@ -36,7 +36,7 @@ pub fn emit_set_seed(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], state, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_next_int(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -109,7 +109,7 @@ pub fn emit_next_double(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_next_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_split(chunks: &mut [Chunk], current: usize, line: u32) {

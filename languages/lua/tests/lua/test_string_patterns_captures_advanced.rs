@@ -32,5 +32,4 @@ lua_print! {
     pattern_frontier_start => {
         "local pos = string.find(\"abc\", \"%f[%a]a\")\nprint(pos)\n",
         "1"
-    },
-}
+    } }

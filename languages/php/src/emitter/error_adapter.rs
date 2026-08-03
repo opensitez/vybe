@@ -60,12 +60,12 @@ fn call_import(
 
 fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -157,7 +157,7 @@ pub fn emit_set_error_handler(chunks: &mut [Chunk], current: usize, argc: u8, li
     lset(chunk, prev_slot, line);
 
     // handler = {cb, mask, prev}
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     lget(chunk, cb_slot, line);
     struct_set_key(chunk, "cb", line);
@@ -173,7 +173,7 @@ pub fn emit_set_error_handler(chunks: &mut [Chunk], current: usize, argc: u8, li
     lget(chunk, prev_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_else(line);
     lget(chunk, prev_slot, line);
     struct_get_key(chunk, "cb", line);
@@ -208,7 +208,7 @@ pub fn emit_error_get_last(chunks: &mut [Chunk], current: usize, _argc: u8, line
     lget(chunk, v, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_else(line);
     lget(chunk, v, line);
     chunk.emit_end(line);
@@ -217,9 +217,9 @@ pub fn emit_error_get_last(chunks: &mut [Chunk], current: usize, _argc: u8, line
 /// PHP `error_clear_last()` — reset the last error to null.
 pub fn emit_error_clear_last(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     global_set(chunk, LAST_G, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// Push the active reporting mask, treating an unset global as `E_ALL`.

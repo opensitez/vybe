@@ -263,7 +263,7 @@ const data = {
         scores: [10, 20, 30]
     }
 };
-const { user: { name, scores: [first, , third] } } = data;
+const { user: { name, scores: [first,  third] } } = data;
 console.log(name);
 console.log(first);
 console.log(third);
@@ -280,7 +280,7 @@ fn destructure_ignoring_elements() {
     assert_eq!(
         run_js(
             r#"
-const [,, third,, fifth = 50] = [1, 2, 3, 4];
+const [,  third,  fifth = 50] = [1, 2, 3, 4];
 console.log(third);
 console.log(fifth);
 "#

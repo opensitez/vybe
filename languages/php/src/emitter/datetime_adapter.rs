@@ -27,8 +27,7 @@ const TZNAME_KEY: &str = "__tzname";
 // Millisecond spans come from the shared date primitive — these were one of
 // eighteen copies of `86_400_000` across eight adapter files.
 use vybe_compiler::primitives::datetime::{
-    MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE, MS_PER_SECOND, MS_PER_WEEK,
-};
+    MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE, MS_PER_SECOND, MS_PER_WEEK };
 
 fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
@@ -38,7 +37,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
@@ -63,12 +62,12 @@ fn local_get(chunk: &mut Chunk, slot: u16, line: u32) {
 
 fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
     let k = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, k, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
 }
 
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
     let k = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, k, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -90,7 +89,7 @@ fn emit_wrap_ms(chunk: &mut Chunk, type_tag: &str, line: u32) {
     let ms_slot = alloc_local(chunk);
     local_set(chunk, ms_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, type_tag, line);
     struct_set(chunk, TYPE_KEY, line);
@@ -103,7 +102,7 @@ pub fn emit_datetime_clone(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let dt_slot = alloc_local(chunk);
     local_set(chunk, dt_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TYPE_KEY, line);
@@ -134,7 +133,7 @@ fn build_tz_getter(chunks: &mut Vec<Chunk>, field: &str, line: u32) -> usize {
     c.arity = 1;
     let k = c.add_constant(Value::String(Arc::from(field)));
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -151,7 +150,7 @@ fn emit_wrap_tz(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let chunk = &mut chunks[current];
     let name_slot = alloc_local(chunk);
     local_set(chunk, name_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeZone", line);
     struct_set(chunk, TYPE_KEY, line);
@@ -328,7 +327,7 @@ pub fn emit_datetime_set_timezone(chunks: &mut [Chunk], current: usize, line: u3
 /// cloning the object's identity while swapping in a fresh instant.
 #[allow(dead_code)]
 fn emit_rewrap_like(chunk: &mut Chunk, dt_slot: u16, ms_slot: u16, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     local_get(chunk, dt_slot, line);
     struct_get(chunk, TYPE_KEY, line);
@@ -2633,7 +2632,7 @@ fn emit_clone_if_immutable(chunk: &mut Chunk, dt_slot: u16, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     chunk.emit_if(line);
     // Build the clone: STRUCT_NEW + copy __type + copy __time + copy __tz.
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
     struct_set(chunk, TYPE_KEY, line);
@@ -2803,8 +2802,7 @@ pub fn format_php_literal_to_ast(
             ExprKind::Member {
                 object: Box::new(obj),
                 field: field.to_string(),
-                null_safe: false,
-            },
+                null_safe: false },
             span.clone(),
         )
     }
@@ -2813,8 +2811,7 @@ pub fn format_php_literal_to_ast(
             ExprKind::Call {
                 callee: Box::new(callee),
                 args: args.into_iter().map(Argument::positional).collect(),
-                optional: false,
-            },
+                optional: false },
             span.clone(),
         )
     }
@@ -2832,8 +2829,7 @@ pub fn format_php_literal_to_ast(
                     vybe_ast::ExprKind::Lit(vybe_ast::Literal::Str(String::new())),
                     span.clone(),
                 )),
-                right: Box::new(part),
-            },
+                right: Box::new(part) },
             span.clone(),
         )
     }
@@ -2859,8 +2855,7 @@ pub fn format_php_literal_to_ast(
             ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(left),
-                right: Box::new(right),
-            },
+                right: Box::new(right) },
             span.clone(),
         )
     }
@@ -2869,8 +2864,7 @@ pub fn format_php_literal_to_ast(
             ExprKind::Binary {
                 op: BinOp::Concat,
                 left: Box::new(left),
-                right: Box::new(right),
-            },
+                right: Box::new(right) },
             span.clone(),
         )
     }
@@ -2883,16 +2877,14 @@ pub fn format_php_literal_to_ast(
                 key: None,
                 value: lit_str(s, span),
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect();
         let arr = Expression::with_span(ExprKind::Array(elems), span.clone());
         Expression::with_span(
             ExprKind::Index {
                 object: Box::new(arr),
                 index: Box::new(idx),
-                null_safe: false,
-            },
+                null_safe: false },
             span.clone(),
         )
     }
@@ -2951,8 +2943,7 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::Mod,
                         left: Box::new(yr),
-                        right: Box::new(lit_int(100, span)),
-                    },
+                        right: Box::new(lit_int(100, span)) },
                     span.clone(),
                 );
                 Some(pad(mod100, 2, span))
@@ -2978,8 +2969,7 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::Mod,
                         left: Box::new(plus11),
-                        right: Box::new(lit_int(12, span)),
-                    },
+                        right: Box::new(lit_int(12, span)) },
                     span.clone(),
                 );
                 let plus1 = add(mod12, lit_int(1, span), span);
@@ -2997,8 +2987,7 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::Lt,
                         left: Box::new(hr),
-                        right: Box::new(lit_int(12, span)),
-                    },
+                        right: Box::new(lit_int(12, span)) },
                     span.clone(),
                 );
                 let (am, pm) = if c == 'A' { ("AM", "PM") } else { ("am", "pm") };
@@ -3006,8 +2995,7 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Ternary {
                         cond: Box::new(cmp),
                         then: Box::new(lit_str(am, span)),
-                        else_: Box::new(lit_str(pm, span)),
-                    },
+                        else_: Box::new(lit_str(pm, span)) },
                     span.clone(),
                 ))
             }
@@ -3038,16 +3026,14 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::StrictEq,
                         left: Box::new(dow.clone()),
-                        right: Box::new(lit_int(0, span)),
-                    },
+                        right: Box::new(lit_int(0, span)) },
                     span.clone(),
                 );
                 let n_int = Expression::with_span(
                     ExprKind::Ternary {
                         cond: Box::new(cmp_zero),
                         then: Box::new(lit_int(7, span)),
-                        else_: Box::new(dow),
-                    },
+                        else_: Box::new(dow) },
                     span.clone(),
                 );
                 Some(stringify(n_int, span))
@@ -3060,8 +3046,7 @@ pub fn format_php_literal_to_ast(
                     ExprKind::Binary {
                         op: BinOp::Div,
                         left: Box::new(time),
-                        right: Box::new(lit_int(1000, span)),
-                    },
+                        right: Box::new(lit_int(1000, span)) },
                     span.clone(),
                 );
                 let floor = call(
@@ -3127,8 +3112,7 @@ pub fn parse_relative_delta(s: &str) -> Option<(i64, &'static str)> {
         "week" => "week",
         "month" => "month",
         "year" => "year",
-        _ => return None,
-    };
+        _ => return None };
     Some((n * sign, canon))
 }
 
@@ -3146,7 +3130,7 @@ pub fn emit_datetime_immutable_modify(chunks: &mut [Chunk], current: usize, line
 
     // Build a fresh DateTimeImmutable carrying the same __time, then
     // delegate to the mutable modify path on it.
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
     struct_set(chunk, TYPE_KEY, line);
@@ -3265,7 +3249,7 @@ pub fn emit_datetime_immutable_add(chunks: &mut [Chunk], current: usize, line: u
     local_set(chunk, interval_slot, line);
     local_set(chunk, dt_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
     struct_set(chunk, TYPE_KEY, line);
@@ -3292,7 +3276,7 @@ pub fn emit_datetime_immutable_sub(chunks: &mut [Chunk], current: usize, line: u
     local_set(chunk, interval_slot, line);
     local_set(chunk, dt_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateTimeImmutable", line);
     struct_set(chunk, TYPE_KEY, line);
@@ -3400,7 +3384,7 @@ pub fn emit_datetime_diff(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     local_set(chunk, invert_slot, line);
 
     // Build the DateInterval object.
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateInterval", line);
     struct_set(chunk, TYPE_KEY, line);
@@ -3458,7 +3442,7 @@ pub fn emit_dateinterval_components(chunks: &mut [Chunk], current: usize, line: 
     local_set(chunk, m_slot, line);
     local_set(chunk, y_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "DateInterval", line);
     struct_set(chunk, TYPE_KEY, line);

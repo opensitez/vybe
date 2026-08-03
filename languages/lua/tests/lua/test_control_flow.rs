@@ -259,5 +259,4 @@ lua_print! {
     return_value_from_inside_if_branch => {
         "local function classify(n)\n  if n < 0 then return 'negative'\n  elseif n == 0 then return 'zero'\n  else return 'positive'\n  end\nend\nprint(classify(-5) .. ',' .. classify(0) .. ',' .. classify(3))\n",
         "negative,zero,positive"
-    },
-}
+    } }

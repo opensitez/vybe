@@ -54,13 +54,11 @@ c_run_cases! {
         decls: "_Noreturn void stop(void){ for(;;){} }",
         body: "printf(\"1\\n\"); return 0;",
         expect: ["1"]
-    },
-}
+    } }
 
 c_compile_cases! {
     k_and_r_style_unspecified_params => { includes: ["<stdio.h>"], decls: "int legacy();", body: "return 0;" },
     array_to_pointer_param_decay => { includes: ["<stdio.h>"], decls: "void take(int *a){}", body: "int x[2]={1,2}; take(x); return 0;" },
     const_param_pointer => { includes: ["<stdio.h>"], decls: "void ro(const int *p){}", body: "int x=1; ro(&x); return 0;" },
     nested_function_statement_compile => { includes: ["<stdio.h>"], decls: "", body: "return 0;" },
-    attribute_unused_compile => { includes: ["<stdio.h>"], decls: "__attribute__((unused)) static int u = 0;", body: "return 0;" },
-}
+    attribute_unused_compile => { includes: ["<stdio.h>"], decls: "__attribute__((unused)) static int u = 0;", body: "return 0;" } }

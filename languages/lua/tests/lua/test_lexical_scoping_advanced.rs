@@ -20,5 +20,4 @@ lua_print! {
     lexical_shadow_block => {
         "local x = 5\nif true then\n  local x = 10\n  print(x)\nend\nprint(x)\n",
         "10\n5"
-    },
-}
+    } }

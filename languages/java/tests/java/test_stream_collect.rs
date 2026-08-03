@@ -21,7 +21,7 @@ fn collectors_to_list_on_filtered_stream_keeps_matches_only() {
     let out = run_main(
         "java.util.List<Integer> evens = java.util.Arrays.asList(1, 2, 3, 4, 5, 6).stream().filter(n -> n % 2 == 0).collect(java.util.stream.Collectors.toList()); System.out.println(evens.size()); System.out.println(evens.get(1));",
     );
-    assert_eq!(out, vec!["3", "6"]);
+    assert_eq!(out, vec!["3", "4"]);
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn collectors_filtering_inside_grouping_by_prunes_each_bucket() {
     let out = run_main(
         "java.util.Map<Boolean, java.util.List<Integer>> groups = java.util.Arrays.asList(1, 2, 3, 4, 5, 6).stream().collect(java.util.stream.Collectors.groupingBy(n -> n % 2 == 0, java.util.stream.Collectors.filtering(n -> n > 2, java.util.stream.Collectors.toList()))); System.out.println(groups.get(true).size()); System.out.println(groups.get(false).size());",
     );
-    assert_eq!(out, vec!["2", "1"]);
+    assert_eq!(out, vec!["2", "2"]);
 }
 
 #[test]

@@ -46,13 +46,13 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
 /// `obj.<key> = <value already on stack>`, leaving `obj` on the stack.
 fn set_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
     let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
 fn get_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
     let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
 }
 
 /// Read `slot.<key>` onto the stack.
@@ -64,7 +64,7 @@ fn field_of(chunks: &mut [Chunk], current: usize, slot: u16, key: &str, line: u3
 /// Build a `stat_result` from the wasi shim's `{size, isFile, isDir, modified}`
 /// (or null when the path is missing). Stack: `[raw]` → `[stat_result]`.
 fn emit_stat_result_from(chunks: &mut [Chunk], current: usize, raw: u16, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
 
     // st_size
     chunks[current].emit_dup(line);
@@ -182,7 +182,7 @@ pub fn emit_scandir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, nm, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, nm, line);
     set_field(chunks, current, "name", line);
@@ -572,8 +572,7 @@ pub fn emit_which(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let i = chunks[current].alloc_scratch(1);
     let cand = chunks[current].alloc_scratch(1);
 
-    let k = chunks[current].add_constant(vybe_runtime::Value::Null);
-    chunks[current].emit_op_u16(Op::CONST, k, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, found, line);
 
     // `get-environment: func() -> list<tuple<string, string>>` takes NO key
@@ -654,7 +653,7 @@ pub fn emit_term_size(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_f64_const(80.0, line);
     set_field(chunks, current, "columns", line);
@@ -702,8 +701,7 @@ pub fn emit_setrecursionlimit(chunks: &mut [Chunk], current: usize, argc: u8, li
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    let k = chunks[current].add_constant(vybe_runtime::Value::Null);
-    chunks[current].emit_op_u16(Op::CONST, k, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `sys.getdefaultencoding()` / `getfilesystemencoding()`.
@@ -731,8 +729,7 @@ pub fn emit_exc_info(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunks[current].emit_op(Op::DROP, line);
     }
     for _ in 0..3 {
-        let k = chunks[current].add_constant(vybe_runtime::Value::Null);
-        chunks[current].emit_op_u16(Op::CONST, k, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     vybe_compiler::primitives::tuples::emit_tuple(chunks, current, 3, line);
 }

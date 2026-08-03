@@ -13,8 +13,7 @@ use vybe_runtime::opcode::Op;
 #[derive(Copy, Clone)]
 struct Range {
     lo: u32,
-    hi: u32,
-}
+    hi: u32 }
 
 const fn r(lo: u32, hi: u32) -> Range {
     Range { lo, hi }

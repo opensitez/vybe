@@ -197,7 +197,7 @@ console.log(grouped["null"].length + "|" + grouped["undefined"].length);
 #[test]
 fn test_js_object_groupby_sparse_array_holes_visited() {
     let src = r#"
-const sparse = [1, , 3];
+const sparse = [1,  3];
 const grouped = Object.groupBy(sparse, x => typeof x);
 console.log(grouped.number.length + "|" + grouped.undefined.length);
 "#;

@@ -256,5 +256,4 @@ lua_print! {
     table_boolean_keys => {
         "local t = {}\nt[true] = \"yes\"\nt[false] = \"no\"\nprint(t[true] .. \",\" .. t[false])\n",
         "yes,no"
-    },
-}
+    } }

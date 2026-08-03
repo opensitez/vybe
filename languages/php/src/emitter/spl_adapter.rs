@@ -84,7 +84,7 @@ fn build_array_method(
     c.emit_call(fn_i, arity, line);
     if discard_result {
         c.emit_op(Op::DROP, line);
-        c.emit_op(Op::NULL, line);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     c.emit_op(Op::RETURN, line);
     idx
@@ -125,12 +125,11 @@ fn build_const_method(
     let mut c = Chunk::new(name);
     c.arity = 1;
     match value {
-        ConstMethodValue::Null => c.emit_op(Op::NULL, line),
+        ConstMethodValue::Null => c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         ConstMethodValue::False => c.emit_bool_const(false, line),
         ConstMethodValue::True => c.emit_bool_const(true, line),
         ConstMethodValue::Num(value) => c.emit_f64_const(value, line),
-        ConstMethodValue::Str(value) => c.emit_string_const(value, line),
-    }
+        ConstMethodValue::Str(value) => c.emit_string_const(value, line) }
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -142,8 +141,7 @@ enum ConstMethodValue {
     False,
     True,
     Num(f64),
-    Str(&'static str),
-}
+    Str(&'static str) }
 
 fn idx_key(chunk: &mut Chunk) -> u16 {
     sconst(chunk, "__idx")
@@ -156,9 +154,9 @@ fn build_iter_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_f64_const(0.0, line);
     let k = idx_key(&mut c);
-    c.emit_op_u16(Op::STRUCT_SET, k, line);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     c.emit_op(Op::DROP, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -168,7 +166,7 @@ fn build_iter_next_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_iter_next");
     c.arity = 1;
     c.local_count = c.local_count.max(1);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -190,7 +188,7 @@ fn build_iter_current_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.local_count = c.local_count.max(1);
     let k = sconst(&mut c, "__first");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -212,7 +210,7 @@ fn build_iter_magic_call_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.local_count = c.local_count.max(3);
     let current = sconst(&mut c, "__spl_current");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, current, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, current, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -254,9 +252,9 @@ fn build_stream_fwrite_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     let buf = sconst(&mut c, "__buf");
-    c.emit_op_u16(Op::STRUCT_SET, buf, line);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, buf, line);
     c.emit_op(Op::DROP, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -268,7 +266,7 @@ fn build_stream_fgets_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.local_count = c.local_count.max(1);
     let buf = sconst(&mut c, "__buf");
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, buf, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, buf, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -278,7 +276,7 @@ fn build_stream_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let mut c = Chunk::new("__spl_file_rewind");
     c.arity = 1;
     c.local_count = c.local_count.max(1);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -346,7 +344,7 @@ fn build_heap_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) 
     let mut c = Chunk::new("__spl_insert");
     c.arity = 2;
     heap::emit_push_sorted_with_comparator_func(&mut c, 0, 1, cmp_idx, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
     chunks.push(c);
@@ -382,7 +380,7 @@ fn build_pq_insert_method(chunks: &mut Vec<Chunk>, cmp_idx: usize, line: u32) ->
     c.emit_array_new_fixed(0, 2, line);
     c.emit_op_u16(Op::LOCAL_SET, pair_slot, line);
     heap::emit_push_sorted_with_comparator_func(&mut c, 0, pair_slot, cmp_idx, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(4);
     chunks.push(c);
@@ -437,7 +435,7 @@ fn build_map_method(
     c.emit_call(fn_i, arity, line);
     if discard_result {
         c.emit_op(Op::DROP, line);
-        c.emit_op(Op::NULL, line);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(arity as u16);
@@ -471,9 +469,9 @@ fn build_map_attach_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, 0, line);
     lget(&mut c, 2, line);
     let current = sconst(&mut c, "__spl_current");
-    c.emit_op_u16(Op::STRUCT_SET, current, line);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, current, line);
     c.emit_op(Op::DROP, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
     chunks.len() - 1
@@ -506,15 +504,15 @@ fn build_map_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_op(Op::ARRAY_GET, line);
         lset(c, value_slot, line);
         c.emit_else(line);
-        c.emit_op(Op::NULL, line);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         lset(c, value_slot, line);
         c.emit_end(line);
         lget(c, 0, line);
         lget(c, value_slot, line);
         let current = sconst(c, "__spl_current");
-        c.emit_op_u16(Op::STRUCT_SET, current, line);
+        c.emit_struct_field_op(Op::STRUCT_SET, 0, current, line);
         c.emit_op(Op::DROP, line);
-        c.emit_op(Op::NULL, line);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         c.emit_op(Op::RETURN, line);
     }
     idx
@@ -578,7 +576,7 @@ fn build_map_add_all_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lset(c, index_slot, line);
     }
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op(Op::RETURN, line);
     current
 }
@@ -648,7 +646,7 @@ fn build_map_remove_all_method(chunks: &mut Vec<Chunk>, keep_matches: bool, line
         lset(c, index_slot, line);
     }
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op(Op::RETURN, line);
     current
 }
@@ -733,7 +731,7 @@ pub fn emit_spl_objectstorage_new(
         chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
-        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
         chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -983,7 +981,7 @@ fn finish_array_instance(
         chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
         chunk.emit(0, line); // 0 upvalues
         let mk = sconst(chunk, mname);
-        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -1015,7 +1013,7 @@ fn finish_fixed_values_array_instance(
         chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
-        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -1048,7 +1046,7 @@ fn finish_second_child_array_instance(
         chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
-        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -1075,7 +1073,7 @@ fn finish_buffer_file_object(
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_string_const("", line);
     let buf = sconst(chunk, "__buf");
-    chunk.emit_op_u16(Op::STRUCT_SET, buf, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf, line);
     chunk.emit_op(Op::DROP, line);
 
     for (mname, midx) in binds {
@@ -1083,7 +1081,7 @@ fn finish_buffer_file_object(
         chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
-        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -1103,7 +1101,7 @@ fn finish_single_null_array_instance(
     }
 
     let this_slot = chunk.alloc_scratch(1);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_array_new_fixed(0, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
@@ -1112,7 +1110,7 @@ fn finish_single_null_array_instance(
         chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
-        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -1142,7 +1140,7 @@ fn finish_array_iterator_instance(
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_f64_const(0.0, line);
     let idx = sconst(chunk, "__idx");
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1150,15 +1148,15 @@ fn finish_array_iterator_instance(
     chunk.emit_f64_const(0.0, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     let first = sconst(chunk, "__first");
-    chunk.emit_op_u16(Op::STRUCT_SET, first, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, first, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let first = sconst(chunk, "__first");
-    chunk.emit_op_u16(Op::STRUCT_GET, first, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, first, line);
     let spl_current = sconst(chunk, "__spl_current");
-    chunk.emit_op_u16(Op::STRUCT_SET, spl_current, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, spl_current, line);
     chunk.emit_op(Op::DROP, line);
 
     for (mname, midx) in binds {
@@ -1166,7 +1164,7 @@ fn finish_array_iterator_instance(
         chunk.emit_op_u16(Op::REF_FUNC, midx as u16, line);
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
-        chunk.emit_op_u16(Op::STRUCT_SET, mk, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
         chunk.emit_op(Op::DROP, line);
     }
 

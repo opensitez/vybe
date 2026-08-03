@@ -6,8 +6,7 @@ dart_cases! {
   var xs = <int>[];
   print(switch (xs) {
     [] => 'empty',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["empty"]
     };
@@ -17,8 +16,7 @@ dart_cases! {
   var xs = [42];
   print(switch (xs) {
     [var n] => n,
-    _ => -1,
-  });
+    _ => -1 });
 }"#,
         ["42"]
     };
@@ -28,8 +26,7 @@ dart_cases! {
   var xs = [3, 4];
   print(switch (xs) {
     [var a, var b] => a + b,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["7"]
     };
@@ -39,8 +36,7 @@ dart_cases! {
   var xs = [1, 2, 3];
   print(switch (xs) {
     [var a, var b, var c] => a + b + c,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["6"]
     };
@@ -50,8 +46,7 @@ dart_cases! {
   var xs = [1, 2, 3, 4];
   print(switch (xs) {
     [var head, ...var tail] => tail.length,
-    _ => -1,
-  });
+    _ => -1 });
 }"#,
         ["3"]
     };
@@ -61,8 +56,7 @@ dart_cases! {
   var xs = [9, 8, 7];
   print(switch (xs) {
     [var first, ...var _] => first,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["9"]
     };
@@ -72,8 +66,7 @@ dart_cases! {
   var xs = [5, 6];
   print(switch (xs) {
     [var a, ...var rest] => rest.length + a,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["6"]
     };
@@ -83,8 +76,7 @@ dart_cases! {
   var xs = [99];
   print(switch (xs) {
     [var a, ...var rest] => rest.isEmpty,
-    _ => false,
-  });
+    _ => false });
 }"#,
         ["true"]
     };
@@ -94,8 +86,7 @@ dart_cases! {
   var xs = [0, 15];
   print(switch (xs) {
     [0, var n] => n,
-    _ => -1,
-  });
+    _ => -1 });
 }"#,
         ["15"]
     };
@@ -105,8 +96,7 @@ dart_cases! {
   var xs = [1, 8];
   print(switch (xs) {
     [var _, var y] => y,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["8"]
     };
@@ -116,8 +106,7 @@ dart_cases! {
   var xs = ['a', 'b'];
   print(switch (xs) {
     ['a', 'b'] => 'match',
-    _ => 'miss',
-  });
+    _ => 'miss' });
 }"#,
         ["match"]
     };
@@ -129,8 +118,7 @@ dart_cases! {
     [] => 'empty',
     [var _] => 'one',
     [var _, var __] => 'two',
-    _ => 'many',
-  });
+    _ => 'many' });
 }"#,
         ["many"]
     };
@@ -140,8 +128,7 @@ dart_cases! {
   var xs = [[1, 2], [3, 4]];
   print(switch (xs) {
     [var a, var b] => a.length + b.length,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["4"]
     };
@@ -151,8 +138,7 @@ dart_cases! {
   var xs = <int>[];
   print(switch (xs) {
     [] || [var _] => 'small',
-    _ => 'big',
-  });
+    _ => 'big' });
 }"#,
         ["small"]
     };
@@ -162,8 +148,7 @@ dart_cases! {
   var xs = [2, 3];
   print(switch (xs) {
     [var a, var b] when a + b == 5 => 'five',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["five"]
     };
@@ -173,8 +158,7 @@ dart_cases! {
   var xs = [2, 4];
   print(switch (xs) {
     [var a, var b] when a + b == 5 => 'five',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["other"]
     };
@@ -184,8 +168,7 @@ dart_cases! {
   var xs = [1, 2, 3, 4];
   print(switch (xs) {
     [var _, ...var tail] when tail.length == 3 => 'three-tail',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["three-tail"]
     };
@@ -244,8 +227,7 @@ dart_cases! {
   var m = {'a': 1};
   print(switch (m) {
     {'a': var v} => v,
-    _ => -1,
-  });
+    _ => -1 });
 }"#,
         ["1"]
     };
@@ -255,8 +237,7 @@ dart_cases! {
   var m = {'x': 10, 'y': 20};
   print(switch (m) {
     {'x': var a, 'y': var b} => a + b,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["30"]
     };
@@ -266,8 +247,7 @@ dart_cases! {
   var m = {'mode': 'on', 'level': 3};
   print(switch (m) {
     {'mode': 'on', 'level': var n} => n,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["3"]
     };
@@ -277,8 +257,7 @@ dart_cases! {
   var m = {'k': 99};
   print(switch (m) {
     {'k': var _} => 'found',
-    _ => 'miss',
-  });
+    _ => 'miss' });
 }"#,
         ["found"]
     };
@@ -288,8 +267,7 @@ dart_cases! {
   var m = {'score': 85};
   print(switch (m) {
     {'score': var s} when s >= 80 => 'pass',
-    _ => 'fail',
-  });
+    _ => 'fail' });
 }"#,
         ["pass"]
     };
@@ -299,8 +277,7 @@ dart_cases! {
   var m = {'score': 55};
   print(switch (m) {
     {'score': var s} when s >= 80 => 'pass',
-    _ => 'fail',
-  });
+    _ => 'fail' });
 }"#,
         ["fail"]
     };
@@ -334,8 +311,7 @@ dart_cases! {
   var xs = [1, 2, 3, 4];
   print(switch (xs) {
     [var a, var b, var c, var d] => a + b + c + d,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["10"]
     };
@@ -345,8 +321,7 @@ dart_cases! {
   var xs = [2, 3, 4, 5];
   print(switch (xs) {
     [var first, ...var rest] => first + rest.fold(0, (a, b) => a + b),
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["14"]
     };
@@ -356,8 +331,7 @@ dart_cases! {
   var xs = [-1, 5];
   print(switch (xs) {
     [-1, var n] => n,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["5"]
     };
@@ -367,8 +341,7 @@ dart_cases! {
   var xs = [1, 2, 3, 4, 5];
   print(switch (xs) {
     [var _, var _, ...var tail] when tail.length == 3 => 'ok',
-    _ => 'no',
-  });
+    _ => 'no' });
 }"#,
         ["ok"]
     };
@@ -378,8 +351,7 @@ dart_cases! {
   var m = {'r': 1, 'g': 2, 'b': 3};
   print(switch (m) {
     {'r': var r, 'g': var g, 'b': var b} => r + g + b,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["6"]
     };
@@ -389,8 +361,7 @@ dart_cases! {
   var m = {'type': 'a'};
   print(switch (m) {
     {'type': 'a'} || {'type': 'b'} => 'letter',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["letter"]
     };
@@ -400,8 +371,7 @@ dart_cases! {
   var m = {'x': 1};
   print(switch (m) {
     {'y': var _} => 'y',
-    _ => 'fallback',
-  });
+    _ => 'fallback' });
 }"#,
         ["fallback"]
     };
@@ -435,8 +405,7 @@ dart_cases! {
   var xs = [true, false];
   print(switch (xs) {
     [true, var b] => b,
-    _ => true,
-  });
+    _ => true });
 }"#,
         ["false"]
     };
@@ -446,8 +415,7 @@ dart_cases! {
   var m = {'enabled': true};
   print(switch (m) {
     {'enabled': var flag} when flag => 'on',
-    _ => 'off',
-  });
+    _ => 'off' });
 }"#,
         ["on"]
     };
@@ -457,8 +425,7 @@ dart_cases! {
   var xs = [1, 2, 3, 4, 5, 6];
   print(switch (xs) {
     [var a, var b, ...var rest] => rest.length + a + b,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["7"]
     };
@@ -468,8 +435,7 @@ dart_cases! {
   var m = {'first': 'hello', 'second': 'world'};
   print(switch (m) {
     {'first': var a, 'second': var b} => a + b,
-    _ => '',
-  });
+    _ => '' });
 }"#,
         ["helloworld"]
     };
@@ -480,8 +446,7 @@ dart_cases! {
   print(switch (xs) {
     [] => 'empty',
     [var x, ...var r] => r.length,
-    _ => -1,
-  });
+    _ => -1 });
 }"#,
         ["0"]
     };
@@ -503,8 +468,7 @@ dart_cases! {
   var xs = [[1, 2], [3, 4]];
   print(switch (xs) {
     [[var a, var b], [var c, var d]] => a + b + c + d,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["10"]
     };
@@ -514,8 +478,7 @@ dart_cases! {
   var m = {'1': 10, '2': 20};
   print(switch (m) {
     {'1': var x, '2': var y} => x + y,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["30"]
     };
@@ -525,8 +488,7 @@ dart_cases! {
   var xs = [4, 9];
   print(switch (xs) {
     [var a, var b] when a.isEven => b,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["9"]
     };
@@ -536,8 +498,7 @@ dart_cases! {
   var m = {'a': 1, 'b': 2, 'c': 3};
   print(switch (m) {
     {'a': var x, 'c': var z} => x + z,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["4"]
     };
@@ -560,8 +521,7 @@ dart_cases! {
   var xs = [1, 2];
   print(switch (xs) {
     [var _] || [var _, var __] => 'short',
-    _ => 'long',
-  });
+    _ => 'long' });
 }"#,
         ["short"]
     };
@@ -571,8 +531,7 @@ dart_cases! {
   var m = {'u': 2, 'v': 3};
   print(switch (m) {
     {'u': var u, 'v': var v} when u + v == 5 => 'sum5',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["sum5"]
     };
@@ -582,8 +541,7 @@ dart_cases! {
   var xs = ['go', 'dart'];
   print(switch (xs) {
     ['go', 'dart'] => 'both',
-    _ => 'miss',
-  });
+    _ => 'miss' });
 }"#,
         ["both"]
     };
@@ -593,8 +551,7 @@ dart_cases! {
   var m = <String, int>{};
   print(switch (m) {
     {} => 'empty-map',
-    _ => 'nonempty',
-  });
+    _ => 'nonempty' });
 }"#,
         ["empty-map"]
     };
@@ -617,8 +574,7 @@ dart_cases! {
   var xs = [10, 1, 2, 3];
   print(switch (xs) {
     [var h, ...var t] => h + t[0] + t[1] + t[2],
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["16"]
     };
@@ -628,8 +584,7 @@ dart_cases! {
   var m = {'data': [1, 2, 3]};
   print(switch (m) {
     {'data': var list} => list.length,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["3"]
     };
@@ -639,8 +594,7 @@ dart_cases! {
   var xs = [5, 6, 7];
   print(switch (xs) {
     [var _, ...var tail] when tail.isNotEmpty => tail.first,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["6"]
     };
@@ -650,8 +604,7 @@ dart_cases! {
   var m = {'name': 'dart'};
   print(switch (m) {
     {'name': var s} when s.length == 4 => 'four',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["four"]
     };

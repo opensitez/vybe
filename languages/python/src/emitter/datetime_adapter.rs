@@ -54,13 +54,13 @@ const COMPONENTS: &[(&str, &str)] = &[
 
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
     let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, k, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
     let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, k, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
 }
 
 /// Where a materialized value's `__type` comes from. Arithmetic is
@@ -69,8 +69,7 @@ fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {
 /// hardcoding one.
 enum Tag<'a> {
     Const(&'a str),
-    Local(u16),
-}
+    Local(u16) }
 
 /// Wrap a ms timestamp in a fully-materialized value.
 /// Stack: `[ms]` → `[obj]`.
@@ -82,13 +81,12 @@ fn emit_materialize_tag(chunk: &mut Chunk, tag: Tag, line: u32) {
     let ms = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, ms, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
 
     chunk.emit_dup(line);
     match tag {
         Tag::Const(s) => chunk.emit_string_const(s, line),
-        Tag::Local(slot) => chunk.emit_op_u16(Op::LOCAL_GET, slot, line),
-    }
+        Tag::Local(slot) => chunk.emit_op_u16(Op::LOCAL_GET, slot, line) }
     struct_set(chunk, TYPE_KEY, line);
 
     chunk.emit_dup(line);
@@ -156,8 +154,7 @@ fn emit_components_new(chunk: &mut Chunk, argc: u8, first: usize, type_tag: &str
     for i in (0..argc as usize).rev() {
         match slots.get(first + i) {
             Some(slot) => chunk.emit_op_u16(Op::LOCAL_SET, *slot, line),
-            None => chunk.emit_op(Op::DROP, line),
-        }
+            None => chunk.emit_op(Op::DROP, line) }
     }
 
     emit_utc_from_locals(chunk, &slots, line);
@@ -213,7 +210,7 @@ pub fn emit_wrap_timedelta(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::F64_FLOOR, line);
     chunk.emit_op_u16(Op::LOCAL_SET, secs, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(TYPE_TIMEDELTA, line);
     struct_set(chunk, TYPE_KEY, line);
@@ -286,7 +283,7 @@ fn emit_wrap_timezone(chunk: &mut Chunk, line: u32) {
     let off = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, off, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     chunk.emit_string_const(TYPE_TIMEZONE, line);
     struct_set(chunk, TYPE_KEY, line);
@@ -538,7 +535,7 @@ pub fn emit_timetuple(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     let obj = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     for (tm, prop) in [
         ("tm_year", "year"),
         ("tm_mon", "month"),
@@ -651,8 +648,7 @@ pub fn emit_cal_monthrange(chunks: &mut [Chunk], current: usize, _argc: u8, line
 pub enum DtOp {
     Add,
     Sub,
-    Mul,
-}
+    Mul }
 
 /// `slot` holds an object carrying `key`. The `typeof` guard matters:
 /// `STRUCT_GET` traps on a primitive, and these run on every `+`.
@@ -686,8 +682,7 @@ fn dt_op_code(op: &DtOp) -> Op {
     match op {
         DtOp::Add => Op::F64_ADD,
         DtOp::Sub => Op::F64_SUB,
-        DtOp::Mul => Op::F64_MUL,
-    }
+        DtOp::Mul => Op::F64_MUL }
 }
 
 /// `+`/`-`/`*` over this adapter's values, for the combinations Python

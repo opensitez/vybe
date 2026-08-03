@@ -122,8 +122,7 @@ go_run_cases! {
     variadic_byte_slice_spread => (
         "package main; import \"fmt\"; func total(bytes ...byte) int { t := 0; for _, b := range bytes { t += int(b) }; return t }; func main() { data := []byte{'a', 'b'}; fmt.Println(total(data...)) }",
         vec!["195"]
-    ),
-}
+    ) }
 
 go_compile_cases! {
     variadic_final_parameter_signature_compile =>
@@ -185,5 +184,4 @@ go_compile_cases! {
     variadic_map_values_spread_compile =>
         "package main; func keys(m map[string]int) int { return len(m) }; func main() { _ = keys(map[string]int{\"a\": 1}) }",
     variadic_in_return_statement_compile =>
-        "package main; func max(nums ...int) int { m := nums[0]; for _, n := range nums { if n > m { m = n } }; return m }; func main() { _ = max(3, 9, 1) }",
-}
+        "package main; func max(nums ...int) int { m := nums[0]; for _, n := range nums { if n > m { m = n } }; return m }; func main() { _ = max(3, 9, 1) }" }

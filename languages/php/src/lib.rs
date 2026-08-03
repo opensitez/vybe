@@ -67,8 +67,7 @@ static VARIABLE_NAMESPACE: vybe_runtime::registry::VariableNamespace =
     vybe_runtime::registry::VariableNamespace {
         body: variable_body,
         spell: spell_variable,
-        global_key: variable_global_key,
-    };
+        global_key: variable_global_key };
 
 /// Register this language with the shared plugin registry (dylib entry point).
 pub fn register() {
@@ -78,8 +77,7 @@ pub fn register() {
         profile_source,
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
-        register_tree: Some(tree_register::register_namespace_tree),
-    });
+        register_tree: Some(tree_register::register_namespace_tree) });
     vybe_runtime::registry::register_hooks(
         "php",
         vybe_runtime::registry::LanguageHooks {

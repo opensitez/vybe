@@ -76,5 +76,4 @@ lua_print! {
     next_invalid_key_raises_error => {
         "local ok, err = pcall(function() next({a=1}, \"invalid_key\") end)\nprint(ok)\n",
         "false"
-    },
-}
+    } }

@@ -18,7 +18,7 @@ fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
     match &value {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
@@ -55,12 +55,12 @@ fn call_import(
 
 fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -263,7 +263,7 @@ pub fn emit_php_mysqli_report(chunks: &mut [Chunk], current: usize, argc: u8, li
     for _ in 0..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_php_mysqli_connect(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -761,7 +761,7 @@ pub fn emit_php_mysqli_fetch_field(chunks: &mut [Chunk], current: usize, _argc: 
         lget(chunk, field_name_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
         chunk.emit_if_value(line);
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunk.emit_else(line);
     }
 
@@ -864,7 +864,7 @@ pub fn emit_php_mysqli_close(chunks: &mut [Chunk], current: usize, _argc: u8, li
     {
         let chunk = &mut chunks[current];
         lget(chunk, dbh_slot, line);
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         struct_set_key(chunk, "__connection", line);
         push_const(chunk, Value::Bool(true), line);
         chunk.emit_end(line);
@@ -1095,7 +1095,7 @@ pub fn emit_php_mysqli_stmt_result_metadata(
     let stmt_slot = alloc_local(chunk);
     lset(chunk, stmt_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     let meta_slot = alloc_local(chunk);
     lset(chunk, meta_slot, line);
 

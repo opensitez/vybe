@@ -32,5 +32,4 @@ lua_print! {
     index_exist_shortcircuit => {
         "local called = false\nlocal t = setmetatable({k = 99}, {\n  __index = function() called = true; return 0 end\n})\nlocal v = t.k\nprint(v, called)\n",
         "99 false"
-    },
-}
+    } }

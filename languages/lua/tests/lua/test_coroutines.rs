@@ -104,5 +104,4 @@ lua_print! {
     coroutine_status_normal_during_resume_nested => {
         "local co1, co2\nco1 = coroutine.create(function()\n  coroutine.resume(co2)\nend)\nco2 = coroutine.create(function()\n  print(coroutine.status(co1))\nend)\ncoroutine.resume(co1)\n",
         "normal"
-    },
-}
+    } }

@@ -124,5 +124,4 @@ lua_print! {
     metamethod_index_function_receives_table_and_key => {
         "local t = setmetatable({}, {__index = function(tbl, k) return \"k:\" .. k end})\nprint(t.foo)\n",
         "k:foo"
-    },
-}
+    } }

@@ -6,6 +6,32 @@ name = "fortran"
 extensions = ["f90", "f95", "f03", "f08", "f18", "f"]
 
 [compiler]
+# `intent(out)` arrives default-initialized.
+out_params_default_initialized = true
+# An omitted trailing `optional ::` dummy argument is passed as undefined.
+pads_trailing_optional_arg = true
+# `allocate(a(n,m))` names every dimension.
+allocate_takes_dimension_list = true
+# `a(lo:hi)` includes both endpoints.
+slice_bounds_inclusive = true
+# Derived types are value types — assignment copies, mutations write back.
+user_types_are_value_types = true
+# `a = 0` fills every element.
+array_assign_broadcasts_scalar = true
+# Arguments alias the caller's object.
+args_pass_by_reference = true
+# Module variables compile before contained procedures.
+class_body_declarations_before_procedures = true
+# `real :: a(3,4)` declares the shape; the declaration allocates it.
+array_bounds_declare_fixed_shape = true
+# `a + b` on arrays is elementwise.
+array_arithmetic_elementwise = true
+# A method call on a value-type receiver writes the receiver back.
+member_call_writes_receiver_back = true
+# `TypeName(args)` constructs a derived type — no `new`.
+bare_name_constructs_value_type = true
+# A procedure in an INTERFACE block is callable under the interface name.
+interface_block_is_generic_alias = true
 function_return = "result_slot"        # Fortran uses result variable or function name
 self_keyword = ""
 base_keyword = ""
@@ -92,11 +118,17 @@ repeat        = { emit = "common:str_repeat",              min_args = 2, max_arg
 to_upper      = { emit = "common:str_to_upper",            min_args = 1, max_args = 1 }
 to_lower      = { emit = "common:str_to_lower",            min_args = 1, max_args = 1 }
 array_join    = { emit = "intrinsic:array_join",          min_args = 2, max_args = 2 }
+# Matrix multiply — emitter in emitter/math_adapter.rs.
+matmul        = { emit = "common:fortran.matmul",         min_args = 2, max_args = 2 }
 sprintf       = { emit = "common:sprintf.format",        min_args = 1, max_args = 255 }
 
 # ── Misc ─────────────────────────────────────────────────────────────────────
 
 stop          = { emit = "noop",                           min_args = 0, max_args = 1 }
+# `STOP <code>` / `ERROR STOP <code>` — the walker lowers the coded form here.
+# `exit-with-code` is the WASI arm that carries a real status; plain `exit`
+# only distinguishes ok from error.
+__fortran_stop = { emit = "host:wasi:cli/exit:exit-with-code", min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS

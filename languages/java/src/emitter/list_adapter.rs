@@ -9,8 +9,7 @@ use vybe_compiler::primitives::{
     functions::create_function_chunk,
     heap,
     instructions::{core_wasm, host},
-    sorted_collection,
-};
+    sorted_collection };
 
 fn get(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -141,7 +140,7 @@ fn emit_sort_if_ordered(chunks: &mut [Chunk], current: usize, value: u16, line: 
 }
 
 fn emit_java_exception_throw(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(&mut chunks[current], name, line);
@@ -481,7 +480,7 @@ pub fn emit_sorted_collection_new(
 pub fn emit_priority_queue_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let comparator = chunks[current].alloc_scratch(1);
     if argc == 0 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     set(&mut chunks[current], comparator, line);
     collections::emit_array_new(chunks, current, 0, line);
@@ -547,7 +546,7 @@ pub fn emit_sub_list(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], from, line);
     set(&mut chunks[current], parent, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     let view = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], view, line);
     get(&mut chunks[current], view, line);
@@ -686,7 +685,7 @@ pub fn emit_collection_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_collection_disjoint(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -753,7 +752,7 @@ pub fn emit_collection_extreme(
     if argc == 2 {
         set(&mut chunks[current], comparator, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         set(&mut chunks[current], comparator, line);
     }
     let list = chunks[current].alloc_scratch(1);
@@ -859,7 +858,7 @@ pub fn emit_map_get(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], key, line);
     host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     set(&mut chunks[current], result, line);
     get(&mut chunks[current], result, line);
@@ -889,10 +888,34 @@ pub fn emit_map_get(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], result, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     emit_unwrap_identity_map_value(chunks, current, map, result, line);
     chunks[current].emit_end(line);
+}
+
+pub fn emit_get_or_map_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let key = chunks[current].alloc_scratch(1);
+    let collection = chunks[current].alloc_scratch(1);
+    let result = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], key, line);
+    set(&mut chunks[current], collection, line);
+
+    get(&mut chunks[current], collection, line);
+    get(&mut chunks[current], key, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], result, line);
+
+    get(&mut chunks[current], result, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], collection, line);
+    get(&mut chunks[current], key, line);
+    emit_map_get(chunks, current, line);
+    set(&mut chunks[current], result, line);
+    chunks[current].emit_end(line);
+
+    get(&mut chunks[current], result, line);
 }
 
 pub fn emit_hash_map_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -1026,7 +1049,7 @@ pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], key, line);
     host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     set(&mut chunks[current], previous, line);
     get(&mut chunks[current], had_key, line);
@@ -1041,7 +1064,7 @@ pub fn emit_map_put(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], previous, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     emit_unwrap_identity_map_value(chunks, current, map, previous, line);
     chunks[current].emit_end(line);
@@ -1104,7 +1127,7 @@ pub fn emit_map_put_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_map_get_or_default(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1237,7 +1260,7 @@ pub fn emit_map_put_if_absent(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_pack_identity_map_value(chunks, current, map, original_key, value, line);
     host::emit(&mut chunks[current], "ecma:map", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -1326,7 +1349,7 @@ pub fn emit_map_remove(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     get(&mut chunks[current], key, line);
     host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     set(&mut chunks[current], previous, line);
     get(&mut chunks[current], map, line);
@@ -1336,7 +1359,7 @@ pub fn emit_map_remove(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     get(&mut chunks[current], previous, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     emit_unwrap_identity_map_value(chunks, current, map, previous, line);
     chunks[current].emit_end(line);
@@ -1410,7 +1433,7 @@ pub fn emit_map_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunks[current].emit_op(Op::DROP, line);
     emit_unwrap_identity_map_value(chunks, current, map, previous, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -1436,7 +1459,7 @@ pub fn emit_map_compute(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], key, line);
     host::emit(&mut chunks[current], "ecma:map", "get", 2, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     set(&mut chunks[current], old_value, line);
 
@@ -1445,7 +1468,7 @@ pub fn emit_map_compute(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], old_value, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     emit_unwrap_identity_map_value(chunks, current, map, old_value, line);
     chunks[current].emit_end(line);
@@ -1512,7 +1535,7 @@ pub fn emit_map_compute_if_present(chunks: &mut [Chunk], current: usize, line: u
     chunks[current].emit_end(line);
     get(&mut chunks[current], result, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 
@@ -1632,7 +1655,7 @@ pub fn emit_map_replace_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_map_for_each(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1680,7 +1703,7 @@ pub fn emit_map_for_each(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn emit_concurrent_items(chunks: &mut [Chunk], current: usize, map: u16, mode: u8, line: u32) {
@@ -1688,8 +1711,7 @@ fn emit_concurrent_items(chunks: &mut [Chunk], current: usize, map: u16, mode: u
     match mode {
         0 => host::emit(&mut chunks[current], "ecma:map", "keys", 1, line),
         1 => host::emit(&mut chunks[current], "ecma:map", "values", 1, line),
-        _ => host::emit(&mut chunks[current], "ecma:map", "entries", 1, line),
-    }
+        _ => host::emit(&mut chunks[current], "ecma:map", "entries", 1, line) }
 }
 
 pub fn emit_concurrent_for_each(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
@@ -1734,7 +1756,7 @@ pub fn emit_concurrent_for_each(chunks: &mut [Chunk], current: usize, mode: u8, 
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_concurrent_reduce(chunks: &mut [Chunk], current: usize, mode: u8, line: u32) {
@@ -1756,7 +1778,7 @@ pub fn emit_concurrent_reduce(chunks: &mut [Chunk], current: usize, mode: u8, li
     core_wasm::i32_const(&mut chunks[current], line, 0);
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], items, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
@@ -1806,7 +1828,7 @@ pub fn emit_concurrent_search(chunks: &mut [Chunk], current: usize, mode: u8, li
     get(&mut chunks[current], items, line);
     collections::emit_len(chunks, current, line);
     set(&mut chunks[current], len, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     set(&mut chunks[current], found, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     set(&mut chunks[current], index, line);
@@ -1859,12 +1881,12 @@ pub fn emit_semaphore_new(chunks: &mut [Chunk], current: usize, argc: u8, line: 
             set(&mut chunks[current], permits, line);
         }
     }
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     let sem = chunks[current].alloc_scratch(1);
     let cells = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], sem, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     set(&mut chunks[current], cells, line);
     get(&mut chunks[current], cells, line);
     chunks[current].emit_string_const("__shared_int32_len", line);
@@ -2029,7 +2051,7 @@ pub fn emit_semaphore_acquire(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunks[current].patch_loop(loop_patch);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_semaphore_release(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -2039,7 +2061,7 @@ pub fn emit_semaphore_release(chunks: &mut [Chunk], current: usize, argc: u8, li
     get(&mut chunks[current], permits, line);
     host::emit(&mut chunks[current], "ecma:atomics", "add", 3, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_semaphore_try_acquire(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -2118,7 +2140,7 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     worker.emit_op_u16(Op::GLOBAL_SET, current_key, line);
     worker.emit_op_u16(Op::GLOBAL_GET, run_key, line);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
-    worker.emit_op_u16(Op::STRUCT_GET, target_key, line);
+    worker.emit_struct_field_op(Op::STRUCT_GET, 0, target_key, line);
     worker.emit_op_u8(Op::CALL_REF, 1, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 1;
@@ -2147,7 +2169,7 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
         line,
     );
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_java_thread_join(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2164,7 +2186,7 @@ pub fn emit_java_thread_join(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_java_thread_sleep(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2178,7 +2200,7 @@ pub fn emit_java_thread_sleep(chunks: &mut [Chunk], current: usize, line: u32) {
         block_idx,
         line,
     );
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_map_clone(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2470,7 +2492,7 @@ pub fn emit_list_iterator(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     }
     set(&mut chunks[current], list, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     let iterator = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], iterator, line);
     get(&mut chunks[current], iterator, line);
@@ -2817,7 +2839,7 @@ pub fn emit_vector_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u
         min_capacity,
         line,
     );
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_vector_trim_to_size(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2828,7 +2850,7 @@ pub fn emit_vector_trim_to_size(chunks: &mut [Chunk], current: usize, line: u32)
     collections::emit_len(chunks, current, line);
     set(&mut chunks[current], len, line);
     set_object_prop_from_local(chunks, current, list, VECTOR_CAPACITY_KEY, len, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_vector_set_size(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2841,14 +2863,14 @@ pub fn emit_vector_set_size(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], size, line);
     host::emit(&mut chunks[current], "ecma:object", "set", 3, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_enumeration_from_array(chunks: &mut [Chunk], current: usize, line: u32) {
     let items = chunks[current].alloc_scratch(1);
     let enumeration = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], items, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     set(&mut chunks[current], enumeration, line);
     set_object_prop_from_local(chunks, current, enumeration, ENUM_ITEMS_KEY, items, line);
     set_object_prop_i32(chunks, current, enumeration, ENUM_INDEX_KEY, 0, line);
@@ -3065,14 +3087,14 @@ pub fn emit_blocking_queue_put(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].patch_block(outer);
     get(&mut chunks[current], done, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_blocking_queue_take(chunks: &mut [Chunk], current: usize, line: u32) {
     let queue = chunks[current].alloc_scratch(1);
     let result = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], queue, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     set(&mut chunks[current], result, line);
     let sub_dur_idx = chunks[0].add_import("wasi:clocks/monotonic-clock", "subscribe-duration");
     let block_idx = chunks[0].add_import("wasi:io/poll", "[method]pollable.block");
@@ -3230,7 +3252,7 @@ pub fn emit_peek(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], list, line);
     if last {
@@ -3254,7 +3276,7 @@ pub fn emit_poll(chunks: &mut [Chunk], current: usize, last: bool, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], list, line);
     if last {
@@ -3287,7 +3309,7 @@ pub fn emit_sorted_bound(chunks: &mut [Chunk], current: usize, mode: u8, line: u
     set(&mut chunks[current], index, line);
     chunks[current].emit_bool_const(false, line);
     set(&mut chunks[current], found, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     set(&mut chunks[current], candidate, line);
 
     let outer = chunks[current].emit_block(line);
@@ -3453,7 +3475,7 @@ pub fn emit_sorted_map_bound_entry(chunks: &mut [Chunk], current: usize, mode: u
     set(&mut chunks[current], index, line);
     chunks[current].emit_bool_const(false, line);
     set(&mut chunks[current], found, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     set(&mut chunks[current], candidate, line);
 
     let outer = chunks[current].emit_block(line);
@@ -3736,7 +3758,7 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         get(&mut chunks[current], value, line);
         collections::emit_set(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     let index = chunks[current].alloc_scratch(1);
@@ -3797,7 +3819,7 @@ pub fn emit_remove_value_checked(chunks: &mut [Chunk], current: usize, line: u32
 pub fn emit_iterator_remove_unsupported(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
     emit_java_exception_throw(chunks, current, "UnsupportedOperationException", line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -3820,7 +3842,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     let to = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], to, line);
     set_object_prop_from_local(chunks, current, list, SUBLIST_TO_KEY, to, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     get(&mut chunks[current], list, line);
     host::emit(&mut chunks[current], "ecma:array", "clear", 1, line);
@@ -4020,7 +4042,7 @@ pub fn emit_replace_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(outer_loop);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn emit_filter_members(chunks: &mut [Chunk], current: usize, line: u32, retain: bool) {

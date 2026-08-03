@@ -6,7 +6,7 @@ fn hole_in_array_literal() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 3]; // hole at index 1
+const arr = [1,  3]; // hole at index 1
 console.log(arr.length);
 console.log(arr[1]);       // undefined
 console.log(1 in arr);     // false — hole, not undefined
@@ -21,7 +21,7 @@ fn map_skips_holes() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 3];
+const arr = [1,  3];
 const result = arr.map(x => x * 2);
 console.log(result[0]);
 console.log(1 in result);  // hole preserved in map
@@ -37,7 +37,7 @@ fn filter_skips_holes() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 2, , 3];
+const arr = [1,  2,  3];
 const result = arr.filter(x => x > 1);
 console.log(result.join(","));
 "#
@@ -51,7 +51,7 @@ fn foreach_skips_holes() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 2, , 3];
+const arr = [1,  2,  3];
 const visited = [];
 arr.forEach(x => visited.push(x));
 console.log(visited.join(","));
@@ -66,7 +66,7 @@ fn reduce_skips_holes() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 2, , 3];
+const arr = [1,  2,  3];
 const sum = arr.reduce((acc, x) => acc + x, 0);
 console.log(sum);
 "#
@@ -80,11 +80,11 @@ fn join_treats_hole_as_empty() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 3];
+const arr = [1,  3];
 console.log(arr.join(","));
 "#
         ),
-        vec!["1,,3"]
+        vec!["1, 3"]
     );
 }
 
@@ -93,7 +93,7 @@ fn spread_fills_holes_with_undefined() {
     assert_eq!(
         run_js(
             r#"
-const sparse = [1, , 3];
+const sparse = [1,  3];
 const dense = [...sparse];
 console.log(1 in dense); // true — undefined, not hole
 console.log(dense[1]);
@@ -108,7 +108,7 @@ fn array_from_hole_array_fills_undefined() {
     assert_eq!(
         run_js(
             r#"
-const sparse = [1, , 3];
+const sparse = [1,  3];
 const dense = Array.from(sparse);
 console.log(1 in dense);
 console.log(dense[1]);
@@ -123,7 +123,7 @@ fn find_treats_holes_as_undefined() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 3];
+const arr = [1,  3];
 const found = arr.find(x => x === undefined);
 console.log(found);
 "#
@@ -137,7 +137,7 @@ fn flat_removes_holes() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 2, , 3];
+const arr = [1,  2,  3];
 const flat = arr.flat();
 console.log(flat.length);
 console.log(flat.join(","));
@@ -168,7 +168,7 @@ fn at_and_inclusive_checks() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 3];
+const arr = [1,  3];
 console.log(arr.at(1));
 console.log(arr[1]);
 console.log(1 in arr);
@@ -183,7 +183,7 @@ fn fill_converts_hole_to_value() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 3];
+const arr = [1,  3];
 arr.fill(0, 1, 2);
 console.log(arr.length);
 console.log(1 in arr);
@@ -199,14 +199,14 @@ fn copywithin_preserves_length_and_holes() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 2, , 3];
+const arr = [1,  2,  3];
 const copied = arr.copyWithin(1, 0, 2);
 console.log(copied.length);
 console.log(2 in copied);
 console.log(copied.join(","));
 "#
         ),
-        vec!["5", "true", "1,,,,3"]
+        vec!["5", "true", "1, , 3"]
     );
 }
 
@@ -215,7 +215,7 @@ fn slice_preserves_sparse_holes() {
     assert_eq!(
         run_js(
             r#"
-const arr = [1, , 3];
+const arr = [1,  3];
 const sliced = arr.slice(0, 3);
 console.log(1 in sliced);
 "#

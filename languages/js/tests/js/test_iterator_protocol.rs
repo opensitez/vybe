@@ -80,7 +80,7 @@ fn custom_iterable_array_from() {
 const obj = {
     [Symbol.iterator]() {
         let i = 0;
-        return { next() { return i < 4 ? { value: i * i, done: false, } : { done: true }; i++ } };
+        return { next() { return i < 4 ? { value: i * i, done: false } : { done: true }; i++ } };
     }
 };
 // Simpler approach

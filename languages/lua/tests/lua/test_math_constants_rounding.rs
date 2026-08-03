@@ -24,5 +24,4 @@ lua_print! {
     math_huge_type => { "print(math.type(math.huge))\n", "float" },
     math_pi_type => { "print(math.type(math.pi))\n", "float" },
     math_floor_type => { "print(math.type(math.floor(3.9)))\n", "integer" },
-    math_ceil_type => { "print(math.type(math.ceil(3.1)))\n", "integer" },
-}
+    math_ceil_type => { "print(math.type(math.ceil(3.1)))\n", "integer" } }

@@ -50,5 +50,4 @@ lua_print! {
     tostring_on_table_without_metamethod_is_not_nil => {
         "print(type(tostring({})))\n",
         "string"
-    },
-}
+    } }

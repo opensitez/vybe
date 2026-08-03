@@ -8,8 +8,7 @@ dart_cases! {
   print(switch (n) {
     1 => 'one',
     2 => 'two',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["one"]
     };
@@ -20,8 +19,7 @@ dart_cases! {
   print(switch (n) {
     1 => 'one',
     2 => 'two',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["two"]
     };
@@ -32,8 +30,7 @@ dart_cases! {
   print(switch (n) {
     1 => 'one',
     2 => 'two',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["other"]
     };
@@ -42,8 +39,7 @@ dart_cases! {
         r#"void main() {
   print(switch (0) {
     0 => 'zero',
-    _ => 'nonzero',
-  });
+    _ => 'nonzero' });
 }"#,
         ["zero"]
     };
@@ -52,8 +48,7 @@ dart_cases! {
         r#"void main() {
   print(switch (-3) {
     -3 => 'neg-three',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["neg-three"]
     };
@@ -63,8 +58,7 @@ dart_cases! {
   print(switch (4) {
     < 0 => 'negative',
     >= 0 && < 10 => 'small',
-    _ => 'large',
-  });
+    _ => 'large' });
 }"#,
         ["small"]
     };
@@ -74,8 +68,7 @@ dart_cases! {
   print(switch (-5) {
     < 0 => 'negative',
     0 => 'zero',
-    _ => 'positive',
-  });
+    _ => 'positive' });
 }"#,
         ["negative"]
     };
@@ -85,8 +78,7 @@ dart_cases! {
   print(switch (100) {
     < 0 => 'negative',
     >= 0 && < 10 => 'small',
-    _ => 'large',
-  });
+    _ => 'large' });
 }"#,
         ["large"]
     };
@@ -96,8 +88,7 @@ dart_cases! {
   print(switch (42) {
     41 => 'miss',
     42 => 'hit',
-    43 => 'miss2',
-  });
+    43 => 'miss2' });
 }"#,
         ["hit"]
     };
@@ -109,10 +100,8 @@ dart_cases! {
   print(switch (outer) {
     1 => switch (inner) {
       2 => 'nested',
-      _ => 'inner-other',
-    },
-    _ => 'outer-other',
-  });
+      _ => 'inner-other' },
+    _ => 'outer-other' });
 }"#,
         ["nested"]
     };
@@ -124,8 +113,7 @@ dart_cases! {
     1 => 10,
     2 => 20,
     3 => 30,
-    _ => 0,
-  };
+    _ => 0 };
   print(label + 5);
 }"#,
         ["35"]
@@ -137,8 +125,7 @@ dart_cases! {
   print(switch (s) {
     'dart' => 'match',
     'java' => 'miss',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["match"]
     };
@@ -149,8 +136,7 @@ dart_cases! {
   print(switch (s) {
     'dart' => 'match',
     'java' => 'miss',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["other"]
     };
@@ -159,8 +145,7 @@ dart_cases! {
         r#"void main() {
   print(switch ('') {
     '' => 'empty',
-    _ => 'nonempty',
-  });
+    _ => 'nonempty' });
 }"#,
         ["empty"]
     };
@@ -170,8 +155,7 @@ dart_cases! {
   print(switch ('x') {
     'x' => 'ex',
     'y' => 'why',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["ex"]
     };
@@ -181,8 +165,7 @@ dart_cases! {
   print(switch ('hello world') {
     'hello world' => 'greeting',
     'bye' => 'farewell',
-    _ => 'unknown',
-  });
+    _ => 'unknown' });
 }"#,
         ["greeting"]
     };
@@ -192,8 +175,7 @@ dart_cases! {
   print(switch ('Dart') {
     'dart' => 'lower',
     'DART' => 'upper',
-    _ => 'mixed',
-  });
+    _ => 'mixed' });
 }"#,
         ["mixed"]
     };
@@ -203,8 +185,7 @@ dart_cases! {
   var day = 'Sat';
   print(switch (day) {
     'Sat' || 'Sun' => 'weekend',
-    _ => 'weekday',
-  });
+    _ => 'weekday' });
 }"#,
         ["weekend"]
     };
@@ -214,8 +195,7 @@ dart_cases! {
   var day = 'Mon';
   print(switch (day) {
     'Sat' || 'Sun' => 'weekend',
-    _ => 'weekday',
-  });
+    _ => 'weekday' });
 }"#,
         ["weekday"]
     };
@@ -224,8 +204,7 @@ dart_cases! {
         r#"void main() {
   print(switch ('b') {
     'a' || 'b' || 'c' => 'abc',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["abc"]
     };
@@ -234,8 +213,7 @@ dart_cases! {
         r#"void main() {
   print(switch ('z') {
     'a' || 'b' || 'c' => 'abc',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["other"]
     };
@@ -244,8 +222,7 @@ dart_cases! {
         r#"void main() {
   print(switch (7) {
     1 => 'one',
-    _ => 'catch-all',
-  });
+    _ => 'catch-all' });
 }"#,
         ["catch-all"]
     };
@@ -253,8 +230,7 @@ dart_cases! {
     switch_expr_wildcard_only_arm => {
         r#"void main() {
   print(switch (999) {
-    _ => 'always',
-  });
+    _ => 'always' });
 }"#,
         ["always"]
     };
@@ -264,8 +240,7 @@ dart_cases! {
   print(switch ('x') {
     'a' => 'alpha',
     'b' => 'beta',
-    _ => 'rest',
-  });
+    _ => 'rest' });
 }"#,
         ["rest"]
     };
@@ -274,8 +249,7 @@ dart_cases! {
         r#"void main() {
   print(switch (null) {
     null => 'is-null',
-    _ => 'not-null',
-  });
+    _ => 'not-null' });
 }"#,
         ["is-null"]
     };
@@ -284,8 +258,7 @@ dart_cases! {
         r#"void main() {
   print(switch (true) {
     true => 'yes',
-    false => 'no',
-  });
+    false => 'no' });
 }"#,
         ["yes"]
     };
@@ -294,8 +267,7 @@ dart_cases! {
         r#"void main() {
   print(switch (2) {
     1 || 2 || 3 => 'small',
-    _ => 'big',
-  });
+    _ => 'big' });
 }"#,
         ["small"]
     };
@@ -304,8 +276,7 @@ dart_cases! {
         r#"void main() {
   print(switch (1) {
     1 || 2 || 3 => 'small',
-    _ => 'big',
-  });
+    _ => 'big' });
 }"#,
         ["small"]
     };
@@ -314,8 +285,7 @@ dart_cases! {
         r#"void main() {
   print(switch (3) {
     1 || 2 || 3 => 'small',
-    _ => 'big',
-  });
+    _ => 'big' });
 }"#,
         ["small"]
     };
@@ -324,8 +294,7 @@ dart_cases! {
         r#"void main() {
   print(switch (10) {
     1 || 2 || 3 => 'small',
-    _ => 'big',
-  });
+    _ => 'big' });
 }"#,
         ["big"]
     };
@@ -335,8 +304,7 @@ dart_cases! {
   print(switch (5) {
     1 || 2 => 'tiny',
     3 || 4 || 5 => 'mid',
-    _ => 'large',
-  });
+    _ => 'large' });
 }"#,
         ["mid"]
     };
@@ -346,8 +314,7 @@ dart_cases! {
   print(switch (8) {
     1 || 2 => 'pair-a',
     7 || 8 || 9 => 'pair-b',
-    _ => 'neither',
-  });
+    _ => 'neither' });
 }"#,
         ["pair-b"]
     };
@@ -356,8 +323,7 @@ dart_cases! {
         r#"void main() {
   print(switch (0) {
     0 || 1 => 'zero-or-one',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["zero-or-one"]
     };
@@ -366,8 +332,7 @@ dart_cases! {
         r#"void main() {
   print(switch (-1) {
     -1 || -2 => 'negative-pair',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["negative-pair"]
     };
@@ -377,8 +342,7 @@ dart_cases! {
   var xs = <int>[];
   print(switch (xs) {
     [] => 'empty',
-    _ => 'nonempty',
-  });
+    _ => 'nonempty' });
 }"#,
         ["empty"]
     };
@@ -389,8 +353,7 @@ dart_cases! {
   print(switch (xs) {
     [] => 'empty',
     [var a] => 'single',
-    _ => 'multi',
-  });
+    _ => 'multi' });
 }"#,
         ["single"]
     };
@@ -401,8 +364,7 @@ dart_cases! {
   print(switch (xs) {
     [] => 'empty',
     [var a, var b] => 'pair',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["pair"]
     };
@@ -412,8 +374,7 @@ dart_cases! {
   var xs = [10, 20, 30];
   print(switch (xs) {
     [var a, var b, var c] => 'triple',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["triple"]
     };
@@ -423,8 +384,7 @@ dart_cases! {
   var xs = [3, 4];
   var sum = switch (xs) {
     [var a, var b] => a + b,
-    _ => 0,
-  };
+    _ => 0 };
   print(sum);
 }"#,
         ["7"]
@@ -435,8 +395,7 @@ dart_cases! {
   var xs = [1, 2, 3, 4];
   print(switch (xs) {
     [var head, ...var tail] => head,
-    _ => -1,
-  });
+    _ => -1 });
 }"#,
         ["1"]
     };
@@ -446,8 +405,7 @@ dart_cases! {
   var xs = [9, 8, 7];
   var count = switch (xs) {
     [var first, ...var rest] => rest.length + 1,
-    _ => 0,
-  };
+    _ => 0 };
   print(count);
 }"#,
         ["3"]
@@ -458,8 +416,7 @@ dart_cases! {
   var xs = ['a', 'b'];
   print(switch (xs) {
     ['a', 'b'] => 'ab',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["ab"]
     };
@@ -471,8 +428,7 @@ dart_cases! {
     [] => 'empty',
     [var a] => 'one',
     [var a, var b] => 'two',
-    _ => 'many',
-  });
+    _ => 'many' });
 }"#,
         ["many"]
     };
@@ -482,8 +438,7 @@ dart_cases! {
   var xs = [[1, 2], [3, 4]];
   print(switch (xs) {
     [var a, var b] => 'pair-of-lists',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["pair-of-lists"]
     };
@@ -493,8 +448,7 @@ dart_cases! {
   var xs = [5, 9];
   print(switch (xs) {
     [var _, var y] => y,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["9"]
     };
@@ -504,8 +458,7 @@ dart_cases! {
   var xs = [0, 99];
   print(switch (xs) {
     [0, var n] => n,
-    _ => -1,
-  });
+    _ => -1 });
 }"#,
         ["99"]
     };
@@ -515,8 +468,7 @@ dart_cases! {
   var xs = [1];
   print(switch (xs) {
     [] || [var _] => 'empty-or-one',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["empty-or-one"]
     };
@@ -526,8 +478,7 @@ dart_cases! {
   var p = (0, 0);
   print(switch (p) {
     (0, 0) => 'origin',
-    _ => 'elsewhere',
-  });
+    _ => 'elsewhere' });
 }"#,
         ["origin"]
     };
@@ -537,8 +488,7 @@ dart_cases! {
   var p = (3, 4);
   var total = switch (p) {
     (var x, var y) => x + y,
-    _ => 0,
-  };
+    _ => 0 };
   print(total);
 }"#,
         ["7"]
@@ -549,8 +499,7 @@ dart_cases! {
   var u = (name: 'Ada', id: 42);
   print(switch (u) {
     (name: 'Ada', id: var n) => n,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["42"]
     };
@@ -560,8 +509,7 @@ dart_cases! {
   var u = (name: 'Bob', score: 10);
   print(switch (u) {
     (name: var n, score: var s) => s,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["10"]
     };
@@ -571,8 +519,7 @@ dart_cases! {
   var e = (1, label: 'one');
   print(switch (e) {
     (var n, label: var lbl) => lbl,
-    _ => 'none',
-  });
+    _ => 'none' });
 }"#,
         ["one"]
     };
@@ -582,8 +529,7 @@ dart_cases! {
   var p = (7, 8);
   print(switch (p) {
     (var _, var y) => y,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["8"]
     };
@@ -593,8 +539,7 @@ dart_cases! {
   var rgb = (1, 2, 3);
   print(switch (rgb) {
     (var r, var g, var b) => r + g + b,
-    _ => 0,
-  });
+    _ => 0 });
 }"#,
         ["6"]
     };
@@ -604,8 +549,7 @@ dart_cases! {
   var p = (1, 2);
   print(switch (p) {
     (0, 0) || (1, 2) => 'special',
-    _ => 'generic',
-  });
+    _ => 'generic' });
 }"#,
         ["special"]
     };
@@ -615,8 +559,7 @@ dart_cases! {
   var p = (9, 9);
   print(switch (p) {
     (0, 0) => 'origin',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["other"]
     };
@@ -626,8 +569,7 @@ dart_cases! {
   print(switch (5) {
     var n when n > 0 => 'positive',
     var n when n < 0 => 'negative',
-    _ => 'zero',
-  });
+    _ => 'zero' });
 }"#,
         ["positive"]
     };
@@ -637,8 +579,7 @@ dart_cases! {
   print(switch (-2) {
     var n when n > 0 => 'positive',
     var n when n < 0 => 'negative',
-    _ => 'zero',
-  });
+    _ => 'zero' });
 }"#,
         ["negative"]
     };
@@ -648,8 +589,7 @@ dart_cases! {
   print(switch (0) {
     var n when n > 0 => 'positive',
     var n when n < 0 => 'negative',
-    _ => 'zero',
-  });
+    _ => 'zero' });
 }"#,
         ["zero"]
     };
@@ -658,8 +598,7 @@ dart_cases! {
         r#"void main() {
   print(switch ('hello') {
     var s when s.length == 5 => 'five-chars',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["five-chars"]
     };
@@ -669,8 +608,7 @@ dart_cases! {
   var xs = [1, 2, 3];
   print(switch (xs) {
     [var a, var b, var c] when a + b + c == 6 => 'sum-six',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["sum-six"]
     };
@@ -681,8 +619,7 @@ dart_cases! {
   print(switch (r) {
     (name: var n, score: var s) when s >= 90 => 'A',
     (name: var n, score: var s) when s >= 80 => 'B',
-    _ => 'C',
-  });
+    _ => 'C' });
 }"#,
         ["A"]
     };
@@ -692,8 +629,7 @@ dart_cases! {
   print(switch (4) {
     1 || 2 || 3 => 'small',
     var n when n >= 4 && n < 10 => 'mid',
-    _ => 'large',
-  });
+    _ => 'large' });
 }"#,
         ["mid"]
     };
@@ -703,8 +639,7 @@ dart_cases! {
   print(switch (6) {
     var n when n % 2 == 0 => 'even',
     var n when n % 2 == 1 => 'odd',
-    _ => 'unknown',
-  });
+    _ => 'unknown' });
 }"#,
         ["even"]
     };
@@ -714,8 +649,7 @@ dart_cases! {
   var xs = [2, 4];
   print(switch (xs) {
     [var a, var b] when a * b == 8 => 'product-eight',
-    _ => 'other',
-  });
+    _ => 'other' });
 }"#,
         ["product-eight"]
     };
@@ -725,8 +659,7 @@ dart_cases! {
   var u = (role: 'admin', level: 3);
   print(switch (u) {
     (role: 'admin', level: var lv) when lv >= 2 => 'elevated',
-    _ => 'standard',
-  });
+    _ => 'standard' });
 }"#,
         ["elevated"]
     };

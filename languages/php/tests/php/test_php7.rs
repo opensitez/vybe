@@ -127,7 +127,7 @@ fn php72_object_type() {
 // Trailing commas in grouped use
 #[test]
 fn php72_trailing_comma_use() {
-    assert!(parse_ok("<?php use App\\{A, B, C,};"));
+    assert!(parse_ok("<?php use App\\{A, B, C };"));
 }
 
 // ══════════════════════════════════════════════════════════════

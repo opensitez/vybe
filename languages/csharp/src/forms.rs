@@ -12,8 +12,7 @@ struct ControlInfo {
     width: i32,
     height: i32,
     text: String,
-    props: Vec<(String, String)>,
-}
+    props: Vec<(String, String)> }
 
 /// Parse C# designer source and populate a `GuiState` with live widgets.
 pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
@@ -25,7 +24,7 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
 
     for stmt in init_body {
         match &stmt.kind {
-            StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            StmtKind::Assign { targets, value, .. } if targets.len() == 1 => {
                 if let Some(field) = extract_this_field(&targets[0]) {
                     if let ExprKind::New { class, .. } = &value.kind {
                         let type_name = expr_to_type_name(class);
@@ -40,8 +39,7 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
                                     width: 100,
                                     height: 30,
                                     text: String::new(),
-                                    props: Vec::new(),
-                                });
+                                    props: Vec::new() });
                             }
                             continue;
                         }
@@ -87,8 +85,7 @@ pub fn load_designer(source: &str, gui: &mut GuiState) -> Result<(), String> {
             StmtKind::AddHandler {
                 control,
                 event,
-                handler,
-            } => {
+                handler } => {
                 let ctrl_name = expr_to_control_name(control);
                 let handler_name = expr_to_handler_name(handler);
                 if !ctrl_name.is_empty() && !handler_name.is_empty() {
@@ -128,8 +125,7 @@ pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
         x: i32,
         y: i32,
         w: i32,
-        h: i32,
-    }
+        h: i32 }
 
     let mut snaps: Vec<CtrlSnapshot> = Vec::new();
     for i in 0..gui.form.control_count() {
@@ -145,8 +141,7 @@ pub fn save_designer(gui: &mut GuiState, class_name: &str) -> String {
                 x: r.x as i32,
                 y: r.y as i32,
                 w: r.w as i32,
-                h: r.h as i32,
-            });
+                h: r.h as i32 });
         }
     }
 
@@ -323,8 +318,7 @@ fn extract_event_bind_from_assign<'a>(
     if let ExprKind::Binary {
         op: BinOp::Add,
         left,
-        right,
-    } = &value.kind
+        right } = &value.kind
     {
         let (left_ctrl, left_event) = extract_this_member_prop(left)?;
         if left_ctrl == ctrl && left_event == event_name {
@@ -376,8 +370,7 @@ fn arg_to_i32(arg: &Argument) -> Option<i32> {
     match &arg.value.kind {
         ExprKind::Lit(Literal::Int(n)) => Some(*n as i32),
         ExprKind::Lit(Literal::Float(f)) => Some(*f as i32),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn expr_to_type_name(expr: &Expression) -> String {
@@ -387,8 +380,7 @@ fn expr_to_type_name(expr: &Expression) -> String {
             let base = expr_to_type_name(object);
             format!("{}.{}", base, field)
         }
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 fn last_component(name: &str) -> &str {
@@ -399,16 +391,14 @@ fn expr_to_control_name(expr: &Expression) -> String {
     match &expr.kind {
         ExprKind::Ident(s) => s.clone(),
         ExprKind::Member { field, .. } => field.clone(),
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 fn expr_to_handler_name(expr: &Expression) -> String {
     match &expr.kind {
         ExprKind::Ident(s) => s.clone(),
         ExprKind::Member { field, .. } => field.clone(),
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 fn expr_to_value_string(expr: &Expression) -> String {
@@ -438,8 +428,7 @@ fn expr_to_value_string(expr: &Expression) -> String {
                 .collect();
             format!("{}({})", name, arg_strs.join(", "))
         }
-        _ => format!("{:?}", expr.kind),
-    }
+        _ => format!("{:?}", expr.kind) }
 }
 
 fn widget_to_csharp_type(widget: &dyn vybe_widgets::PanelWidget) -> &'static str {

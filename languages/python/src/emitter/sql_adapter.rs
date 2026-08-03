@@ -52,13 +52,13 @@ fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, a
 
 fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 
 /// `obj[key] = <value on stack>`. Stack: `[obj, value] -> []`.
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -239,7 +239,7 @@ pub fn emit_cursor(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     struct_set_key(&mut chunks[current], "__cursor", line);
 
     lget(&mut chunks[current], cur, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     struct_set_key(&mut chunks[current], "lastrowid", line);
 
     lget(&mut chunks[current], cur, line);
@@ -498,7 +498,7 @@ pub fn emit_fetchone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
     chunks[current].emit_else(line);
     {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_end(line);
     // result: tuple or null
@@ -509,7 +509,7 @@ fn emit_conn_op(chunks: &mut [Chunk], current: usize, argc: u8, op: &str, line: 
     lget(&mut chunks[current], base, line);
     call_import(chunks, current, "wasi:sql", op, 1, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     // result: None
 }
 

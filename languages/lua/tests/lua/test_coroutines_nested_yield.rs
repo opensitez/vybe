@@ -20,5 +20,4 @@ lua_print! {
     yield_inside_for_iterator => {
         "local co = coroutine.create(function()\n  for i = 1, 3 do coroutine.yield(i) end\n  return 4\nend)\nlocal r = \"\"\nwhile coroutine.status(co) ~= \"dead\" do\n  local ok, val = coroutine.resume(co)\n  if ok and val then r = r .. val end\nend\nprint(r)\n",
         "1234"
-    },
-}
+    } }

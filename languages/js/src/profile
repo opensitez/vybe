@@ -8,6 +8,8 @@ name = "js"
 extensions = ["js", "mjs"]
 
 [compiler]
+# Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
+global_namespace = "globalThis"
 function_return = "explicit"
 self_keyword = "this"
 constructor_name = "constructor"
@@ -44,6 +46,9 @@ ecma_iterator_result_shape = true     # .next() -> {value, done}
 # construction binds from it — decorator-style reassignment
 # (C.prototype.m = wrap(C.prototype.m)) reaches later instances.
 class_method_dispatch = "prototype"
+# Class static fields are own properties of the constructor — visible to
+# Object.getOwnPropertyDescriptor and removable with `delete`.
+static_fields_are_own_properties = true
 enum_as_ordinals = false
 case_sensitive = true
 string_indexing = "zero_based"
@@ -352,6 +357,12 @@ queueMicrotask       = { emit = "host:ecma:promise:queueMicrotask", min_args = 1
 "dns.lookup"           = { emit = "common:dotnet.dns_get_host_addresses", min_args = 1, max_args = 1 }
 
 # ── child_process module ─────────────────────────────────────────────────────
+
+# process.exit(code) — did not resolve at all, so the code after it kept
+# running and the status was lost. Routed through WASI like every other
+# language rather than `node:process.exit`, which calls `std::process::exit`
+# and would tear the embedder down.
+"process.exit" = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
 
 "child_process.execSync" = { emit = "host:node:child_process:execSync",  min_args = 1, max_args = 2 }
 "child_process.exec"     = { emit = "host:node:child_process:execSync",  min_args = 1, max_args = 2 }

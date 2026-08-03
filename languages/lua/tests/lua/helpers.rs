@@ -19,8 +19,7 @@ pub fn parse_ok(src: &str) {
 pub fn compile_ok(src: &str) {
     match compile_chunks(src) {
         Ok(chunks) => assert!(!chunks.is_empty(), "compile produced no chunks"),
-        Err(e) => panic!("compile failed: {e}"),
-    }
+        Err(e) => panic!("compile failed: {e}") }
 }
 
 pub fn run_lua(src: &str) -> Vec<String> {

@@ -13,8 +13,7 @@
 //!   - `toString()`, `equals()`, `hashCode()`, `compareTo()` → canonical names
 
 use vybe_ast::{
-    ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind, Visibility,
-};
+    ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind, Visibility };
 use vybe_ast::class_normalize::{NormalMembers, from_method_stmt, types::*};
 
 pub fn normalize_class(
@@ -44,8 +43,7 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
-                    readonly: m.is_readonly,
-                };
+                    readonly: m.is_readonly };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -70,8 +68,7 @@ pub fn normalize_class(
                     out.special_methods.push(SpecialMethod {
                         kind,
                         canonical_name: canonical.clone(),
-                        source_name: src_name.clone(),
-                    });
+                        source_name: src_name.clone() });
                 }
                 out.push_method(m.is_static, method);
             }
@@ -97,8 +94,7 @@ pub fn normalize_class(
                                 args.iter()
                                     .map(|e| vybe_ast::Argument::positional(e.clone()))
                                     .collect(),
-                            ),
-                        },
+                            ) },
                         None => {
                             if parents.is_empty() {
                                 BaseCall::None
@@ -107,8 +103,7 @@ pub fn normalize_class(
                             }
                         }
                     },
-                    named_name: None,
-                };
+                    named_name: None };
                 out.push_constructor(normalized);
             }
             // Java's augmentation is interface `default` methods, declared

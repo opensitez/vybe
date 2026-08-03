@@ -4,7 +4,7 @@ use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
 fn emit_exception_throw(chunk: &mut Chunk, exc_name: &str, message_slot: Option<u16>, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     if let Some(slot) = message_slot {
         chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -34,7 +34,7 @@ pub fn emit_exception(
         chunks[current].emit_op_u16(Op::LOCAL_SET, msg, line);
     }
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, msg, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -49,7 +49,7 @@ pub fn emit_exception(
 /// Stack: `[value]` -> `[value]`, or throws `NullPointerException` when value is null.
 pub fn emit_not_null_assert(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc == 0 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
 
     let value = chunks[current].alloc_scratch(1);
@@ -92,7 +92,7 @@ pub fn emit_precondition(
     chunks[current].emit_op_u16(Op::LOCAL_GET, condition, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     emit_exception_throw(&mut chunks[current], exc_name, message, line);
     chunks[current].emit_end(line);
@@ -112,7 +112,7 @@ pub fn emit_precondition_not_null(
     if argc >= 1 {
         chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
     }
 
@@ -133,7 +133,7 @@ pub fn emit_class_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     if argc >= 1 {
         chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
     }
 
@@ -142,7 +142,7 @@ pub fn emit_class_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     let type_key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
         vybe_compiler::primitives::reflection::FIELD_TYPE_NAME,
     )));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, type_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, type_name, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, type_name, line);
@@ -153,7 +153,7 @@ pub fn emit_class_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     chunks[current].emit_end(line);
 
     let klass = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, klass, line);
     set_field_from_slot(&mut chunks[current], klass, "simpleName", type_name, line);
     set_field_from_slot(
@@ -165,7 +165,7 @@ pub fn emit_class_of(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
     );
 
     let java = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, java, line);
     set_field_from_slot(&mut chunks[current], java, "name", type_name, line);
     set_field_from_slot(&mut chunks[current], java, "canonicalName", type_name, line);
@@ -189,6 +189,6 @@ fn set_field_from_slot(
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }

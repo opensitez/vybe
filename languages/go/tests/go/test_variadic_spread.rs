@@ -75,8 +75,7 @@ go_run_cases! {
     variadic_interface_mixed_len => (
         "package main; import \"fmt\"; func pack(values ...interface{}) int { return len(values) }; func main() { fmt.Println(pack(1, \"two\", true)); }",
         vec!["3"]
-    ),
-}
+    ) }
 
 go_compile_cases! {
     spread_nil_int_slice_to_variadic => "package main; import \"fmt\"; func sum(nums ...int) int { return len(nums) }; func main() { var s []int; fmt.Println(sum(s...)) }",
@@ -85,5 +84,4 @@ go_compile_cases! {
     mixed_params_int_string_variadic_compile => "package main; func log(level int, tag string, msgs ...string) int { return level + len(tag) + len(msgs) }; func main() { _ = log(2, \"app\", \"a\", \"b\") }",
     variadic_method_receiver_compile => "package main; type Logger struct{}; func (l Logger) Write(parts ...string) int { return len(parts) }; func main() { _ = Logger{}.Write(\"a\", \"b\") }",
     spread_string_slice_into_variadic_compile => "package main; func take(words ...string) int { return len(words) }; func main() { tail := []string{\"x\", \"y\"}; _ = take(tail...) }",
-    forward_variadic_to_peer_with_slice_copy_compile => "package main; func sink(nums ...int) int { return len(nums) }; func relay(nums ...int) int { copy := append([]int(nil), nums...); return sink(copy...) }; func main() { _ = relay(3, 4, 5) }",
-}
+    forward_variadic_to_peer_with_slice_copy_compile => "package main; func sink(nums ...int) int { return len(nums) }; func relay(nums ...int) int { copy := append([]int(nil), nums...); return sink(copy...) }; func main() { _ = relay(3, 4, 5) }" }

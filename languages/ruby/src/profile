@@ -9,6 +9,9 @@ extensions = ["rb"]
 
 [compiler]
 function_return = "explicit"
+# `Integer("abc")` raises ArgumentError; measured against ruby 2026-08-02.
+numeric_cast_invalid_error = "ArgumentError"
+numeric_cast_invalid_message = "invalid value for Integer(): \"{}\""
 self_keyword = "self"
 constructor_name = "initialize"
 # namespaceplan.md: namespace-shaped entry points resolve through the
@@ -193,7 +196,13 @@ srand           = { emit = "common:ruby.srand",             min_args = 0, max_ar
 # ── Misc ─────────────────────────────────────────────────────────────────────
 
 sleep           = { emit = "noop",                           min_args = 0, max_args = 1 }
-exit            = { emit = "noop",                           min_args = 0, max_args = 1 }
+# `exit` ends the RUN and carries the status — it was `noop`, so `exit 6`
+# did nothing at all and the rest of the script kept running (real ruby: 6).
+exit            = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
+# QUOTED: `!` is not legal in a bare TOML key, and an unquoted `exit!` makes the
+# whole profile fail to parse — which silently unregisters the language
+# ("Unknown file extension: .rb"), it does not report a profile error.
+"exit!"         = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
 system          = { emit = "host:node:child_process:execSync", min_args = 1, max_args = 1 }
 raise           = { emit = "throw",                          min_args = 0, max_args = 1 }
 sprintf         = { emit = "common:sprintf.format",          min_args = 1, max_args = 255 }

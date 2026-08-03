@@ -10,6 +10,16 @@ name = "c"
 extensions = ["c", "h"]
 
 [compiler]
+# `(double)x` / `(float)x` coerce without truncating.
+float_cast_types = ["double", "float"]
+# `int a[3] = {...}` / `char s[] = "hi"` are aggregates, not scalars to coerce.
+aggregate_decl_skips_coercion = true
+# A translation unit may take the address of an externally-defined object.
+globals_may_be_undeclared = true
+# `&v` promotes once at entry, not per `&v` site.
+promote_addr_taken_at_entry = true
+# libc supplies sprintf; the shared helper must not be linked over it.
+excluded_runtime_helpers = ["__stdlib_sprintf"]
 # `int / int` truncates. C# has always declared this; C reached the SAME shared
 # block through a `profile.name == "c"` check that carried a second copy of the
 # integer-spelling test (builtinslotplan.md §3c).
@@ -74,6 +84,10 @@ uses_common_resolver = true
 
 # ── string.h ─────────────────────────────────────────────────────────────────
 # strlen/strcmp work directly via opcode/emitter
+# `exit(code)` ENDS THE RUN with that status — it is not a return. Compiling it
+# to a bare return let a caller carry on and the process still exited 0, the
+# same bug PHP's `exit` had. `exit-with-code` is the WASI arm that carries a
+# real status.
 "strlen"   = { emit = "common:c.strlen",    min_args = 1, max_args = 1 }
 "strcmp"   = { emit = "common:c.strcmp",        min_args = 2, max_args = 2 }
 "strncmp"  = { emit = "common:c.strncmp",        min_args = 2, max_args = 3 }
@@ -240,3 +254,16 @@ extra_imports = []
 # old predicate did.
 [builtin_types]
 int = ["*int*", "*long*", "*short*", "*char*", "bool", "_bool"]
+
+# Cast-to-integer widths. `(char)x` truncates then wraps to 8 unsigned bits;
+# `(long)x` truncates only (no entry for `bits`).
+[integer_cast_widths]
+char = { bits = 8, signed = false }
+uint8 = { bits = 8, signed = false }
+int16 = { bits = 16, signed = true }
+int = { bits = 32, signed = true }
+uint32 = { bits = 32, signed = false }
+unsigned = { bits = 32, signed = false }
+"unsigned int" = { bits = 32, signed = false }
+"unsigned long" = { bits = 32, signed = false }
+long = {}

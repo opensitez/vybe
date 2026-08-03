@@ -36,5 +36,4 @@ lua_print! {
     os_time_ordering => {
         "local earlier = os.time({year=2000, month=1, day=1, hour=0, min=0, sec=0})\nlocal later = os.time({year=2001, month=1, day=1, hour=0, min=0, sec=0})\nprint(later > earlier)\n",
         "true"
-    },
-}
+    } }

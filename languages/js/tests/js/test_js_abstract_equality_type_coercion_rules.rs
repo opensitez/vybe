@@ -254,8 +254,7 @@ fn test_js_abstract_equality_valueof_falls_back_to_tostring() {
             r#"
 const obj = {
     valueOf() { return {}; },
-    toString() { return "7"; },
-};
+    toString() { return "7"; } };
 console.log(obj == 7);
 console.log(obj == "7");
 "#,

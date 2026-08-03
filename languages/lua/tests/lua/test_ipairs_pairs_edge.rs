@@ -44,5 +44,4 @@ lua_print! {
     ipairs_iterator_tuple => {
         "local it, s, i = ipairs({10, 20, 30})\nlocal _, v = it(s, i)\nprint(v)\n",
         "10"
-    },
-}
+    } }

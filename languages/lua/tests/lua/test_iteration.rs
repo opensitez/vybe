@@ -152,5 +152,4 @@ lua_print! {
     iterator_state_encapsulated_in_closure => {
         "local function range(from, to)\n  local i = from - 1\n  return function()\n    i = i + 1\n    if i <= to then return i end\n  end\nend\nlocal t = {}\nfor v in range(3, 6) do t[#t+1] = v end\nprint(table.concat(t, ','))\n",
         "3,4,5,6"
-    },
-}
+    } }

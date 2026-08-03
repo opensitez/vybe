@@ -34,7 +34,7 @@ fn push_str(chunk: &mut Chunk, s: &str, line: u32) {
 }
 
 fn push_null(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn push_empty(chunk: &mut Chunk, line: u32) {
@@ -196,7 +196,7 @@ fn emit_lua_gsub_manual_replace(
     {
         let index_key = chunks[current].add_constant(Value::String(Arc::from("index")));
         lget(&mut chunks[current], item_slot, line);
-        chunks[current].emit_op_u16(Op::STRUCT_GET, index_key, line);
+        chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, index_key, line);
         lset(&mut chunks[current], start_slot, line);
     }
 
@@ -1107,8 +1107,7 @@ fn escape_for_js_regex_pattern(s: &str) -> String {
                 // In JS regex, % is not special, but we escape it for clarity.
                 out.push('%');
             }
-            _ => out.push(c),
-        }
+            _ => out.push(c) }
     }
     out
 }
@@ -1436,7 +1435,7 @@ pub fn emit_lua_string_match(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
         let c = &mut chunks[current];
         let index_k = c.add_constant(Value::String(Arc::from("index")));
         lget(c, result_slot, line);
-        c.emit_op_u16(Op::STRUCT_GET, index_k, line);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, index_k, line);
         lget(c, result_slot, line);
         c.emit_i32_const(0, line);
         c.emit_op(Op::ARRAY_GET, line);
@@ -1608,7 +1607,7 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // start = result.index + 1  (Lua 1-based)
         let index_k = c.add_constant(Value::String(Arc::from("index")));
         lget(c, result_slot, line);
-        c.emit_op_u16(Op::STRUCT_GET, index_k, line);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, index_k, line);
         lget(c, start0_slot, line);
         c.emit_op(Op::F64_ADD, line);
         c.emit_f64_const(1.0, line);
@@ -1617,7 +1616,7 @@ pub fn emit_lua_string_find(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // end = start - 1 + len(result[0])  = result.index + len(result[0])
         lget(c, result_slot, line);
         let idx_k = c.add_constant(Value::String(Arc::from("index")));
-        c.emit_op_u16(Op::STRUCT_GET, idx_k, line);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, idx_k, line);
         lget(c, start0_slot, line);
         c.emit_op(Op::F64_ADD, line);
         lget(c, result_slot, line);

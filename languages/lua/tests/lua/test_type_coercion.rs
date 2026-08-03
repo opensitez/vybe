@@ -21,5 +21,4 @@ lua_print! {
     test_coercion_relational_operators_do_not_coerce_different_types => { "print(1 == '1')", "false" },
     test_coercion_relational_order_raises_error_on_mismatched_types => { "local ok, err = pcall(function() return 1 < '1' end); print(ok)", "false" },
     test_coercion_string_concat_with_float_trailing_zero => { "print(3.0 .. 'abc')", "3.0abc" },
-    test_coercion_string_math_with_trailing_chars_fails => { "local ok, err = pcall(function() return '10abc' + 5 end); print(ok)", "false" },
-}
+    test_coercion_string_math_with_trailing_chars_fails => { "local ok, err = pcall(function() return '10abc' + 5 end); print(ok)", "false" } }

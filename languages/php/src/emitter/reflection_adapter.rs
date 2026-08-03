@@ -19,7 +19,7 @@ fn build_field_getter(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u3
     c.arity = 1;
     let k = sconst(&mut c, field);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(1);
     chunks.push(c);
@@ -38,8 +38,8 @@ fn build_has_field(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32) 
     c.arity = 1;
     let k = sconst(&mut c, field);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, k, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     vybe_compiler::primitives::ops::emit_js_strict_eq(&mut c, line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut c, line);
     c.emit_op(Op::RETURN, line);
@@ -55,7 +55,7 @@ fn build_reflect_get(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     let k = sconst(&mut c, field);
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, k, line); // this.field
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line); // this.field
     reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
@@ -70,11 +70,11 @@ fn build_reflect_set(chunks: &mut Vec<Chunk>, name: &str, field: &str, line: u32
     let k = sconst(&mut c, field);
     c.emit_op_u16(Op::LOCAL_GET, 1, line); // obj
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, k, line); // this.field
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line); // this.field
     c.emit_op_u16(Op::LOCAL_GET, 2, line); // value
     reflection::emit_set_property_in_chunk(&mut c, line);
     c.emit_op(Op::DROP, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(3);
     chunks.push(c);
@@ -88,7 +88,7 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let method_k = sconst(&mut c, "method");
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, method_k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, method_k, line);
     reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 2, line);
@@ -106,7 +106,7 @@ fn build_implements_interface(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let ifaces_k = sconst(&mut c, "__interfaces");
     let indexof_i = c.add_import("ecma:array".to_string(), "indexOf".to_string());
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, ifaces_k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, ifaces_k, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_call(indexof_i, 2, line);
     // indexOf returns -1 if not found; >= 0 means found
@@ -130,10 +130,10 @@ fn build_get_methods(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
     c.emit_if_value(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, pub_k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, pub_k, line);
     c.emit_else(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, all_k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, all_k, line);
     c.emit_end(line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
@@ -152,10 +152,10 @@ fn build_get_properties(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     vybe_compiler::primitives::ops::emit_dyn_eq(&mut c, line);
     c.emit_if_value(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, pub_k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, pub_k, line);
     c.emit_else(line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
-    c.emit_op_u16(Op::STRUCT_GET, all_k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, all_k, line);
     c.emit_end(line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(2);
@@ -276,7 +276,7 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_SET, methods_slot, line);
         chunk.emit_array_new_fixed(0, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, ifaces_slot, line);
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunk.emit_op_u16(Op::LOCAL_SET, parent_slot, line);
         chunk.emit_bool_const(false, line);
         chunk.emit_op_u16(Op::LOCAL_SET, abstract_slot, line);
@@ -350,7 +350,7 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, parent_ref_slot, line);
         let pref_k = sconst(chunk, "__parent_ref");
-        chunk.emit_op_u16(Op::STRUCT_SET, pref_k, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pref_k, line);
         chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_end(line);
@@ -515,7 +515,7 @@ pub fn emit_refl_function(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     if argc >= 5 {
         chunk.emit_op_u16(Op::LOCAL_SET, return_type_slot, line);
     } else {
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunk.emit_op_u16(Op::LOCAL_SET, return_type_slot, line);
     }
 

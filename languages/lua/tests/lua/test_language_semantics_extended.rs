@@ -44,5 +44,4 @@ lua_print! {
     control_repeat_until => {
         "local n = 0\nrepeat n = n + 1 until n >= 3\nprint(n)\n",
         "3"
-    },
-}
+    } }

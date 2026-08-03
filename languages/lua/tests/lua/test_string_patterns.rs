@@ -196,5 +196,4 @@ lua_print! {
     pattern_lazy_star_minimal_match => {
         "print(string.match(\"abbc\", \"a.-c\"))\n",
         "abbc"
-    },
-}
+    } }

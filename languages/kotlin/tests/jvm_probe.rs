@@ -6,13 +6,13 @@
 //! declares only tree data (`type_scopes` + `kind = "tree-ambient"`), and the
 //! resolver does the rest — the same way csharp/vb reach `dotnet.*`.
 
-fn register_both() {
+fn register_plugins() {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(vybe_language_kotlin::register);
+    ONCE.call_once(vybe_runtime::init_registered);
 }
 
 fn try_compile(src: &str) -> Result<Vec<vybe_runtime::Chunk>, String> {
-    register_both();
+    register_plugins();
     let module = vybe_language_kotlin::parse(src)?;
     let profile = vybe_compiler::profile::parse_profile(vybe_language_kotlin::profile_source())
         .map_err(|e| format!("profile parse failed: {}", e))?;
@@ -45,13 +45,12 @@ fn probe(label: &str, src: &str) {
     vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     match vm.run(chunks) {
         Ok(_) => println!("[{label}] RAN → {:?}", output.lock().unwrap()),
-        Err(e) => println!("[{label}] RUNTIME TRAP: {e}"),
-    }
+        Err(e) => println!("[{label}] RUNTIME TRAP: {e}") }
 }
 
 #[test]
 fn tree_shape() {
-    register_both();
+    register_plugins();
     // Force the lazy platform/language tree registration the resolver does.
     let _ = try_compile("fun main() { println(1) }\nmain()\n");
     for path in [
@@ -191,7 +190,7 @@ main()
 /// collision, so a dropped leaf is otherwise invisible.
 #[test]
 fn all_java_keys_resolve() {
-    register_both();
+    register_plugins();
     let _ = try_compile("fun main() { println(1) }\nmain()\n");
     let src = vybe_language_java::profile_source();
     let mut keys: Vec<String> = Vec::new();
@@ -225,12 +224,11 @@ fn all_java_keys_resolve() {
 
 #[test]
 fn ast_shape() {
-    register_both();
+    register_plugins();
     let src = "import java.util.ArrayList\nfun main() {\n    val a = java.util.ArrayList<Int>()\n    val b = ArrayList<Int>()\n}\n";
     match vybe_language_kotlin::parse(src) {
         Ok(m) => println!("AST: {:#?}", m.body),
-        Err(e) => println!("PARSE FAIL: {e}"),
-    }
+        Err(e) => println!("PARSE FAIL: {e}") }
 }
 
 /// Kotlin's OWN names must not be hijacked by the `java.lang` ambient. The

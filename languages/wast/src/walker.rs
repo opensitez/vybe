@@ -121,8 +121,7 @@ fn peek_opener_has_param(pair: &Pair<Rule>) -> bool {
     let inner = if pair.as_rule() == Rule::instr {
         match pair.clone().into_inner().next() {
             Some(p) => p,
-            None => return false,
-        }
+            None => return false }
     } else {
         pair.clone()
     };
@@ -145,8 +144,7 @@ fn peek_block_param_count(pair: &Pair<Rule>) -> usize {
     let inner = if pair.as_rule() == Rule::instr {
         match pair.clone().into_inner().next() {
             Some(p) => p,
-            None => return 0,
-        }
+            None => return 0 }
     } else {
         pair.clone()
     };
@@ -178,8 +176,7 @@ fn peek_block_result_count(pair: &Pair<Rule>) -> usize {
     let inner = if pair.as_rule() == Rule::instr {
         match pair.clone().into_inner().next() {
             Some(p) => p,
-            None => return 0,
-        }
+            None => return 0 }
     } else {
         pair.clone()
     };
@@ -245,8 +242,7 @@ fn assign_last_n_exprs_to(body: &mut [Statement], temps: &[String]) {
             let value = e.clone();
             body[idx].kind = StmtKind::Expr(Expression::new(ExprKind::Assign {
                 target: Box::new(Expression::ident(&temps[k])),
-                value: Box::new(value),
-            }));
+                value: Box::new(value) }));
         }
     }
 }
@@ -273,8 +269,7 @@ fn carry_stack_into_temps(
             out.push(Statement::new(StmtKind::Expr(Expression::new(
                 ExprKind::Assign {
                     target: Box::new(Expression::ident(temp)),
-                    value: Box::new(val.clone()),
-                },
+                    value: Box::new(val.clone()) },
             ))));
         }
     }
@@ -306,10 +301,8 @@ fn preserve_stack_across_block(stack: &mut Vec<Expression>, statements: &mut Vec
                     type_hint: None,
                     init: Some(e),
                     array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Let,
-            }));
+                    with_events: false }],
+                kind: VarDeclKind::Let }));
             stack.push(Expression::ident(&t));
         }
     }
@@ -369,10 +362,8 @@ fn emit_folded_block(
                 type_hint: None,
                 init: Some(Expression::null()),
                 array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }));
+                with_events: false }],
+            kind: VarDeclKind::Let }));
     }
     let kind = if is_loop {
         LabelKind::Loop
@@ -394,16 +385,14 @@ fn emit_folded_block(
             StmtKind::While {
                 cond: Expression::bool(true),
                 body,
-                else_body: None,
-            },
+                else_body: None },
             span,
         )
     };
     statements.push(Statement::with_span(
         StmtKind::Labeled {
             label: effective,
-            body: Box::new(inner_stmt),
-        },
+            body: Box::new(inner_stmt) },
         span,
     ));
     for tmp in &result_temps {
@@ -459,10 +448,8 @@ fn emit_folded_try_table(
                 type_hint: None,
                 init: Some(Expression::null()),
                 array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        }));
+                with_events: false }],
+            kind: VarDeclKind::Let }));
     }
     let mut body = fold_instructions(instr_pairs, labels)?;
     assign_last_n_exprs_to(&mut body, &result_temps);
@@ -523,15 +510,13 @@ fn emit_folded_try_table(
             payload_binds,
             capture_ref,
             exnref_bind,
-            body: hbody,
-        });
+            body: hbody });
     }
 
     statements.push(Statement::with_span(
         StmtKind::WasmTryTable {
             body,
-            catches: wasm_catches,
-        },
+            catches: wasm_catches },
         span,
     ));
     // Normal-completion results are now available to the enclosing context.
@@ -589,10 +574,8 @@ fn emit_folded_br_on_null(
             type_hint: None,
             init: Some(ref_val),
             array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Let,
-    }));
+            with_events: false }],
+        kind: VarDeclKind::Let }));
     let is_null = make_call("ref_is_null", vec![Expression::ident(&tmp)], span);
     let target = br_target_of(label_arg.as_ref());
     let mut then_body: Vec<Statement> = Vec::new();
@@ -604,8 +587,7 @@ fn emit_folded_br_on_null(
                     then_body.push(Statement::new(StmtKind::Expr(Expression::new(
                         ExprKind::Assign {
                             target: Box::new(Expression::ident(rt)),
-                            value: Box::new(Expression::ident(&tmp)),
-                        },
+                            value: Box::new(Expression::ident(&tmp)) },
                     ))));
                 }
             } else {
@@ -614,14 +596,12 @@ fn emit_folded_br_on_null(
             }
             then_body.push(br_stmt_for(&entry, span));
         }
-        None => then_body.push(make_br_stmt_opt(None, labels, span)),
-    }
+        None => then_body.push(make_br_stmt_opt(None, labels, span)) }
     let cond = if is_non_null {
         Expression::new(ExprKind::Binary {
             op: BinOp::StrictEq,
             left: Box::new(is_null),
-            right: Box::new(Expression::int(0)),
-        })
+            right: Box::new(Expression::int(0)) })
     } else {
         is_null
     };
@@ -630,8 +610,7 @@ fn emit_folded_br_on_null(
             cond,
             then_body,
             else_body: None,
-            elifs: Vec::new(),
-        },
+            elifs: Vec::new() },
         span,
     ));
     // Fall-through: br_on_null leaves the (non-null) ref; br_on_non_null drops it.
@@ -676,8 +655,7 @@ fn emit_folded_return(
 #[derive(Clone, PartialEq)]
 enum LabelKind {
     Block,
-    Loop,
-}
+    Loop }
 
 #[derive(Clone)]
 struct LabelEntry {
@@ -695,8 +673,7 @@ struct LabelEntry {
     /// a loop (a `continue`) carries the top N stack values into these before
     /// looping, and the loop body reads them as its seed. Empty for blocks and
     /// param-less loops.
-    param_temps: Vec<String>,
-}
+    param_temps: Vec<String> }
 
 /// A fresh synthetic block/loop label.
 fn fresh_block_label() -> String {
@@ -722,8 +699,7 @@ impl LabelStack {
             name: effective.clone(),
             kind,
             result_temps,
-            param_temps: Vec::new(),
-        });
+            param_temps: Vec::new() });
         effective
     }
     fn pop(&mut self) {
@@ -756,8 +732,7 @@ impl LabelStack {
                 let len = self.0.len();
                 (*i < len).then(|| self.0[len - 1 - i].clone())
             }
-            BrTarget::Innermost => self.0.last().cloned(),
-        }
+            BrTarget::Innermost => self.0.last().cloned() }
     }
 }
 
@@ -765,16 +740,14 @@ impl LabelStack {
 enum BrTarget {
     Named(String),
     Index(usize),
-    Innermost,
-}
+    Innermost }
 
 /// Derive a `br` target from its first argument (label id or numeric index).
 fn br_target_of(arg: Option<&Expression>) -> BrTarget {
     match arg.map(|a| &a.kind) {
         Some(ExprKind::Ident(n)) => BrTarget::Named(n.clone()),
         Some(ExprKind::Lit(Literal::Int(i))) => BrTarget::Index(*i as usize),
-        _ => BrTarget::Innermost,
-    }
+        _ => BrTarget::Innermost }
 }
 
 /// The temporaries a `br`/`br_if` to `entry` carries the top-of-stack values
@@ -799,8 +772,7 @@ fn br_stmt_for(entry: &LabelEntry, span: Span) -> Statement {
         LabelKind::Block => Statement::with_span(
             StmtKind::Break(BreakTarget::Label(entry.name.clone())),
             span,
-        ),
-    }
+        ) }
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
@@ -820,16 +792,14 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 }
             }
             Rule::EOI => {}
-            _ => walk_script_cmd(top, &mut body)?,
-        }
+            _ => walk_script_cmd(top, &mut body)? }
     }
 
     Ok(Module {
         name: "main".into(),
         language: Lang::Unknown,
         body,
-        imports: Vec::new(),
-    })
+        imports: Vec::new() })
 }
 
 // ── Script commands ───────────────────────────────────────────────────────────
@@ -899,8 +869,7 @@ fn walk_script_cmd(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), St
             body.push(walk_get_cmd(pair)?);
             Ok(())
         }
-        _ => Ok(()),
-    }
+        _ => Ok(()) }
 }
 
 // ── Module ────────────────────────────────────────────────────────────────────
@@ -1467,10 +1436,8 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                                 type_hint: None,
                                 init: Some(init),
                                 array_bounds: None,
-                                with_events: false,
-                            }],
-                            kind: VarDeclKind::Let,
-                        }));
+                                with_events: false }],
+                            kind: VarDeclKind::Let }));
                     }
                     // `(start $f)` is invoked as a static method at instantiation
                     // in the module assembly below (its name was captured in the
@@ -1513,8 +1480,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             interfaces: Vec::new(),
             members,
             modifiers: ClassModifiers::default(),
-            decorators: Vec::new(),
-        },
+            decorators: Vec::new() },
         span,
     );
 
@@ -1533,8 +1499,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                         Argument::positional(Expression::string(parent.as_deref().unwrap_or(""))),
                         Argument::positional(Expression::int(*fields as i64)),
                     ],
-                    optional: false,
-                })))
+                    optional: false })))
             })
             .collect()
     });
@@ -1552,8 +1517,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                         Argument::positional(Expression::string(name)),
                         Argument::positional(Expression::string(elem)),
                     ],
-                    optional: false,
-                })))
+                    optional: false })))
             })
             .collect::<Vec<_>>()
     }));
@@ -1570,11 +1534,9 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(&class_name)),
                     field: sf.clone(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: Vec::new(),
-                optional: false,
-            });
+                optional: false });
             result.push(Statement::new(StmtKind::Expr(call)));
         }
     }
@@ -1593,20 +1555,17 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             let callee = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&class_name)),
                 field: entry,
-                null_safe: false,
-            });
+                null_safe: false });
             let call = Expression::new(ExprKind::Call {
                 callee: Box::new(callee),
                 args: Vec::new(),
-                optional: false,
-            });
+                optional: false });
             let stmt = if entry_yields {
                 // `log(entry())` — the entry's declared result is its output.
                 Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("log")),
                     args: vec![Argument::positional(call)],
-                    optional: false,
-                })
+                    optional: false })
             } else {
                 call
             };
@@ -1679,8 +1638,7 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            })
+                                is_nullable: false })
                             .collect();
                     }
                 }
@@ -1736,8 +1694,7 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        },
+            is_sub: false },
         span,
     ))
 }
@@ -1829,8 +1786,7 @@ fn walk_param(pair: Pair<Rule>, base: usize) -> Result<Vec<Param>, String> {
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false,
-        }]);
+            is_nullable: false }]);
     }
     Ok(types
         .into_iter()
@@ -1843,8 +1799,7 @@ fn walk_param(pair: Pair<Rule>, base: usize) -> Result<Vec<Param>, String> {
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false,
-        })
+            is_nullable: false })
         .collect())
 }
 
@@ -1882,20 +1837,16 @@ fn walk_local(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                 s if s.contains('$') => Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__wast_typed_null")),
                     args: vec![],
-                    optional: false,
-                }),
-                _ => Expression::null(),
-            };
+                    optional: false }),
+                _ => Expression::null() };
             Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(var_name),
                     type_hint: Some(t.clone()),
                     init: Some(init),
                     array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Let,
-            })
+                    with_events: false }],
+                kind: VarDeclKind::Let })
         })
         .collect())
 }
@@ -1916,8 +1867,7 @@ fn walk_instr_as_stmts(
     match inner.as_rule() {
         Rule::folded_instr => walk_folded_instr_as_stmts(inner, span, labels),
         Rule::plain_instr => walk_plain_instr_as_stmts(inner, span, labels),
-        _ => Err(format!("Unexpected instr rule: {:?}", inner.as_rule())),
-    }
+        _ => Err(format!("Unexpected instr rule: {:?}", inner.as_rule())) }
 }
 
 fn walk_instr_as_expr(pair: Pair<Rule>, labels: &mut LabelStack) -> Result<Expression, String> {
@@ -1926,8 +1876,7 @@ fn walk_instr_as_expr(pair: Pair<Rule>, labels: &mut LabelStack) -> Result<Expre
     match inner.as_rule() {
         Rule::folded_instr => walk_folded_instr_as_expr(inner, span, labels),
         Rule::plain_instr => walk_plain_instr_as_expr(inner, span, labels),
-        _ => Err(format!("Unexpected instr rule: {:?}", inner.as_rule())),
-    }
+        _ => Err(format!("Unexpected instr rule: {:?}", inner.as_rule())) }
 }
 
 // ── Plain instructions ────────────────────────────────────────────────────────
@@ -2003,8 +1952,7 @@ fn walk_folded_instr_as_stmts(
             Ok(vec![Statement::with_span(
                 StmtKind::Labeled {
                     label: effective,
-                    body: Box::new(block_stmt),
-                },
+                    body: Box::new(block_stmt) },
                 span,
             )])
         }
@@ -2033,15 +1981,13 @@ fn walk_folded_instr_as_stmts(
                 StmtKind::While {
                     cond: Expression::bool(true),
                     body,
-                    else_body: None,
-                },
+                    else_body: None },
                 span,
             );
             Ok(vec![Statement::with_span(
                 StmtKind::Labeled {
                     label: effective,
-                    body: Box::new(while_stmt),
-                },
+                    body: Box::new(while_stmt) },
                 span,
             )])
         }
@@ -2060,8 +2006,7 @@ fn walk_folded_instr_as_stmts(
         "unreachable" => Ok(vec![Statement::with_span(
             StmtKind::Throw {
                 expr: None,
-                cause: None,
-            },
+                cause: None },
             span,
         )]),
 
@@ -2110,8 +2055,7 @@ fn walk_folded_instr_as_stmts(
                     cond: cond_expr,
                     then_body: vec![branch],
                     else_body: None,
-                    elifs: Vec::new(),
-                },
+                    elifs: Vec::new() },
                 span,
             )])
         }
@@ -2275,8 +2219,7 @@ fn walk_folded_core(
             ExprKind::Ternary {
                 cond: Box::new(cond),
                 then: Box::new(then_val),
-                else_: Box::new(else_val),
-            },
+                else_: Box::new(else_val) },
             span,
         ));
     }
@@ -2294,15 +2237,13 @@ fn wat_float_format(x: Expression) -> Expression {
         Expression::new(ExprKind::Binary {
             op,
             left: Box::new(l),
-            right: Box::new(r),
-        })
+            right: Box::new(r) })
     }
     fn tern(c: Expression, t: Expression, e: Expression) -> Expression {
         Expression::new(ExprKind::Ternary {
             cond: Box::new(c),
             then: Box::new(t),
-            else_: Box::new(e),
-        })
+            else_: Box::new(e) })
     }
     let zero = || Expression::float(0.0);
     // whole number → "<x>.0"; otherwise the natural decimal string.
@@ -2367,8 +2308,7 @@ fn fold_memarg_offset(args: Vec<Expression>, span: Span) -> Vec<Expression> {
                 ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(addr),
-                    right: Box::new(Expression::int(offset)),
-                },
+                    right: Box::new(Expression::int(offset)) },
                 span,
             );
         }
@@ -2398,8 +2338,7 @@ fn resolve_wat_memidx(e: &Expression) -> usize {
         ExprKind::Ident(nm) => MEMORY_NAME_INDEX
             .with(|f| f.borrow().get(nm).copied())
             .unwrap_or(0),
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 /// Number of leading memory-index immediates a memory op may carry: `memory.copy`
@@ -2413,8 +2352,7 @@ fn mem_op_immediate_count(name: &str) -> usize {
         | "i64.load8_s" | "i64.load8_u" | "i64.load16_s" | "i64.load16_u" | "i64.load32_s"
         | "i64.load32_u" | "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8"
         | "i32.store16" | "i64.store8" | "i64.store16" | "i64.store32" => 1,
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 /// True when a raw `instr_arg` is a BARE index immediate (`integer`/`id`) — i.e.
@@ -2520,8 +2458,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             let signed = name == "array.get_s";
             let elem = args.first().and_then(|a| match &a.kind {
                 ExprKind::Ident(n) => ARRAY_ELEM_TYPE.with(|m| m.borrow().get(n).cloned()),
-                _ => None,
-            });
+                _ => None });
             let rest: Vec<Expression> = args.into_iter().skip(1).collect();
             let get = make_call("array_get", rest, span);
             Ok(match (elem.as_deref(), signed) {
@@ -2530,16 +2467,13 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 (Some("i8"), false) => Expression::new(ExprKind::Binary {
                     op: BinOp::BitAnd,
                     left: Box::new(get),
-                    right: Box::new(Expression::int(0xFF)),
-                }),
+                    right: Box::new(Expression::int(0xFF)) }),
                 (Some("i16"), false) => Expression::new(ExprKind::Binary {
                     op: BinOp::BitAnd,
                     left: Box::new(get),
-                    right: Box::new(Expression::int(0xFFFF)),
-                }),
+                    right: Box::new(Expression::int(0xFFFF)) }),
                 // Non-packed (i32/i64/ref/…): the stored value is already exact.
-                _ => get,
-            })
+                _ => get })
         }
         "array.copy" => {
             let rest: Vec<Expression> = args.into_iter().skip(2).collect();
@@ -2596,8 +2530,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 ExprKind::Lit(Literal::Int(i)) => {
                     Expression::with_span(ExprKind::Ident(index_binding_name(*i, is_global)), span)
                 }
-                _ => idx,
-            })
+                _ => idx })
         }
 
         // ── Local / global set → Assign ───────────────────────────────────
@@ -2611,13 +2544,11 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 ExprKind::Lit(Literal::Int(i)) => {
                     Expression::with_span(ExprKind::Ident(index_binding_name(*i, is_global)), span)
                 }
-                _ => target_raw,
-            };
+                _ => target_raw };
             Ok(Expression::with_span(
                 ExprKind::Assign {
                     target: Box::new(target),
-                    value: Box::new(value),
-                },
+                    value: Box::new(value) },
                 span,
             ))
         }
@@ -2630,15 +2561,13 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             let target_name = match &target_raw.kind {
                 ExprKind::Ident(n) => n.clone(),
                 ExprKind::Lit(Literal::Int(i)) => format!("p{}", i),
-                _ => "__tee_tmp".to_string(),
-            };
+                _ => "__tee_tmp".to_string() };
             Ok(Expression::with_span(
                 ExprKind::Sequence(vec![
                     Expression::with_span(
                         ExprKind::Assign {
                             target: Box::new(Expression::ident(&target_name)),
-                            value: Box::new(value),
-                        },
+                            value: Box::new(value) },
                         span,
                     ),
                     Expression::ident(&target_name),
@@ -2678,8 +2607,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             Ok(Expression::with_span(
                 ExprKind::Unary {
                     op: UnaryOp::Neg,
-                    expr: Box::new(operand),
-                },
+                    expr: Box::new(operand) },
                 span,
             ))
         }
@@ -2705,8 +2633,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 ExprKind::Ternary {
                     cond: Box::new(cond),
                     then: Box::new(val1),
-                    else_: Box::new(val2),
-                },
+                    else_: Box::new(val2) },
                 span,
             ))
         }
@@ -2745,19 +2672,16 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                         ExprKind::Member {
                             object: Box::new(Expression::ident(&class)),
                             field: n.clone(),
-                            null_safe: false,
-                        },
+                            null_safe: false },
                         span,
                     )
                 }
-                _ => callee,
-            };
+                _ => callee };
             Ok(Expression::with_span(
                 ExprKind::Call {
                     callee: Box::new(callee),
                     args: call_args.into_iter().map(Argument::positional).collect(),
-                    optional: false,
-                },
+                    optional: false },
                 span,
             ))
         }
@@ -2781,17 +2705,14 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
             let field = match args.into_iter().next() {
                 Some(e) => match &e.kind {
                     ExprKind::Ident(n) => n.clone(),
-                    _ => return Ok(e),
-                },
-                None => return Ok(Expression::null()),
-            };
+                    _ => return Ok(e) },
+                None => return Ok(Expression::null()) };
             let class = MODULE_CLASS_NAME.with(|c| c.borrow().clone());
             Ok(Expression::with_span(
                 ExprKind::Member {
                     object: Box::new(Expression::ident(&class)),
                     field,
-                    null_safe: false,
-                },
+                    null_safe: false },
                 span,
             ))
         }
@@ -2817,8 +2738,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 ExprKind::Call {
                     callee: Box::new(callee),
                     args: rest.into_iter().map(Argument::positional).collect(),
-                    optional: false,
-                },
+                    optional: false },
                 span,
             ))
         }
@@ -2840,8 +2760,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 .enumerate()
                 .map(|(i, v)| ObjectProperty::KeyValue {
                     key: Expression::string(&i.to_string()),
-                    value: v,
-                })
+                    value: v })
                 .collect();
             let obj = Expression::with_span(ExprKind::Object(props), span);
             Ok(wast_stamp_type(obj, &type_name, span))
@@ -2858,8 +2777,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 .enumerate()
                 .map(|(i, ty)| ObjectProperty::KeyValue {
                     key: Expression::string(&i.to_string()),
-                    value: default_value_for_storage_type(ty),
-                })
+                    value: default_value_for_storage_type(ty) })
                 .collect();
             let obj = Expression::with_span(ExprKind::Object(props), span);
             Ok(wast_stamp_type(obj, &type_name, span))
@@ -2871,8 +2789,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         "array.new_default" => {
             let elem = args.first().and_then(|a| match &a.kind {
                 ExprKind::Ident(n) => ARRAY_ELEM_TYPE.with(|m| m.borrow().get(n).cloned()),
-                _ => None,
-            });
+                _ => None });
             // Numeric OR concrete `(ref null $t)` elements have a known default
             // (0/0.0/typed-null), so lower to `array.new $T <default> <length>`
             // which fills every lane. funcref/externref/unknown keep the VM's
@@ -2903,8 +2820,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                         key: None,
                         value: v.clone(),
                         spread: false,
-                        by_ref: false,
-                    })
+                        by_ref: false })
                     .collect()
             } else {
                 vec![]
@@ -2917,8 +2833,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                         Argument::positional(arr),
                         Argument::positional(Expression::string(&type_name)),
                     ],
-                    optional: false,
-                },
+                    optional: false },
                 span,
             ))
         }
@@ -2942,8 +2857,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 ExprKind::Member {
                     object: Box::new(obj),
                     field: field_idx.to_string(),
-                    null_safe: false,
-                },
+                    null_safe: false },
                 span,
             );
             if name == "struct.get" {
@@ -2961,16 +2875,13 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                 (Some("i8"), false) => Expression::new(ExprKind::Binary {
                     op: BinOp::BitAnd,
                     left: Box::new(member),
-                    right: Box::new(Expression::int(0xFF)),
-                }),
+                    right: Box::new(Expression::int(0xFF)) }),
                 (Some("i16"), false) => Expression::new(ExprKind::Binary {
                     op: BinOp::BitAnd,
                     left: Box::new(member),
-                    right: Box::new(Expression::int(0xFFFF)),
-                }),
+                    right: Box::new(Expression::int(0xFFFF)) }),
                 // Non-packed (i32/i64/ref/…): the stored value is already exact.
-                _ => member,
-            })
+                _ => member })
         }
         // struct.set $T N ref val → ref["N"] = val  (produces null, used as stmt)
         // args: [typeidx, fieldidx, ref_expr, val_expr]
@@ -2993,19 +2904,16 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
                         ExprKind::Member {
                             object: Box::new(obj),
                             field: field_idx.to_string(),
-                            null_safe: false,
-                        },
+                            null_safe: false },
                         span,
                     )),
-                    value: Box::new(val),
-                },
+                    value: Box::new(val) },
                 span,
             ))
         }
 
         // ── everything else → call with dots replaced by underscores ──────
-        _ => Ok(make_call(&name.replace('.', "_"), args, span)),
-    }
+        _ => Ok(make_call(&name.replace('.', "_"), args, span)) }
 }
 
 // ── Instruction argument helpers ──────────────────────────────────────────────
@@ -3014,8 +2922,7 @@ fn walk_instr_arg_pair(pair: Pair<Rule>, labels: &mut LabelStack) -> Result<Expr
     let inner = pair.into_inner().next().ok_or("Empty instr_arg")?;
     match inner.as_rule() {
         Rule::folded_instr => walk_folded_instr_as_expr(inner, Span::default(), labels),
-        _ => Ok(instr_arg_inner_to_expr(inner)),
-    }
+        _ => Ok(instr_arg_inner_to_expr(inner)) }
 }
 
 fn instr_arg_inner_to_expr(inner: Pair<Rule>) -> Expression {
@@ -3030,8 +2937,7 @@ fn instr_arg_inner_to_expr(inner: Pair<Rule>) -> Expression {
         | Rule::bare_heap_type
         | Rule::mem_arg
         | Rule::val_lane_type => Expression::string(inner.as_str()),
-        _ => Expression::null(),
-    }
+        _ => Expression::null() }
 }
 
 // ── Break/continue helper ─────────────────────────────────────────────────────
@@ -3043,10 +2949,8 @@ fn make_br_stmt_opt(label: Option<&str>, labels: &LabelStack, span: Span) -> Sta
                 StmtKind::Continue(ContinueTarget::Label(lbl.to_string())),
                 span,
             ),
-            _ => Statement::with_span(StmtKind::Break(BreakTarget::Label(lbl.to_string())), span),
-        },
-        None => Statement::with_span(StmtKind::Break(BreakTarget::Implicit), span),
-    }
+            _ => Statement::with_span(StmtKind::Break(BreakTarget::Label(lbl.to_string())), span) },
+        None => Statement::with_span(StmtKind::Break(BreakTarget::Implicit), span) }
 }
 
 // ── Module fields ─────────────────────────────────────────────────────────────
@@ -3132,8 +3036,7 @@ fn walk_memory_field(pair: Pair<Rule>) -> Result<Statement, String> {
     Ok(Statement::with_span(
         StmtKind::MemoryDecl {
             min_pages,
-            max_pages,
-        },
+            max_pages },
         span,
     ))
 }
@@ -3172,8 +3075,7 @@ fn walk_tag_field(pair: Pair<Rule>) -> Result<Statement, String> {
     Ok(Statement::with_span(
         StmtKind::WasmTagDecl {
             name: name.unwrap_or_default(),
-            arity,
-        },
+            arity },
         span,
     ))
 }
@@ -3219,8 +3121,7 @@ fn walk_table_field(
         let decl = Statement::with_span(
             StmtKind::TableDecl {
                 min_size: n,
-                max_size: Some(n),
-            },
+                max_size: Some(n) },
             span,
         );
         let mut population = Vec::new();
@@ -3228,8 +3129,7 @@ fn walk_table_field(
             let funcref = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&class)),
                 field: f.clone(),
-                null_safe: false,
-            });
+                null_safe: false });
             let call = make_call(
                 "table_set",
                 vec![
@@ -3275,8 +3175,7 @@ fn wasm_type_ref_name(expr: &Expression) -> String {
     match &expr.kind {
         ExprKind::Ident(n) => n.clone(),
         ExprKind::Lit(Literal::Int(i)) => i.to_string(),
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 /// Stamp a freshly-built struct object with its WASM GC rtt (the registered
@@ -3292,8 +3191,7 @@ fn wast_stamp_type(obj: Expression, type_name: &str, span: Span) -> Expression {
                 Argument::positional(obj),
                 Argument::positional(Expression::string(type_name)),
             ],
-            optional: false,
-        },
+            optional: false },
         span,
     )
 }
@@ -3393,8 +3291,7 @@ fn walk_elem_field(pair: Pair<Rule>) -> Result<Statement, String> {
         let funcref = Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&class)),
             field: f.clone(),
-            null_safe: false,
-        });
+            null_safe: false });
         let call = make_call(
             "table_set",
             vec![
@@ -3456,10 +3353,8 @@ fn default_value_for_storage_type(ty: &str) -> Expression {
         s if s.contains('$') => Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__wast_typed_null")),
             args: vec![],
-            optional: false,
-        }),
-        _ => Expression::null(),
-    }
+            optional: false }),
+        _ => Expression::null() }
 }
 
 /// The ordered field storage types of a `struct_type`/`struct_subtype` body.
@@ -3527,8 +3422,7 @@ fn walk_data_field(pair: Pair<Rule>) -> Result<Statement, String> {
         StmtKind::DataSegment {
             memory_index,
             offset,
-            bytes,
-        },
+            bytes },
         span,
     ))
 }
@@ -3558,8 +3452,7 @@ fn decode_wat_data_string(s: &str) -> Vec<u8> {
             b'0'..=b'9' => c - b'0',
             b'a'..=b'f' => c - b'a' + 10,
             b'A'..=b'F' => c - b'A' + 10,
-            _ => 0,
-        }
+            _ => 0 }
     };
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -3651,41 +3544,116 @@ fn walk_invoke_cmd(pair: Pair<Rule>) -> Result<Statement, String> {
                 ExprKind::Member {
                     object: Box::new(Expression::ident(&class)),
                     field: method,
-                    null_safe: false,
-                },
+                    null_safe: false },
                 span,
             )
         }
-        None => Expression::ident(&func_name),
-    };
+        None => Expression::ident(&func_name) };
     Ok(Statement::with_span(
         StmtKind::Expr(Expression::with_span(
             ExprKind::Call {
                 callee: Box::new(callee),
                 args: args.into_iter().map(Argument::positional).collect(),
-                optional: false,
-            },
+                optional: false },
             span,
         )),
         span,
     ))
 }
 
+/// `(assert_return (invoke "f" …) (i32.const 42))`.
+///
+/// A script directive is part of the LANGUAGE, not a call into a test harness.
+/// It lowers to ordinary code — run the action, compare, throw on mismatch — so
+/// `vybex file.wast` works on its own. Routing it to `vybe:wast:assert_return`
+/// meant the only implementation lived in `languages/wast/tests/wast/helpers.rs`
+/// and every script died with `Unresolved import` outside `cargo test`.
+///
+/// The file itself is untouched: `wasmtime wast` runs the same source through
+/// its own native directive support.
 fn walk_assert_return(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut action_expr: Option<Expression> = None;
     let mut expected: Vec<Expression> = Vec::new();
+    let mut expects_nan = Vec::new();
+    let mut expects_v128 = Vec::new();
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::action => action_expr = Some(walk_action(child)?),
-            Rule::result_val => expected.push(walk_const_expr(child)?),
+            Rule::result_val => {
+                // `nan:canonical` / `nan:arithmetic` pin no payload, so they
+                // cannot be compared with `==`.
+                expects_nan.push(child.as_str().contains("nan"));
+                // A v128 is a VECTOR: scalar `!=` does not compare its lanes,
+                // so it reports "different" for two identical vectors and every
+                // v128-returning assert fails regardless of its lanes.
+                expects_v128.push(child.as_str().contains("v128"));
+                expected.push(walk_const_expr(child)?);
+            }
             _ => {}
         }
     }
-    let mut args = Vec::new();
-    if let Some(a) = action_expr {
-        args.push(a);
+    let Some(action) = action_expr else {
+        return Ok(Statement::with_span(StmtKind::Empty, span));
+    };
+
+    if expected.len() == 1 {
+        let want = expected.pop().expect("checked len");
+        let cond = if expects_nan[0] {
+            // NaN is the only value that differs from itself, so "equals
+            // itself" is precisely the failure case.
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(action.clone()),
+                    right: Box::new(action) },
+                span,
+            )
+        } else if expects_v128[0] {
+            // Lane-wise: `i8x16.eq` yields all-ones in each byte lane that
+            // matches, and `i8x16.all_true` is 1 only when every lane did. So
+            // the FAILURE condition is that result being 0. Comparing at i8x16
+            // is shape-independent — it checks all 16 bytes, so it is correct
+            // for i32x4 / f64x2 / any other interpretation of the same bits.
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(make_call(
+                        "i8x16.all_true",
+                        vec![make_call("i8x16.eq", vec![action, want], span)],
+                        span,
+                    )),
+                    right: Box::new(Expression::int(0)) },
+                span,
+            )
+        } else {
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(action),
+                    right: Box::new(want) },
+                span,
+            )
+        };
+        let throw = Statement::with_span(
+            StmtKind::Throw {
+                expr: Some(Expression::string("assert_return failed")),
+                cause: None },
+            span,
+        );
+        return Ok(Statement::with_span(
+            StmtKind::If {
+                cond,
+                then_body: vec![throw],
+                elifs: Vec::new(),
+                else_body: None },
+            span,
+        ));
     }
+
+    // Multi-value results arrive packed as one array and zero-value actions
+    // have nothing to compare; both still go through the builtin.
+    let mut args = vec![action];
     args.extend(expected);
     Ok(Statement::with_span(
         StmtKind::Expr(make_call("__wast_assert_return", args, span)),
@@ -3774,18 +3742,15 @@ fn walk_action(pair: Pair<Rule>) -> Result<Expression, String> {
             let stmt = walk_invoke_cmd(inner)?;
             match stmt.kind {
                 StmtKind::Expr(e) => Ok(e),
-                _ => Ok(Expression::null()),
-            }
+                _ => Ok(Expression::null()) }
         }
         Rule::get_cmd => {
             let stmt = walk_get_cmd(inner)?;
             match stmt.kind {
                 StmtKind::Expr(e) => Ok(e),
-                _ => Ok(Expression::null()),
-            }
+                _ => Ok(Expression::null()) }
         }
-        _ => Ok(Expression::null()),
-    }
+        _ => Ok(Expression::null()) }
 }
 
 fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -3832,8 +3797,7 @@ fn make_call(name: &str, args: Vec<Expression>, span: Span) -> Expression {
         ExprKind::Call {
             callee: Box::new(Expression::ident(name)),
             args: args.into_iter().map(Argument::positional).collect(),
-            optional: false,
-        },
+            optional: false },
         span,
     )
 }
@@ -3849,8 +3813,7 @@ fn bin_op(mut args: Vec<Expression>, op: BinOp, span: Span) -> Result<Expression
         ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right),
-        },
+            right: Box::new(right) },
         span,
     ))
 }
@@ -3901,8 +3864,7 @@ fn apply_multi_value_return(body: &mut Vec<Statement>, n: usize) {
         .iter()
         .map(|&i| match &body[i].kind {
             StmtKind::Expr(e) => e.clone(),
-            _ => unreachable!(),
-        })
+            _ => unreachable!() })
         .collect();
     // The N statements are contiguous at the tail; drop them and append the
     // single tuple return.
@@ -3976,19 +3938,16 @@ fn parse_float(s: &str) -> Expression {
 fn parse_hex_float(s: &str) -> Option<f64> {
     let (neg, rest) = match s.strip_prefix('-') {
         Some(r) => (true, r),
-        None => (false, s.strip_prefix('+').unwrap_or(s)),
-    };
+        None => (false, s.strip_prefix('+').unwrap_or(s)) };
     let rest = rest
         .strip_prefix("0x")
         .or_else(|| rest.strip_prefix("0X"))?;
     let (mantissa, exp) = match rest.find(['p', 'P']) {
         Some(i) => (&rest[..i], rest[i + 1..].parse::<i32>().ok()?),
-        None => (rest, 0),
-    };
+        None => (rest, 0) };
     let (int_part, frac_part) = match mantissa.find('.') {
         Some(i) => (&mantissa[..i], &mantissa[i + 1..]),
-        None => (mantissa, ""),
-    };
+        None => (mantissa, "") };
     let mut value = 0.0f64;
     for c in int_part.chars() {
         value = value * 16.0 + c.to_digit(16)? as f64;
@@ -4023,8 +3982,7 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: start.0 as u32,
         start_col: start.1 as u32,
         end_line: end.0 as u32,
-        end_col: end.1 as u32,
-    }
+        end_col: end.1 as u32 }
 }
 
 /// Peek the plain-instruction keyword of an `instr`/`plain_instr` pair without
@@ -4221,10 +4179,8 @@ fn fold_instructions_seeded(
                                         type_hint: None,
                                         init: Some(Expression::null()),
                                         array_bounds: None,
-                                        with_events: false,
-                                    }],
-                                    kind: VarDeclKind::Let,
-                                }));
+                                        with_events: false }],
+                                    kind: VarDeclKind::Let }));
                             }
                             assign_last_n_exprs_to(&mut then_body, &result_temps);
                             if let Some(eb) = else_body.as_mut() {
@@ -4235,8 +4191,7 @@ fn fold_instructions_seeded(
                                     cond,
                                     then_body,
                                     else_body,
-                                    elifs: Vec::new(),
-                                },
+                                    elifs: Vec::new() },
                                 span,
                             ));
                             for tmp in &result_temps {
@@ -4248,8 +4203,7 @@ fn fold_instructions_seeded(
                                     cond,
                                     then_body,
                                     else_body,
-                                    elifs: Vec::new(),
-                                },
+                                    elifs: Vec::new() },
                                 span,
                             ));
                         }
@@ -4290,10 +4244,8 @@ fn fold_instructions_seeded(
                                         type_hint: None,
                                         init: Some(init),
                                         array_bounds: None,
-                                        with_events: false,
-                                    }],
-                                    kind: VarDeclKind::Let,
-                                }));
+                                        with_events: false }],
+                                    kind: VarDeclKind::Let }));
                             }
                             param_temps.iter().map(|t| Expression::ident(t)).collect()
                         } else {
@@ -4318,10 +4270,8 @@ fn fold_instructions_seeded(
                                     type_hint: None,
                                     init: Some(Expression::null()),
                                     array_bounds: None,
-                                    with_events: false,
-                                }],
-                                kind: VarDeclKind::Let,
-                            }));
+                                    with_events: false }],
+                                kind: VarDeclKind::Let }));
                         }
                         let effective = labels.push(label.clone(), kind, result_temps.clone());
                         labels.set_last_param_temps(param_temps.clone());
@@ -4343,16 +4293,14 @@ fn fold_instructions_seeded(
                                 StmtKind::While {
                                     cond: Expression::bool(true),
                                     body,
-                                    else_body: None,
-                                },
+                                    else_body: None },
                                 span,
                             )
                         };
                         statements.push(Statement::with_span(
                             StmtKind::Labeled {
                                 label: effective,
-                                body: Box::new(inner_stmt),
-                            },
+                                body: Box::new(inner_stmt) },
                             span,
                         ));
                         for tmp in &result_temps {
@@ -4393,10 +4341,8 @@ fn fold_instructions_seeded(
                                     type_hint: None,
                                     init: Some(exnref_expr),
                                     array_bounds: None,
-                                    with_events: false,
-                                }],
-                                kind: VarDeclKind::Let,
-                            }));
+                                    with_events: false }],
+                                kind: VarDeclKind::Let }));
                             tmp
                         }
                     };
@@ -4682,8 +4628,7 @@ fn fold_instructions_seeded(
                         statements.push(Statement::with_span(
                             StmtKind::Throw {
                                 expr: None,
-                                cause: None,
-                            },
+                                cause: None },
                             span,
                         ));
                     }
@@ -4767,16 +4712,14 @@ fn fold_instructions_seeded(
                                 carry_stack_into_temps(&carry, &mut stack, false, &mut then_body);
                                 br_stmt_for(&entry, span)
                             }
-                            None => make_br_stmt_opt(None, labels, span),
-                        };
+                            None => make_br_stmt_opt(None, labels, span) };
                         then_body.push(branch);
                         statements.push(Statement::with_span(
                             StmtKind::If {
                                 cond: cond_expr,
                                 then_body,
                                 else_body: None,
-                                elifs: Vec::new(),
-                            },
+                                elifs: Vec::new() },
                             span,
                         ));
                     }
@@ -4803,16 +4746,14 @@ fn fold_instructions_seeded(
                                             out.push(Statement::new(StmtKind::Expr(
                                                 Expression::new(ExprKind::Assign {
                                                     target: Box::new(Expression::ident(tmp)),
-                                                    value: Box::new(val.clone()),
-                                                }),
+                                                    value: Box::new(val.clone()) }),
                                             )));
                                         }
                                     }
                                     out.push(br_stmt_for(&entry, span));
                                     out
                                 }
-                                None => vec![make_br_stmt_opt(None, labels, span)],
-                            }
+                                None => vec![make_br_stmt_opt(None, labels, span)] }
                         };
                         if targets.is_empty() {
                             // Degenerate: nothing to branch to.
@@ -4826,25 +4767,21 @@ fn fold_instructions_seeded(
                                     type_hint: None,
                                     init: Some(index),
                                     array_bounds: None,
-                                    with_events: false,
-                                }],
-                                kind: VarDeclKind::Let,
-                            }));
+                                    with_events: false }],
+                                kind: VarDeclKind::Let }));
                             // Default (last) branch, then wrap each earlier case.
                             let mut chain = br_for(&targets[targets.len() - 1]);
                             for k in (0..targets.len() - 1).rev() {
                                 let cond = Expression::new(ExprKind::Binary {
                                     op: BinOp::StrictEq,
                                     left: Box::new(Expression::ident(&idx_tmp)),
-                                    right: Box::new(Expression::int(k as i64)),
-                                });
+                                    right: Box::new(Expression::int(k as i64)) });
                                 chain = vec![Statement::with_span(
                                     StmtKind::If {
                                         cond,
                                         then_body: br_for(&targets[k]),
                                         else_body: Some(chain),
-                                        elifs: Vec::new(),
-                                    },
+                                        elifs: Vec::new() },
                                     span,
                                 )];
                             }
@@ -4872,18 +4809,15 @@ fn fold_instructions_seeded(
                                 type_hint: None,
                                 init: Some(ref_val),
                                 array_bounds: None,
-                                with_events: false,
-                            }],
-                            kind: VarDeclKind::Let,
-                        }));
+                                with_events: false }],
+                            kind: VarDeclKind::Let }));
                         let test =
                             make_call("ref_test", vec![to_ht, Expression::ident(&tmp)], span);
                         let cond = if is_fail {
                             Expression::new(ExprKind::Binary {
                                 op: BinOp::StrictEq,
                                 left: Box::new(test),
-                                right: Box::new(Expression::int(0)),
-                            })
+                                right: Box::new(Expression::int(0)) })
                         } else {
                             test
                         };
@@ -4895,21 +4829,18 @@ fn fold_instructions_seeded(
                                     then_body.push(Statement::new(StmtKind::Expr(
                                         Expression::new(ExprKind::Assign {
                                             target: Box::new(Expression::ident(rt)),
-                                            value: Box::new(Expression::ident(&tmp)),
-                                        }),
+                                            value: Box::new(Expression::ident(&tmp)) }),
                                     )));
                                 }
                                 then_body.push(br_stmt_for(&entry, span));
                             }
-                            None => then_body.push(make_br_stmt_opt(None, labels, span)),
-                        }
+                            None => then_body.push(make_br_stmt_opt(None, labels, span)) }
                         statements.push(Statement::with_span(
                             StmtKind::If {
                                 cond,
                                 then_body,
                                 else_body: None,
-                                elifs: Vec::new(),
-                            },
+                                elifs: Vec::new() },
                             span,
                         ));
                         // Fall-through: the ref stays available for continuation.
@@ -4949,7 +4880,7 @@ fn fold_instructions_seeded(
                                         DestructurePattern::Array(pats),
                                     ))],
                                     value: expr,
-                                },
+                                    by_ref: false },
                                 span,
                             ));
                             for t in &temps {
@@ -4963,8 +4894,7 @@ fn fold_instructions_seeded(
                     }
                 }
             }
-            _ => return Err(format!("Unexpected instr rule: {:?}", inner.as_rule())),
-        }
+            _ => return Err(format!("Unexpected instr rule: {:?}", inner.as_rule())) }
     }
 
     // Flush remaining stack values as statements
@@ -5163,8 +5093,7 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
                     ExprKind::Lit(Literal::Int(idx)) => {
                         FUNC_INDEX_ARITIES.with(|f| *f.borrow().get(*idx as usize).unwrap_or(&1))
                     }
-                    _ => 1,
-                }
+                    _ => 1 }
             } else {
                 1
             }
@@ -5177,8 +5106,7 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
                 .first()
                 .and_then(|e| match &e.kind {
                     ExprKind::Ident(n) => TYPE_FUNC_PARAMS.with(|m| m.borrow().get(n).copied()),
-                    _ => None,
-                })
+                    _ => None })
                 .unwrap_or(0);
             1 + params
         }
@@ -5193,8 +5121,7 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
                 let type_name = match &first.kind {
                     ExprKind::Ident(n) => n.clone(),
                     ExprKind::Lit(Literal::Int(i)) => i.to_string(),
-                    _ => String::new(),
-                };
+                    _ => String::new() };
                 STRUCT_FIELD_COUNTS.with(|f| *f.borrow().get(&type_name).unwrap_or(&0))
             } else {
                 0
@@ -5208,8 +5135,7 @@ fn get_instruction_arity(name: &str, args: &[Expression]) -> usize {
         //    are immediates, not stack operands). ────────────────────────────
         n if is_simd_instr(n) => simd_stack_arity(n),
 
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 /// Is this a SIMD (v128) instruction mnemonic?
@@ -5292,8 +5218,7 @@ fn call_result_count(args: &[Expression]) -> usize {
         Some(ExprKind::Lit(Literal::Int(idx))) => FUNC_INDEX_RESULTS
             .with(|f| f.borrow().get(*idx as usize).copied())
             .unwrap_or(1),
-        _ => 1,
-    }
+        _ => 1 }
 }
 
 fn get_instruction_push_count(name: &str) -> usize {
@@ -5316,6 +5241,5 @@ fn get_instruction_push_count(name: &str) -> usize {
         // SIMD stores also write memory and return nothing.
         | "v128.store" | "v128.store8_lane" | "v128.store16_lane"
         | "v128.store32_lane" | "v128.store64_lane" => 0,
-        _ => 1,
-    }
+        _ => 1 }
 }

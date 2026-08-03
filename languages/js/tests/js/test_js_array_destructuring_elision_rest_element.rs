@@ -16,7 +16,7 @@ console.log(`${a},${b},${c}`);
 #[test]
 fn test_js_array_destructuring_elision_skipping_elements() {
     let src = r#"
-const [first, , third] = [1, 2, 3];
+const [first,  third] = [1, 2, 3];
 console.log(`${first}|${third}`);
 "#;
     assert_eq!(run_js(src), vec!["1|3"]);
@@ -179,7 +179,7 @@ console.log(arr.join(","));
 #[test]
 fn test_js_array_destructuring_elision_only_pattern() {
     let src = r#"
-const [, , c] = [10, 20, 30];
+const [,  c] = [10, 20, 30];
 console.log(c);
 "#;
     assert_eq!(run_js(src), vec!["30"]);

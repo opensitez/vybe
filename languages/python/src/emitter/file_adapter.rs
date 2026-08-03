@@ -44,14 +44,14 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
 
 fn set_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
     let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
 fn field_of(chunks: &mut [Chunk], current: usize, slot: u16, key: &str, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
 }
 
 /// True when `slot` is one of our file objects (has `__fpath`).
@@ -103,7 +103,7 @@ pub fn emit_open(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, data, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, path, line);
     set_field(chunks, current, "__fpath", line);
@@ -203,8 +203,7 @@ pub fn emit_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_f64_const(1.0, line);
     set_field(chunks, current, "__fclosed", line);
     chunks[current].emit_end(line);
-    let k = chunks[current].add_constant(vybe_runtime::Value::Null);
-    chunks[current].emit_op_u16(Op::CONST, k, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `f.readline()` — the next line INCLUDING its terminator, `""` at EOF.
@@ -285,8 +284,7 @@ fn emit_write_from_stack(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     ops::emit_dyn_add(&mut chunks[current], line);
     set_field(chunks, current, "__fdata", line);
-    let k = chunks[current].add_constant(vybe_runtime::Value::Null);
-    chunks[current].emit_op_u16(Op::CONST, k, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `f.seek(n)` — byte offset within the buffered contents.
@@ -370,7 +368,7 @@ pub fn emit_named_temp_file(chunks: &mut [Chunk], current: usize, argc: u8, line
     call_import(chunks, current, "wasi:filesystem", "writeFile", 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, p, line);
     set_field(chunks, current, "__fpath", line);

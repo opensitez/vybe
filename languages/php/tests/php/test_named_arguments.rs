@@ -365,8 +365,7 @@ foreach ($values as $v) {
     $result = match(true) {
         $v < 0  => clamp(val: $v, min: 0, max: 10),
         $v > 10 => clamp(val: $v, min: 0, max: 10),
-        default => $v,
-    };
+        default => $v };
     echo $result . "\n";
 }
 "#

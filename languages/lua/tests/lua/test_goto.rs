@@ -64,5 +64,4 @@ lua_print! {
     goto_backward_accumulates_sum => {
         "local total = 0\nlocal i = 1\n::again::\ntotal = total + i\ni = i + 1\nif i <= 4 then goto again end\nprint(total)\n",
         "10"
-    },
-}
+    } }

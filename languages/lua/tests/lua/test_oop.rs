@@ -108,5 +108,4 @@ lua_print! {
     constructor_collecting_varargs_into_field => {
         "local function make_list(...)\n  return {items = {...}}\nend\nlocal l = make_list(10, 20, 30)\nprint(#l.items .. ',' .. l.items[2])\n",
         "3,20"
-    },
-}
+    } }

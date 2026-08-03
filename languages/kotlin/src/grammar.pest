@@ -52,8 +52,8 @@ finally_kw     = @{ "finally" ~ !(ASCII_ALPHANUMERIC | "_") }
 throw_kw       = @{ "throw" ~ !(ASCII_ALPHANUMERIC | "_") }
 const_kw       = @{ "const" ~ !(ASCII_ALPHANUMERIC | "_") }
 sealed_kw      = @{ "sealed" ~ !(ASCII_ALPHANUMERIC | "_") }
-get_kw         = @{ "get" ~ !(ASCII_ALPHANUMERIC | "_") }
-set_kw         = @{ "set" ~ !(ASCII_ALPHANUMERIC | "_") }
+get_kw         = @{ "get" ~ !("." | ASCII_ALPHANUMERIC | "_") }
+set_kw         = @{ "set" ~ !("." | ASCII_ALPHANUMERIC | "_") }
 to_kw          = @{ "to" ~ !(ASCII_ALPHANUMERIC | "_") }
 by_kw          = @{ "by" ~ !(ASCII_ALPHANUMERIC | "_") }
 constructor_kw = @{ "constructor" ~ !(ASCII_ALPHANUMERIC | "_") }
@@ -217,7 +217,7 @@ class_body = { "{" ~ eat_terminators ~ (class_member ~ eat_terminators)* ~ "}" }
 class_member = { import_decl | init_block | secondary_constructor | companion_object | enum_decl | function_decl | var_decl | class_decl | object_decl | interface_decl }
 init_block = { "init" ~ block }
 
-secondary_constructor = { annotation* ~ modifier* ~ constructor_kw ~ parameter_list ~ (":" ~ (this_kw | super_kw) ~ "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (block | eat_terminators) }
+secondary_constructor = { annotation* ~ modifier* ~ constructor_kw ~ parameter_list ~ eat_terminators ~ (":" ~ eat_terminators ~ (this_kw | super_kw) ~ "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ (block | eat_terminators) }
 
 // `private companion object`, and a body is optional on every object form —
 // `object Empty` and `data object Singleton` are complete declarations.
@@ -364,7 +364,7 @@ if_expr = { if_kw ~ "(" ~ expr ~ ")" ~ (block | statement) ~ (else_kw ~ (if_expr
 when_expr = { when_kw ~ ("(" ~ expr ~ ")")? ~ "{" ~ eat_terminators ~ (when_entry ~ eat_terminators)* ~ "}" }
 when_entry = { (when_condition ~ ("," ~ when_condition)* | else_kw) ~ "->" ~ (block | statement) }
 when_condition = {
-    (is_kw | not_is_kw) ~ type_ref
+    (is_kw | not_is_kw) ~ eat_terminators ~ type_ref
   | (in_kw | not_in_kw) ~ expr
   | range_condition
   | comparison_condition

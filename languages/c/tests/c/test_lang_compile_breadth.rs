@@ -30,5 +30,4 @@ c_compile_cases! {
     lang_statement_expression_gnu => { includes: ["<stdio.h>"], decls: "", body: "int x=({int y=2; y+1;}); return x;" },
     lang_attribute_unused => { includes: ["<stdio.h>"], decls: "__attribute__((unused)) static int u;", body: "return 0;" },
     lang_attribute_packed => { includes: ["<stdio.h>"], decls: "struct __attribute__((packed)) P { char c; int n; };", body: "return sizeof(struct P);" },
-    lang_thread_local_static => { includes: ["<stdio.h>"], decls: "_Thread_local static int tls;", body: "tls=1; return tls;" },
-}
+    lang_thread_local_static => { includes: ["<stdio.h>"], decls: "_Thread_local static int tls;", body: "tls=1; return tls;" } }

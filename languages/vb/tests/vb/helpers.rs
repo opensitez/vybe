@@ -139,8 +139,7 @@ pub fn dotnet_expected_one(expected: &str) -> String {
     match expected {
         "true" => "True".to_string(),
         "false" => "False".to_string(),
-        other => other.to_string(),
-    }
+        other => other.to_string() }
 }
 
 pub fn dotnet_expected_lines(expected: &[&str]) -> Vec<String> {

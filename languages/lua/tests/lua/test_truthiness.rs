@@ -120,5 +120,4 @@ lua_print! {
     nil_not_equal_to_false_in_equality_check => {
         "print(nil == false)\n",
         "false"
-    },
-}
+    } }

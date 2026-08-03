@@ -16,5 +16,4 @@ lua_print! {
     xpcall_handler_non_string => {
         "local ok, err = xpcall(function() error(\"boom\") end, function() return {code=500} end)\nprint(ok, type(err), err.code)\n",
         "false table 500"
-    },
-}
+    } }

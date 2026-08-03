@@ -8,11 +8,31 @@ name = "pascal"
 extensions = ["pas", "pp", "dpr", "lpr"]
 
 [compiler]
+# A bare reference to a parameterless function invokes it: `X := Foo;` calls
+# `Foo`. Was a `profile.name == "pascal"` check in shared `expressions.rs`.
+bare_name_invokes_parameterless_function = true
 # `a xor b` is bitwise when both operands are integers and LOGICAL otherwise —
 # one token, two meanings, resolved by operand type. Replaces a
 # `profile.name == "pascal"` check in the shared binary-operator path
 # (builtinslotplan.md §3c).
 xor_is_logical_for_non_integers = true
+# `and`/`or`/`not` are bitwise on integer operands, logical on booleans — the
+# same dual meaning `xor` already declared. Was `profile.name == "pascal"` in
+# shared `expressions.rs` and `type_inference.rs`.
+logical_ops_bitwise_for_integers = true
+# `+`/`*`/`-` on two sets are union/intersection/difference.
+set_arithmetic_operators = true
+# `TShape.Circle` and `obj.Method` invoke a parameterless routine without `()`.
+member_invokes_parameterless_method = true
+# A top-level `const X: T;` with no initializer declares a TYPE ALIAS.
+const_without_init_is_type_alias = true
+# `s[1]` is the first character; `Integer(9.7)` truncates to 9.
+string_index_is_one_based = true
+integer_cast_truncates = true
+# `value.Helper(x)` resolves to a free function from the receiver's type, and a
+# bare `Field(x)` calls a callable field of the enclosing class.
+type_helper_methods = true
+bare_class_field_is_callable = true
 # Pascal RTTI (`TRttiType.GetProperty`, `GetAttributes`) reads a class's member
 # list at runtime instead of the walker deriving it into a compile-time HashMap.
 class_member_metadata = true
@@ -55,8 +75,22 @@ linq_queries = false
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
-writeln       = { emit = "print",                          min_args = 0, max_args = 255 }
-write         = { emit = "print",                          min_args = 0, max_args = 255 }
+writeln       = { emit = "common:pascal.writeln",          min_args = 0, max_args = 255 }
+# SysUtils / System stdlib. These were implemented inline in shared
+# `builtins.rs`; they are pascal's stdlib, so they bind here like any builtin.
+Integer       = { emit = "common:pascal.trunc_cast",      min_args = 1, max_args = 1 }
+Int           = { emit = "common:pascal.trunc_cast",      min_args = 1, max_args = 1 }
+LongInt       = { emit = "common:pascal.trunc_cast",      min_args = 1, max_args = 1 }
+IntToHex      = { emit = "common:pascal.int_to_hex",      min_args = 1, max_args = 2 }
+BoolToStr     = { emit = "common:pascal.bool_to_str",     min_args = 1, max_args = 2 }
+AnsiUpperCase = { emit = "common:pascal.ansi_upper",      min_args = 1, max_args = 1 }
+AnsiLowerCase = { emit = "common:pascal.ansi_lower",      min_args = 1, max_args = 1 }
+SameStr       = { emit = "common:pascal.same_str",        min_args = 2, max_args = 2 }
+SameText      = { emit = "common:pascal.same_text",       min_args = 2, max_args = 2 }
+CompareText   = { emit = "common:pascal.compare_text",    min_args = 2, max_args = 2 }
+StrToBool     = { emit = "common:pascal.str_to_bool",     min_args = 1, max_args = 1 }
+StrToIntDef   = { emit = "common:pascal.str_to_int_def",  min_args = 2, max_args = 2 }
+write         = { emit = "common:pascal.write",            min_args = 0, max_args = 255 }
 readln        = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
 read          = { emit = "host:wasi:cli:readLine",         min_args = 0, max_args = 1 }
 eof           = { emit = "common:pascal.file_eof",          min_args = 1, max_args = 1 }
@@ -67,6 +101,15 @@ __pascal_file_close     = { emit = "host:wasi:filesystem:closeFile",         min
 __pascal_file_println   = { emit = "host:wasi:filesystem:printFile",         min_args = 1, max_args = 255 }
 __pascal_file_writeln   = { emit = "host:wasi:filesystem:printFile",         min_args = 1, max_args = 255 }
 __pascal_file_writecsv  = { emit = "host:wasi:filesystem:writeFile_handle",  min_args = 1, max_args = 255 }
+# `TStringList.CommaText` / `DelimitedText` — the SHARED csv primitive, the same
+# one php `str_getcsv`/`fputcsv` and fortran `str_getcsv` bind. Delimiter and
+# quote char are runtime arguments because `Delimiter`/`QuoteChar` are settable
+# properties. fpc encloses a field containing the delimiter, the quote char OR
+# whitespace, which is `FormatOptions::quote_whitespace`; measured against real
+# `fpc`, `CommaText` of `['apple','has,comma','has space','has"quote']` is
+# `apple,"has,comma","has space","has""quote"`.
+__pascal_csv_join   = { emit = "common:csv.format_row_quote_ws", min_args = 3, max_args = 3 }
+__pascal_csv_split  = { emit = "common:csv.parse_line",          min_args = 3, max_args = 3 }
 __pascal_file_readline  = { emit = "host:wasi:filesystem:lineInput",         min_args = 1, max_args = 1 }
 __pascal_file_readcsv   = { emit = "host:wasi:filesystem:inputFile",         min_args = 1, max_args = 1 }
 __pascal_file_exists    = { emit = "host:wasi:filesystem:exists",            min_args = 1, max_args = 1 }
@@ -176,20 +219,18 @@ stringofchar  = { emit = "common:str_repeat",              min_args = 2, max_arg
 leftstr       = { emit = "intrinsic:leftstr",              min_args = 2, max_args = 2 }
 rightstr      = { emit = "intrinsic:rightstr",             min_args = 2, max_args = 2 }
 comparestr    = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
-comparetext   = { emit = "host:ecma:string:localeCompare",       min_args = 2, max_args = 2 }
-delete        = { emit = "common:pascal.str_remove_range", min_args = 3, max_args = 3 }
-insert        = { emit = "common:pascal.str_insert",       min_args = 3, max_args = 3 }
+# `Delete(var S; Index; Count)` / `Insert(Src; var Dst; Index)` write back into
+# a var parameter — argument 0 and 1 respectively.
+delete        = { emit = "mutate_call:pascal.str_delete@0", min_args = 3, max_args = 3 }
+insert        = { emit = "mutate_call:pascal.str_insert_var@1",   min_args = 3, max_args = 3 }
 
 # ── Type conversion ─────────────────────────────────────────────────────────
 
 inttostr      = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 floattostr    = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
 strtoint      = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 1 }
-strtointdef   = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 2 }
 strtoint64    = { emit = "host:ecma:number:parseInt",     min_args = 1, max_args = 1 }
 strtofloat    = { emit = "host:ecma:number:parseFloat",   min_args = 1, max_args = 1 }
-booltostr     = { emit = "common:pascal.tostring", min_args = 1, max_args = 1 }
-strtobool     = { emit = "common:dyn_to_bool",             min_args = 1, max_args = 1 }
 stringtoguid  = { emit = "common:pascal.string_to_guid",   min_args = 1, max_args = 1 }
 guidtostring  = { emit = "common:pascal.guid_to_string",   min_args = 1, max_args = 1 }
 isequalguid   = { emit = "common:pascal.is_equal_guid",    min_args = 2, max_args = 2 }
@@ -240,6 +281,20 @@ __pascal_structured_clone = { emit = "host:ecma:structured-clone:clone", min_arg
 sort          = { emit = "common:pascal.sort_in_place",   min_args = 1, max_args = 1 }
 reverse       = { emit = "host:ecma:array:reverse",        min_args = 1, max_args = 1 }
 
+# ── Control flow ─────────────────────────────────────────────────────────────
+
+# `Halt` / `Halt(code)` ends the program from any depth and carries the status.
+# `wasi:cli/exit` is the interface name (`wasi:cli` matches no registration) and
+# `exit-with-code` is the arm that takes a number — plain `exit` takes a
+# result<(),()> and can only say 0 or 1.
+#
+# This lived below `[array_methods]` together with `free`/`freeandnil`/`new`/
+# `dispose`/`assert`/`exit`: that header was inserted mid-file, so the whole
+# block stopped being a builtin declaration and `halt(2)` resolved to nothing.
+# Only `halt` is moved here — the other six are equally stranded but changing
+# what they emit is a separate, unmeasured change.
+halt          = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
+
 [array_methods]
 reduce        = "__array_reduce"
 
@@ -252,7 +307,8 @@ dispose       = { emit = "noop",                           min_args = 1, max_arg
 
 # ── Control flow ─────────────────────────────────────────────────────────────
 
-halt          = { emit = "host:wasi:cli:exit",             min_args = 0, max_args = 1 }
+# (`halt` moved up into [builtins]; see the note there. These two are still
+# stranded under [array_methods] and declare nothing.)
 assert        = { emit = "noop",                           min_args = 1, max_args = 2 }
 exit          = { emit = "noop",                           min_args = 0, max_args = 0 }
 

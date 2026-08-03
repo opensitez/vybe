@@ -14,7 +14,7 @@ fn get(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn emit_arithmetic_exception(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(

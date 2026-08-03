@@ -53,5 +53,4 @@ lua_print! {
         "abc,b"
     },
     pattern_backref => { "print(string.match(\"a-a\", \"(%a)-(%1)\"))\n", "a\ta" },
-    pattern_backref_fail => { "print(tostring(string.match(\"a-b\", \"(%a)-(%1)\")))\n", "nil" },
-}
+    pattern_backref_fail => { "print(tostring(string.match(\"a-b\", \"(%a)-(%1)\")))\n", "nil" } }

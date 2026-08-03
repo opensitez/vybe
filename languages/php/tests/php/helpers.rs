@@ -145,16 +145,14 @@ pub fn compile_ok(src: &str) {
         Ok(chunks) => {
             assert!(!chunks.is_empty(), "compile produced no chunks");
         }
-        Err(e) => panic!("compile failed: {}", e),
-    }
+        Err(e) => panic!("compile failed: {}", e) }
 }
 
 /// Returns the compiled chunks, or panics with the error.
 pub fn compile(src: &str) -> Vec<vybe_runtime::Chunk> {
     match compile_chunks(src) {
         Ok(c) => c,
-        Err(e) => panic!("compile failed: {}", e),
-    }
+        Err(e) => panic!("compile failed: {}", e) }
 }
 
 /// Compile + run, return the final value popped from the stack.
@@ -209,8 +207,7 @@ pub fn run_prints_dynamic(src: &str, virtual_path: &str) -> Vec<String> {
 pub fn parse(src: &str) {
     match vybe_language_php::parse(src) {
         Ok(_) => {}
-        Err(e) => panic!("parse failed: {}", e),
-    }
+        Err(e) => panic!("parse failed: {}", e) }
 }
 
 /// Returns true if the source parses successfully. Replaces the

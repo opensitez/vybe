@@ -67,7 +67,7 @@ fn php_string_manipulation() {
 #[test]
 fn php_string_split_and_join_with_empty_parts() {
     let out = run_prints(
-        "<?php\n$source = ',a,,b,';\necho count(explode(',', $source)) . '|';\necho implode('|', explode(',', $source));\n",
+        "<?php\n$source = ',a, b,';\necho count(explode(',', $source)) . '|';\necho implode('|', explode(',', $source));\n",
     );
     assert_eq!(out, vec!["5| |a||b|"]);
 }

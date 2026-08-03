@@ -128,5 +128,4 @@ lua_print! {
     multiple_upvalues_from_same_scope_in_single_closure => {
         "local a, b, c = 1, 2, 3\nlocal f = function() return a + b + c end\nprint(f())\n",
         "6"
-    },
-}
+    } }

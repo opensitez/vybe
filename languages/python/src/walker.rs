@@ -146,8 +146,7 @@ fn preprocess_indentation(source: &str) -> String {
                     indent += 8 - (indent % 8);
                     chars.next();
                 }
-                _ => break,
-            }
+                _ => break }
         }
 
         let rest: String = chars.collect();
@@ -260,8 +259,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         for pair in inner {
             match pair.as_rule() {
                 Rule::EOI | Rule::NEWLINE => continue,
-                _ => walk_stmt_into(pair, &mut body, &mut imports)?,
-            }
+                _ => walk_stmt_into(pair, &mut body, &mut imports)? }
         }
     }
 
@@ -456,15 +454,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
         0,
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident("__doc__")],
-            value: Expression::new(ExprKind::Lit(Literal::Null)),
-        }),
+            value: Expression::new(ExprKind::Lit(Literal::Null)), by_ref: false }),
     );
     Ok(Module {
         name: "main".into(),
         language: Lang::Python,
         body,
-        imports,
-    })
+        imports })
 }
 
 /// Heuristic: does the source reference bytes at all? Only gates whether the
@@ -483,7 +479,33 @@ fn source_uses_bytes(source: &str) -> bool {
 
 /// Parse a Python source prelude into top-level statements. Errors yield `[]`
 /// so a prelude problem can never break user compilation.
+///
+/// Memoised per PROCESS, the way `vybe_language_js::prelude_body` is. The
+/// preludes are conditional (only what the source references is injected) but
+/// each one still went back through pest on every compile, and there are 27
+/// injection sites. Cloning a parsed body is far cheaper than re-parsing it.
+///
+/// Keyed by CONTENT rather than pointer: `parse_collections_prelude` builds its
+/// source at run time from the counters it saw, so a pointer key would be both
+/// wrong and unsound once that string is freed.
 fn parse_python_prelude(src: &str) -> Vec<Statement> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, Vec<Statement>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().unwrap().get(src) {
+        return hit.clone();
+    }
+    let parsed = parse_python_prelude_uncached(src);
+    // A dynamically-built prelude varies per program; caching every variant
+    // would grow without bound in a long-lived worker.
+    if cache.lock().unwrap().len() < 256 {
+        cache.lock().unwrap().insert(src.to_string(), parsed.clone());
+    }
+    parsed
+}
+
+fn parse_python_prelude_uncached(src: &str) -> Vec<Statement> {
     let preprocessed = preprocess_indentation(src);
     let pairs = match PythonParser::parse(Rule::program, &preprocessed) {
         Ok(p) => p,
@@ -2526,8 +2548,7 @@ shlex = {
     "split": __py_shlex_split,
     "quote": __py_shlex_quote,
     "join": __py_shlex_join,
-    "shlex": __py_shlex_class,
-}
+    "shlex": __py_shlex_class }
 "##;
 
 const TEXTWRAP_PRELUDE: &str = r##"
@@ -2635,8 +2656,7 @@ textwrap = {
     "dedent": __py_textwrap_dedent,
     "indent": __py_textwrap_indent,
     "shorten": __py_textwrap_shorten,
-    "TextWrapper": __py_TextWrapper,
-}
+    "TextWrapper": __py_TextWrapper }
 "##;
 
 const COLLECTIONS_PRELUDE: &str = r#"
@@ -3154,8 +3174,7 @@ fn walk_stmt_into(
                     if bound != root {
                         body.push(Statement::new(StmtKind::Assign {
                             targets: vec![Expression::new(ExprKind::Ident(bound.clone()))],
-                            value: Expression::new(ExprKind::Ident(root.clone())),
-                        }));
+                            value: Expression::new(ExprKind::Ident(root.clone())), by_ref: false }));
                     }
                     return Ok(());
                 }
@@ -3173,14 +3192,12 @@ fn walk_stmt_into(
                                 key: Expression::new(ExprKind::Lit(Literal::Str(
                                     name.clone().into(),
                                 ))),
-                                value: Expression::new(ExprKind::Ident(name.clone())),
-                            })
+                                value: Expression::new(ExprKind::Ident(name.clone())) })
                             .collect()
                     });
                     body.push(Statement::new(StmtKind::Assign {
                         targets: vec![Expression::new(ExprKind::Ident("__py_sys_modules".into()))],
-                        value: Expression::new(ExprKind::Object(props)),
-                    }));
+                        value: Expression::new(ExprKind::Object(props)), by_ref: false }));
                 } else if PY_SYS_MODULES_BOUND.with(|b| b.get()) {
                     body.push(Statement::new(StmtKind::Assign {
                         targets: vec![Expression::new(ExprKind::Index {
@@ -3190,10 +3207,8 @@ fn walk_stmt_into(
                             index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
                                 bound.clone().into(),
                             )))),
-                            null_safe: false,
-                        })],
-                        value: Expression::new(ExprKind::Ident(bound)),
-                    }));
+                            null_safe: false })],
+                        value: Expression::new(ExprKind::Ident(bound)), by_ref: false }));
                 }
             }
             imports.push(import);
@@ -3256,14 +3271,12 @@ fn walk_stmt_into(
                             "defaultdict" => Some("__py_defaultdict"),
                             "deque" => Some("__py_deque"),
                             "ChainMap" => Some("__py_chainmap_new"),
-                            _ => None,
-                        };
+                            _ => None };
                         if let Some(helper) = helper {
                             let local = n.alias.as_ref().unwrap_or(&n.name).clone();
                             body.push(Statement::new(StmtKind::Assign {
                                 targets: vec![Expression::new(ExprKind::Ident(local))],
-                                value: Expression::ident(helper),
-                            }));
+                                value: Expression::ident(helper), by_ref: false }));
                         }
                     }
                     imports.push(import);
@@ -3275,8 +3288,7 @@ fn walk_stmt_into(
                         if let Some(lambda) = operator_fn_lambda(&n.name) {
                             body.push(Statement::new(StmtKind::Assign {
                                 targets: vec![Expression::new(ExprKind::Ident(local))],
-                                value: lambda,
-                            }));
+                                value: lambda, by_ref: false }));
                         }
                     }
                     return Ok(());
@@ -3287,8 +3299,7 @@ fn walk_stmt_into(
                             let local = n.alias.as_ref().unwrap_or(&n.name).clone();
                             body.push(Statement::new(StmtKind::Assign {
                                 targets: vec![Expression::new(ExprKind::Ident(local))],
-                                value: Expression::ident("wraps"),
-                            }));
+                                value: Expression::ident("wraps"), by_ref: false }));
                         }
                     }
                     imports.push(import);
@@ -3304,8 +3315,7 @@ fn walk_stmt_into(
             }
             imports.push(import);
         }
-        _ => body.push(walk_statement(pair)?),
-    }
+        _ => body.push(walk_statement(pair)?) }
     Ok(())
 }
 
@@ -3319,11 +3329,9 @@ fn operator_fn_lambda(name: &str) -> Option<Expression> {
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Binary {
                 op,
                 left: Box::new(Expression::new(ExprKind::Ident("__a".into()))),
-                right: Box::new(Expression::new(ExprKind::Ident("__b".into()))),
-            }))),
+                right: Box::new(Expression::new(ExprKind::Ident("__b".into()))) }))),
             is_async: false,
-            captures: vec![],
-        })
+            captures: vec![] })
     };
     // `add`/`mul` route through the same dynamic helpers `+`/`*` lower to
     // (list concat / str repeat / dunder dispatch), not raw numeric ops.
@@ -3336,11 +3344,9 @@ fn operator_fn_lambda(name: &str) -> Option<Expression> {
                     Argument::positional(Expression::new(ExprKind::Ident("__a".into()))),
                     Argument::positional(Expression::new(ExprKind::Ident("__b".into()))),
                 ],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        })
+            captures: vec![] })
     };
     Some(match name {
         "add" | "concat" => helper2("__pyadd__"),
@@ -3360,37 +3366,31 @@ fn operator_fn_lambda(name: &str) -> Option<Expression> {
             params: vec![lambda_param("__a")],
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Unary {
                 op: UnaryOp::Neg,
-                expr: Box::new(Expression::new(ExprKind::Ident("__a".into()))),
-            }))),
+                expr: Box::new(Expression::new(ExprKind::Ident("__a".into()))) }))),
             is_async: false,
-            captures: vec![],
-        }),
-        _ => return None,
-    })
+            captures: vec![] }),
+        _ => return None })
 }
 
 fn py_member(object: Expression, field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(object),
         field: field.into(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn py_index(object: Expression, index: Expression) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(object),
         index: Box::new(index),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn py_call(callee: Expression, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
 }
 
 fn py_raise_expr(exc_name: &str, message: Option<&str>) -> Expression {
@@ -3418,29 +3418,23 @@ fn py_raise_expr_stmt(expr: &Expression) -> Option<StmtKind> {
         let field = |name: &str| Expression::new(ExprKind::Member {
             object: Box::new(tmp.clone()),
             field: name.into(),
-            null_safe: false,
-        });
+            null_safe: false });
         return Some(StmtKind::Block(vec![
             Statement::new(StmtKind::Assign {
                 targets: vec![tmp.clone()],
-                value: call_ident("__py_exc_Exception", vec![opt.clone()]),
-            }),
+                value: call_ident("__py_exc_Exception", vec![opt.clone()]), by_ref: false }),
             Statement::new(StmtKind::Assign {
                 targets: vec![field("__exception_type")],
-                value: Expression::string("GetoptError"),
-            }),
+                value: Expression::string("GetoptError"), by_ref: false }),
             Statement::new(StmtKind::Assign {
                 targets: vec![field("msg")],
-                value: opt.clone(),
-            }),
+                value: opt.clone(), by_ref: false }),
             Statement::new(StmtKind::Assign {
                 targets: vec![field("opt")],
-                value: opt,
-            }),
+                value: opt, by_ref: false }),
             Statement::new(StmtKind::Throw {
                 expr: Some(tmp),
-                cause: None,
-            }),
+                cause: None }),
         ]));
     }
     let exc = {
@@ -3451,16 +3445,14 @@ fn py_raise_expr_stmt(expr: &Expression) -> Option<StmtKind> {
     };
     Some(StmtKind::Throw {
         expr: Some(exc),
-        cause: None,
-    })
+        cause: None })
 }
 
 fn py_numeric_zero(e: &Expression) -> bool {
     match &e.kind {
         ExprKind::Lit(Literal::Int(n)) => *n == 0,
         ExprKind::Lit(Literal::Float(n)) => *n == 0.0,
-        _ => false,
-    }
+        _ => false }
 }
 
 fn py_static_add_type_error(left: &Expression, right: &Expression) -> bool {
@@ -3479,8 +3471,7 @@ fn py_lambda1(param: &str, body: Expression) -> Expression {
         params: vec![lambda_param(param)],
         body: LambdaBody::Expr(Box::new(body)),
         is_async: false,
-        captures: vec![],
-    })
+        captures: vec![] })
 }
 
 /// `operator.<name>(args)` — the DOTTED call form (`import operator;
@@ -3506,8 +3497,7 @@ fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
         Expression::new(ExprKind::Ternary {
             cond: Box::new(cond),
             then: Box::new(Expression::bool(t)),
-            else_: Box::new(Expression::bool(!t)),
-        })
+            else_: Box::new(Expression::bool(!t)) })
     };
     // String-literal arguments only — `attrgetter`/`methodcaller` names are
     // resolved at compile time, exactly as CPython resolves them at call time.
@@ -3515,8 +3505,7 @@ fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
         args.iter()
             .map(|a| match &a.value.kind {
                 ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
-                _ => None,
-            })
+                _ => None })
             .collect()
     };
 
@@ -3565,11 +3554,9 @@ fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
                 body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                     callee: Box::new(py_member(obj(), method)),
                     args: args[1..].to_vec(),
-                    optional: false,
-                }))),
+                    optional: false }))),
                 is_async: false,
-                captures: vec![],
-            })
+                captures: vec![] })
         }
 
         // ── Sequence queries ─────────────────────────────────────────────
@@ -3611,8 +3598,7 @@ fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
                 Expression::new(ExprKind::Binary {
                     op,
                     left: Box::new(a.clone()),
-                    right: Box::new(b.clone()),
-                })
+                    right: Box::new(b.clone()) })
             };
             match name {
                 "iadd" | "iconcat" => py_call(Expression::ident("__pyadd__"), vec![a, b]),
@@ -3626,8 +3612,7 @@ fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
                 "ior" => binary(BinOp::BitOr),
                 "ixor" => binary(BinOp::BitXor),
                 "ilshift" => binary(BinOp::Shl),
-                _ => binary(BinOp::Shr),
-            }
+                _ => binary(BinOp::Shr) }
         }
 
         // `length_hint(o[, default])` — the exact length when `o` is sized.
@@ -3636,8 +3621,7 @@ fn operator_call_lowering(name: &str, args: &[Argument]) -> Option<Expression> {
         // that case is not covered here.
         "length_hint" => py_call(Expression::ident("len"), vec![arg0()?]),
 
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn lambda_param(name: &str) -> Param {
@@ -3649,8 +3633,7 @@ fn lambda_param(name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    }
+        is_nullable: false }
 }
 
 fn py_builtin_callable_lambda(name: &str) -> Option<Expression> {
@@ -3661,8 +3644,7 @@ fn py_builtin_callable_lambda(name: &str) -> Option<Expression> {
             Expression::new(ExprKind::Ternary {
                 cond: Box::new(Expression::new(ExprKind::Ident(param.into()))),
                 then: Box::new(Expression::bool(true)),
-                else_: Box::new(Expression::bool(false)),
-            }),
+                else_: Box::new(Expression::bool(false)) }),
         ),
         "len" | "abs" | "str" | "int" | "float" | "chr" | "ord" => Expression::new(ExprKind::Lambda {
             params: vec![lambda_param(param)],
@@ -3671,13 +3653,10 @@ fn py_builtin_callable_lambda(name: &str) -> Option<Expression> {
                 args: vec![Argument::positional(Expression::new(ExprKind::Ident(
                     param.into(),
                 )))],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        }),
-        _ => return None,
-    })
+            captures: vec![] }),
+        _ => return None })
 }
 
 fn py_string_method_callable_lambda(field: &str) -> Option<Expression> {
@@ -3686,8 +3665,7 @@ fn py_string_method_callable_lambda(field: &str) -> Option<Expression> {
         "isalpha" => "__py_str_isalpha",
         "isalnum" => "__py_str_isalnum",
         "isspace" => "__py_str_isspace",
-        _ => return None,
-    };
+        _ => return None };
     let param = "__py_str_value";
     Some(py_lambda1(
         param,
@@ -3708,11 +3686,9 @@ fn py_callable_expr(value: Expression) -> Expression {
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                 callee: Box::new(value),
                 args: vec![],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        }),
+            captures: vec![] }),
         ExprKind::Index { object, index, .. }
             if matches!(&object.kind, ExprKind::Ident(n) if n == "str") =>
         {
@@ -3728,14 +3704,11 @@ fn py_callable_expr(value: Expression) -> Expression {
                 body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                     callee: Box::new(value),
                     args: vec![],
-                    optional: false,
-                }))),
+                    optional: false }))),
                 is_async: false,
-                captures: vec![],
-            })
+                captures: vec![] })
         }
-        _ => value,
-    }
+        _ => value }
 }
 
 fn normalize_heapq_key_callable(mut args: Vec<Argument>) -> Vec<Argument> {
@@ -3837,8 +3810,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
 
         Rule::NEWLINE | Rule::INDENT | Rule::DEDENT => StmtKind::Empty,
 
-        other => return Err(format!("Unexpected statement rule: {:?}", other)),
-    };
+        other => return Err(format!("Unexpected statement rule: {:?}", other)) };
     Ok(Statement::with_span(kind, span))
 }
 
@@ -3877,8 +3849,7 @@ fn stmt_has_yield(stmt: &Statement) -> bool {
                 || finally.as_ref().map_or(false, |fb| body_has_yield(fb))
         }
         StmtKind::With { body, .. } => body_has_yield(body),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn expr_has_yield(expr: &Expression) -> bool {
@@ -3888,8 +3859,7 @@ fn expr_has_yield(expr: &Expression) -> bool {
         ExprKind::Binary { left, right, .. } => expr_has_yield(left) || expr_has_yield(right),
         ExprKind::Unary { expr: e, .. } => expr_has_yield(e),
         ExprKind::Index { object, index, .. } => expr_has_yield(object) || expr_has_yield(index),
-        _ => false,
-    }
+        _ => false }
 }
 
 // ── Function def ────────────────────────────────────────────────────────────
@@ -3979,8 +3949,7 @@ fn walk_func_def(
         handles: Vec::new(),
         is_async,
         is_generator: has_yield,
-        is_sub: false,
-    })
+        is_sub: false })
 }
 
 fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
@@ -4035,8 +4004,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             pass_by: PassBy::Value,
                             is_rest: false,
                             is_kwargs: false,
-                            is_nullable: false,
-                        });
+                            is_nullable: false });
                     }
                     Rule::star_param => {
                         let mut name = String::new();
@@ -4053,8 +4021,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_rest: true,
                             is_kwargs: false,
                             is_optional: false,
-                            is_nullable: false,
-                        });
+                            is_nullable: false });
                     }
                     Rule::double_star_param => {
                         let mut name = String::new();
@@ -4075,8 +4042,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_rest: false,
                             is_kwargs: true,
                             is_optional: false,
-                            is_nullable: false,
-                        });
+                            is_nullable: false });
                     }
                     Rule::bare_star | Rule::slash_param => {} // separator, not a param
                     _ => {}
@@ -4110,8 +4076,7 @@ fn py_counter_binary(op: BinOp, left: &Expression, right: &Expression) -> Option
         BinOp::Sub => "-",
         BinOp::BitAnd => "&",
         BinOp::BitOr => "|",
-        _ => return None,
-    };
+        _ => return None };
     Some(call_ident(
         "__py_counter_op",
         vec![left.clone(), right.clone(), Expression::string(op_name)],
@@ -4122,16 +4087,14 @@ fn other_attr(field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::Ident("other".into()))),
         field: field.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn binop(op: BinOp, left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right),
-    })
+        right: Box::new(right) })
 }
 
 /// One annotated class-level declaration a `@dataclass` turns into a field.
@@ -4144,8 +4107,7 @@ fn binop(op: BinOp, left: Expression, right: Expression) -> Expression {
 struct DataclassField {
     name: String,
     default: Option<Expression>,
-    init_var: bool,
-}
+    init_var: bool }
 
 /// `__repr__` as `@dataclass` generates it: `ClassName(field=repr, ...)`.
 fn dataclass_repr(class_name: &str, fields: &[DataclassField]) -> Statement {
@@ -4207,8 +4169,7 @@ fn is_dataclass_decorator(d: &Expression) -> bool {
         ExprKind::Ident(n) => n == "dataclass",
         ExprKind::Call { callee, .. } => matches!(&callee.kind, ExprKind::Ident(n) if n == "dataclass"),
         ExprKind::Member { field, .. } => field == "dataclass",
-        _ => false,
-    }
+        _ => false }
 }
 
 /// The annotated class-level declarations, in source order — exactly what
@@ -4231,8 +4192,7 @@ fn dataclass_fields(body: &[Statement]) -> Vec<DataclassField> {
                     default: d.init.as_ref().and_then(dataclass_field_default),
                     // `InitVar[int]`, or the bare `InitVar` — the hint is a
                     // string, so match the head rather than parsing it.
-                    init_var: hint == "InitVar" || hint.starts_with("InitVar["),
-                });
+                    init_var: hint == "InitVar" || hint.starts_with("InitVar[") });
             }
         }
     }
@@ -4253,8 +4213,7 @@ fn dataclass_field_default(init: &Expression) -> Option<Expression> {
     let is_field_call = match &callee.kind {
         ExprKind::Ident(n) => n == "field",
         ExprKind::Member { field, .. } => field == "field",
-        _ => false,
-    };
+        _ => false };
     if !is_field_call {
         return Some(init.clone());
     }
@@ -4265,8 +4224,7 @@ fn dataclass_field_default(init: &Expression) -> Option<Expression> {
                 return Some(Expression::new(ExprKind::Call {
                     callee: Box::new(arg.value.clone()),
                     args: Vec::new(),
-                    optional: false,
-                }));
+                    optional: false }));
             }
             _ => {}
         }
@@ -4278,8 +4236,7 @@ fn self_attr(field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::Ident("self".into()))),
         field: field.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn plain_param(name: &str, default: Option<Expression>) -> Param {
@@ -4291,8 +4248,7 @@ fn plain_param(name: &str, default: Option<Expression>) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    }
+        is_nullable: false }
 }
 
 fn has_method(body: &[Statement], want: &str) -> bool {
@@ -4309,8 +4265,7 @@ fn fn_decl(name: &str, params: Vec<Param>, body: Vec<Statement>) -> Statement {
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub: false,
-    })
+        is_sub: false })
 }
 
 fn is_python_private_name(name: &str) -> bool {
@@ -4378,8 +4333,7 @@ fn mangle_private_members_in_expr(class_name: &str, expr: &mut Expression) {
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => mangle_private_members_in_expr(class_name, expr),
-            LambdaBody::Block(stmts) => mangle_private_members_in_stmts(class_name, stmts),
-        },
+            LambdaBody::Block(stmts) => mangle_private_members_in_stmts(class_name, stmts) },
         _ => {}
     }
 }
@@ -4394,8 +4348,7 @@ fn mangle_private_members_in_stmts(class_name: &str, stmts: &mut [Statement]) {
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 mangle_private_members_in_expr(class_name, cond);
                 mangle_private_members_in_stmts(class_name, then_body);
                 for (elif_cond, elif_body) in elifs {
@@ -4425,7 +4378,7 @@ fn mangle_private_members_in_stmts(class_name: &str, stmts: &mut [Statement]) {
             StmtKind::Return(Some(expr)) | StmtKind::Expr(expr) => {
                 mangle_private_members_in_expr(class_name, expr);
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value , ..} => {
                 for target in targets {
                     mangle_private_members_in_expr(class_name, target);
                 }
@@ -4467,8 +4420,7 @@ fn synthesize_dataclass_members(class_name: &str, body: &mut Vec<Statement>) {
             }
             init_body.push(Statement::new(StmtKind::Assign {
                 targets: vec![self_attr(&field.name)],
-                value: Expression::new(ExprKind::Ident(field.name.clone())),
-            }));
+                value: Expression::new(ExprKind::Ident(field.name.clone())), by_ref: false }));
         }
         // `__post_init__(self, *init_vars)` runs last, once every real field
         // is assigned, so it can derive attributes from them.
@@ -4483,11 +4435,9 @@ fn synthesize_dataclass_members(class_name: &str, body: &mut Vec<Statement>) {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident("self")),
                         field: "__post_init__".into(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: init_vars.into_iter().map(Argument::positional).collect(),
-                    optional: false,
-                },
+                    optional: false },
             ))));
         }
         // FRONT, not back. Field types are inferred from the constructor's
@@ -4518,11 +4468,9 @@ fn synthesize_dataclass_members(class_name: &str, body: &mut Vec<Statement>) {
                     key: None,
                     value: Expression::string(&f.name),
                     spread: false,
-                    by_ref: false,
-                })
+                    by_ref: false })
                 .collect(),
-        )),
-    }));
+        )) , by_ref: false }));
 }
 
 fn synthesize_python_class_defaults(class_name: &str, body: &mut Vec<Statement>) {
@@ -4540,16 +4488,13 @@ fn synthesize_python_class_defaults(class_name: &str, body: &mut Vec<Statement>)
                 vec![
                     Statement::new(StmtKind::Assign {
                         targets: vec![self_attr("message")],
-                        value: message.clone(),
-                    }),
+                        value: message.clone(), by_ref: false }),
                     Statement::new(StmtKind::Assign {
                         targets: vec![self_attr("args")],
-                        value: Expression::new(ExprKind::Tuple(vec![message])),
-                    }),
+                        value: Expression::new(ExprKind::Tuple(vec![message])), by_ref: false }),
                     Statement::new(StmtKind::Assign {
                         targets: vec![self_attr("stack")],
-                        value: Expression::string(""),
-                    }),
+                        value: Expression::string(""), by_ref: false }),
                 ],
             ));
         }
@@ -4582,8 +4527,7 @@ fn synthesize_python_class_defaults(class_name: &str, body: &mut Vec<Statement>)
                 ExprKind::Binary {
                     op: BinOp::StrictEq,
                     left: Box::new(Expression::ident("self")),
-                    right: Box::new(Expression::ident("other")),
-                },
+                    right: Box::new(Expression::ident("other")) },
             ))))],
         ));
     }
@@ -4598,10 +4542,8 @@ fn synthesize_python_class_defaults(class_name: &str, body: &mut Vec<Statement>)
                         "unhashable type: '{}'",
                         class_name
                     )))],
-                    optional: false,
-                })),
-                cause: None,
-            })],
+                    optional: false })),
+                cause: None })],
         ));
     }
     if has_method(body, "__init__") {
@@ -4634,14 +4576,12 @@ fn normalize_exception_super_init(class_name: &str, body: &mut [Statement]) {
                 }) if matches!(&callee.kind, ExprKind::Super) => {
                     Some(args.iter().map(|a| a.value.clone()).collect::<Vec<_>>())
                 }
-                _ => None,
-            };
+                _ => None };
             rewritten.push(inner);
             if let Some(args) = maybe_args {
                 rewritten.push(Statement::new(StmtKind::Assign {
                     targets: vec![self_attr("args")],
-                    value: Expression::new(ExprKind::Tuple(args)),
-                }));
+                    value: Expression::new(ExprKind::Tuple(args)), by_ref: false }));
             }
         }
         *fn_body = rewritten;
@@ -4762,8 +4702,7 @@ fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtK
         interfaces: Vec::new(),
         members,
         modifiers: ClassModifiers::default(),
-        decorators: vec![],
-    })
+        decorators: vec![] })
 }
 
 fn method_call_args_from_params(params: &[Param]) -> Vec<Argument> {
@@ -4773,8 +4712,7 @@ fn method_call_args_from_params(params: &[Param]) -> Vec<Argument> {
             value: Expression::ident(&p.name),
             name: None,
             by_ref: false,
-            spread: p.is_rest || p.is_kwargs,
-        })
+            spread: p.is_rest || p.is_kwargs })
         .collect()
 }
 
@@ -4795,8 +4733,7 @@ fn decorated_method_body(
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub: false,
-    };
+        is_sub: false };
     let mut stmts = vec![Statement::new(original)];
     assign_function_metadata(&mut stmts, &original_name, params, return_type.as_ref(), body);
     let decorated = call_decorator_stack(decorators, Expression::ident(&original_name));
@@ -4804,8 +4741,7 @@ fn decorated_method_body(
         ExprKind::Call {
             callee: Box::new(decorated),
             args: method_call_args_from_params(params),
-            optional: false,
-        },
+            optional: false },
     )))));
     stmts
 }
@@ -4826,13 +4762,12 @@ fn block_desugared_function(stmt: &Statement) -> Option<StmtKind> {
         handles,
         is_async,
         is_generator,
-        is_sub,
-    } = &first.kind
+        is_sub } = &first.kind
     else {
         return None;
     };
     let (public_name, final_value) = stmts.iter().rev().find_map(|s| {
-        if let StmtKind::Assign { targets, value } = &s.kind
+        if let StmtKind::Assign { targets, value , ..} = &s.kind
             && targets.len() == 1
             && let ExprKind::Ident(public) = &targets[0].kind
         {
@@ -4845,8 +4780,7 @@ fn block_desugared_function(stmt: &Statement) -> Option<StmtKind> {
         Statement::new(StmtKind::Return(Some(Expression::new(ExprKind::Call {
             callee: Box::new(final_value),
             args: method_call_args_from_params(params),
-            optional: false,
-        })))),
+            optional: false })))),
     ];
     Some(StmtKind::FunctionDecl {
         name: public_name,
@@ -4857,8 +4791,7 @@ fn block_desugared_function(stmt: &Statement) -> Option<StmtKind> {
         handles: handles.clone(),
         is_async: *is_async,
         is_generator: *is_generator,
-        is_sub: *is_sub,
-    })
+        is_sub: *is_sub })
 }
 
 fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassMember> {
@@ -4894,8 +4827,7 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                         body: body.clone(),
                         base_args: None,
                         initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-                        visibility: Visibility::Public,
-                    });
+                        visibility: Visibility::Public });
                     continue;
                 }
 
@@ -4912,8 +4844,7 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                         getter: Some(body.clone()),
                         setter: None,
                         is_auto: false,
-                        modifiers: Modifiers::default(),
-                    });
+                        modifiers: Modifiers::default() });
                     property_indices.insert(name.clone(), idx);
                     continue;
                 }
@@ -4941,12 +4872,10 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            });
+                                is_nullable: false });
                             *setter = Some(vybe_ast::PropertySetter {
                                 param: value_param,
-                                body: body.clone(),
-                            });
+                                body: body.clone() });
                         }
                     }
                     continue;
@@ -4992,8 +4921,7 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                         is_rest: false,
                         is_kwargs: false,
                         is_optional: false,
-                        is_nullable: false,
-                    };
+                        is_nullable: false };
                     let mut p = vec![dummy];
                     p.extend_from_slice(params);
                     p
@@ -5006,8 +4934,7 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                         is_rest: false,
                         is_kwargs: false,
                         is_optional: false,
-                        is_nullable: false,
-                    };
+                        is_nullable: false };
                     let mut p = vec![dummy];
                     if let Some(cls) = params.first() {
                         let mut cls = cls.clone();
@@ -5035,8 +4962,7 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                         handles: Vec::new(),
                         is_async: *is_async,
                         is_generator: false,
-                        is_sub: false,
-                    },
+                        is_sub: false },
                 ))));
             }
             // Annotated class-level declaration (`x: int = 0`, or bare
@@ -5068,11 +4994,10 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                         init: d.init.clone(),
                         modifiers: mods,
                         with_events: false,
-                        array_bounds: None,
-                    });
+                        array_bounds: None });
                 }
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value , ..} => {
                 // Class-level assignment → static Field (Python class variables)
                 for target in targets {
                     if let ExprKind::Ident(field_name) = &target.kind {
@@ -5084,8 +5009,7 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                             init: Some(value.clone()),
                             modifiers: mods,
                             with_events: false,
-                            array_bounds: None,
-                        });
+                            array_bounds: None });
                     }
                 }
             }
@@ -5123,8 +5047,7 @@ fn is_special_decorator(expr: &Expression) -> bool {
         ExprKind::Member { field, .. } => {
             matches!(field.as_str(), "setter" | "getter" | "deleter")
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn function_docstring(body: &[Statement]) -> Option<String> {
@@ -5142,10 +5065,8 @@ fn assign_member(object: Expression, field: &str, value: Expression) -> Statemen
         targets: vec![Expression::new(ExprKind::Member {
             object: Box::new(object),
             field: field.to_string(),
-            null_safe: false,
-        })],
-        value,
-    })
+            null_safe: false })],
+        value, by_ref: false })
 }
 
 fn function_doc_expr(body: &[Statement]) -> Expression {
@@ -5160,8 +5081,7 @@ fn py_annotation_expr(type_hint: &str) -> Expression {
             "__py_type_obj",
             vec![Expression::string(type_hint.trim())],
         ),
-        other => Expression::string(other),
-    }
+        other => Expression::string(other) }
 }
 
 fn function_annotations_expr(params: &[Param], return_type: Option<&String>) -> Option<Expression> {
@@ -5170,15 +5090,13 @@ fn function_annotations_expr(params: &[Param], return_type: Option<&String>) -> 
         if let Some(hint) = &p.type_hint {
             props.push(ObjectProperty::KeyValue {
                 key: Expression::string(&p.name),
-                value: py_annotation_expr(hint),
-            });
+                value: py_annotation_expr(hint) });
         }
     }
     if let Some(hint) = return_type {
         props.push(ObjectProperty::KeyValue {
             key: Expression::string("return"),
-            value: py_annotation_expr(hint),
-        });
+            value: py_annotation_expr(hint) });
     }
     if props.is_empty() {
         None
@@ -5222,8 +5140,7 @@ fn call_decorator_stack(decorators: Vec<Expression>, base: Expression) -> Expres
                 value: acc,
                 name: None,
                 by_ref: false,
-                spread: false,
-            }],
+                spread: false }],
         ));
     }
     acc
@@ -5234,8 +5151,7 @@ fn decorator_root_ident(expr: &Expression) -> Option<&str> {
         ExprKind::Ident(name) => Some(name.as_str()),
         ExprKind::Call { callee, .. } => decorator_root_ident(callee),
         ExprKind::Member { object, .. } => decorator_root_ident(object),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn decorator_stack_contains_class(decorators: &[Expression]) -> bool {
@@ -5300,16 +5216,14 @@ fn desugar_function_decorators(decl: StmtKind, decorators: Vec<Expression>) -> S
     let acc = call_decorator_stack(decorators, Expression::ident(&original_name));
     stmts.push(Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(&fn_name)],
-        value: acc,
-    }));
+        value: acc, by_ref: false }));
     StmtKind::Block(stmts)
 }
 
 fn class_decl_name(decl: &StmtKind) -> Option<String> {
     match decl {
         StmtKind::ClassDecl { name, .. } => Some(name.clone()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn desugar_class_decorators(decl: StmtKind, decorators: Vec<Expression>) -> StmtKind {
@@ -5328,8 +5242,7 @@ fn desugar_class_decorators(decl: StmtKind, decorators: Vec<Expression>) -> Stmt
         Statement::new(decl),
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&name)],
-            value,
-        }),
+            value, by_ref: false }),
     ])
 }
 
@@ -5381,8 +5294,7 @@ fn walk_decorated(pair: Pair<Rule>) -> Result<StmtKind, String> {
             other => Err(format!(
                 "Expected def/class after decorator, got {:?}",
                 other
-            )),
-        }
+            )) }
     } else {
         Err("Empty decorated statement".into())
     }
@@ -5433,8 +5345,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
         cond,
         then_body,
         elifs,
-        else_body,
-    })
+        else_body })
 }
 
 // ── While ───────────────────────────────────────────────────────────────────
@@ -5455,16 +5366,14 @@ fn mark_loop_break_sets_flag(stmts: Vec<Statement>, flag: &str) -> Vec<Statement
             StmtKind::Break(_) => {
                 out.push(Statement::new(StmtKind::Assign {
                     targets: vec![Expression::ident(flag)],
-                    value: Expression::bool(true),
-                }));
+                    value: Expression::bool(true), by_ref: false }));
                 out.push(stmt);
             }
             StmtKind::If {
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 out.push(Statement::new(StmtKind::If {
                     cond,
                     then_body: mark_loop_break_sets_flag(then_body, flag),
@@ -5472,15 +5381,13 @@ fn mark_loop_break_sets_flag(stmts: Vec<Statement>, flag: &str) -> Vec<Statement
                         .into_iter()
                         .map(|(c, b)| (c, mark_loop_break_sets_flag(b, flag)))
                         .collect(),
-                    else_body: else_body.map(|b| mark_loop_break_sets_flag(b, flag)),
-                }));
+                    else_body: else_body.map(|b| mark_loop_break_sets_flag(b, flag)) }));
             }
             StmtKind::Try {
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 out.push(Statement::new(StmtKind::Try {
                     body: mark_loop_break_sets_flag(body, flag),
                     catches: catches
@@ -5491,27 +5398,23 @@ fn mark_loop_break_sets_flag(stmts: Vec<Statement>, flag: &str) -> Vec<Statement
                         })
                         .collect(),
                     else_body: else_body.map(|b| mark_loop_break_sets_flag(b, flag)),
-                    finally: finally.map(|b| mark_loop_break_sets_flag(b, flag)),
-                }));
+                    finally: finally.map(|b| mark_loop_break_sets_flag(b, flag)) }));
             }
             StmtKind::With {
                 items,
                 body,
-                is_async,
-            } => {
+                is_async } => {
                 out.push(Statement::new(StmtKind::With {
                     items,
                     body: mark_loop_break_sets_flag(body, flag),
-                    is_async,
-                }));
+                    is_async }));
             }
             StmtKind::Block(b) => {
                 out.push(Statement::new(StmtKind::Block(mark_loop_break_sets_flag(
                     b, flag,
                 ))));
             }
-            _ => out.push(stmt),
-        }
+            _ => out.push(stmt) }
     }
     out
 }
@@ -5532,8 +5435,7 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
         return Ok(StmtKind::While {
             cond,
             body,
-            else_body: None,
-        });
+            else_body: None });
     };
 
     // Python `while C: BODY else: ELSE` runs ELSE only on a NORMAL exit
@@ -5549,22 +5451,18 @@ fn walk_while(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let body = mark_loop_break_sets_flag(body, &flag);
     let flag_init = Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(&flag)],
-        value: Expression::bool(false),
-    });
+        value: Expression::bool(false), by_ref: false });
     let while_stmt = Statement::new(StmtKind::While {
         cond,
         body,
-        else_body: None,
-    });
+        else_body: None });
     let else_guard = Statement::new(StmtKind::If {
         cond: Expression::new(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(Expression::ident(&flag)),
-        }),
+            expr: Box::new(Expression::ident(&flag)) }),
         then_body: else_stmts,
         elifs: Vec::new(),
-        else_body: None,
-    });
+        else_body: None });
     Ok(StmtKind::Block(vec![flag_init, while_stmt, else_guard]))
 }
 
@@ -5616,9 +5514,7 @@ fn walk_for(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
                 value: Expression::new(ExprKind::Index {
                     object: Box::new(Expression::new(ExprKind::Ident(tmp.clone()))),
                     index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(i as i64)))),
-                    null_safe: false,
-                }),
-            }));
+                    null_safe: false }), by_ref: false }));
         }
         destructure_stmts.extend(body);
         body = destructure_stmts;
@@ -5634,8 +5530,7 @@ fn walk_for(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
         body,
         of: true,
         else_body,
-        is_async,
-    })
+        is_async })
 }
 
 // ── Try ─────────────────────────────────────────────────────────────────────
@@ -5691,8 +5586,7 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     var_name,
                     stack_var: None,
                     body: catch_body,
-                    when_clause: None,
-                });
+                    when_clause: None });
             }
             Rule::else_clause => {
                 let mut ei = p.into_inner();
@@ -5727,8 +5621,7 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         catches,
         else_body,
-        finally,
-    })
+        finally })
 }
 
 fn py_except_type_names(raw: &str) -> Vec<String> {
@@ -5794,36 +5687,28 @@ fn py_exception_chain_stmts(
     vec![
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(tmp)],
-            value: exc,
-        }),
+            value: exc, by_ref: false }),
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(tmp)),
                 field: "__cause__".into(),
-                null_safe: false,
-            })],
-            value: cause,
-        }),
+                null_safe: false })],
+            value: cause, by_ref: false }),
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(tmp)),
                 field: "__context__".into(),
-                null_safe: false,
-            })],
-            value: context,
-        }),
+                null_safe: false })],
+            value: context, by_ref: false }),
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(tmp)),
                 field: "__suppress_context__".into(),
-                null_safe: false,
-            })],
-            value: Expression::bool(suppress),
-        }),
+                null_safe: false })],
+            value: Expression::bool(suppress), by_ref: false }),
         Statement::new(StmtKind::Throw {
             expr: Some(Expression::ident(tmp)),
-            cause: None,
-        }),
+            cause: None }),
     ]
 }
 
@@ -5904,8 +5789,7 @@ fn py_stamp_except_raise_contexts(body: &mut Vec<Statement>, current_var: &str) 
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 py_stamp_except_raise_contexts(body, current_var);
                 for catch in catches {
                     py_stamp_except_raise_contexts(&mut catch.body, current_var);
@@ -5918,8 +5802,7 @@ fn py_stamp_except_raise_contexts(body: &mut Vec<Statement>, current_var: &str) 
                 }
                 None
             }
-            _ => None,
-        };
+            _ => None };
         if let Some(stmts) = replacement {
             rewritten.extend(stmts);
         } else {
@@ -5935,7 +5818,7 @@ fn py_rewrite_except_exc_info(body: &mut [Statement], current_var: &str) {
             StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
                 py_rewrite_except_exc_info_expr(expr, current_var)
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value , ..} => {
                 for target in targets {
                     py_rewrite_except_exc_info_expr(target, current_var);
                 }
@@ -5952,8 +5835,7 @@ fn py_rewrite_except_exc_info(body: &mut [Statement], current_var: &str) {
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 py_rewrite_except_exc_info_expr(cond, current_var);
                 py_rewrite_except_exc_info(then_body, current_var);
                 for (cond, body) in elifs {
@@ -5987,8 +5869,7 @@ fn py_rewrite_except_exc_info(body: &mut [Statement], current_var: &str) {
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 py_rewrite_except_exc_info(body, current_var);
                 for catch in catches {
                     let nested = catch.var_name.as_deref().unwrap_or(current_var);
@@ -6017,7 +5898,7 @@ fn py_rewrite_except_exc_info(body: &mut [Statement], current_var: &str) {
 fn py_expand_except_exc_info_assigns(body: &mut Vec<Statement>, current_var: &str) {
     let mut rewritten = Vec::with_capacity(body.len());
     for mut stmt in body.drain(..) {
-        if let StmtKind::Assign { targets, value } = &stmt.kind
+        if let StmtKind::Assign { targets, value , ..} = &stmt.kind
             && targets.len() == 1
             && py_is_sys_exc_info_call(value)
             && let Some(names) = py_destructure_idents(&targets[0])
@@ -6027,17 +5908,13 @@ fn py_expand_except_exc_info_assigns(body: &mut Vec<Statement>, current_var: &st
                 targets: vec![Expression::ident(&names[0])],
                 value: Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
                     key: Expression::string("__name__"),
-                    value: call_ident("__py_type_name", vec![Expression::ident(current_var)]),
-                }])),
-            }));
+                    value: call_ident("__py_type_name", vec![Expression::ident(current_var)]) }])), by_ref: false }));
             rewritten.push(Statement::new(StmtKind::Assign {
                 targets: vec![Expression::ident(&names[1])],
-                value: Expression::ident(current_var),
-            }));
+                value: Expression::ident(current_var), by_ref: false }));
             rewritten.push(Statement::new(StmtKind::Assign {
                 targets: vec![Expression::ident(&names[2])],
-                value: Expression::new(ExprKind::Lit(Literal::Null)),
-            }));
+                value: Expression::new(ExprKind::Lit(Literal::Null)), by_ref: false }));
             continue;
         }
         match &mut stmt.kind {
@@ -6066,8 +5943,7 @@ fn py_expand_except_exc_info_assigns(body: &mut Vec<Statement>, current_var: &st
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 py_expand_except_exc_info_assigns(body, current_var);
                 for catch in catches {
                     let nested = catch.var_name.as_deref().unwrap_or(current_var);
@@ -6127,11 +6003,9 @@ fn py_rewrite_except_exc_info_expr(expr: &mut Expression, current_var: &str) {
             expr.kind = match which {
                 0 => ExprKind::Object(vec![ObjectProperty::KeyValue {
                     key: Expression::string("__name__"),
-                    value: call_ident("__py_type_name", vec![Expression::ident(current_var)]),
-                }]),
+                    value: call_ident("__py_type_name", vec![Expression::ident(current_var)]) }]),
                 1 => ExprKind::Ident(current_var.to_string()),
-                _ => ExprKind::Lit(Literal::Null),
-            };
+                _ => ExprKind::Lit(Literal::Null) };
         }
         ExprKind::Call { callee, args, .. } => {
             if args.is_empty()
@@ -6147,23 +6021,19 @@ fn py_rewrite_except_exc_info_expr(expr: &mut Expression, current_var: &str) {
                             value: call_ident(
                                 "__py_type_name",
                                 vec![Expression::ident(current_var)],
-                            ),
-                        }])),
+                            ) }])),
                         spread: false,
-                        by_ref: false,
-                    },
+                        by_ref: false },
                     ArrayElement {
                         key: None,
                         value: Expression::ident(current_var),
                         spread: false,
-                        by_ref: false,
-                    },
+                        by_ref: false },
                     ArrayElement {
                         key: None,
                         value: Expression::new(ExprKind::Lit(Literal::Null)),
                         spread: false,
-                        by_ref: false,
-                    },
+                        by_ref: false },
                 ]);
                 return;
             }
@@ -6245,8 +6115,7 @@ fn walk_with(pair: Pair<Rule>, is_async: bool) -> Result<StmtKind, String> {
                 }
                 items.push(WithItem {
                     expr: expr.unwrap_or(Expression::new(ExprKind::Lit(Literal::Null))),
-                    var,
-                });
+                    var });
             }
             Rule::block => body = walk_block(p)?,
             _ => {}
@@ -6274,29 +6143,25 @@ fn with_member(recv: &str, field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident(recv)),
         field: field.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 fn with_arg(value: Expression) -> Argument {
     Argument {
         value,
         name: None,
         by_ref: false,
-        spread: false,
-    }
+        spread: false }
 }
 fn with_call(callee: Expression, args: Vec<Argument>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
-        optional: false,
-    })
+        optional: false })
 }
 fn with_not(e: Expression) -> Expression {
     Expression::new(ExprKind::Unary {
         op: UnaryOp::Not,
-        expr: Box::new(e),
-    })
+        expr: Box::new(e) })
 }
 
 /// `with A as a, B as b: body` → nested PEP-343 blocks:
@@ -6328,36 +6193,30 @@ fn build_sql_with_desugar(conn: &str, body: Vec<Statement>) -> Vec<Statement> {
         body: vec![
             with_stmt(StmtKind::Assign {
                 targets: vec![Expression::ident(&hit)],
-                value: Expression::bool(true),
-            }),
+                value: Expression::bool(true), by_ref: false }),
             sql_call("__sql_rollback"),
             with_stmt(StmtKind::Throw {
                 expr: Some(Expression::ident(&exc)),
-                cause: None,
-            }),
+                cause: None }),
         ],
-        when_clause: None,
-    };
+        when_clause: None };
 
     let finally = vec![with_stmt(StmtKind::If {
         cond: with_not(Expression::ident(&hit)),
         then_body: vec![sql_call("__sql_commit")],
         elifs: vec![],
-        else_body: None,
-    })];
+        else_body: None })];
 
     vec![
         sql_call("__sql_begin"),
         with_stmt(StmtKind::Assign {
             targets: vec![Expression::ident(&hit)],
-            value: Expression::bool(false),
-        }),
+            value: Expression::bool(false), by_ref: false }),
         with_stmt(StmtKind::Try {
             body,
             catches: vec![catch],
             else_body: None,
-            finally: Some(finally),
-        }),
+            finally: Some(finally) }),
     ]
 }
 
@@ -6375,8 +6234,7 @@ fn build_file_with_desugar(
     vec![
         with_stmt(StmtKind::Assign {
             targets: vec![Expression::ident(&target)],
-            value: item.expr.clone(),
-        }),
+            value: item.expr.clone(), by_ref: false }),
         with_stmt(StmtKind::Try {
             body,
             catches: vec![],
@@ -6386,14 +6244,12 @@ fn build_file_with_desugar(
                     Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(&target)),
                         field: "close".into(),
-                        null_safe: false,
-                    }),
+                        null_safe: false }),
                     vec![],
                 )))]
             } else {
                 vec![]
-            }),
-        }),
+            }) }),
     ]
 }
 
@@ -6407,8 +6263,7 @@ fn suppress_context_types(expr: &Expression) -> Option<Vec<String>> {
             field == "suppress"
                 && matches!(&object.kind, ExprKind::Ident(module) if module == "contextlib")
         }
-        _ => false,
-    };
+        _ => false };
     if !is_suppress {
         return None;
     }
@@ -6442,11 +6297,9 @@ fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement
                 var_name: None,
                 stack_var: None,
                 body: Vec::new(),
-                when_clause: None,
-            }],
+                when_clause: None }],
             else_body: None,
-            finally: None,
-        })];
+            finally: None })];
     }
     // `with open(...) as f:` — a file object is a plain adapter-built value, not
     // a class, so it has no `__enter__`/`__exit__` to call. Bind it directly and
@@ -6492,8 +6345,7 @@ fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement
     let assign = |name: &str, value: Expression| {
         with_stmt(StmtKind::Assign {
             targets: vec![Expression::ident(name)],
-            value,
-        })
+            value, by_ref: false })
     };
 
     let catch = CatchClause {
@@ -6521,14 +6373,11 @@ fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement
                 // bare `raise` re-raises `null` here, so raise `exc` explicitly.
                 then_body: vec![with_stmt(StmtKind::Throw {
                     expr: Some(Expression::ident(&exc)),
-                    cause: None,
-                })],
+                    cause: None })],
                 elifs: vec![],
-                else_body: None,
-            }),
+                else_body: None }),
         ],
-        when_clause: None,
-    };
+        when_clause: None };
 
     let finally = vec![with_stmt(StmtKind::If {
         cond: with_not(Expression::ident(&hit)),
@@ -6541,8 +6390,7 @@ fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement
             ],
         )))],
         elifs: vec![],
-        else_body: None,
-    })];
+        else_body: None })];
 
     vec![
         assign(&mgr, first.expr.clone()),
@@ -6552,8 +6400,7 @@ fn build_with_desugar(items: &[WithItem], body: Vec<Statement>) -> Vec<Statement
             body: inner_body,
             catches: vec![catch],
             else_body: None,
-            finally: Some(finally),
-        }),
+            finally: Some(finally) }),
     ]
 }
 
@@ -6589,8 +6436,7 @@ fn walk_match(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 cases.push(MatchCase {
                     pattern,
                     guard,
-                    body,
-                });
+                    body });
             }
             Rule::NEWLINE | Rule::INDENT | Rule::DEDENT => {}
             _ => {}
@@ -6599,8 +6445,7 @@ fn walk_match(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     Ok(StmtKind::MatchStatement {
         subject: subject.unwrap_or(Expression::new(ExprKind::Lit(Literal::Null))),
-        cases,
-    })
+        cases })
 }
 
 fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
@@ -6621,8 +6466,7 @@ fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
             let inner = pair.into_inner().next();
             match inner {
                 Some(p) => walk_pattern(p),
-                None => Ok(Pattern::Wildcard),
-            }
+                None => Ok(Pattern::Wildcard) }
         }
         Rule::single_pattern => {
             let inner = pair.into_inner().next().ok_or("Empty single_pattern")?;
@@ -6643,16 +6487,14 @@ fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
                 .map(|p| p.as_str().to_string());
             Ok(Pattern::As {
                 pattern: Some(Box::new(sub_pattern)),
-                name,
-            })
+                name })
         }
         Rule::wildcard_pattern => Ok(Pattern::Wildcard),
         Rule::capture_pattern => {
             let name = pair.as_str().to_string();
             Ok(Pattern::As {
                 pattern: None,
-                name: Some(name),
-            })
+                name: Some(name) })
         }
         Rule::singleton_pattern => {
             let text = pair.as_str().trim();
@@ -6660,8 +6502,7 @@ fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
                 "None" => Expression::null(),
                 "True" => Expression::bool(true),
                 "False" => Expression::bool(false),
-                _ => Expression::null(),
-            };
+                _ => Expression::null() };
             Ok(Pattern::Singleton(expr))
         }
         Rule::literal_pattern => {
@@ -6732,20 +6573,17 @@ fn walk_pattern(pair: Pair<Rule>) -> Result<Pattern, String> {
                             patterns.push(walk_pattern(first)?);
                         }
                     }
-                    _ => patterns.push(walk_pattern(cp)?),
-                }
+                    _ => patterns.push(walk_pattern(cp)?) }
             }
             Ok(Pattern::Class {
                 cls: Expression::new(ExprKind::Ident(cls_name)),
                 patterns,
-                kw_patterns,
-            })
+                kw_patterns })
         }
         Rule::true_kw => Ok(Pattern::Singleton(Expression::bool(true))),
         Rule::false_kw => Ok(Pattern::Singleton(Expression::bool(false))),
         Rule::none_kw => Ok(Pattern::Singleton(Expression::null())),
-        other => Err(format!("Unexpected pattern rule: {:?}", other)),
-    }
+        other => Err(format!("Unexpected pattern rule: {:?}", other)) }
 }
 
 // ── Return / Raise ──────────────────────────────────────────────────────────
@@ -6811,11 +6649,9 @@ fn walk_del(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: object.clone(),
                         field: "pop".into(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: vec![Argument::positional((**index).clone())],
-                    optional: false,
-                });
+                    optional: false });
                 return Ok(StmtKind::Expr(pop));
             }
         }
@@ -6856,14 +6692,12 @@ fn python_finalise_stmt(target: &Expression) -> Statement {
         Expression::new(ExprKind::Binary {
             op,
             left: Box::new(expr),
-            right: Box::new(Expression::string(s)),
-        })
+            right: Box::new(Expression::string(s)) })
     };
     let del_member = Expression::new(ExprKind::Member {
         object: Box::new(target.clone()),
         field: "__del__".into(),
-        null_safe: false,
-    });
+        null_safe: false });
     // `typeof x != "undefined"` FIRST, and `and` short-circuits, so the member
     // read never happens for a name that does not exist yet. `TypeOf` is the
     // only expression that tolerates an unbound name — reading one any other
@@ -6871,19 +6705,16 @@ fn python_finalise_stmt(target: &Expression) -> Statement {
     let cond = Expression::new(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(is(type_of(target.clone()), BinOp::NotEq, "undefined")),
-        right: Box::new(is(type_of(del_member.clone()), BinOp::Eq, "function")),
-    });
+        right: Box::new(is(type_of(del_member.clone()), BinOp::Eq, "function")) });
     let call_finaliser = Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
         callee: Box::new(del_member),
         args: Vec::new(),
-        optional: false,
-    })));
+        optional: false })));
     Statement::new(StmtKind::If {
         cond,
         then_body: vec![call_finaliser],
         elifs: Vec::new(),
-        else_body: None,
-    })
+        else_body: None })
 }
 
 fn walk_assert(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -6898,15 +6729,12 @@ fn walk_assert(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::If {
         cond: Expression::new(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(test),
-        }),
+            expr: Box::new(test) }),
         then_body: vec![Statement::new(StmtKind::Throw {
             expr: Some(call_ident("__py_exc_AssertionError", vec![message])),
-            cause: None,
-        })],
+            cause: None })],
         elifs: Vec::new(),
-        else_body: None,
-    })
+        else_body: None })
 }
 
 fn walk_scope_decl(pair: Pair<Rule>, kind: ScopeDeclKind) -> Result<StmtKind, String> {
@@ -6945,8 +6773,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         if let ExprKind::Index {
             object,
             index,
-            null_safe: _,
-        } = &target.kind
+            null_safe: _ } = &target.kind
             && let ExprKind::Ident(var) = &object.kind
         {
             if let Some(factory) = defaultdict_factory(var) {
@@ -6962,8 +6789,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     let delta = if op_str == "-=" {
                         Expression::new(ExprKind::Unary {
                             op: UnaryOp::Neg,
-                            expr: Box::new(value),
-                        })
+                            expr: Box::new(value) })
                     } else {
                         value
                     };
@@ -7001,12 +6827,10 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     Argument::positional(read_target),
                     Argument::positional(value),
                 ],
-                optional: false,
-            });
+                optional: false });
             return Ok(StmtKind::Assign {
                 targets: vec![lowered_target],
-                value: combined,
-            });
+                value: combined, by_ref: false });
         }
         if op_str == "|="
             && let ExprKind::Ident(name) = &target.kind
@@ -7014,8 +6838,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         {
             return Ok(StmtKind::Assign {
                 targets: vec![target.clone()],
-                value: call_ident("__py_dict_ior", vec![target, value]),
-            });
+                value: call_ident("__py_dict_ior", vec![target, value]), by_ref: false });
         }
         // `-=`/`|=`/`&=`/`^=` lower to `x = x <binop> v` so the polymorphic
         // binary operator handles sets (difference/union/intersection/symmetric
@@ -7031,18 +6854,15 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             // path truncates toward zero.
             "//=" => Some(BinOp::FloorDiv),
             "%=" => Some(BinOp::Mod),
-            _ => None,
-        };
+            _ => None };
         if let Some(op) = set_binop {
             let combined = Expression::new(ExprKind::Binary {
                 op,
                 left: Box::new(target.clone()),
-                right: Box::new(value),
-            });
+                right: Box::new(value) });
             return Ok(StmtKind::Assign {
                 targets: vec![target],
-                value: combined,
-            });
+                value: combined, by_ref: false });
         }
         let op = match op_str {
             "+=" => CompoundOp::Add,
@@ -7058,8 +6878,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             "&=" => CompoundOp::BitAnd,
             "^=" => CompoundOp::BitXor,
             "@=" => CompoundOp::Mul, // matmul
-            _ => CompoundOp::Add,
-        };
+            _ => CompoundOp::Add };
         return Ok(StmtKind::CompoundAssign { target, op, value });
     }
 
@@ -7121,10 +6940,8 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             return Ok(match init {
                 Some(value) => StmtKind::Assign {
                     targets: vec![target],
-                    value,
-                },
-                None => StmtKind::Empty,
-            });
+                    value, by_ref: false },
+                None => StmtKind::Empty });
         };
         return Ok(StmtKind::VarDecl {
             declarations: vec![vybe_ast::VarDeclarator {
@@ -7132,10 +6949,8 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 type_hint: Some(hint),
                 init,
                 array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Let,
-        });
+                with_events: false }],
+            kind: VarDeclKind::Let });
     }
 
     if all_exprs.len() >= 2 {
@@ -7157,8 +6972,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         NamedTupleDef {
                             type_name: type_name.clone().unwrap_or_default(),
                             fields: fields.iter().filter_map(|(n, _)| n.clone()).collect(),
-                            defaults: Vec::new(),
-                        },
+                            defaults: Vec::new() },
                     );
                 }
             }
@@ -7308,8 +7122,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         ..
                     } => matches!(&inner.kind, ExprKind::Ident(n) if n == "sys")
                         && field == "modules",
-                    _ => false,
-                };
+                    _ => false };
                 if sys_modules_target
                     && let ExprKind::Lit(Literal::Str(module_name)) = &index.kind
                     && let ExprKind::Ident(var_name) = &value.kind
@@ -7351,10 +7164,8 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         class: Box::new(Expression::ident("TypeError")),
                         args: vec![Argument::positional(Expression::string(
                             "mappingproxy is read-only",
-                        ))],
-                    })),
-                    cause: None,
-                });
+                        ))] })),
+                    cause: None });
             }
         }
         // Convert Tuple targets to Destructure for tuple unpacking (x, y = ...)
@@ -7397,7 +7208,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
             let finalise = python_finalise_stmt(&targets[0]);
             return Ok(StmtKind::Block(vec![
                 finalise,
-                Statement::new(StmtKind::Assign { targets, value }),
+                Statement::new(StmtKind::Assign { targets, value , by_ref: false }),
             ]));
         }
         if targets.len() == 1
@@ -7405,8 +7216,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         {
             return Ok(StmtKind::Assign {
                 targets: vec![lowered_target],
-                value,
-            });
+                value, by_ref: false });
         }
         if targets.len() == 1
             && let ExprKind::Index { object, index, .. } = &targets[0].kind
@@ -7417,14 +7227,12 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(var)),
                     field: "__setitem__".into(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![
                     Argument::positional(*index.clone()),
                     Argument::positional(value),
                 ],
-                optional: false,
-            })));
+                optional: false })));
         }
         if targets.len() == 1
             && let ExprKind::Index { object, index, .. } = &targets[0].kind
@@ -7436,7 +7244,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 vec![Expression::ident(var), *index.clone(), value],
             )));
         }
-        Ok(StmtKind::Assign { targets, value })
+        Ok(StmtKind::Assign { targets, value , by_ref: false })
     } else if all_exprs.len() == 1 {
         let expr = all_exprs.remove(0);
         if let Some(throw_stmt) = py_raise_expr_stmt(&expr) {
@@ -7463,8 +7271,7 @@ fn counter_update_stmt_block(expr: &Expression) -> Option<StmtKind> {
     let sign = match name.as_str() {
         "__py_counter_update" => 1,
         "__py_counter_subtract" => -1,
-        _ => return None,
-    };
+        _ => return None };
     if args.len() != 2 {
         return None;
     }
@@ -7480,8 +7287,7 @@ fn counter_update_stmt_block(expr: &Expression) -> Option<StmtKind> {
                 args[1].value.clone(),
                 Expression::int(sign),
             ],
-        ),
-    })
+        ), by_ref: false })
 }
 
 fn ordereddict_update_stmt_block(expr: &Expression) -> Option<StmtKind> {
@@ -7498,8 +7304,7 @@ fn ordereddict_update_stmt_block(expr: &Expression) -> Option<StmtKind> {
     };
     Some(StmtKind::Assign {
         targets: vec![Expression::ident(var)],
-        value: expr.clone(),
-    })
+        value: expr.clone(), by_ref: false })
 }
 
 fn counter_method_expr(expr: &Expression) -> Option<Expression> {
@@ -7525,8 +7330,7 @@ fn counter_method_expr(expr: &Expression) -> Option<Expression> {
             "__py_counter_subtract",
             vec![Expression::ident(var), other],
         )),
-        _ => None,
-    }
+        _ => None }
 }
 
 // ── Import ──────────────────────────────────────────────────────────────────
@@ -7568,15 +7372,13 @@ fn walk_import(pair: Pair<Rule>) -> Result<Import, String> {
         let (path, alias) = imports.remove(0);
         Ok(Import {
             kind: ImportKind::Simple { path, alias },
-            span,
-        })
+            span })
     } else {
         // Multiple: import os, sys — emit first, rest are separate
         let (path, alias) = imports.remove(0);
         Ok(Import {
             kind: ImportKind::Simple { path, alias },
-            span,
-        })
+            span })
     }
 }
 
@@ -7634,19 +7436,15 @@ fn walk_import_from(pair: Pair<Rule>) -> Result<Import, String> {
         Ok(Import {
             kind: ImportKind::Wildcard {
                 path: module,
-                alias: None,
-            },
-            span,
-        })
+                alias: None },
+            span })
     } else {
         Ok(Import {
             kind: ImportKind::Named {
                 path: module,
                 names,
-                level,
-            },
-            span,
-        })
+                level },
+            span })
     }
 }
 
@@ -7781,8 +7579,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
         Rule::NEWLINE | Rule::INDENT | Rule::DEDENT => Ok(ExprKind::Lit(Literal::Null)),
 
-        other => Err(format!("Unexpected expression rule: {:?}", other)),
-    }
+        other => Err(format!("Unexpected expression rule: {:?}", other)) }
 }
 
 // ── Infix / precedence unwrap ───────────────────────────────────────────────
@@ -7813,8 +7610,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let value = walk_expression(inner.remove(0))?;
                 Ok(ExprKind::Walrus {
                     target: Box::new(target),
-                    value: Box::new(value),
-                })
+                    value: Box::new(value) })
             } else {
                 walk_expr_kind(inner.remove(0))
             }
@@ -7832,8 +7628,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(ExprKind::Ternary {
                     cond: Box::new(test),
                     then: Box::new(body),
-                    else_: Box::new(orelse),
-                })
+                    else_: Box::new(orelse) })
             } else {
                 walk_expr_kind(inner.remove(0))
             }
@@ -7854,8 +7649,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
             Ok(ExprKind::Ternary {
                 cond: Box::new(operand),
                 then: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
-                else_: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))),
-            })
+                else_: Box::new(Expression::new(ExprKind::Lit(Literal::Bool(true)))) })
         }
         Rule::comparison => {
             // left (comp_op right)* — Python chains: a < b < c → a < b and b < c
@@ -7890,16 +7684,13 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(right),
                                 field: "has".into(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![Argument::positional(left.clone())],
-                            optional: false,
-                        });
+                            optional: false });
                         left = if op == BinOp::NotIn {
                             Expression::new(ExprKind::Unary {
                                 op: UnaryOp::Not,
-                                expr: Box::new(has_call),
-                            })
+                                expr: Box::new(has_call) })
                         } else {
                             has_call
                         };
@@ -7925,14 +7716,12 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     Argument::positional(right),
                                     Argument::positional(left.clone()),
                                 ],
-                                optional: false,
-                            })
+                                optional: false })
                         };
                         left = if op == BinOp::NotIn {
                             Expression::new(ExprKind::Unary {
                                 op: UnaryOp::Not,
-                                expr: Box::new(contains),
-                            })
+                                expr: Box::new(contains) })
                         } else {
                             contains
                         };
@@ -7981,8 +7770,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     Argument::positional(left.clone()),
                                     Argument::positional(right),
                                 ],
-                                optional: false,
-                            });
+                                optional: false });
                         }
                     } else if matches!(op, BinOp::Eq | BinOp::NotEq) {
                         let left_none = expr_is_tracked_none(&left);
@@ -8007,8 +7795,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         Argument::positional(left.clone()),
                                         Argument::positional(right),
                                     ],
-                                    optional: false,
-                                })
+                                    optional: false })
                             };
                             continue;
                         }
@@ -8023,14 +7810,12 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             left = Expression::new(ExprKind::Binary {
                                 op,
                                 left: Box::new(call_ident("__vybe_bytes_decode", vec![left])),
-                                right: Box::new(call_ident("__vybe_bytes_decode", vec![right])),
-                            });
+                                right: Box::new(call_ident("__vybe_bytes_decode", vec![right])) });
                         } else {
                             left = Expression::new(ExprKind::Binary {
                                 op,
                                 left: Box::new(left.clone()),
-                                right: Box::new(right),
-                            });
+                                right: Box::new(right) });
                         }
                     } else if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
                         && expr_is_python_bytes(&left)
@@ -8042,8 +7827,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         left = Expression::new(ExprKind::Binary {
                             op,
                             left: Box::new(call_ident("__vybe_bytes_decode", vec![left])),
-                            right: Box::new(call_ident("__vybe_bytes_decode", vec![right])),
-                        });
+                            right: Box::new(call_ident("__vybe_bytes_decode", vec![right])) });
                     } else if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
                         && py_fresh_class_lacks_richcompare(&left, op)
                         && py_fresh_class_lacks_richcompare(&right, op)
@@ -8059,14 +7843,12 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         left = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(helper)),
                             args: vec![Argument::positional(left), Argument::positional(right)],
-                            optional: false,
-                        });
+                            optional: false });
                     } else {
                         left = Expression::new(ExprKind::Binary {
                             op,
                             left: Box::new(left),
-                            right: Box::new(right),
-                        });
+                            right: Box::new(right) });
                     }
                 }
                 Ok(left.kind)
@@ -8074,19 +7856,16 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let mut result = Expression::new(ExprKind::Binary {
                     op: comparisons[0].0,
                     left: Box::new(operands[0].clone()),
-                    right: Box::new(operands[1].clone()),
-                });
+                    right: Box::new(operands[1].clone()) });
                 for j in 1..comparisons.len() {
                     let pairwise = Expression::new(ExprKind::Binary {
                         op: comparisons[j].0,
                         left: Box::new(operands[j].clone()),
-                        right: Box::new(operands[j + 1].clone()),
-                    });
+                        right: Box::new(operands[j + 1].clone()) });
                     result = Expression::new(ExprKind::Binary {
                         op: BinOp::And,
                         left: Box::new(result),
-                        right: Box::new(pairwise),
-                    });
+                        right: Box::new(pairwise) });
                 }
                 Ok(result.kind)
             }
@@ -8114,19 +7893,16 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 return Ok(ExprKind::Call {
                     callee: Box::new(Expression::ident("__pyneg__")),
                     args: vec![Argument::positional(operand)],
-                    optional: false,
-                });
+                    optional: false });
             }
             let op = match op_str {
                 "-" => UnaryOp::Neg,
                 "+" => UnaryOp::Pos,
                 "~" => UnaryOp::BitNot,
-                _ => UnaryOp::Neg,
-            };
+                _ => UnaryOp::Neg };
             Ok(ExprKind::Unary {
                 op,
-                expr: Box::new(operand),
-            })
+                expr: Box::new(operand) })
         }
         Rule::power => {
             // base ** exponent
@@ -8142,8 +7918,7 @@ fn walk_infix_or_unwrap(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 Ok(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Ident("__pypow__".into()))),
                     args: vec![Argument::positional(base), Argument::positional(exp)],
-                    optional: false,
-                })
+                    optional: false })
             } else {
                 Ok(base.kind)
             }
@@ -8176,8 +7951,7 @@ fn walk_binary_chain(
                 Expression::new(ExprKind::Binary {
                     op,
                     left: Box::new(left),
-                    right: Box::new(right),
-                })
+                    right: Box::new(right) })
             });
         }
     }
@@ -8215,16 +7989,14 @@ fn walk_python_additive(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, String> 
                         left = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Ident(helper.into()))),
                             args: vec![Argument::positional(left), Argument::positional(right)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                 } else {
                     let op = parse_binop(op_str);
                     left = Expression::new(ExprKind::Binary {
                         op,
                         left: Box::new(left),
-                        right: Box::new(right),
-                    });
+                        right: Box::new(right) });
                 }
             }
         } else {
@@ -8255,8 +8027,7 @@ fn walk_python_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
                     "/" => Some("__pytruediv__"),
                     "//" => Some("__pyfloordiv__"),
                     "%" => Some("__pymod__"),
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(helper) = helper {
                     if matches!(op_str, "/" | "//" | "%") && py_numeric_zero(&right) {
                         left = py_raise_expr("ZeroDivisionError", Some("division by zero"));
@@ -8265,16 +8036,14 @@ fn walk_python_multiplicative(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
                         left = Expression::new(ExprKind::Call {
                             callee: Box::new(callee),
                             args: vec![Argument::positional(left), Argument::positional(right)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                 } else {
                     let op = parse_binop(op_str);
                     left = Expression::new(ExprKind::Binary {
                         op,
                         left: Box::new(left),
-                        right: Box::new(right),
-                    });
+                        right: Box::new(right) });
                 }
             }
         } else {
@@ -8298,8 +8067,7 @@ fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
                 left = Expression::new(ExprKind::Binary {
                     op,
                     left: Box::new(left),
-                    right: Box::new(right),
-                });
+                    right: Box::new(right) });
             }
         } else if is_expression_rule(p.as_rule()) {
             // Operator was merged into the rule text, parse from context
@@ -8308,8 +8076,7 @@ fn walk_binary_chain_with_ops(mut items: Vec<Pair<Rule>>) -> Result<ExprKind, St
             left = Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(left),
-                right: Box::new(right),
-            });
+                right: Box::new(right) });
         } else {
             i += 1;
         }
@@ -8434,8 +8201,7 @@ fn is_counter_expr(e: &Expression) -> bool {
             matches!(&callee.kind, ExprKind::Ident(n)
                 if n == "__py_counter_new" || n == "Counter" || n == "__py_counter_op")
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn normalize_defaultdict_factory(factory: Expression) -> Expression {
@@ -8443,8 +8209,7 @@ fn normalize_defaultdict_factory(factory: Expression) -> Expression {
         ExprKind::Ident(n) if matches!(n.as_str(), "int" | "list" | "set" | "dict") => {
             Expression::string(n)
         }
-        _ => factory,
-    }
+        _ => factory }
 }
 
 fn note_defaultdict_var(name: &str, factory: Expression) {
@@ -8478,8 +8243,7 @@ fn defaultdict_call_factory(e: &Expression) -> Option<Expression> {
             args.first().map(|a| normalize_defaultdict_factory(a.value.clone()))
         }
         ExprKind::Ident(n) => defaultdict_func_factory(n),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn defaultdict_child_factory(factory: &Expression) -> Option<Expression> {
@@ -8492,11 +8256,9 @@ fn defaultdict_child_factory(factory: &Expression) -> Option<Expression> {
                 } else {
                     None
                 }
-            }),
-        },
+            }) },
         ExprKind::Ident(n) => defaultdict_func_factory(n),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn nested_defaultdict_object(e: &Expression) -> Option<(Expression, Expression)> {
@@ -8532,8 +8294,7 @@ fn lower_defaultdict_index_target(e: &Expression) -> Option<Expression> {
     Some(Expression::new(ExprKind::Index {
         object: Box::new(lowered_object),
         index: Box::new(*index.clone()),
-        null_safe: false,
-    }))
+        null_safe: false }))
 }
 
 fn note_deque_maxlen_var(name: &str, maxlen: Expression) {
@@ -8594,8 +8355,7 @@ fn resolve_string_array_const(e: &Expression) -> Option<Vec<String>> {
         ExprKind::Ident(name) => {
             PY_STRING_ARRAY_CONSTS.with(|m| m.borrow().get(name).cloned())
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn note_textwrapper_var(name: &str, args: &[Argument]) {
@@ -8606,8 +8366,7 @@ fn note_textwrapper_var(name: &str, args: &[Argument]) {
                 value: a.value.clone(),
                 name: a.name.clone(),
                 by_ref: a.by_ref,
-                spread: a.spread,
-            })
+                spread: a.spread })
             .collect(),
     )
     .into_iter()
@@ -8751,16 +8510,13 @@ fn wrap_key_ident_in_lambda(key: Expression) -> Expression {
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false,
-        }],
+            is_nullable: false }],
         body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
             callee: Box::new(key),
             args: vec![Argument::positional(Expression::ident("__sk"))],
-            optional: false,
-        }))),
+            optional: false }))),
         is_async: false,
-        captures: vec![],
-    })
+        captures: vec![] })
 }
 
 fn wrap_tuple_key_lambda(key: Expression) -> Expression {
@@ -8768,8 +8524,7 @@ fn wrap_tuple_key_lambda(key: Expression) -> Expression {
         params,
         body: LambdaBody::Expr(body),
         is_async,
-        captures,
-    } = &key.kind
+        captures } = &key.kind
     else {
         return key;
     };
@@ -8795,8 +8550,7 @@ fn wrap_tuple_key_lambda(key: Expression) -> Expression {
         params: params.clone(),
         body: LambdaBody::Expr(Box::new(expr)),
         is_async: *is_async,
-        captures: captures.clone(),
-    })
+        captures: captures.clone() })
 }
 
 /// `sqlite3.Row` sentinel: an identity `(cursor, row) -> row` lambda — a truthy
@@ -8810,14 +8564,12 @@ fn sqlite3_row_factory_lambda() -> Expression {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    };
+        is_nullable: false };
     Expression::new(ExprKind::Lambda {
         params: vec![param("__cur"), param("__row")],
         body: LambdaBody::Expr(Box::new(Expression::ident("__row"))),
         is_async: false,
-        captures: vec![],
-    })
+        captures: vec![] })
 }
 
 /// `sys` module scalar constants (leaves modules/argv/path to existing handling).
@@ -8833,8 +8585,7 @@ fn sys_module_constant(field: &str) -> Option<Literal> {
         "float_repr_style" => Literal::Str("short".into()),
         "dont_write_bytecode" => Literal::Bool(true),
         "recursionlimit" => Literal::Int(1000),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 const PY_KEYWORDS: &[&str] = &[
@@ -8854,8 +8605,7 @@ fn string_array_expr(values: &[&str]) -> Expression {
                 key: None,
                 value: Expression::string(value),
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     ))
 }
@@ -8864,8 +8614,7 @@ fn keyword_module_member(field: &str) -> Option<Expression> {
     Some(match field {
         "kwlist" => string_array_expr(PY_KEYWORDS),
         "softkwlist" => string_array_expr(PY_SOFT_KEYWORDS),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn rewrite_keyword_call(object: &Expression, field: &str, args: &[Argument]) -> Option<Expression> {
@@ -8875,8 +8624,7 @@ fn rewrite_keyword_call(object: &Expression, field: &str, args: &[Argument]) -> 
     let haystack = match field {
         "iskeyword" => string_array_expr(PY_KEYWORDS),
         "issoftkeyword" => string_array_expr(PY_SOFT_KEYWORDS),
-        _ => return None,
-    };
+        _ => return None };
     Some(call_ident(
         "__py_contains__",
         vec![haystack, desugar_member_reads(args[0].value.clone())],
@@ -8889,8 +8637,7 @@ fn object_from_str_pairs(pairs: &[(&str, &str)]) -> Expression {
             .iter()
             .map(|(key, value)| ObjectProperty::KeyValue {
                 key: Expression::string(key),
-                value: Expression::string(value),
-            })
+                value: Expression::string(value) })
             .collect(),
     ))
 }
@@ -8907,8 +8654,7 @@ fn mimetype_builtin(ext: &str) -> Option<&'static str> {
         ".pdf" => "application/pdf",
         ".zip" => "application/zip",
         ".tar" => "application/x-tar",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn note_mimetype_custom(ext: &str, mime: &str) {
@@ -8939,8 +8685,7 @@ fn mime_encoding_for_path(path: &str) -> Option<&'static str> {
         ".gz" => Some("gzip"),
         ".bz2" => Some("bzip2"),
         ".xz" => Some("xz"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn mimetypes_module_member(field: &str) -> Option<Expression> {
@@ -8964,8 +8709,7 @@ fn mimetypes_module_member(field: &str) -> Option<Expression> {
             (".xz", "xz"),
         ]),
         "suffix_map" => object_from_str_pairs(&[(".tgz", ".tar.gz")]),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn mimetype_tuple(mime: Option<String>, enc: Option<&str>) -> Expression {
@@ -9011,8 +8755,7 @@ fn rewrite_mimetypes_call(
                 "text/xml" | "application/xml" => Some(".xml"),
                 "application/pdf" => Some(".pdf"),
                 "application/zip" => Some(".zip"),
-                _ => None,
-            };
+                _ => None };
             ext.map(Expression::string)
                 .unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Null)))
         }
@@ -9028,12 +8771,10 @@ fn rewrite_mimetypes_call(
                 "text/xml" | "application/xml" => &[".xml"],
                 "application/pdf" => &[".pdf"],
                 "application/zip" => &[".zip"],
-                _ => &[],
-            };
+                _ => &[] };
             string_array_expr(exts)
         }
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn getopt_opts_expr(opts: &[(String, String)], rest: &[String]) -> Expression {
@@ -9046,8 +8787,7 @@ fn getopt_opts_expr(opts: &[(String, String)], rest: &[String]) -> Expression {
                 Expression::string(value),
             ])),
             spread: false,
-            by_ref: false,
-        })
+            by_ref: false })
         .collect();
     let arg_items = rest
         .iter()
@@ -9055,8 +8795,7 @@ fn getopt_opts_expr(opts: &[(String, String)], rest: &[String]) -> Expression {
             key: None,
             value: Expression::string(value),
             spread: false,
-            by_ref: false,
-        })
+            by_ref: false })
         .collect();
     Expression::new(ExprKind::Tuple(vec![
         Expression::new(ExprKind::Array(opt_items)),
@@ -9172,8 +8911,7 @@ fn rewrite_getopt_call(object: &Expression, field: &str, args: &[Argument]) -> O
         .unwrap_or_default();
     match parse_getopt_static(&argv, &optstring, &longopts, field == "gnu_getopt") {
         Ok((opts, rest)) => Some(getopt_opts_expr(&opts, &rest)),
-        Err(opt) => Some(py_raise_expr("GetoptError", Some(&opt))),
-    }
+        Err(opt) => Some(py_raise_expr("GetoptError", Some(&opt))) }
 }
 
 /// `sys.<fn>(...)` — simple functions with static/identity semantics.
@@ -9193,8 +8931,7 @@ fn rewrite_sys_call(object: &Expression, field: &str, args: &[Argument]) -> Opti
         "getsizeof" => Expression::new(ExprKind::Lit(Literal::Int(64))),
         "intern" if args.len() == 1 => desugar_member_reads(args[0].value.clone()),
         "is_finalizing" => Expression::new(ExprKind::Lit(Literal::Bool(false))),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// `html.escape(s)` / `html.unescape(s)` → chained `str.replace(...)`.
@@ -9209,11 +8946,9 @@ fn rewrite_html_call(object: &Expression, field: &str, args: &[Argument]) -> Opt
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(acc),
                     field: "replace".into(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![Argument::positional(s(from)), Argument::positional(s(to))],
-                optional: false,
-            })
+                optional: false })
         })
     };
     let text = desugar_member_reads(args[0].value.clone());
@@ -9242,8 +8977,7 @@ fn rewrite_html_call(object: &Expression, field: &str, args: &[Argument]) -> Opt
                 ("&amp;", "&"),
             ],
         )),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// `re.<fn>(...)` module functions → `__re_*` builtins over ecma:regexp.
@@ -9260,8 +8994,7 @@ fn rewrite_re_call(object: &Expression, field: &str, args: &[Argument]) -> Optio
             "split" => "__re_split",
             "escape" => "__re_escape",
             "compile" => "__re_compile",
-            _ => return None,
-        };
+            _ => return None };
         let vals = args
             .iter()
             .map(|a| desugar_member_reads(a.value.clone()))
@@ -9278,8 +9011,7 @@ fn rewrite_re_call(object: &Expression, field: &str, args: &[Argument]) -> Optio
                 "findall" => "__re_findall",
                 "sub" => "__re_sub",
                 "split" => "__re_split",
-                _ => return None,
-            };
+                _ => return None };
             let mut vals = vec![Expression::ident(name)];
             vals.extend(args.iter().map(|a| desugar_member_reads(a.value.clone())));
             return Some(call_ident(builtin, vals));
@@ -9301,15 +9033,13 @@ fn rewrite_re_match_method(
         Expression::new(ExprKind::Index {
             object: Box::new(obj),
             index: Box::new(i),
-            null_safe: false,
-        })
+            null_safe: false })
     };
     let member = |obj: Expression, f: &str| {
         Expression::new(ExprKind::Member {
             object: Box::new(obj),
             field: f.into(),
-            null_safe: false,
-        })
+            null_safe: false })
     };
     let int = |n: i64| Expression::new(ExprKind::Lit(Literal::Int(n)));
     let len = |e: Expression| call_ident("len", vec![e]);
@@ -9329,13 +9059,11 @@ fn rewrite_re_match_method(
             let sliced = Expression::new(ExprKind::Call {
                 callee: Box::new(member(recv(), "slice")),
                 args: vec![Argument::positional(int(1))],
-                optional: false,
-            });
+                optional: false });
             // tuple(m.slice(1))
             Some(call_ident("tuple", vec![sliced]))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// `platform.<fn>()` — host/interpreter info as static strings/tuples/uname obj.
@@ -9349,8 +9077,7 @@ fn rewrite_platform_call(object: &Expression, field: &str) -> Option<Expression>
     };
     let kv = |k: &str, v: &str| ObjectProperty::KeyValue {
         key: Expression::new(ExprKind::Lit(Literal::Str(k.into()))),
-        value: Expression::new(ExprKind::Lit(Literal::Str(v.into()))),
-    };
+        value: Expression::new(ExprKind::Lit(Literal::Str(v.into()))) };
     Some(match field {
         "system" => s("Linux"),
         "node" => s("vybe"),
@@ -9375,8 +9102,7 @@ fn rewrite_platform_call(object: &Expression, field: &str) -> Option<Expression>
             kv("machine", "x86_64"),
             kv("processor", "x86_64"),
         ])),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// `stat` module integer constants (mode bits / index constants).
@@ -9415,8 +9141,7 @@ fn stat_module_constant(field: &str) -> Option<Literal> {
         "ST_ATIME" => 7,
         "ST_MTIME" => 8,
         "ST_CTIME" => 9,
-        _ => return None,
-    };
+        _ => return None };
     Some(Literal::Int(v))
 }
 
@@ -9430,15 +9155,13 @@ fn rewrite_stat_call(object: &Expression, field: &str, args: &[Argument]) -> Opt
         Expression::new(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(m()),
-            right: Box::new(Expression::int(mask)),
-        })
+            right: Box::new(Expression::int(mask)) })
     };
     let is_type = |ty: i64| {
         Expression::new(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(band(0o170000)),
-            right: Box::new(Expression::int(ty)),
-        })
+            right: Box::new(Expression::int(ty)) })
     };
     Some(match field {
         "S_IMODE" => band(0o7777),
@@ -9450,8 +9173,7 @@ fn rewrite_stat_call(object: &Expression, field: &str, args: &[Argument]) -> Opt
         "S_ISFIFO" => is_type(0o010000),
         "S_ISLNK" => is_type(0o120000),
         "S_ISSOCK" => is_type(0o140000),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// `string` module constants (static → compile-time literals).
@@ -9472,8 +9194,7 @@ fn string_module_constant(field: &str) -> Option<Literal> {
         "punctuation" => punct.to_string(),
         "whitespace" => ws.to_string(),
         "printable" => format!("{digits}{letters}{punct}{ws}"),
-        _ => return None,
-    };
+        _ => return None };
     Some(Literal::Str(s.into()))
 }
 
@@ -9484,8 +9205,7 @@ fn string_module_member(field: &str) -> Option<&'static str> {
         "Template" => "__string_Template",
         "Formatter" => "__string_Formatter",
         "capwords" => "__string_capwords",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Runtime `isinstance(value, <type_name>)` for a builtin type — the JS-compiler
@@ -9500,63 +9220,54 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
         Expression::new(ExprKind::Binary {
             op: BinOp::StrictEq,
             left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(value.clone())))),
-            right: Box::new(Expression::string(name)),
-        })
+            right: Box::new(Expression::string(name)) })
     };
     let ref_test = |name: &str| {
         Expression::new(ExprKind::Binary {
             op: BinOp::InstanceOf,
             left: Box::new(value.clone()),
-            right: Box::new(Expression::new(ExprKind::Ident(name.into()))),
-        })
+            right: Box::new(Expression::new(ExprKind::Ident(name.into()))) })
     };
     // `ref.test` pushes a raw wasm i32 — materialize a real Python bool.
     let as_bool = |e: Expression| {
         Expression::new(ExprKind::Ternary {
             cond: Box::new(e),
             then: Box::new(Expression::bool(true)),
-            else_: Box::new(Expression::bool(false)),
-        })
+            else_: Box::new(Expression::bool(false)) })
     };
     let member = |field: &str| {
         Expression::new(ExprKind::Index {
             object: Box::new(value.clone()),
             index: Box::new(Expression::string(field)),
-            null_safe: false,
-        })
+            null_safe: false })
     };
     let and = |l: Expression, r: Expression| {
         Expression::new(ExprKind::Binary {
             op: BinOp::And,
             left: Box::new(l),
-            right: Box::new(r),
-        })
+            right: Box::new(r) })
     };
     let or = |l: Expression, r: Expression| {
         Expression::new(ExprKind::Binary {
             op: BinOp::Or,
             left: Box::new(l),
-            right: Box::new(r),
-        })
+            right: Box::new(r) })
     };
     let exception_type_check = |target: &str| {
         let exc_type = Expression::new(ExprKind::Index {
             object: Box::new(value.clone()),
             index: Box::new(Expression::string("__exception_type")),
-            null_safe: false,
-        });
+            null_safe: false });
         let mut acc: Option<Expression> = None;
         for candidate in py_builtin_exception_names() {
             if py_builtin_subclass(candidate, target) == Some(true) {
                 let one = Expression::new(ExprKind::Binary {
                     op: BinOp::StrictEq,
                     left: Box::new(exc_type.clone()),
-                    right: Box::new(Expression::string(candidate)),
-                });
+                    right: Box::new(Expression::string(candidate)) });
                 acc = Some(match acc {
                     Some(prev) => or(prev, one),
-                    None => one,
-                });
+                    None => one });
             }
         }
         acc
@@ -9571,12 +9282,10 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
         let keys_probe = Expression::new(ExprKind::Binary {
             op: BinOp::StrictNotEq,
             left: Box::new(member("__keys")),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
-        });
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))) });
         let not_set = Expression::new(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(ref_test("Set")),
-        });
+            expr: Box::new(ref_test("Set")) });
         let struct_dict = and(
             and(typeof_check("object"), not_set),
             keys_probe,
@@ -9584,8 +9293,7 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
         Expression::new(ExprKind::Binary {
             op: BinOp::Or,
             left: Box::new(ref_test("Map")),
-            right: Box::new(struct_dict),
-        })
+            right: Box::new(struct_dict) })
     };
 
     if let Some(check) = exception_type_check(type_name) {
@@ -9602,8 +9310,7 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
         "int" => Expression::new(ExprKind::Binary {
             op: BinOp::Or,
             left: Box::new(typeof_check("number")),
-            right: Box::new(typeof_check("boolean")),
-        }),
+            right: Box::new(typeof_check("boolean")) }),
         // Both are ObjectKind::Array (the abstract WASM GC heap type), but a
         // tuple carries the `__tuple` tag (`tuple_literals_tagged`), which is
         // what repr/type() already key on. Without it `isinstance([1], tuple)`
@@ -9613,8 +9320,7 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
             ref_test("array"),
             Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(member("__tuple")),
-            }),
+                expr: Box::new(member("__tuple")) }),
         )),
         "dict" => as_bool(dict_check()),
         "Sized" | "Iterable" => as_bool(or(
@@ -9627,8 +9333,7 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
             ref_test("array"),
             Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(member("__tuple")),
-            }),
+                expr: Box::new(member("__tuple")) }),
         )),
         "Callable" => typeof_check("function"),
         "Iterator" => {
@@ -9640,8 +9345,7 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
                 as_bool(Expression::new(ExprKind::Binary {
                     op: BinOp::StrictNotEq,
                     left: Box::new(member("next")),
-                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
-                }))
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))) }))
             }
         }
         "Generator" => {
@@ -9653,8 +9357,7 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
                 as_bool(Expression::new(ExprKind::Binary {
                     op: BinOp::StrictNotEq,
                     left: Box::new(member("next")),
-                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))),
-                }))
+                    right: Box::new(Expression::new(ExprKind::Lit(Literal::Null))) }))
             }
         }
         // A frozenset is a Set carrying the `__frozenset` tag (the same tag
@@ -9662,8 +9365,7 @@ fn py_isinstance_runtime_check(value: &Expression, type_name: &str) -> Option<Ex
         // frozenset` never matches.
         "frozenset" => as_bool(and(ref_test("Set"), member("__frozenset"))),
         "set" => as_bool(ref_test("Set")),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// `pprint.<name>` → the injected prelude global (see [PPRINT_PRELUDE]).
@@ -9676,8 +9378,7 @@ fn pprint_module_member(field: &str) -> Option<&'static str> {
         "isreadable" => "__pprint_isreadable",
         "isrecursive" => "__pprint_isrecursive",
         "PrettyPrinter" => "__pprint_PrettyPrinter",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// `shlex.<name>` → the injected prelude global (see [SHLEX_PRELUDE]).
@@ -9687,8 +9388,7 @@ fn shlex_module_member(field: &str) -> Option<&'static str> {
         "quote" => "__py_shlex_quote",
         "join" => "__py_shlex_join",
         "shlex" => "__py_shlex_class",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// `textwrap.<name>` → the injected prelude global (see [TEXTWRAP_PRELUDE]).
@@ -9700,8 +9400,7 @@ fn textwrap_module_member(field: &str) -> Option<&'static str> {
         "indent" => "__py_textwrap_indent",
         "shorten" => "__py_textwrap_shorten",
         "TextWrapper" => "__py_TextWrapper",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn normalize_shlex_call_args(field: &str, mut args: Vec<Argument>) -> Vec<Argument> {
@@ -9726,8 +9425,7 @@ fn textwrap_default_arg(name: &str) -> Expression {
         "placeholder" => Expression::string(" [...]"),
         "prefix" => Expression::string(""),
         "predicate" => Expression::null(),
-        _ => Expression::null(),
-    }
+        _ => Expression::null() }
 }
 
 fn flatten_textwrap_args(field: &str, args: Vec<Argument>) -> Vec<Argument> {
@@ -9759,8 +9457,7 @@ fn flatten_textwrap_args(field: &str, args: Vec<Argument>) -> Vec<Argument> {
         ],
         "indent" => &["text", "prefix", "predicate"],
         "shorten" => &["text", "width", "placeholder"],
-        _ => return args,
-    };
+        _ => return args };
 
     if !args.iter().any(|a| a.name.is_some()) {
         return args;
@@ -9850,22 +9547,19 @@ fn fold_textwrap_call(field: &str, args: &[Argument]) -> Option<Expression> {
                 .join("\n");
             Some(Expression::string(&out))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn expr_int(e: &Expression) -> Option<i64> {
     match &e.kind {
         ExprKind::Lit(Literal::Int(n)) => Some(*n),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn expr_bool(e: &Expression) -> Option<bool> {
     match &e.kind {
         ExprKind::Lit(Literal::Bool(v)) => Some(*v),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn expr_str(e: &Expression) -> Option<String> {
@@ -9966,8 +9660,7 @@ fn fold_textwrapper_method(field: &str, settings: &[Expression], args: &[Argumen
                 key: None,
                 value: Expression::string(&line),
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     )))
 }
@@ -10092,8 +9785,7 @@ fn rust_fnmatch_translate(pattern: &str) -> String {
                 out.push('\\');
                 out.push(c);
             }
-            c => out.push(c),
-        }
+            c => out.push(c) }
         i += 1;
     }
     out.push_str(")\\Z");
@@ -10121,8 +9813,7 @@ fn fold_fnmatch_call(field: &str, args: &[Argument]) -> Option<Expression> {
                         key: None,
                         value: Expression::string(&name),
                         spread: false,
-                        by_ref: false,
-                    });
+                        by_ref: false });
                 }
             }
             Some(Expression::new(ExprKind::Array(out)))
@@ -10131,8 +9822,7 @@ fn fold_fnmatch_call(field: &str, args: &[Argument]) -> Option<Expression> {
             let pat = resolve_string_const(&args[0].value)?;
             Some(Expression::string(&rust_fnmatch_translate(&pat)))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn fnmatch_generated_regex_to_pattern(regex: &str) -> Option<String> {
@@ -10165,8 +9855,7 @@ fn fnmatch_generated_regex_to_pattern(regex: &str) -> Option<String> {
                     i += 1;
                 }
             }
-            c => out.push(c),
-        }
+            c => out.push(c) }
         i += 1;
     }
     Some(out)
@@ -10190,8 +9879,7 @@ fn sqlite3_module_constant(field: &str) -> Option<Literal> {
         "threadsafety" => Literal::Int(1),
         "version" => Literal::Str("2.6.0".into()),
         "sqlite_version" => Literal::Str("3.40.0".into()),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Map a sqlite cursor/connection method name to its `__sql_*` builtin.
@@ -10205,8 +9893,7 @@ fn sql_method_builtin(field: &str) -> Option<&'static str> {
         "commit" => "__sql_commit",
         "rollback" => "__sql_rollback",
         "close" => "__sql_close",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// True when `e` is a sqlite connection/cursor handle: a tracked variable, or a
@@ -10220,8 +9907,7 @@ fn is_sql_handle_expr(e: &Expression) -> bool {
                 f.as_str(),
                 "__sql_connect" | "__sql_cursor" | "__sql_execute" | "__sql_executemany"
             )),
-        _ => false,
-    }
+        _ => false }
 }
 
 /// `sqlite3.connect(...)` → `__sql_connect(...)`, and `<handle>.method(...)` →
@@ -10241,8 +9927,7 @@ fn rewrite_sqlite_call(
                 return Some(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__sql_connect")),
                     args,
-                    optional,
-                }));
+                    optional }));
             }
             // `sqlite3.Binary(b)` is identity on the bytes it wraps.
             if field == "Binary" && args.len() == 1 {
@@ -10263,8 +9948,7 @@ fn rewrite_sqlite_call(
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(builtin)),
         args: call_args,
-        optional,
-    }))
+        optional }))
 }
 
 fn note_from_imported_module(name: &str) {
@@ -10279,8 +9963,7 @@ fn note_float_returning_import(module: &str, imported: &str, local: &str) {
     let is_float = match module {
         "math" => FLOAT_MATH_FNS.contains(&imported),
         "statistics" => FLOAT_STATISTICS_FNS.contains(&imported),
-        _ => false,
-    };
+        _ => false };
     if is_float {
         PY_FLOAT_RETURNING_IMPORTS.with(|m| {
             m.borrow_mut().insert(local.to_string());
@@ -10332,8 +10015,7 @@ fn prelude_module_class(receiver: &ExprKind, field: &str) -> Option<String> {
         | ("io", "BytesIO")
         | ("configparser", "ConfigParser")
         | ("configparser", "RawConfigParser") => Some(field.to_string()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn note_module_alias(alias: &str, module: &str) {
@@ -10363,8 +10045,7 @@ fn object_string_property(e: &Expression, key: &str) -> Option<String> {
         }
         match &value.kind {
             ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
-            _ => None,
-        }
+            _ => None }
     })
 }
 
@@ -10408,8 +10089,7 @@ fn dynamic_module_attr_target(target: &Expression) -> Option<(String, String)> {
             };
             dynamic_module_for_var(var).map(|module| (module, attr.to_string()))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn literal_string_array(value: &Expression) -> Option<Vec<String>> {
@@ -10472,20 +10152,17 @@ fn py_module_metadata_attr(module_name: &str, field: &str) -> Option<Expression>
         }
         "__loader__" => Expression::new(ExprKind::Object(vec![])),
         "__spec__" => py_module_spec_object(module_name),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn py_module_spec_object(module_name: &str) -> Expression {
     Expression::new(ExprKind::Object(vec![
         ObjectProperty::KeyValue {
             key: Expression::new(ExprKind::Lit(Literal::Str("name".into()))),
-            value: Expression::new(ExprKind::Lit(Literal::Str(module_name.to_string().into()))),
-        },
+            value: Expression::new(ExprKind::Lit(Literal::Str(module_name.to_string().into()))) },
         ObjectProperty::KeyValue {
             key: Expression::new(ExprKind::Lit(Literal::Str("loader".into()))),
-            value: Expression::new(ExprKind::Object(vec![])),
-        },
+            value: Expression::new(ExprKind::Object(vec![])) },
     ]))
 }
 
@@ -10495,8 +10172,7 @@ fn dynamic_module_import_stmts(module: &str, local: &str) -> Option<Vec<Statemen
     if local != source {
         stmts.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::new(ExprKind::Ident(local.to_string()))],
-            value: Expression::new(ExprKind::Ident(source.clone())),
-        }));
+            value: Expression::new(ExprKind::Ident(source.clone())), by_ref: false }));
     }
     note_dynamic_module_var(local, module);
     Some(stmts)
@@ -10512,8 +10188,7 @@ fn dynamic_module_star_import_stmts(module: &str) -> Option<Vec<Statement>> {
         let value = dynamic_module_attr(module, &name)?;
         stmts.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::new(ExprKind::Ident(name))],
-            value,
-        }));
+            value, by_ref: false }));
     }
     Some(stmts)
 }
@@ -10546,16 +10221,14 @@ fn expr_is_tracked_none(e: &Expression) -> bool {
     match &e.kind {
         ExprKind::Lit(Literal::Null) => true,
         ExprKind::Ident(name) => PY_NONE_VARS.with(|m| m.borrow().contains(name)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn resolve_string_const(e: &Expression) -> Option<String> {
     match &e.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.to_string()),
         ExprKind::Ident(name) => PY_STRING_CONSTS.with(|m| m.borrow().get(name).cloned()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn mapping_proxy_source(name: &str) -> Option<Expression> {
@@ -10578,8 +10251,7 @@ fn mapping_proxy_ctor_arg(value: &Expression) -> Option<Expression> {
             matches!(&object.kind, ExprKind::Ident(n) if n == "types")
                 && field == "MappingProxyType"
         }
-        _ => false,
-    };
+        _ => false };
     if is_ctor && args.len() == 1 {
         Some(args[0].value.clone())
     } else {
@@ -10607,8 +10279,7 @@ fn simple_namespace_ctor_object(value: &Expression) -> Option<Expression> {
             matches!(&object.kind, ExprKind::Ident(n) if n == "types")
                 && field == "SimpleNamespace"
         }
-        _ => false,
-    };
+        _ => false };
     if !is_ctor {
         return None;
     }
@@ -10619,8 +10290,7 @@ fn simple_namespace_ctor_object(value: &Expression) -> Option<Expression> {
         } else if let Some(name) = &arg.name {
             props.push(ObjectProperty::KeyValue {
                 key: Expression::string(name),
-                value: arg.value.clone(),
-            });
+                value: arg.value.clone() });
         }
     }
     Some(Expression::new(ExprKind::Object(props)))
@@ -10633,8 +10303,7 @@ fn keyword_object(args: &[Argument]) -> Option<Expression> {
             let name = arg.name.as_ref()?;
             Some(ObjectProperty::KeyValue {
                 key: Expression::string(name),
-                value: desugar_member_reads(arg.value.clone()),
-            })
+                value: desugar_member_reads(arg.value.clone()) })
         })
         .collect();
     (!props.is_empty()).then(|| Expression::new(ExprKind::Object(props)))
@@ -10692,8 +10361,7 @@ fn collections_ctor_call(name: &str, args: &[Argument]) -> Option<Expression> {
             Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__py_chainmap_new")),
                 args: call_args,
-                optional: false,
-            }))
+                optional: false }))
         }
         "UserDict" | "__py_userdict" => Some(
             positional
@@ -10715,21 +10383,18 @@ fn collections_ctor_call(name: &str, args: &[Argument]) -> Option<Expression> {
                 .cloned()
                 .unwrap_or_else(|| Expression::string(""))],
         )),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
     let max_args = match (module, attr) {
         ("collections", "Counter" | "deque" | "OrderedDict") => 1,
         ("json", "dumps" | "loads" | "dump" | "load") => 1,
-        _ => return None,
-    };
+        _ => return None };
     let callable = Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident(module)),
         field: attr.into(),
-        null_safe: false,
-    });
+        null_safe: false });
     let params: Vec<Param> = (0..max_args)
         .map(|i| Param {
             name: format!("__arg{i}"),
@@ -10739,8 +10404,7 @@ fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
             is_rest: false,
             is_kwargs: false,
             is_optional: true,
-            is_nullable: true,
-        })
+            is_nullable: true })
         .collect();
     let args: Vec<Argument> = (0..max_args)
         .map(|i| {
@@ -10753,11 +10417,9 @@ fn py_module_callable_member(module: &str, attr: &str) -> Option<Expression> {
         body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
             callee: Box::new(callable),
             args,
-            optional: false,
-        }))),
+            optional: false }))),
         is_async: false,
-        captures: vec![],
-    }))
+        captures: vec![] }))
 }
 
 /// The stdlib universe this implementation can mount. `import X` for an
@@ -10868,9 +10530,7 @@ fn py_import_error_stmt(msg: &str) -> Statement {
             class: Box::new(Expression::new(ExprKind::Ident("ImportError".into()))),
             args: vec![Argument::positional(Expression::new(ExprKind::Lit(
                 Literal::Str(msg.into()),
-            )))],
-        }),
-    })];
+            )))] }), by_ref: false })];
     if let Some(name) = msg
         .strip_prefix("No module named '")
         .and_then(|s| s.strip_suffix("'"))
@@ -10879,15 +10539,12 @@ fn py_import_error_stmt(msg: &str) -> Statement {
             targets: vec![Expression::new(ExprKind::Index {
                 object: Box::new(err.clone()),
                 index: Box::new(Expression::new(ExprKind::Lit(Literal::Str("name".into())))),
-                null_safe: false,
-            })],
-            value: Expression::new(ExprKind::Lit(Literal::Str(name.into()))),
-        }));
+                null_safe: false })],
+            value: Expression::new(ExprKind::Lit(Literal::Str(name.into()))), by_ref: false }));
     }
     stmts.push(Statement::new(StmtKind::Throw {
         expr: Some(err),
-        cause: None,
-    }));
+        cause: None }));
     Statement::new(StmtKind::Block(stmts))
 }
 
@@ -10905,8 +10562,7 @@ fn py_module_renames(module: &str) -> Option<&'static [(&'static str, &'static s
             ("dump", "stringify"),
             ("load", "parse"),
         ],
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Statements normalizing a module's Python-facing surface onto its
@@ -10923,16 +10579,13 @@ fn py_module_rename_stmts(module: &str) -> Vec<Statement> {
                 index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
                     (*py_name).into(),
                 )))),
-                null_safe: false,
-            })],
+                null_safe: false })],
             value: Expression::new(ExprKind::Index {
                 object: Box::new(Expression::new(ExprKind::Ident(module.to_string()))),
                 index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
                     (*canonical).into(),
                 )))),
-                null_safe: false,
-            }),
-        }));
+                null_safe: false }), by_ref: false }));
     }
     // if typeof(module) != "undefined": <assigns>
     vec![Statement::new(StmtKind::If {
@@ -10943,12 +10596,10 @@ fn py_module_rename_stmts(module: &str) -> Vec<Statement> {
             )))),
             right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
                 "undefined".into(),
-            )))),
-        }),
+            )))) }),
         then_body: assigns,
         elifs: Vec::new(),
-        else_body: None,
-    })]
+        else_body: None })]
 }
 
 /// Static surfaces of stdlib modules the walker mounts — `hasattr(mod,
@@ -11106,8 +10757,7 @@ fn py_module_surface(module: &str) -> Option<&'static [&'static str]> {
             "PARSE_DECLTYPES",
             "PARSE_COLNAMES",
         ],
-        _ => return None,
-    })
+        _ => return None })
 }
 
 thread_local! {
@@ -11315,8 +10965,7 @@ fn python_instance_index(var: &str, attr: &str) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(Expression::ident(var)),
         index: Box::new(Expression::string(attr)),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn is_userdict_instance(var: &str) -> bool {
@@ -11365,8 +11014,7 @@ struct NamedTupleDef {
     type_name: String,
     fields: Vec<String>,
     /// Trailing defaults (`namedtuple(..., defaults=[...])`); apply right-aligned.
-    defaults: Vec<Expression>,
-}
+    defaults: Vec<Expression> }
 
 fn register_namedtuple_def(name: &str, def: NamedTupleDef) {
     PY_NAMEDTUPLE_DEFS.with(|m| {
@@ -11403,11 +11051,9 @@ fn receiver_namedtuple_def(recv: &Expression) -> Option<NamedTupleDef> {
         ExprKind::NamedTuple { fields, type_name } => Some(NamedTupleDef {
             type_name: type_name.clone().unwrap_or_default(),
             fields: fields.iter().filter_map(|(n, _)| n.clone()).collect(),
-            defaults: Vec::new(),
-        }),
+            defaults: Vec::new() }),
         ExprKind::Ident(name) => namedtuple_instance_def(name),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Positional read `recv[index]` off a namedtuple receiver.
@@ -11415,8 +11061,7 @@ fn namedtuple_index_read(recv: &Expression, index: usize) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(recv.clone()),
         index: Box::new(Expression::int(index as i64)),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 /// `nt._asdict()` → an ordered dict `{field: nt[i]}`.
@@ -11427,8 +11072,7 @@ fn build_namedtuple_asdict(recv: &Expression, def: &NamedTupleDef) -> Expression
         .enumerate()
         .map(|(i, f)| ObjectProperty::KeyValue {
             key: Expression::new(ExprKind::Lit(Literal::Str(f.clone()))),
-            value: namedtuple_index_read(recv, i),
-        })
+            value: namedtuple_index_read(recv, i) })
         .collect();
     Expression::new(ExprKind::Object(props))
 }
@@ -11459,16 +11103,14 @@ fn build_namedtuple_replace(
         .collect();
     Expression::new(ExprKind::NamedTuple {
         fields,
-        type_name: Some(def.type_name.clone()),
-    })
+        type_name: Some(def.type_name.clone()) })
 }
 
 /// Extract the string value of a string-literal expression.
 fn str_literal(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Ordered value expressions of a list/tuple literal.
@@ -11478,8 +11120,7 @@ fn sequence_values(expr: &Expression) -> Option<Vec<Expression>> {
         ExprKind::Array(items) if items.iter().all(|e| e.key.is_none() && !e.spread) => {
             Some(items.iter().map(|e| e.value.clone()).collect())
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Parse a namedtuple field spec: a whitespace/comma-separated string
@@ -11527,8 +11168,7 @@ fn parse_namedtuple_call(value: &Expression) -> Option<NamedTupleDef> {
     Some(NamedTupleDef {
         type_name,
         fields,
-        defaults,
-    })
+        defaults })
 }
 
 /// The type object bound by `Name = namedtuple(...)` — an object exposing
@@ -11544,12 +11184,10 @@ fn namedtuple_type_object(def: &NamedTupleDef) -> Expression {
     Expression::new(ExprKind::Object(vec![
         ObjectProperty::KeyValue {
             key: Expression::string("_fields"),
-            value: field_tuple,
-        },
+            value: field_tuple },
         ObjectProperty::KeyValue {
             key: Expression::string("__typename"),
-            value: Expression::new(ExprKind::Lit(Literal::Str(def.type_name.clone()))),
-        },
+            value: Expression::new(ExprKind::Lit(Literal::Str(def.type_name.clone()))) },
     ]))
 }
 
@@ -11584,8 +11222,7 @@ fn build_namedtuple_construction(def: &NamedTupleDef, args: Vec<Argument>) -> Ex
         .collect();
     ExprKind::NamedTuple {
         fields,
-        type_name: Some(def.type_name.clone()),
-    }
+        type_name: Some(def.type_name.clone()) }
 }
 
 fn is_defined_class(name: &str) -> bool {
@@ -11604,8 +11241,7 @@ fn py_relational_helper(op: BinOp) -> Option<&'static str> {
         BinOp::Gt => "__pygt__",
         BinOp::LtEq => "__pyle__",
         BinOp::GtEq => "__pyge__",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn py_richcompare_method(op: BinOp) -> Option<&'static str> {
@@ -11614,8 +11250,7 @@ fn py_richcompare_method(op: BinOp) -> Option<&'static str> {
         BinOp::Gt => "__gt__",
         BinOp::LtEq => "__le__",
         BinOp::GtEq => "__ge__",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn py_fresh_class_lacks_richcompare(expr: &Expression, op: BinOp) -> bool {
@@ -11640,8 +11275,7 @@ fn strftime_directive(spec: char) -> Option<(&'static str, i64)> {
         'H' => ("hour", 2),
         'M' => ("minute", 2),
         'S' => ("second", 2),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// `dt.strftime('%Y-%m-%d')` → `pad(dt['year'],4) + '-' + pad(dt['month'],2) …`
@@ -11669,12 +11303,10 @@ fn strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
                 Argument::positional(Expression::new(ExprKind::Index {
                     object: Box::new((**object).clone()),
                     index: Box::new(Expression::string(prop)),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 Argument::positional(Expression::new(ExprKind::Lit(Literal::Int(width)))),
             ],
-            optional: false,
-        })
+            optional: false })
     };
 
     let mut parts: Vec<Expression> = Vec::new();
@@ -11695,8 +11327,7 @@ fn strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
                 }
                 parts.push(read(prop, width));
             }
-            None => lit.push('%'),
-        }
+            None => lit.push('%') }
     }
     if !lit.is_empty() {
         parts.push(Expression::string(&lit));
@@ -11709,8 +11340,7 @@ fn strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
             Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(acc),
-                right: Box::new(part),
-            })
+                right: Box::new(part) })
         })
         .kind,
     )
@@ -11742,8 +11372,7 @@ fn time_strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKi
         Expression::new(ExprKind::Index {
             object: Box::new(t.clone()),
             index: Box::new(Expression::string(prop)),
-            null_safe: false,
-        })
+            null_safe: false })
     };
     let padded = |prop: &str, width: i64| {
         Expression::new(ExprKind::Call {
@@ -11752,8 +11381,7 @@ fn time_strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKi
                 Argument::positional(field_read(prop)),
                 Argument::positional(Expression::new(ExprKind::Lit(Literal::Int(width)))),
             ],
-            optional: false,
-        })
+            optional: false })
     };
     // `%A` → `['Monday', …][tm_wday]`.
     let weekday_name = || {
@@ -11774,13 +11402,11 @@ fn time_strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKi
                         value: Expression::string(n),
                         spread: false,
                         key: None,
-                        by_ref: false,
-                    })
+                        by_ref: false })
                     .collect(),
             ))),
             index: Box::new(field_read("tm_wday")),
-            null_safe: false,
-        })
+            null_safe: false })
     };
 
     let mut parts: Vec<Expression> = Vec::new();
@@ -11804,8 +11430,7 @@ fn time_strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKi
             Some('S') => padded("tm_sec", 2),
             Some('j') => padded("tm_yday", 3),
             Some('A') => weekday_name(),
-            _ => return None,
-        };
+            _ => return None };
         if !lit.is_empty() {
             parts.push(Expression::string(&lit));
             lit.clear();
@@ -11823,8 +11448,7 @@ fn time_strftime_expand(callee: &Expression, args: &[Argument]) -> Option<ExprKi
             Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(acc),
-                right: Box::new(part),
-            })
+                right: Box::new(part) })
         })
         .kind,
     )
@@ -11877,8 +11501,7 @@ fn datetime_replace_call(callee: &Expression, args: &[Argument]) -> Option<ExprK
     Some(ExprKind::Call {
         callee: Box::new(Expression::ident("__py_dt_replace")),
         args: call_args,
-        optional: false,
-    })
+        optional: false })
 }
 
 /// `zoneinfo` — `ZoneInfo(key)` is a value carrying its key, and
@@ -11899,12 +11522,10 @@ fn zoneinfo_call(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
         "ZoneInfo" if args.len() == 1 => Some(ExprKind::Object(vec![
             ObjectProperty::KeyValue {
                 key: Expression::string("__type"),
-                value: Expression::string("ZoneInfo"),
-            },
+                value: Expression::string("ZoneInfo") },
             ObjectProperty::KeyValue {
                 key: Expression::string("key"),
-                value: args[0].value.clone(),
-            },
+                value: args[0].value.clone() },
         ])),
         "available_timezones" if args.is_empty() => Some(ExprKind::Call {
             callee: Box::new(Expression::ident("set")),
@@ -11913,13 +11534,10 @@ fn zoneinfo_call(callee: &Expression, args: &[Argument]) -> Option<ExprKind> {
                     value: Expression::string("UTC"),
                     spread: false,
                     key: None,
-                    by_ref: false,
-                }],
+                    by_ref: false }],
             )))],
-            optional: false,
-        }),
-        _ => None,
-    }
+            optional: false }),
+        _ => None }
 }
 
 /// CPython signatures for the `datetime` constructors that are normally
@@ -11959,8 +11577,7 @@ fn datetime_kwarg_signature(callee: &Expression) -> Option<&'static [&'static st
             "microsecond",
             "tzinfo",
         ],
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Place each keyword argument at its signature slot, filling the gaps with
@@ -11979,10 +11596,8 @@ fn normalize_datetime_kwargs(params: &[&str], args: Vec<Argument>) -> Vec<Argume
                 Some(pos) => pos,
                 // An unknown keyword is not ours to interpret; drop it
                 // rather than shift every later argument.
-                None => continue,
-            },
-            None => i,
-        };
+                None => continue },
+            None => i };
         if slot < slots.len() {
             highest = highest.max(slot);
             slots[slot] = arg.value;
@@ -12038,8 +11653,7 @@ fn rewrite_dict_items(callee: &Expression, args: &[Argument]) -> Option<Expressi
         Expression::new(ExprKind::Index {
             object: Box::new(Expression::new(ExprKind::Ident("__item_pair".into()))),
             index: Box::new(Expression::int(i)),
-            null_safe: false,
-        })
+            null_safe: false })
     };
     let pair = Expression::new(ExprKind::Tuple(vec![pair_index(0), pair_index(1)]));
     Some(Expression::new(ExprKind::Comprehension {
@@ -12049,15 +11663,85 @@ fn rewrite_dict_items(callee: &Expression, args: &[Argument]) -> Option<Expressi
             target: Expression::new(ExprKind::Ident("__item_pair".into())),
             iter: entries,
             conditions: Vec::new(),
-            is_async: false,
-        }],
-    }))
+            is_async: false }] }))
 }
 
 /// `dict.fromkeys(keys[, value])` → `{__k: value for __k in keys}` (value
 /// defaults to `None`). Reuses the dict-comprehension lowering (which builds a
 /// Map), so the result is a real dict with the right keys/order — no separate
 /// classmethod machinery needed.
+/// `dict(...)` / `OrderedDict(...)` in a shape a dict LITERAL can express →
+/// the literal node, which is what `{'a': 1}` already produces.
+///
+/// This is normalization, not lowering: the shared compiler carried an
+/// `is_python_profile()` arm that rebuilt these three shapes by hand
+/// (`primitives/calls.rs`), which also put the python-only NAMES `dict` and
+/// `OrderedDict` in a shared crate. `OrderedDict` collapses to the same node
+/// because ecma objects are insertion-ordered, which is exactly what that arm
+/// said too.
+///
+/// Only the shapes a literal can represent are rewritten. `dict(other)`,
+/// `dict(zip(a, b))` and a non-literal list argument fall through to the
+/// ordinary call so the `dict` builtin still handles them.
+fn rewrite_dict_construction(callee: &Expression, args: &[Argument]) -> Option<Expression> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    if name != "dict" && name != "OrderedDict" && name != "Counter" {
+        return None;
+    }
+    if args.iter().any(|arg| arg.spread || arg.by_ref) {
+        return None;
+    }
+
+    // `Counter` is listed defensively and currently never arrives here — the
+    // walker rewrites it upstream, so `Counter(a=1) + Counter(a=2)` keeps real
+    // Counter semantics (verified byte-identical to python3). If that upstream
+    // rewrite ever moves, this guard keeps the non-dict forms — iterable
+    // `Counter([...])`, which COUNTS, and empty `Counter()` — off the literal
+    // path, which would otherwise silently turn them into plain dicts.
+    if name == "Counter" && (args.is_empty() || args.iter().any(|arg| arg.name.is_none())) {
+        return None;
+    }
+
+    // `dict()` (vacuously all-named) and `dict(a=1, b=2)`.
+    if args.iter().all(|arg| arg.name.is_some()) {
+        let props = args
+            .iter()
+            .map(|arg| ObjectProperty::KeyValue {
+                key: Expression::new(ExprKind::Lit(Literal::Str(
+                    arg.name.clone().unwrap().into(),
+                ))),
+                value: arg.value.clone() })
+            .collect();
+        return Some(Expression::new(ExprKind::Object(props)));
+    }
+
+    // `dict([('x', 9), ('y', 8)])` — a LITERAL list of 2-tuples only.
+    if args.len() == 1 && args[0].name.is_none() {
+        if let ExprKind::Array(elements) = &args[0].value.kind {
+            let mut props = Vec::with_capacity(elements.len());
+            for element in elements {
+                if element.spread || element.key.is_some() {
+                    return None;
+                }
+                let ExprKind::Tuple(items) = &element.value.kind else {
+                    return None;
+                };
+                if items.len() != 2 {
+                    return None;
+                }
+                props.push(ObjectProperty::KeyValue {
+                    key: items[0].clone(),
+                    value: items[1].clone() });
+            }
+            return Some(Expression::new(ExprKind::Object(props)));
+        }
+    }
+
+    None
+}
+
 fn rewrite_dict_fromkeys(callee: &Expression, args: &[Argument]) -> Option<Expression> {
     let ExprKind::Member { object, field, .. } = &callee.kind else {
         return None;
@@ -12091,9 +11775,7 @@ fn rewrite_dict_fromkeys(callee: &Expression, args: &[Argument]) -> Option<Expre
             target: Expression::new(ExprKind::Ident("__fk_key".into())),
             iter: keys,
             conditions: Vec::new(),
-            is_async: false,
-        }],
-    }))
+            is_async: false }] }))
 }
 
 /// `random.NAME(args)` → `__py_random_NAME(args)` for the names that are not
@@ -12113,8 +11795,7 @@ fn rewrite_random_call(callee: &Expression, args: &[Argument]) -> Option<Express
         Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Ident(helper.to_string()))),
             args,
-            optional: false,
-        }))
+            optional: false }))
     };
     match field.as_str() {
         // Fixed-arity variates: forward positional args verbatim.
@@ -12134,8 +11815,7 @@ fn rewrite_random_call(callee: &Expression, args: &[Argument]) -> Option<Express
                 1 => (Expression::int(0), pos[0].clone(), Expression::int(1)),
                 2 => (pos[0].clone(), pos[1].clone(), Expression::int(1)),
                 3 => (pos[0].clone(), pos[1].clone(), pos[2].clone()),
-                _ => return None,
-            };
+                _ => return None };
             call(
                 "__py_random_randrange",
                 vec![
@@ -12166,8 +11846,7 @@ fn rewrite_random_call(callee: &Expression, args: &[Argument]) -> Option<Express
                 ],
             )
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// json adapter consumes. Returns `None` for anything that isn't a
@@ -12196,25 +11875,21 @@ fn rewrite_json_dumps(callee: &Expression, args: &[Argument]) -> Option<Expressi
     } else if let Some(cls) = kw("cls") {
         let inst = Expression::new(ExprKind::New {
             class: Box::new(cls),
-            args: vec![],
-        });
+            args: vec![] });
         let call = Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(inst),
                 field: "default".into(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(Expression::new(ExprKind::Ident(
                 "__o".into(),
             )))],
-            optional: false,
-        });
+            optional: false });
         Expression::new(ExprKind::Lambda {
             params: vec![lambda_param("__o")],
             body: LambdaBody::Expr(Box::new(call)),
             is_async: false,
-            captures: vec![],
-        })
+            captures: vec![] })
     } else {
         Expression::null()
     };
@@ -12226,10 +11901,8 @@ fn rewrite_json_dumps(callee: &Expression, args: &[Argument]) -> Option<Expressi
     let (item_sep, kv_sep) = match kw("separators") {
         Some(sep) => match &sep.kind {
             ExprKind::Tuple(items) if items.len() == 2 => (items[0].clone(), items[1].clone()),
-            _ => json_default_separators(kw("indent").is_some()),
-        },
-        None => json_default_separators(kw("indent").is_some()),
-    };
+            _ => json_default_separators(kw("indent").is_some()) },
+        None => json_default_separators(kw("indent").is_some()) };
 
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Ident("__py_json_dumps".into()))),
@@ -12241,8 +11914,7 @@ fn rewrite_json_dumps(callee: &Expression, args: &[Argument]) -> Option<Expressi
             Argument::positional(item_sep),
             Argument::positional(kv_sep),
         ],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
@@ -12263,8 +11935,7 @@ fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
         return ExprKind::Call {
             callee: Box::new(callee),
             args,
-            optional: false,
-        };
+            optional: false };
     }
     if let ExprKind::Ident(name) = &callee.kind {
         if let Some(def) = namedtuple_def(name) {
@@ -12276,19 +11947,15 @@ fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::New {
                             class: Box::new(callee),
-                            args: Vec::new(),
-                        })),
+                            args: Vec::new() })),
                         field: "__call__".into(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args,
-                    optional: false,
-                };
+                    optional: false };
             }
             return ExprKind::New {
                 class: Box::new(callee),
-                args,
-            };
+                args };
         }
     }
     // Inline `namedtuple('P', 'a b')(1, 2)` — the callee is the factory call.
@@ -12298,8 +11965,7 @@ fn call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
     ExprKind::Call {
         callee: Box::new(callee),
         args,
-        optional: false,
-    }
+        optional: false }
 }
 
 /// Root identifier at the base of a member/index/call chain.
@@ -12309,8 +11975,7 @@ fn expr_root_ident(e: &Expression) -> Option<String> {
         ExprKind::Member { object, .. } => expr_root_ident(object),
         ExprKind::Index { object, .. } => expr_root_ident(object),
         ExprKind::Call { callee, .. } => expr_root_ident(callee),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// True while an expression still denotes a module namespace: the import
@@ -12334,8 +11999,7 @@ fn module_namespace_path(e: &Expression) -> Option<String> {
         ExprKind::Member { object, field, .. } => {
             Some(format!("{}.{}", module_namespace_path(object)?, field))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// `calendar.month_name` / `calendar.day_name` — fixed, indexable name
@@ -12372,8 +12036,7 @@ fn calendar_name_table(path: &str) -> Option<&'static [&'static str]> {
             "Sunday",
         ],
         "calendar.day_abbr" => &["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// The adapter's `__type` tag for a `datetime` type *reference* — the
@@ -12387,8 +12050,7 @@ fn datetime_type_tag(e: &Expression) -> Option<&'static str> {
         "datetime.datetime" => "datetime",
         "datetime.timedelta" => "timedelta",
         "datetime.timezone" => "timezone",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// `datetime` class attributes that hold *constructed* values rather than
@@ -12400,8 +12062,7 @@ fn datetime_attr_builtin(path: &str) -> Option<&'static str> {
         "datetime.date.max" | "datetime.datetime.max" => "__py_date_max",
         "datetime.timezone.utc" => "__py_timezone_utc",
         "datetime.timedelta.resolution" => "__py_timedelta_resolution",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn py_builtin_type_name(name: &str) -> Option<&'static str> {
@@ -12452,8 +12113,7 @@ fn py_builtin_type_name(name: &str) -> Option<&'static str> {
         "UnicodeError" => "UnicodeError",
         "ValueError" => "ValueError",
         "ZeroDivisionError" => "ZeroDivisionError",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn py_builtin_exception_bases(name: &str) -> Option<&'static [&'static str]> {
@@ -12487,8 +12147,7 @@ fn py_builtin_exception_bases(name: &str) -> Option<&'static [&'static str]> {
         "KeyError" => &["LookupError", "Exception", "BaseException"],
         "OverflowError" => &["ArithmeticError", "Exception", "BaseException"],
         "ZeroDivisionError" => &["ArithmeticError", "Exception", "BaseException"],
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn py_builtin_exception_names() -> &'static [&'static str] {
@@ -12596,10 +12255,8 @@ fn py_static_type_name(e: &Expression) -> Option<&'static str> {
             ExprKind::Ident(n) if n == "bytes" || n == "__py_bytes_new__" => Some("bytes"),
             ExprKind::Ident(n) if n == "bytearray" => Some("bytearray"),
             ExprKind::Ident(n) if n == "complex" => Some("complex"),
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn py_type_is_builtin(left: &Expression, right: &Expression) -> Option<bool> {
@@ -12629,8 +12286,7 @@ fn py_builtin_subclass(sub: &str, base: &str) -> Option<bool> {
         (a, b) if a == b => true,
         (_, "object") => true,
         ("bool", "int") => true,
-        _ => false,
-    })
+        _ => false })
 }
 
 fn py_id_call_arg(e: &Expression) -> Option<&Expression> {
@@ -12677,8 +12333,7 @@ fn py_static_getattr_member_identity(left: &Expression, right: &Expression) -> O
             };
             (object, field.as_str())
         }
-        _ => return None,
-    };
+        _ => return None };
     if field != attr {
         return Some(false);
     }
@@ -12731,8 +12386,7 @@ fn py_static_callable(e: &Expression) -> Option<bool> {
                 None
             }
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn py_static_hasattr(obj: &Expression, attr: &str) -> Option<bool> {
@@ -12758,8 +12412,7 @@ fn py_static_hasattr(obj: &Expression, attr: &str) -> Option<bool> {
             ("set", "add" | "discard" | "remove" | "__len__") => true,
             ("str", "upper" | "lower" | "replace" | "split" | "join" | "__len__") => true,
             ("int", "real") => true,
-            _ => false,
-        });
+            _ => false });
     }
     if let ExprKind::New { class, .. } = &obj.kind {
         if let ExprKind::Ident(name) = &class.kind {
@@ -12781,8 +12434,7 @@ fn os_path_constant(field: &str) -> Option<Expression> {
         "pardir" => Expression::string(".."),
         "defpath" => Expression::string("/bin:/usr/bin"),
         "devnull" => Expression::string("/dev/null"),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Rewrite bare attribute reads to subscripts (see the module note above).
@@ -12791,8 +12443,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
         ExprKind::Member {
             object,
             field,
-            null_safe,
-        } => {
+            null_safe } => {
             // `string.<const>` — module constants (ascii_letters, digits, …).
             if matches!(&object.kind, ExprKind::Ident(n) if n == "string")
                 && is_imported_module("string")
@@ -12904,8 +12555,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         let name = py_generator_expr_name(&object).unwrap_or_default();
                         return Expression::new(ExprKind::Object(vec![ObjectProperty::KeyValue {
                             key: Expression::string("co_name"),
-                            value: Expression::string(&name),
-                        }]));
+                            value: Expression::string(&name) }]));
                     }
                     "gi_running" => return Expression::bool(false),
                     "gi_frame" | "gi_yieldfrom" => {
@@ -12952,8 +12602,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 return Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(&class_name)),
                     field,
-                    null_safe,
-                });
+                    null_safe });
             }
             // `types.ModuleType.__name__` — static metadata of the mounted
             // types surface.
@@ -12995,8 +12644,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         .iter()
                         .map(|name| ObjectProperty::KeyValue {
                             key: Expression::new(ExprKind::Lit(Literal::Str(name.clone().into()))),
-                            value: Expression::new(ExprKind::Ident(name.clone())),
-                        })
+                            value: Expression::new(ExprKind::Ident(name.clone())) })
                         .collect()
                 });
                 return Expression::new(ExprKind::Object(props));
@@ -13013,14 +12661,12 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         is_rest: false,
                         is_kwargs: false,
                         is_optional: false,
-                        is_nullable: false,
-                    }],
+                        is_nullable: false }],
                     body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ident(
                         "__mod".into(),
                     )))),
                     is_async: false,
-                    captures: vec![],
-                });
+                    captures: vec![] });
             }
             // Module metadata resolves at COMPILE time — the walker knows
             // the mounts (§16.2 namespace bindings are compile-time):
@@ -13049,30 +12695,26 @@ fn desugar_member_reads(e: Expression) -> Expression {
                                 "__py_obj_entries__".into(),
                             ))),
                             args: vec![Argument::positional(object)],
-                            optional: false,
-                        });
+                            optional: false });
                         let pair_index = |i: i64| {
                             Expression::new(ExprKind::Index {
                                 object: Box::new(Expression::new(ExprKind::Ident(
                                     "__py_dict_pair".into(),
                                 ))),
                                 index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(i)))),
-                                null_safe: false,
-                            })
+                                null_safe: false })
                         };
                         let element = Expression::new(ExprKind::Array(vec![
                             ArrayElement {
                                 key: None,
                                 spread: false,
                                 by_ref: false,
-                                value: pair_index(0),
-                            },
+                                value: pair_index(0) },
                             ArrayElement {
                                 key: None,
                                 spread: false,
                                 by_ref: false,
-                                value: pair_index(1),
-                            },
+                                value: pair_index(1) },
                         ]));
                         return Expression::new(ExprKind::Comprehension {
                             kind: ComprehensionKind::Dict,
@@ -13081,9 +12723,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                                 target: Expression::new(ExprKind::Ident("__py_dict_pair".into())),
                                 iter: entries,
                                 conditions: Vec::new(),
-                                is_async: false,
-                            }],
-                        });
+                                is_async: false }] });
                     }
                 }
             }
@@ -13104,8 +12744,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Ident(builtin.into()))),
                         args: Vec::new(),
-                        optional: false,
-                    });
+                        optional: false });
                 }
                 if let Some(names) = calendar_name_table(&full) {
                     return Expression::new(ExprKind::Array(
@@ -13115,8 +12754,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                                 value: Expression::new(ExprKind::Lit(Literal::Str((*n).into()))),
                                 spread: false,
                                 key: None,
-                                by_ref: false,
-                            })
+                                by_ref: false })
                             .collect(),
                     ));
                 }
@@ -13131,14 +12769,12 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 Expression::new(ExprKind::Member {
                     object: Box::new(object),
                     field,
-                    null_safe,
-                })
+                    null_safe })
             } else if in_assignment_target() {
                 Expression::new(ExprKind::Index {
                     object: Box::new(object),
                     index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(field.into())))),
-                    null_safe,
-                })
+                    null_safe })
             } else {
                 // An attribute READ is not a subscript. Both land in the same
                 // map-backed storage, but they fail differently: `d["k"]`
@@ -13160,8 +12796,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
         ExprKind::Call {
             callee,
             args,
-            optional,
-        } => {
+            optional } => {
             // `t.join()` — a THREAD join. Python's string/list `join` ALWAYS
             // takes the iterable as its argument (`sep.join(items)`), so a
             // zero-argument `.join()` is never the collection method and can
@@ -13202,11 +12837,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(value),
                                 field: "__hash__".into(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: Vec::new(),
-                            optional: false,
-                        });
+                            optional: false });
                     }
                 }
                 if n == "__import__" && args.len() == 1 {
@@ -13241,16 +12874,14 @@ fn desugar_member_reads(e: Expression) -> Expression {
                                 return Expression::new(ExprKind::Member {
                                     object: Box::new(Expression::new(ExprKind::Ident(module))),
                                     field: attr.to_string(),
-                                    null_safe: false,
-                                });
+                                    null_safe: false });
                             }
                             return Expression::new(ExprKind::Index {
                                 object: Box::new(Expression::new(ExprKind::Ident(module))),
                                 index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
                                     attr.to_string().into(),
                                 )))),
-                                null_safe: false,
-                            });
+                                null_safe: false });
                         }
                     }
                 }
@@ -13275,10 +12906,8 @@ fn desugar_member_reads(e: Expression) -> Expression {
                             ..
                         } => match &o.kind {
                             ExprKind::Ident(m) if is_imported_module(m) => Some(format!("{m}.{f}")),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
+                            _ => None },
+                        _ => None };
                     if let (Some(path), ExprKind::Lit(Literal::Str(attr))) =
                         (module_path, &args[1].value.kind)
                     {
@@ -13346,10 +12975,8 @@ fn desugar_member_reads(e: Expression) -> Expression {
                                         ))),
                                         value: Expression::new(ExprKind::Lit(Literal::Str(
                                             name.into(),
-                                        ))),
-                                    },
-                                ])),
-                            })
+                                        ))) },
+                                ])) })
                             .collect(),
                     ));
                 }
@@ -13363,16 +12990,13 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     return Expression::new(ExprKind::Object(vec![
                         ObjectProperty::KeyValue {
                             key: Expression::new(ExprKind::Lit(Literal::Str("__name__".into()))),
-                            value: name.clone(),
-                        },
+                            value: name.clone() },
                         ObjectProperty::KeyValue {
                             key: Expression::new(ExprKind::Lit(Literal::Str("__file__".into()))),
-                            value: Expression::string("<module>"),
-                        },
+                            value: Expression::string("<module>") },
                         ObjectProperty::KeyValue {
                             key: Expression::new(ExprKind::Lit(Literal::Str("__doc__".into()))),
-                            value: Expression::string(""),
-                        },
+                            value: Expression::string("") },
                         ObjectProperty::KeyValue {
                             key: Expression::new(ExprKind::Lit(Literal::Str("__spec__".into()))),
                             value: Expression::new(ExprKind::Object(vec![
@@ -13380,16 +13004,13 @@ fn desugar_member_reads(e: Expression) -> Expression {
                                     key: Expression::new(ExprKind::Lit(Literal::Str(
                                         "name".into(),
                                     ))),
-                                    value: name,
-                                },
+                                    value: name },
                                 ObjectProperty::KeyValue {
                                     key: Expression::new(ExprKind::Lit(Literal::Str(
                                         "loader".into(),
                                     ))),
-                                    value: Expression::new(ExprKind::Object(vec![])),
-                                },
-                            ])),
-                        },
+                                    value: Expression::new(ExprKind::Object(vec![])) },
+                            ])) },
                     ]));
                 }
             }
@@ -13451,11 +13072,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                                 callee: Box::new(Expression::new(ExprKind::Member {
                                     object: Box::new(sorted),
                                     field: "reverse".into(),
-                                    null_safe: false,
-                                })),
+                                    null_safe: false })),
                                 args: vec![],
-                                optional: false,
-                            })
+                                optional: false })
                         } else {
                             sorted
                         };
@@ -13473,11 +13092,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(recv),
                                 field: field.clone(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args,
-                            optional,
-                        });
+                            optional });
                     }
                     if let Some(settings) = textwrapper_args(name) {
                         let values: Vec<Expression> = args
@@ -13539,8 +13156,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(field)),
                         args,
-                        optional,
-                    });
+                        optional });
                 }
                 if let Some(path) = module_namespace_path(object) {
                     if let Some(value) = dynamic_module_attr(&path, field) {
@@ -13554,8 +13170,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         return Expression::new(ExprKind::Call {
                             callee: Box::new(value),
                             args,
-                            optional,
-                        });
+                            optional });
                     }
                 }
                 if let Some(rewritten) =
@@ -13837,11 +13452,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident("tempfile")),
                         field: field.clone(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: fixed,
-                    optional,
-                });
+                    optional });
             }
             // `tempfile.NamedTemporaryFile(prefix=…, suffix=…, dir=…)` etc.
             // `emit_common(name, chunks, current, argc, line)` receives a value
@@ -13875,11 +13488,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident("tempfile")),
                         field: field.clone(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: fixed,
-                    optional,
-                });
+                    optional });
             }
             // `pprint.pformat(...)` / `pprint.PrettyPrinter(...)` / … — call the
             // injected prelude global (see [PPRINT_PRELUDE]). Kept a real Call so
@@ -13898,8 +13509,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
                     args,
-                    optional,
-                });
+                    optional });
             }
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && let Some(path) = module_namespace_path(object)
@@ -13907,8 +13517,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 let rewritten = match path.as_str() {
                     "shlex" => shlex_module_member(field),
                     "textwrap" => textwrap_module_member(field),
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(name) = rewritten {
                     let mut args: Vec<Argument> = args
                         .into_iter()
@@ -13928,14 +13537,12 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     return if matches!(name, "__py_shlex_class" | "__py_TextWrapper") {
                         Expression::new(ExprKind::New {
                             class: Box::new(Expression::new(ExprKind::Ident(name.into()))),
-                            args,
-                        })
+                            args })
                     } else {
                         Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
                             args,
-                            optional,
-                        })
+                            optional })
                     };
                 }
             }
@@ -13956,8 +13563,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("wraps")),
                         args,
-                        optional,
-                    });
+                        optional });
                 }
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "string")
                     && is_imported_module("string")
@@ -13973,8 +13579,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         return Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
                             args,
-                            optional,
-                        });
+                            optional });
                     }
                 }
             }
@@ -13987,8 +13592,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(userdict_data_expr(var)),
                         field: field.clone(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: args
                         .into_iter()
                         .map(|mut a| {
@@ -13996,8 +13600,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                             a
                         })
                         .collect(),
-                    optional,
-                });
+                    optional });
             }
             if let ExprKind::Member { object, field, .. } = &callee.kind
                 && field == "split"
@@ -14044,11 +13647,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(recv),
                             field: "sort".into(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: vec![],
-                        optional: false,
-                    });
+                        optional: false });
                     return Expression::new(ExprKind::Sequence(vec![sort_call, Expression::null()]));
                 }
                 if matches!(&object.kind, ExprKind::Ident(_))
@@ -14060,20 +13661,16 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(recv.clone()),
                             field: "sort".into(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: vec![],
-                        optional: false,
-                    });
+                        optional: false });
                     let reverse_call = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(recv),
                             field: "reverse".into(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: vec![],
-                        optional: false,
-                    });
+                        optional: false });
                     return Expression::new(ExprKind::Sequence(vec![
                         sort_call,
                         reverse_call,
@@ -14086,11 +13683,9 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(recv),
                             field: "reverse".into(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: vec![],
-                        optional: false,
-                    });
+                        optional: false });
                     return Expression::new(ExprKind::Sequence(vec![
                         reverse_call,
                         Expression::null(),
@@ -14103,38 +13698,30 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 ExprKind::New { class, args } => Expression::new(ExprKind::Member {
                     object: Box::new(desugar_member_reads(Expression::new(ExprKind::New {
                         class,
-                        args,
-                    }))),
+                        args }))),
                     field: "__call__".into(),
-                    null_safe: false,
-                }),
+                    null_safe: false }),
                 ExprKind::Call {
                     callee: inner,
                     args: inner_args,
-                    optional: inner_optional,
-                } if matches!(&inner.kind, ExprKind::New { .. }) => {
+                    optional: inner_optional } if matches!(&inner.kind, ExprKind::New { .. }) => {
                     let constructed = Expression::new(ExprKind::Call {
                         callee: inner,
                         args: inner_args,
-                        optional: inner_optional,
-                    });
+                        optional: inner_optional });
                     Expression::new(ExprKind::Member {
                         object: Box::new(desugar_member_reads(constructed)),
                         field: "__call__".into(),
-                        null_safe: false,
-                    })
+                        null_safe: false })
                 }
                 ExprKind::Member {
                     object,
                     field,
-                    null_safe,
-                } => Expression::new(ExprKind::Member {
+                    null_safe } => Expression::new(ExprKind::Member {
                     object: Box::new(desugar_member_reads(*object)),
                     field,
-                    null_safe,
-                }),
-                _ => desugar_member_reads(*callee),
-            };
+                    null_safe }),
+                _ => desugar_member_reads(*callee) };
             Expression::new(ExprKind::Call {
                 callee: Box::new(callee),
                 args: args
@@ -14144,14 +13731,12 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         a
                     })
                     .collect(),
-                optional,
-            })
+                optional })
         }
         ExprKind::Index {
             object,
             index,
-            null_safe,
-        } => {
+            null_safe } => {
             if let ExprKind::Lit(Literal::Str(field)) = &index.kind
                 && field == "__name__"
                 && let Some(value) = py_type_call_arg(&object)
@@ -14167,16 +13752,14 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 return Expression::new(ExprKind::Index {
                     object: Box::new(desugar_member_reads(*object)),
                     index,
-                    null_safe,
-                });
+                    null_safe });
             }
             if let ExprKind::Ident(name) = &object.kind {
                 if let Some(source) = mapping_proxy_source(name) {
                     return Expression::new(ExprKind::Index {
                         object: Box::new(desugar_member_reads(source)),
                         index,
-                        null_safe,
-                    });
+                        null_safe });
                 }
             }
             if !in_assignment_target() && !index_is_slice(&index) {
@@ -14207,24 +13790,20 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         return Expression::new(ExprKind::Index {
                             object,
                             index,
-                            null_safe,
-                        });
+                            null_safe });
                     }
                     return Expression::new(ExprKind::Index {
                         object: Box::new(userdict_data_expr(var)),
                         index,
-                        null_safe,
-                    });
+                        null_safe });
                 }
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(var)),
                         field: "__getitem__".into(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: vec![Argument::positional(*index)],
-                    optional: false,
-                });
+                    optional: false });
             }
             if !in_assignment_target()
                 && let ExprKind::Ident(var) = &object.kind
@@ -14234,14 +13813,12 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     return Expression::new(ExprKind::Index {
                         object,
                         index,
-                        null_safe,
-                    });
+                        null_safe });
                 }
                 return Expression::new(ExprKind::Index {
                     object: Box::new(userdict_data_expr(var)),
                     index,
-                    null_safe,
-                });
+                    null_safe });
             }
             if let ExprKind::Call { callee, .. } = &object.kind
                 && matches!(&callee.kind, ExprKind::Ident(n)
@@ -14266,8 +13843,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 return Expression::new(ExprKind::Index {
                     object: Box::new(desugar_member_reads(*object)),
                     index: Box::new(desugar_slice_bounds(*index)),
-                    null_safe,
-                });
+                    null_safe });
             }
             if !in_assignment_target() {
                 return call_ident(
@@ -14278,8 +13854,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
             Expression::new(ExprKind::Index {
                 object: Box::new(desugar_member_reads(*object)),
                 index: Box::new(desugar_member_reads(*index)),
-                null_safe,
-            })
+                null_safe })
         }
         ExprKind::Binary { op, left, right } => {
             let left = desugar_member_reads(*left);
@@ -14288,8 +13863,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 Expression::new(ExprKind::Binary {
                     op,
                     left: Box::new(left),
-                    right: Box::new(right),
-                })
+                    right: Box::new(right) })
             })
         }
         ExprKind::New { class, args } => {
@@ -14303,8 +13877,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                 .collect();
             let constructed = Expression::new(ExprKind::New {
                 class: Box::new(class.clone()),
-                args,
-            });
+                args });
             if let ExprKind::Ident(name) = &class.kind
                 && (py_class_is_subclass(name, "BaseException")
                     || py_class_is_subclass(name, "Exception"))
@@ -14319,8 +13892,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
         ExprKind::Comprehension {
             kind,
             element,
-            generators,
-        } => Expression::new(ExprKind::Comprehension {
+            generators } => Expression::new(ExprKind::Comprehension {
             kind,
             element: Box::new(desugar_member_reads(*element)),
             generators: generators
@@ -14335,8 +13907,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         .collect();
                     comp_gen
                 })
-                .collect(),
-        }),
+                .collect() }),
         ExprKind::Interpolation(parts) => Expression::new(ExprKind::Interpolation(
             parts
                 .into_iter()
@@ -14345,8 +13916,7 @@ fn desugar_member_reads(e: Expression) -> Expression {
                     InterpolPart::Formatted(expr, spec) => {
                         InterpolPart::Formatted(desugar_member_reads(expr), spec)
                     }
-                    InterpolPart::Text(text) => InterpolPart::Text(text),
-                })
+                    InterpolPart::Text(text) => InterpolPart::Text(text) })
                 .collect(),
         )),
         // A module-aliased local reads AS the module (`m = json; m.dumps`),
@@ -14365,13 +13935,11 @@ fn desugar_member_reads(e: Expression) -> Expression {
                         "__mod".into(),
                     )))),
                     is_async: false,
-                    captures: vec![],
-                });
+                    captures: vec![] });
             }
             Expression::new(ExprKind::Ident(name))
         }
-        _ => e,
-    }
+        _ => e }
 }
 
 // ── Postfix (call, member, subscript chain) ─────────────────────────────────
@@ -14401,8 +13969,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Ident("print".into()))),
                         args: normalize_python_print_args(Vec::new()),
-                        optional: false,
-                    });
+                        optional: false });
                 } else if let ExprKind::Member { object, field, .. } = &expr.kind {
                     // `super().__init__()` (no args) → bare `super()` parent-ctor
                     // call (see the args-carrying case below for the rationale).
@@ -14410,8 +13977,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Super)),
                             args: Vec::new(),
-                            optional: false,
-                        });
+                            optional: false });
                     } else if let Some(path) = module_namespace_path(object)
                         && path == "collections"
                         && let Some(rewritten) = collections_ctor_call(field, &[])
@@ -14448,8 +14014,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Call {
                             callee: Box::new(expr),
                             args: Vec::new(),
-                            optional: false,
-                        });
+                            optional: false });
                     }
                 } else if matches!(&expr.kind, ExprKind::Ident(n) if n == "frozenset") {
                     // Zero-arg `frozenset()` — route to the Python builtin so the
@@ -14457,8 +14022,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__py_frozenset")),
                         args: Vec::new(),
-                        optional: false,
-                    });
+                        optional: false });
                 } else if let ExprKind::Ident(name) = &expr.kind
                     && let Some(rewritten) = collections_ctor_call(name, &[])
                 {
@@ -14483,8 +14047,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         if let ExprKind::Member {
                             object,
                             field,
-                            null_safe,
-                        } = &expr.kind
+                            null_safe } = &expr.kind
                         {
                             if let ExprKind::Ident(name) = &object.kind
                                 && let Some(settings) = textwrapper_args(name)
@@ -14521,8 +14084,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 let rewritten = match path.as_str() {
                                     "shlex" => shlex_module_member(field),
                                     "textwrap" => textwrap_module_member(field),
-                                    _ => None,
-                                };
+                                    _ => None };
                                 if let Some(name) = rewritten {
                                     if path == "shlex" {
                                         args = normalize_shlex_call_args(field, args);
@@ -14539,16 +14101,14 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             class: Box::new(Expression::new(ExprKind::Ident(
                                                 name.into(),
                                             ))),
-                                            args,
-                                        })
+                                            args })
                                     } else {
                                         Expression::new(ExprKind::Call {
                                             callee: Box::new(Expression::new(ExprKind::Ident(
                                                 name.into(),
                                             ))),
                                             args,
-                                            optional: *null_safe,
-                                        })
+                                            optional: *null_safe })
                                     };
                                     continue;
                                 }
@@ -14591,20 +14151,16 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     callee: Box::new(Expression::new(ExprKind::Member {
                                         object: object.clone(),
                                         field: "sort".into(),
-                                        null_safe: false,
-                                    })),
+                                        null_safe: false })),
                                     args: vec![],
-                                    optional: false,
-                                });
+                                    optional: false });
                                 let reverse_call = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::new(ExprKind::Member {
                                         object: object.clone(),
                                         field: "reverse".into(),
-                                        null_safe: false,
-                                    })),
+                                        null_safe: false })),
                                     args: vec![],
-                                    optional: false,
-                                });
+                                    optional: false });
                                 expr = Expression::new(ExprKind::Sequence(vec![
                                     sort_call,
                                     reverse_call,
@@ -14620,11 +14176,9 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     callee: Box::new(Expression::new(ExprKind::Member {
                                         object: object.clone(),
                                         field: "sort".into(),
-                                        null_safe: false,
-                                    })),
+                                        null_safe: false })),
                                     args: vec![],
-                                    optional: false,
-                                });
+                                    optional: false });
                                 expr = Expression::new(ExprKind::Sequence(vec![
                                     sort_call,
                                     Expression::null(),
@@ -14639,11 +14193,9 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     callee: Box::new(Expression::new(ExprKind::Member {
                                         object: object.clone(),
                                         field: "reverse".into(),
-                                        null_safe: false,
-                                    })),
+                                        null_safe: false })),
                                     args: vec![],
-                                    optional: false,
-                                });
+                                    optional: false });
                                 expr = Expression::new(ExprKind::Sequence(vec![
                                     reverse_call,
                                     Expression::null(),
@@ -14668,8 +14220,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     is_rest: false,
                                     is_kwargs: false,
                                     is_optional: false,
-                                    is_nullable: false,
-                                };
+                                    is_nullable: false };
                                 let filter_fn = Expression::new(ExprKind::Lambda {
                                     params: vec![param],
                                     body: LambdaBody::Expr(Box::new(Expression::new(
@@ -14678,40 +14229,49 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             left: Box::new(Expression::new(ExprKind::Ident(
                                                 "__e".into(),
                                             ))),
-                                            right: Box::new(needle),
-                                        },
+                                            right: Box::new(needle) },
                                     ))),
                                     is_async: false,
-                                    captures: vec![],
-                                });
+                                    captures: vec![] });
                                 let filter_call = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::new(ExprKind::Member {
                                         object: object.clone(),
                                         field: "filter".into(),
-                                        null_safe: false,
-                                    })),
+                                        null_safe: false })),
                                     args: vec![Argument::positional(filter_fn)],
-                                    optional: false,
-                                });
+                                    optional: false });
                                 expr = Expression::new(ExprKind::Member {
                                     object: Box::new(filter_call),
                                     field: "length".into(),
-                                    null_safe: false,
-                                });
+                                    null_safe: false });
                                 continue;
                             }
                             if field == "join" && args.len() == 1 {
                                 let delim = object.clone();
                                 let array_arg = args.into_iter().next().unwrap().value;
+                                // KNOWN GAP: this inverts `sep.join(iterable)` into
+                                // `iterable.join(sep)`, so dispatch sees an ARRAY
+                                // receiver and a generator argument reaches
+                                // `Array.prototype.join` and yields "".
+                                // `" ".join(str(a) for a in xs)` is ordinary Python
+                                // and currently produces the empty string.
+                                //
+                                // Materialising here does NOT work: a `list(...)`
+                                // injected at this point in the walk never resolves
+                                // to `host:ecma:array:from` (verified with
+                                // `vybex -d` — no `array:from` is emitted) and it
+                                // breaks `"".join("abc")` and dict joins as well.
+                                // The fix belongs in `builtinslotplan.md`'s model:
+                                // declare `[builtin_slots.string] join`, keep the
+                                // string receiver, and let the adapter drain any
+                                // iterable through the shared `generators.rs`.
                                 expr = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::new(ExprKind::Member {
                                         object: Box::new(array_arg),
                                         field: "join".into(),
-                                        null_safe: *null_safe,
-                                    })),
+                                        null_safe: *null_safe })),
                                     args: vec![Argument::positional(*delim)],
-                                    optional: false,
-                                });
+                                    optional: false });
                                 continue;
                             }
                             // namedtuple instance methods — the receiver's fields
@@ -14902,8 +14462,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 expr = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::new(ExprKind::Super)),
                                     args,
-                                    optional: false,
-                                });
+                                    optional: false });
                                 continue;
                             }
                         }
@@ -14932,8 +14491,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 expr = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::new(ExprKind::Ident(exc_ctor))),
                                     args,
-                                    optional: false,
-                                });
+                                    optional: false });
                                 continue;
                             }
                             if let Some(rewritten) = collections_ctor_call(name, &args) {
@@ -14962,8 +14520,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             "print".into(),
                                         ))),
                                         args: new_args,
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     continue;
                                 }
                                 // `eval(src[, g[, l]])` / `exec(src[, g[, l]])`
@@ -14989,14 +14546,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             ))),
                                             value: Expression::new(ExprKind::Lit(Literal::Bool(
                                                 name == "eval",
-                                            ))),
-                                        },
+                                            ))) },
                                         ObjectProperty::KeyValue {
                                             key: Expression::new(ExprKind::Lit(Literal::Str(
                                                 "namespace".into(),
                                             ))),
-                                            value: namespace,
-                                        },
+                                            value: namespace },
                                     ]));
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Ident(
@@ -15009,8 +14564,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             ))),
                                             Argument::positional(attrs),
                                         ],
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     continue;
                                 }
                                 "divmod" if args.len() == 2 => {
@@ -15021,13 +14575,11 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         Expression::new(ExprKind::Binary {
                                             op: BinOp::FloorDiv,
                                             left: Box::new(a.clone()),
-                                            right: Box::new(b.clone()),
-                                        }),
+                                            right: Box::new(b.clone()) }),
                                         Expression::new(ExprKind::Binary {
                                             op: BinOp::Mod,
                                             left: Box::new(a),
-                                            right: Box::new(b),
-                                        }),
+                                            right: Box::new(b) }),
                                     ]));
                                     continue;
                                 }
@@ -15124,8 +14676,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 key: None,
                                                 spread: false,
                                                 by_ref: false,
-                                                value: Expression::string(name),
-                                            })
+                                                value: Expression::string(name) })
                                             .collect(),
                                         ));
                                         continue;
@@ -15170,8 +14721,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 "int".into(),
                                             ))),
                                             args,
-                                            optional: false,
-                                        });
+                                            optional: false });
                                         continue;
                                     }
                                     // int(s, base) → parseInt(s, base)
@@ -15193,8 +14743,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 .strip_prefix("0x")
                                                 .or_else(|| trimmed.strip_prefix("0X"))
                                                 .unwrap_or(trimmed),
-                                            _ => trimmed,
-                                        };
+                                            _ => trimmed };
                                         if (2..=36).contains(&radix)
                                             && let Ok(n) = i64::from_str_radix(digits, radix)
                                         {
@@ -15207,8 +14756,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             "parseInt".into(),
                                         ))),
                                         args,
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     continue;
                                 }
                                 "repr" if args.len() == 1 => {
@@ -15343,10 +14891,8 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             left: Box::new(Expression::new(ExprKind::Index {
                                                 object: Box::new(args[0].value.clone()),
                                                 index: Box::new(Expression::string("__type")),
-                                                null_safe: false,
-                                            })),
-                                            right: Box::new(Expression::string(tag)),
-                                        });
+                                                null_safe: false })),
+                                            right: Box::new(Expression::string(tag)) });
                                         continue;
                                     }
                                     // Runtime forms. The tuple form ORs the same
@@ -15359,6 +14905,30 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 type_name,
                                             ) {
                                                 expr = r;
+                                                continue;
+                                            }
+                                            // A declared class is a registered
+                                            // WASM GC type, so the test is
+                                            // `instanceof` — which lowers to
+                                            // `ref.test` and resolves the real
+                                            // subtype hierarchy — rather than a
+                                            // compare against the `__type`
+                                            // name stamp. Same rewrite the
+                                            // tuple form below already makes,
+                                            // so `isinstance(x, C)` and
+                                            // `isinstance(x, (C, D))` agree.
+                                            if is_defined_class(type_name) {
+                                                expr = Expression::new(ExprKind::Ternary {
+                                                    cond: Box::new(Expression::new(
+                                                        ExprKind::Binary {
+                                                            op: BinOp::InstanceOf,
+                                                            left: Box::new(args[0].value.clone()),
+                                                            right: Box::new(Expression::ident(
+                                                                type_name,
+                                                            )) },
+                                                    )),
+                                                    then: Box::new(Expression::bool(true)),
+                                                    else_: Box::new(Expression::bool(false)) });
                                                 continue;
                                             }
                                         }
@@ -15376,19 +14946,16 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                                             ExprKind::Binary {
                                                                                 op: BinOp::InstanceOf,
                                                                                 left: Box::new(args[0].value.clone()),
-                                                                                right: Box::new(Expression::ident(n)),
-                                                                            },
+                                                                                right: Box::new(Expression::ident(n)) },
                                                                         )),
                                                                         then: Box::new(Expression::bool(true)),
-                                                                        else_: Box::new(Expression::bool(false)),
-                                                                    }))
+                                                                        else_: Box::new(Expression::bool(false)) }))
                                                                 } else {
                                                                     None
                                                                 }
                                                             })
                                                     }
-                                                    _ => None,
-                                                }) else {
+                                                    _ => None }) else {
                                                     all_known = false;
                                                     break;
                                                 };
@@ -15398,8 +14965,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                         Expression::new(ExprKind::Binary {
                                                             op: BinOp::Or,
                                                             left: Box::new(prev),
-                                                            right: Box::new(one),
-                                                        })
+                                                            right: Box::new(one) })
                                                     }
                                                 });
                                             }
@@ -15422,8 +14988,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                     left: Box::new(Expression::new(
                                                         ExprKind::TypeOf(Box::new(x.clone())),
                                                     )),
-                                                    right: Box::new(Expression::string("number")),
-                                                })),
+                                                    right: Box::new(Expression::string("number")) })),
                                                 right: Box::new(Expression::new(
                                                     ExprKind::Binary {
                                                         op: BinOp::StrictEq,
@@ -15432,10 +14997,8 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                         )),
                                                         right: Box::new(Expression::string(
                                                             "boolean",
-                                                        )),
-                                                    },
-                                                )),
-                                            });
+                                                        )) },
+                                                )) });
                                             continue;
                                         }
                                         // Builtin-type checks desugar to the
@@ -15449,8 +15012,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 left: Box::new(Expression::new(ExprKind::TypeOf(
                                                     Box::new(args[0].value.clone()),
                                                 ))),
-                                                right: Box::new(Expression::string(name)),
-                                            })
+                                                right: Box::new(Expression::string(name)) })
                                         };
                                         let ref_test = |name: &str| {
                                             Expression::new(ExprKind::Binary {
@@ -15458,8 +15020,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 left: Box::new(args[0].value.clone()),
                                                 right: Box::new(Expression::new(ExprKind::Ident(
                                                     name.into(),
-                                                ))),
-                                            })
+                                                ))) })
                                         };
                                         // ref.test pushes a raw wasm i32;
                                         // materialize a real Python bool.
@@ -15467,8 +15028,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             Expression::new(ExprKind::Ternary {
                                                 cond: Box::new(e),
                                                 then: Box::new(Expression::bool(true)),
-                                                else_: Box::new(Expression::bool(false)),
-                                            })
+                                                else_: Box::new(Expression::bool(false)) })
                                         };
                                         // Python dicts are structs carrying a
                                         // `__keys` array; Map-backed dicts
@@ -15486,25 +15046,20 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 left: Box::new(Expression::new(ExprKind::Index {
                                                     object: Box::new(args[0].value.clone()),
                                                     index: Box::new(Expression::string("__keys")),
-                                                    null_safe: false,
-                                                })),
+                                                    null_safe: false })),
                                                 right: Box::new(Expression::new(ExprKind::Lit(
                                                     Literal::Null,
-                                                ))),
-                                            });
+                                                ))) });
                                             let not_set = Expression::new(ExprKind::Unary {
                                                 op: UnaryOp::Not,
-                                                expr: Box::new(ref_test("Set")),
-                                            });
+                                                expr: Box::new(ref_test("Set")) });
                                             Expression::new(ExprKind::Binary {
                                                 op: BinOp::And,
                                                 left: Box::new(Expression::new(ExprKind::Binary {
                                                     op: BinOp::And,
                                                     left: Box::new(typeof_check("object")),
-                                                    right: Box::new(not_set),
-                                                })),
-                                                right: Box::new(keys_probe),
-                                            })
+                                                    right: Box::new(not_set) })),
+                                                right: Box::new(keys_probe) })
                                         };
                                         let rewritten = match type_name.as_str() {
                                             "str" => Some(typeof_check("string")),
@@ -15528,8 +15083,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             // User class: `isinstance(x, MyClass)` → `x instanceof
                                             // MyClass` (shared JS path — reads the constructor name
                                             // and checks the __types ancestry, so inheritance works).
-                                            _ => Some(as_bool(ref_test(type_name.as_str()))),
-                                        };
+                                            _ => Some(as_bool(ref_test(type_name.as_str()))) };
                                         if let Some(r) = rewritten {
                                             expr = r;
                                             continue;
@@ -15581,11 +15135,9 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 callee: Box::new(Expression::new(ExprKind::Member {
                                                     object: Box::new(args[0].value.clone()),
                                                     field: "__bool__".into(),
-                                                    null_safe: false,
-                                                })),
+                                                    null_safe: false })),
                                                 args: Vec::new(),
-                                                optional: false,
-                                            });
+                                                optional: false });
                                             continue;
                                         }
                                         if class_has_attr(class_name, "__len__") {
@@ -15595,15 +15147,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                     callee: Box::new(Expression::new(ExprKind::Member {
                                                         object: Box::new(args[0].value.clone()),
                                                         field: "__len__".into(),
-                                                        null_safe: false,
-                                                    })),
+                                                        null_safe: false })),
                                                     args: Vec::new(),
-                                                    optional: false,
-                                                })),
+                                                    optional: false })),
                                                 right: Box::new(Expression::new(ExprKind::Lit(
                                                     Literal::Int(0),
-                                                ))),
-                                            });
+                                                ))) });
                                             continue;
                                         }
                                     }
@@ -15612,8 +15161,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     expr = Expression::new(ExprKind::Ternary {
                                         cond: Box::new(x),
                                         then: Box::new(Expression::bool(true)),
-                                        else_: Box::new(Expression::bool(false)),
-                                    });
+                                        else_: Box::new(Expression::bool(false)) });
                                     continue;
                                 }
                                 "bool" if args.is_empty() => {
@@ -15641,12 +15189,10 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                         ExprKind::Member {
                                                             object: Box::new(iterable),
                                                             field: "__iter__".into(),
-                                                            null_safe: false,
-                                                        },
+                                                            null_safe: false },
                                                     )),
                                                     args: Vec::new(),
-                                                    optional: false,
-                                                });
+                                                    optional: false });
                                             }
                                         }
                                     }
@@ -15654,8 +15200,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         key: None,
                                         spread: true,
                                         by_ref: false,
-                                        value: call_ident("__py_iter_array__", vec![iterable]),
-                                    }]));
+                                        value: call_ident("__py_iter_array__", vec![iterable]) }]));
                                     continue;
                                 }
                                 "list" if args.is_empty() => {
@@ -15670,8 +15215,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::ident("__py_frozenset")),
                                         args: args.clone(),
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     continue;
                                 }
                                 "tuple" if args.len() == 1 => {
@@ -15681,8 +15225,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         key: None,
                                         spread: true,
                                         by_ref: false,
-                                        value: iterable,
-                                    }]));
+                                        value: iterable }]));
                                     continue;
                                 }
                                 "tuple" if args.is_empty() => {
@@ -15742,8 +15285,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 by_ref: false,
                                                 value: Expression::new(ExprKind::Lit(
                                                     Literal::Int(0),
-                                                )),
-                                            })
+                                                )) })
                                             .collect();
                                         expr = wrap_bytes(Expression::new(ExprKind::Array(
                                             elements,
@@ -15792,8 +15334,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                             key: None,
                                                             spread: false,
                                                             by_ref: false,
-                                                            value,
-                                                        })
+                                                            value })
                                                         .collect(),
                                                 ))
                                             };
@@ -15840,8 +15381,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 key: None,
                                                 spread: false,
                                                 by_ref: false,
-                                                value,
-                                            })
+                                                value })
                                             .collect();
                                         expr = call_ident(
                                             target,
@@ -15860,8 +15400,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Ident(n))),
                                         args: vec![Argument::positional(spread_iterable_expr(it))],
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     continue;
                                 }
                                 "filter"
@@ -15884,14 +15423,12 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             is_rest: false,
                                             is_kwargs: false,
                                             is_optional: false,
-                                            is_nullable: false,
-                                        }],
+                                            is_nullable: false }],
                                         body: LambdaBody::Expr(Box::new(Expression::new(
                                             ExprKind::Ident("__e".into()),
                                         ))),
                                         is_async: false,
-                                        captures: vec![],
-                                    });
+                                        captures: vec![] });
                                     let len_pred = Expression::new(ExprKind::Lambda {
                                         params: vec![lambda_param("__e")],
                                         body: LambdaBody::Expr(Box::new(Expression::new(
@@ -15905,16 +15442,13 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                         ))),
                                                         right: Box::new(Expression::new(ExprKind::Ident(
                                                             "Array".into(),
-                                                        ))),
-                                                    })),
+                                                        ))) })),
                                                     right: Box::new(Expression::new(ExprKind::Binary {
                                                         op: BinOp::StrictEq,
                                                         left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(
                                                             Expression::new(ExprKind::Ident("__e".into())),
                                                         )))),
-                                                        right: Box::new(Expression::string("string")),
-                                                    })),
-                                                })),
+                                                        right: Box::new(Expression::string("string")) })) })),
                                                 then: Box::new(Expression::new(ExprKind::Binary {
                                                     op: BinOp::NotEq,
                                                     left: Box::new(Expression::new(ExprKind::Member {
@@ -15922,18 +15456,14 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                             "__e".into(),
                                                         ))),
                                                         field: "length".into(),
-                                                        null_safe: false,
-                                                    })),
-                                                    right: Box::new(Expression::int(0)),
-                                                })),
+                                                        null_safe: false })),
+                                                    right: Box::new(Expression::int(0)) })),
                                                 else_: Box::new(Expression::new(ExprKind::Ident(
                                                     "__e".into(),
-                                                ))),
-                                            },
+                                                ))) },
                                         ))),
                                         is_async: false,
-                                        captures: vec![],
-                                    });
+                                        captures: vec![] });
                                     let inner = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Ident("filter".into()))),
                                         args: vec![
@@ -15942,8 +15472,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 args[1].value.clone(),
                                             ))),
                                         ],
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Ident(
                                             "filter".into(),
@@ -15952,8 +15481,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             Argument::positional(len_pred),
                                             Argument::positional(inner),
                                         ],
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     continue;
                                 }
                                 "filter" if args.len() == 2 && args.iter().all(|a| a.name.is_none()) => {
@@ -15967,8 +15495,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 args[1].value.clone(),
                                             ))),
                                         ],
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     continue;
                                 }
                                 "iter" if args.len() == 2 && args.iter().all(|a| a.name.is_none()) => {
@@ -15997,8 +15524,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                                 Argument::positional(func),
                                                 Argument::positional(iterables[0].clone()),
                                             ],
-                                            optional: false,
-                                        });
+                                            optional: false });
                                         continue;
                                     }
                                     let tuple_name = "__py_map_args";
@@ -16015,22 +15541,19 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                         Expression::new(ExprKind::Call {
                                         callee: Box::new(func),
                                             args: call_args,
-                                            optional: false,
-                                        }),
+                                            optional: false }),
                                     );
                                     let zipped = Expression::new(ExprKind::Zip {
                                         iterables,
                                         mode: ZipMode::Shortest,
-                                        strict: false,
-                                    });
+                                        strict: false });
                                     expr = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Ident("map".into()))),
                                         args: vec![
                                             Argument::positional(wrapper),
                                             Argument::positional(zipped),
                                         ],
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     continue;
                                 }
                                 "zip" if args.iter().all(|a| !a.spread) => {
@@ -16055,8 +15578,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             expr = Expression::new(ExprKind::Zip {
                                                 iterables,
                                                 mode: ZipMode::Shortest,
-                                                strict: false,
-                                            });
+                                                strict: false });
                                             continue;
                                         }
                                         expr = call_ident("__py_zip_strict", iterables);
@@ -16073,8 +15595,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             Expression::new(ExprKind::Zip {
                                                 iterables,
                                                 mode: ZipMode::Shortest,
-                                                strict: false,
-                                            })
+                                                strict: false })
                                         };
                                         continue;
                                     }
@@ -16136,8 +15657,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             key: None,
                                             spread: true,
                                             by_ref: false,
-                                            value: call_ident("__py_iter_array__", vec![iterable]),
-                                        }]));
+                                            value: call_ident("__py_iter_array__", vec![iterable]) }]));
                                     let sorted = if let Some(key_fn) = key_fn {
                                         call_ident("__py_sort_by_key", vec![spread_array, key_fn])
                                     } else {
@@ -16145,22 +15665,18 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             callee: Box::new(Expression::new(ExprKind::Member {
                                                 object: Box::new(spread_array),
                                                 field: "sort".into(),
-                                                null_safe: false,
-                                            })),
+                                                null_safe: false })),
                                             args: vec![],
-                                            optional: false,
-                                        })
+                                            optional: false })
                                     };
                                     expr = if has_reverse {
                                         Expression::new(ExprKind::Call {
                                             callee: Box::new(Expression::new(ExprKind::Member {
                                                 object: Box::new(sorted),
                                                 field: "reverse".into(),
-                                                null_safe: false,
-                                            })),
+                                                null_safe: false })),
                                             args: vec![],
-                                            optional: false,
-                                        })
+                                            optional: false })
                                     } else {
                                         sorted
                                     };
@@ -16181,25 +15697,21 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     let factor = Expression::new(ExprKind::Binary {
                                         op: BinOp::Pow,
                                         left: Box::new(Expression::int(10)),
-                                        right: Box::new(n),
-                                    });
+                                        right: Box::new(n) });
                                     let scaled = Expression::new(ExprKind::Binary {
                                         op: BinOp::Mul,
                                         left: Box::new(x),
-                                        right: Box::new(factor.clone()),
-                                    });
+                                        right: Box::new(factor.clone()) });
                                     let rounded = Expression::new(ExprKind::Call {
                                         callee: Box::new(Expression::new(ExprKind::Ident(
                                             "round".into(),
                                         ))),
                                         args: vec![Argument::positional(scaled)],
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     expr = Expression::new(ExprKind::Binary {
                                         op: BinOp::Div,
                                         left: Box::new(rounded),
-                                        right: Box::new(factor),
-                                    });
+                                        right: Box::new(factor) });
                                     continue;
                                 }
                                 "pow" if args.len() == 3 => {
@@ -16215,13 +15727,11 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                             Argument::positional(base),
                                             Argument::positional(exp),
                                         ],
-                                        optional: false,
-                                    });
+                                        optional: false });
                                     expr = Expression::new(ExprKind::Binary {
                                         op: BinOp::Mod,
                                         left: Box::new(power),
-                                        right: Box::new(modulus),
-                                    });
+                                        right: Box::new(modulus) });
                                     continue;
                                 }
                                 _ => {}
@@ -16241,8 +15751,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             vec![Argument::positional(Expression::new(ExprKind::Call {
                                 callee: Box::new(cls),
                                 args: ctor_args,
-                                optional: false,
-                            }))]
+                                optional: false }))]
                         } else {
                             args
                         };
@@ -16275,6 +15784,11 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             expr = rewritten;
                             continue;
                         }
+                        // `dict(...)` / `OrderedDict(...)` → dict literal.
+                        if let Some(rewritten) = rewrite_dict_construction(&expr, &args) {
+                            expr = rewritten;
+                            continue;
+                        }
                         // `Foo(args)` — construction if `Foo` is a declared class.
                         expr = Expression::new(call_or_new(expr, args));
                     }
@@ -16301,8 +15815,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             expr = Expression::new(ExprKind::Member {
                                 object: Box::new(expr),
                                 field,
-                                null_safe: false,
-                            });
+                                null_safe: false });
                         }
                     }
                     Rule::subscript => {
@@ -16313,8 +15826,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(index),
-                            null_safe: false,
-                        });
+                            null_safe: false });
                     }
                     _ => {
                         // Fallback: try to walk as expression
@@ -16323,8 +15835,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                         expr = Expression::new(ExprKind::Index {
                             object: Box::new(expr),
                             index: Box::new(val),
-                            null_safe: false,
-                        });
+                            null_safe: false });
                     }
                 }
             }
@@ -16342,8 +15853,7 @@ fn spread_iterable_expr(value: Expression) -> Expression {
         key: None,
         spread: true,
         by_ref: false,
-        value,
-    }]))
+        value }]))
 }
 
 fn py_zip_iterable_expr(value: Expression) -> Expression {
@@ -16365,10 +15875,8 @@ fn py_known_generator_expr(expr: &Expression) -> bool {
             ExprKind::FunctionExpr(stmt) => {
                 matches!(&stmt.kind, StmtKind::FunctionDecl { is_generator: true, .. })
             }
-            _ => false,
-        },
-        _ => false,
-    }
+            _ => false },
+        _ => false }
 }
 
 fn py_generator_expr_name(expr: &Expression) -> Option<String> {
@@ -16388,10 +15896,8 @@ fn py_generator_expr_name(expr: &Expression) -> Option<String> {
                     None
                 }
             }
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn rewrite_python_generator_method_call(
@@ -16417,8 +15923,7 @@ fn rewrite_python_generator_method_call(
             vec![(**object).clone(), args[0].value.clone()],
         )),
         "close" if args.is_empty() => Some(call_ident("__py_gen_close", vec![(**object).clone()])),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Normalize Python `print(...)` arguments to the emitter convention
@@ -16493,12 +15998,10 @@ fn expr_is_python_float(e: &Expression) -> bool {
         ExprKind::Binary {
             op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::Pow | BinOp::FloorDiv,
             left,
-            right,
-        } => expr_is_python_float(left) || expr_is_python_float(right),
+            right } => expr_is_python_float(left) || expr_is_python_float(right),
         ExprKind::Unary {
             op: UnaryOp::Neg | UnaryOp::Pos,
-            expr,
-        } => expr_is_python_float(expr),
+            expr } => expr_is_python_float(expr),
         ExprKind::Call { callee, args, .. } => match &callee.kind {
             ExprKind::Ident(n) if n == "float" => true,
             ExprKind::Ident(n) if is_float_returning_import(n) => true,
@@ -16515,10 +16018,8 @@ fn expr_is_python_float(e: &Expression) -> bool {
                         && FLOAT_STATISTICS_FNS.contains(&field.as_str()))
                     || FLOAT_DT_METHODS.contains(&field.as_str())
             }
-            _ => false,
-        },
-        _ => false,
-    }
+            _ => false },
+        _ => false }
 }
 
 /// `datetime` methods CPython documents as returning a float, so they
@@ -16536,8 +16037,7 @@ fn wrap_float_repr(value: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Ident("__py_float_repr__".into()))),
         args: vec![Argument::positional(value)],
-        optional: false,
-    })
+        optional: false })
 }
 
 /// Tier 2 of float display: like `expr_is_python_float` but also treats a bare
@@ -16549,20 +16049,17 @@ fn expr_is_float_ctx(e: &Expression, floats: &HashMap<String, bool>) -> bool {
         ExprKind::Binary {
             op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod | BinOp::Pow,
             left,
-            right,
-        } => expr_is_float_ctx(left, floats) || expr_is_float_ctx(right, floats),
+            right } => expr_is_float_ctx(left, floats) || expr_is_float_ctx(right, floats),
         ExprKind::Unary {
             op: UnaryOp::Neg | UnaryOp::Pos,
-            expr,
-        } => expr_is_float_ctx(expr, floats),
+            expr } => expr_is_float_ctx(expr, floats),
         ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Ident(n) if n == "__pytruediv__") => {
             true
         }
         ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(n) if is_py_arith_helper(n)) => {
             args.iter().any(|a| expr_is_float_ctx(&a.value, floats))
         }
-        _ => expr_is_python_float(e),
-    }
+        _ => expr_is_python_float(e) }
 }
 
 /// Wrap bare float-variable arguments of a `print(...)` call so they display
@@ -16663,7 +16160,7 @@ fn wrap_float_display_vars(e: &mut Expression, floats: &HashMap<String, bool>) {
 fn apply_float_var_repr(stmts: &mut [Statement], floats: &mut HashMap<String, bool>) {
     for stmt in stmts.iter_mut() {
         match &mut stmt.kind {
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value , ..} => {
                 let is_f = expr_is_float_ctx(value, floats);
                 if let [t] = targets.as_slice() {
                     if let ExprKind::Ident(name) = &t.kind {
@@ -16694,8 +16191,7 @@ fn apply_float_var_repr(stmts: &mut [Statement], floats: &mut HashMap<String, bo
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 apply_float_var_repr(body, floats);
                 for catch in catches {
                     apply_float_var_repr(&mut catch.body, floats);
@@ -16752,8 +16248,7 @@ fn python_print_file_desugar(args: &[Argument]) -> Option<Expression> {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Ident("__pyadd__".into()))),
             args: vec![Argument::positional(a), Argument::positional(b)],
-            optional: false,
-        })
+            optional: false })
     };
     // sep.join(str(x) for x in items) + end, built as a left-folded concat.
     let mut acc: Option<Expression> = None;
@@ -16761,23 +16256,19 @@ fn python_print_file_desugar(args: &[Argument]) -> Option<Expression> {
         let piece = call_builtin1("str", item);
         acc = Some(match acc {
             None => piece,
-            Some(prev) => concat(concat(prev, sep.clone()), piece),
-        });
+            Some(prev) => concat(concat(prev, sep.clone()), piece) });
     }
     let formatted = match acc {
         Some(a) => concat(a, end),
-        None => end,
-    };
+        None => end };
 
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(file.value.clone()),
             field: "write".into(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(formatted)],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn normalize_python_print_args(raw: Vec<Argument>) -> Vec<Argument> {
@@ -16850,8 +16341,7 @@ fn python_print_spread_desugar(args: &[Argument]) -> Option<Vec<Argument>> {
             key: None,
             value: a.value.clone(),
             spread: a.spread,
-            by_ref: false,
-        })
+            by_ref: false })
         .collect();
     let flattened = Expression::new(ExprKind::Array(elements));
 
@@ -16865,9 +16355,7 @@ fn python_print_spread_desugar(args: &[Argument]) -> Option<Vec<Argument>> {
             target: Expression::new(ExprKind::Ident("__print_item".into())),
             iter: flattened,
             conditions: Vec::new(),
-            is_async: false,
-        }],
-    });
+            is_async: false }] });
 
     // `<list>.join(sep)` — the swapped `array.join(delim)` convention the
     // compiler expects (the source-level `delim.join(array)` swap does not run
@@ -16876,11 +16364,9 @@ fn python_print_spread_desugar(args: &[Argument]) -> Option<Vec<Argument>> {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(stringified),
             field: "join".into(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(sep)],
-        optional: false,
-    });
+        optional: false });
 
     // Replacement args: one joined positional (no spread) plus the preserved
     // `end` keyword. `normalize_python_print_args` reshapes this to the
@@ -16892,8 +16378,7 @@ fn python_print_spread_desugar(args: &[Argument]) -> Option<Vec<Argument>> {
             value: end.value.clone(),
             name: Some("end".into()),
             by_ref: false,
-            spread: false,
-        });
+            spread: false });
     }
     Some(print_args)
 }
@@ -16917,27 +16402,23 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                 let val = walk_expression(ci.pop().unwrap())?;
                 let val = match val.kind {
                     ExprKind::Spread(inner) => *inner,
-                    _ => val,
-                };
+                    _ => val };
                 args.push(Argument {
                     value: val,
                     name: None,
                     by_ref: false,
-                    spread: true,
-                });
+                    spread: true });
             } else if is_star {
                 // *args — positional spread expansion.
                 let val = walk_expression(ci.pop().unwrap())?;
                 let val = match val.kind {
                     ExprKind::Spread(inner) => *inner,
-                    _ => val,
-                };
+                    _ => val };
                 args.push(Argument {
                     value: val,
                     name: None,
                     by_ref: false,
-                    spread: true,
-                });
+                    spread: true });
             } else if ci.len() >= 2 && ci[0].as_rule() == Rule::identifier {
                 // Check if it's keyword=value: identifier followed by expression
                 // If there's an "=" between them
@@ -16947,8 +16428,7 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                     value: val,
                     name: Some(name),
                     by_ref: false,
-                    spread: false,
-                });
+                    spread: false });
             } else if ci[0].as_rule() == Rule::comp_for_arg {
                 // Generator expression as argument
                 let val = walk_expression(ci.remove(0))?;
@@ -16962,8 +16442,7 @@ fn walk_call_args(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                         value: *inner,
                         name: None,
                         by_ref: false,
-                        spread: true,
-                    });
+                        spread: true });
                 } else {
                     args.push(Argument::positional(val));
                 }
@@ -17001,8 +16480,7 @@ fn python_index_operand(object: &Expression, index: Expression) -> Expression {
             Argument::positional(desugar_member_reads(object.clone())),
             Argument::positional(index),
         ],
-        optional: false,
-    })
+        optional: false })
 }
 
 /// Is this subscript index a slice rather than a scalar key?
@@ -17024,19 +16502,15 @@ fn desugar_slice_bounds(index: Expression) -> Expression {
         ExprKind::Slice { lower, upper, step } => Expression::new(ExprKind::Slice {
             lower: desugar_opt(lower),
             upper: desugar_opt(upper),
-            step: desugar_opt(step),
-        }),
+            step: desugar_opt(step) }),
         ExprKind::Range {
             start,
             end,
-            inclusive,
-        } => Expression::new(ExprKind::Range {
+            inclusive } => Expression::new(ExprKind::Range {
             start: Box::new(desugar_member_reads(*start)),
             end: Box::new(desugar_member_reads(*end)),
-            inclusive,
-        }),
-        _ => index,
-    }
+            inclusive }),
+        _ => index }
 }
 
 fn walk_subscript_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -17050,16 +16524,13 @@ fn walk_subscript_expr(pair: Pair<Rule>) -> Result<ExprKind, String> {
         let mut parts = text.split(':').map(str::trim);
         let lower = match parts.next() {
             Some("") | None => None,
-            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice lower bound")?)),
-        };
+            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice lower bound")?)) };
         let upper = match parts.next() {
             Some("") | None => None,
-            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice upper bound")?)),
-        };
+            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice upper bound")?)) };
         let step = match parts.next() {
             Some("") | None => None,
-            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice step")?)),
-        };
+            Some(_) => Some(Box::new(exprs.next().ok_or("Missing slice step")?)) };
         return Ok(ExprKind::Slice { lower, upper, step });
     }
 
@@ -17096,8 +16567,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
         Rule::list_inner => walk_list_inner(inner.remove(0)),
         Rule::dict_or_set_inner => walk_dict_or_set(inner.remove(0)),
-        _ => walk_expr_kind(inner.remove(0)),
-    }
+        _ => walk_expr_kind(inner.remove(0)) }
 }
 
 fn walk_list_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -17118,8 +16588,7 @@ fn walk_list_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
         return Ok(ExprKind::Comprehension {
             kind: ComprehensionKind::List,
             element: Box::new(element),
-            generators,
-        });
+            generators });
     }
 
     // Normal list. `*x` elements walk to `ExprKind::Spread(x)`; unwrap them and
@@ -17134,15 +16603,13 @@ fn walk_list_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     key: None,
                     value: *inner,
                     spread: true,
-                    by_ref: false,
-                })
+                    by_ref: false })
             } else {
                 Ok(ArrayElement {
                     key: None,
                     value: val,
                     spread: false,
-                    by_ref: false,
-                })
+                    by_ref: false })
             }
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -17175,8 +16642,7 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
             return Ok(ExprKind::Comprehension {
                 kind: ComprehensionKind::Set,
                 element: Box::new(element),
-                generators,
-            });
+                generators });
         }
     }
 
@@ -17197,14 +16663,12 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     key: None,
                     spread: false,
                     by_ref: false,
-                    value: key,
-                },
+                    value: key },
                 ArrayElement {
                     key: None,
                     spread: false,
                     by_ref: false,
-                    value: val,
-                },
+                    value: val },
             ]));
             let generators = comp_inner
                 .into_iter()
@@ -17214,8 +16678,7 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
             return Ok(ExprKind::Comprehension {
                 kind: ComprehensionKind::Dict,
                 element: Box::new(element),
-                generators,
-            });
+                generators });
         }
     }
 
@@ -17305,9 +16768,7 @@ fn destructure_comp_target(target: &Expression, tmp: &str) -> Vec<Statement> {
                     value: Expression::new(ExprKind::Index {
                         object: Box::new(Expression::ident(tmp)),
                         index: Box::new(Expression::int(i as i64)),
-                        null_safe: false,
-                    }),
-                }));
+                        null_safe: false }), by_ref: false }));
             }
         }
     }
@@ -17333,8 +16794,7 @@ fn lower_generator_expression(element: Expression, generators: Vec<Comprehension
                 cond,
                 then_body: stmts,
                 elifs: Vec::new(),
-                else_body: None,
-            })];
+                else_body: None })];
         }
         let (var, body) = match &clause.target.kind {
             ExprKind::Ident(name) => (name.clone(), stmts),
@@ -17352,8 +16812,7 @@ fn lower_generator_expression(element: Expression, generators: Vec<Comprehension
             body,
             of: true,
             else_body: None,
-            is_async: clause.is_async,
-        })];
+            is_async: clause.is_async })];
     }
 
     let gen_fn = Expression::new(ExprKind::FunctionExpr(Box::new(Statement::new(
@@ -17366,14 +16825,12 @@ fn lower_generator_expression(element: Expression, generators: Vec<Comprehension
             handles: Vec::new(),
             is_async: false,
             is_generator: true,
-            is_sub: false,
-        },
+            is_sub: false },
     ))));
     ExprKind::Call {
         callee: Box::new(gen_fn),
         args: Vec::new(),
-        optional: false,
-    }
+        optional: false }
 }
 
 /// Lower `range(stop)` / `range(start, stop)` / `range(start, stop, step)` into
@@ -17433,16 +16890,14 @@ fn walk_comp_clause(pair: Pair<Rule>) -> Result<ComprehensionGen, String> {
             key: None,
             spread: true,
             by_ref: false,
-            value: iter,
-        }]));
+            value: iter }]));
     }
 
     Ok(ComprehensionGen {
         target,
         iter,
         conditions,
-        is_async,
-    })
+        is_async })
 }
 
 // ── Lambda ──────────────────────────────────────────────────────────────────
@@ -17465,8 +16920,7 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 Rule::identifier => name = c.as_str().to_string(),
                                 _ if c.as_str() == "**" => is_kwargs = true,
                                 _ if c.as_str() == "*" => is_rest = true,
-                                _ => default = Some(walk_expression(c)?),
-                            }
+                                _ => default = Some(walk_expression(c)?) }
                         }
                         if !name.is_empty() {
                             params.push(Param {
@@ -17477,8 +16931,7 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 pass_by: PassBy::Value,
                                 is_rest,
                                 is_kwargs,
-                                is_nullable: false,
-                            });
+                                is_nullable: false });
                         }
                     }
                 }
@@ -17494,8 +16947,7 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<ExprKind, String> {
         params,
         body: LambdaBody::Expr(Box::new(body_expr.unwrap_or(Expression::null()))),
         is_async: false,
-        captures: Vec::new(),
-    })
+        captures: Vec::new() })
 }
 
 // ── Yield ───────────────────────────────────────────────────────────────────
@@ -17602,12 +17054,10 @@ fn expand_format_field(
 ) -> Option<Expression> {
     let (head, spec) = match body.find(':') {
         Some(p) => (&body[..p], Some(&body[p + 1..])),
-        None => (body, None),
-    };
+        None => (body, None) };
     let (name_part, conv) = match head.find('!') {
         Some(p) => (&head[..p], Some(&head[p + 1..])),
-        None => (head, None),
-    };
+        None => (head, None) };
 
     let base = resolve_format_value(name_part, positionals, args, auto_idx)?;
 
@@ -17616,8 +17066,7 @@ fn expand_format_field(
         None => base,
         Some("r") | Some("a") => call_builtin1("repr", base),
         Some("s") => call_builtin1("str", base),
-        Some(_) => return None,
-    };
+        Some(_) => return None };
 
     if let Some(spec) = spec {
         if !spec.is_empty() {
@@ -17633,8 +17082,7 @@ fn expand_format_field(
                     Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(fmt)))),
                     Argument::positional(converted),
                 ],
-                optional: false,
-            }));
+                optional: false }));
         }
     }
 
@@ -17650,8 +17098,7 @@ fn call_builtin1(name: &str, arg: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
         args: vec![Argument::positional(arg)],
-        optional: false,
-    })
+        optional: false })
 }
 
 /// Resolve a field name (`""` auto, `"0"` positional, `"name"` keyword) plus
@@ -17690,8 +17137,7 @@ fn resolve_format_value(
             expr = Expression::new(ExprKind::Index {
                 object: Box::new(expr),
                 index: Box::new(index_expr),
-                null_safe: false,
-            });
+                null_safe: false });
             rest = &stripped[end + 1..];
         } else if let Some(stripped) = rest.strip_prefix('.') {
             let end = stripped.find(['[', '.']).unwrap_or(stripped.len());
@@ -17702,8 +17148,7 @@ fn resolve_format_value(
             expr = Expression::new(ExprKind::Member {
                 object: Box::new(expr),
                 field: attr.to_string(),
-                null_safe: false,
-            });
+                null_safe: false });
             rest = &stripped[end..];
         } else {
             return None;
@@ -17899,8 +17344,7 @@ fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
             args: vec![Argument::positional(a), Argument::positional(b)],
-            optional: false,
-        })
+            optional: false })
     };
 
     // A native numeric base (scientific/percent/grouping) right-aligns by
@@ -17919,11 +17363,9 @@ fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(sci),
                         field: "upper".into(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: vec![],
-                    optional: false,
-                })
+                    optional: false })
             } else {
                 sci
             }
@@ -17938,8 +17380,7 @@ fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression
             Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Ident("__py_fmt_group".into()))),
                 args: vec![Argument::positional(s)],
-                optional: false,
-            })
+                optional: false })
         }
         None | Some('s') if grouping.is_none() && precision.is_none() && sign.is_none() => {
             call_builtin1("str", value)
@@ -17957,16 +17398,14 @@ fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(base),
                 field: method.into(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             // Fill is ALWAYS explicit: rjust/ljust (str_pad_*) drop content on a
             // defaulted fill.
             args: vec![
                 Argument::positional(int_lit(w)),
                 Argument::positional(str_lit(&fill.to_string())),
             ],
-            optional: false,
-        })
+            optional: false })
     };
     match (align, width) {
         (Some(a), Some(w)) => {
@@ -17974,8 +17413,7 @@ fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression
                 '<' => "ljust",
                 '>' => "rjust",
                 '^' => "center",
-                _ => return None,
-            };
+                _ => return None };
             Some(apply(base, method, w, fill))
         }
         (Some(_), None) => Some(base), // align without width is a no-op
@@ -17984,8 +17422,7 @@ fn expand_python_format_spec(value: Expression, spec: &str) -> Option<Expression
             Some(apply(base, "rjust", w, if zero { '0' } else { ' ' }))
         }
         (None, Some(_)) => None, // string base + bare width → printf (runtime default align)
-        (None, None) => Some(base),
-    }
+        (None, None) => Some(base) }
 }
 
 fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -18069,8 +17506,7 @@ fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 let converted = match conv {
                     Some('r') | Some('a') => call_builtin1("repr", base),
                     Some('s') => call_builtin1("str", base),
-                    _ => base,
-                };
+                    _ => base };
 
                 // A supported spec formats via `fmt % value` (`__pymod__`); an
                 // unsupported one (`^` centre, `%`, grouping) falls back to
@@ -18091,15 +17527,13 @@ fn walk_fstring(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                     ))),
                                     Argument::positional(converted),
                                 ],
-                                optional: false,
-                            })
+                                optional: false })
                         } else {
                             call_builtin1("str", converted)
                         }
                     }
                     None if conv.is_none() => call_builtin1("str", converted),
-                    None => converted,
-                };
+                    None => converted };
                 parts.push(InterpolPart::Expr(field));
             }
             _ => {}
@@ -18123,8 +17557,7 @@ fn expr_to_array_pattern_elem(e: &Expression) -> ArrayPatternElem {
         }
         ExprKind::Spread(inner) => match &inner.kind {
             ExprKind::Ident(name) => ArrayPatternElem::Rest(name.clone()),
-            _ => ArrayPatternElem::Hole,
-        },
+            _ => ArrayPatternElem::Hole },
         ExprKind::Tuple(elems) => {
             let nested = elems.iter().map(expr_to_array_pattern_elem).collect();
             ArrayPatternElem::Pattern(BindingPattern::Array(nested), None)
@@ -18136,8 +17569,7 @@ fn expr_to_array_pattern_elem(e: &Expression) -> ArrayPatternElem {
                 .collect();
             ArrayPatternElem::Pattern(BindingPattern::Array(nested), None)
         }
-        _ => ArrayPatternElem::Hole,
-    }
+        _ => ArrayPatternElem::Hole }
 }
 
 fn walk_expr_list(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -18206,8 +17638,7 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: sl as u32,
         start_col: sc as u32,
         end_line: el as u32,
-        end_col: ec as u32,
-    }
+        end_col: ec as u32 }
 }
 
 fn next_meaningful<'a>(
@@ -18221,8 +17652,7 @@ fn next_meaningful<'a>(
             | Rule::in_kw
             | Rule::as_kw
             | Rule::async_kw => continue,
-            _ => return Ok(p),
-        }
+            _ => return Ok(p) }
     }
     Err("No more meaningful pairs".into())
 }
@@ -18344,8 +17774,7 @@ fn call_ident(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Ident(name.into()))),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
 }
 
 /// Construct a `bytes` value from an int-array expression as a real
@@ -18430,8 +17859,7 @@ fn try_rewrite_python_numeric_method(
                 None
             }
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// bytes methods that return `bytes` (re-encoded after the string op).
@@ -18480,10 +17908,8 @@ fn expr_is_python_bytes(e: &Expression) -> bool {
                     || (BYTES_METHODS_RETURN_BYTES.contains(&field.as_str())
                         && expr_is_python_bytes(object))
             }
-            _ => false,
-        },
-        _ => false,
-    }
+            _ => false },
+        _ => false }
 }
 
 fn py_static_bytes_has_non_ascii(e: &Expression) -> bool {
@@ -18512,8 +17938,7 @@ fn decode_bytes_arg(a: &Argument) -> Argument {
             value: call_ident("__vybe_bytes_decode", vec![a.value.clone()]),
             name: a.name.clone(),
             by_ref: a.by_ref,
-            spread: a.spread,
-        }
+            spread: a.spread }
     } else {
         a.clone()
     }
@@ -18550,11 +17975,9 @@ fn try_rewrite_bytes_method(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(decoded_recv),
             field: field.into(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: decoded_args,
-        optional: false,
-    });
+        optional: false });
     if returns_bytes {
         // re-encode the resulting str back to bytes
         Some(wrap_bytes(call_ident("__vybe_str_encode", vec![str_call])))
@@ -18676,8 +18099,7 @@ fn decode_python_escape_str(s: &str) -> String {
                 let n = match chars[i + 1] {
                     'x' => 2,
                     'u' => 4,
-                    _ => 8,
-                };
+                    _ => 8 };
                 match hex_at(i + 2, n).and_then(char::from_u32) {
                     Some(c) => {
                         out.push(c);
@@ -18787,8 +18209,7 @@ fn hex_value(b: u8) -> Option<u8> {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn parse_comparison_op(s: &str) -> BinOp {
@@ -18803,8 +18224,7 @@ fn parse_comparison_op(s: &str) -> BinOp {
         "is" => BinOp::Is,
         _ if s.contains("not") && s.contains("in") => BinOp::NotIn,
         _ if s.contains("is") && s.contains("not") => BinOp::IsNot,
-        _ => BinOp::Eq,
-    }
+        _ => BinOp::Eq }
 }
 
 fn parse_binop(s: &str) -> BinOp {
@@ -18822,8 +18242,7 @@ fn parse_binop(s: &str) -> BinOp {
         "|" => BinOp::BitOr,
         "^" => BinOp::BitXor,
         "&" => BinOp::BitAnd,
-        _ => BinOp::Add,
-    }
+        _ => BinOp::Add }
 }
 
 fn parse_literal_to_expr(text: &str) -> Expression {

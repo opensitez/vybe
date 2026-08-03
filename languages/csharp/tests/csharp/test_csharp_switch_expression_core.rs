@@ -262,7 +262,7 @@ csharp_cases! {
     };
 
     switch_expr_multiple_commas_trailing_ok => {
-        r#"var n=1; Console.WriteLine(n switch{1=>"one",2=>"two",_=>"many",});"#,
+        r#"var n=1; Console.WriteLine(n switch{1=>"one",2=>"two",_=>"many" });"#,
         ["one"]
     };
 

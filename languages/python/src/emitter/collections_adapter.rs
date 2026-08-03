@@ -5,7 +5,7 @@ use vybe_runtime::Chunk;
 use vybe_compiler::primitives::{collections, dict, ops, strings, tuples};
 
 fn emit_throw_python_exception(chunk: &mut Chunk, exc_name: &str, message: &str, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     core_wasm::dup(chunk, line);
     chunk.emit_string_const(message, line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exc_name, line);
@@ -14,7 +14,7 @@ fn emit_throw_python_exception(chunk: &mut Chunk, exc_name: &str, message: &str,
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_string_const("", line);
     let stack_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("stack")));
-    chunk.emit_op_u16(Op::STRUCT_SET, stack_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, stack_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
@@ -524,7 +524,7 @@ pub fn emit_rotate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, len, line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op(Op::RETURN, line);
     chunks[current].emit_end(line);
 
@@ -563,7 +563,7 @@ pub fn emit_rotate(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     call_import(chunks, current, "wasm:js-number", "fromF64", 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, removed, line);
     collections::emit_insert_range(chunks, current, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `OrderedDict.move_to_end(key, last=True)` — reorder the key within the dict's
@@ -576,7 +576,7 @@ pub fn emit_move_to_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let keys_k =
         chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_k, line);
     let keys = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, keys, line);
     // remove the key from its current position
@@ -591,7 +591,7 @@ pub fn emit_move_to_end(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `dict.popitem(last=True)` — remove and return the last (or first, when
@@ -666,7 +666,7 @@ pub fn emit_popitem(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let keys_k =
         chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__keys")));
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_k, line);
     let kk = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, kk, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, kk, line);
@@ -754,7 +754,7 @@ pub fn emit_counter_count(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, d, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_k, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -802,7 +802,7 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     if argc >= 3 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_else(line);
     chunks[current].emit_end(line);
@@ -824,10 +824,10 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     ));
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, closed_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, closed_key, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -840,7 +840,7 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
 
     if argc >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-        chunks[current].emit_op_u16(Op::STRUCT_GET, started_key, line);
+        chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, started_key, line);
         ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
@@ -848,7 +848,7 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_op(Op::I32_AND, line);
         chunks[current].emit_if(line);
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         chunks[current].emit_dup(line);
         chunks[current].emit_string_const(
             "can't send non-None value to a just-started generator",
@@ -867,21 +867,21 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     if argc >= 2 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_arg, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     vybe_compiler::primitives::generators::emit_resume(&mut chunks[current], line);
     let result_slot = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_op_u16(Op::STRUCT_SET, started_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, started_key, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:value", "isGeneratorDone", 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -893,7 +893,7 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     let value_key =
         chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("value")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
     chunks[current].emit_op(Op::DROP, line);
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_else(line);
@@ -912,7 +912,7 @@ pub fn emit_gen_throw(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
     } else {
         // throw() with no arg → GeneratorExit-ish; use a generic exception
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -936,10 +936,10 @@ pub fn emit_gen_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let closed_key = chunks[current].add_constant(vybe_runtime::Value::String(
         std::sync::Arc::from("__py_gen_closed"),
     ));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, closed_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, closed_key, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_string_const("", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -949,7 +949,7 @@ pub fn emit_gen_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     );
     vybe_compiler::primitives::generators::emit_resume_throw(&mut chunks[current], line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// Python `next(it[, default])`. For a generator, resume it through the shared
@@ -974,7 +974,7 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     ));
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_op_u16(Op::STRUCT_SET, started_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, started_key, line);
     chunks[current].emit_op(Op::DROP, line);
     let has_more = chunks[current].local_count;
     chunks[current].alloc_scratch(1);
@@ -992,7 +992,7 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line); // exhausted → default
     } else {
         // exhausted, no default → raise StopIteration
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -1004,10 +1004,10 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
         let value_key = chunks[current]
             .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("value")));
-        chunks[current].emit_op_u16(Op::STRUCT_SET, value_key, line);
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
         chunks[current].emit_op(Op::DROP, line);
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
-        chunks[current].emit_op(Op::NULL, line); // unreachable (throw diverges)
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // unreachable (throw diverges)
     }
     chunks[current].emit_end(line);
 
@@ -1021,7 +1021,7 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if(line);
         emit_throw_python_exception(&mut chunks[current], "StopIteration", "", line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_end(line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
@@ -1141,7 +1141,7 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     )));
     let contains_method = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, contains_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, contains_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, contains_method, line);
     chunk.emit_op_u16(Op::LOCAL_GET, contains_method, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -1218,7 +1218,7 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
         "object has no attribute",
         line,
     );
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
@@ -1308,7 +1308,7 @@ pub fn emit_getitem(chunks: &mut [Chunk], current: usize, line: u32) {
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_throw_python_exception(&mut chunks[current], "IndexError", "list index out of range", line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
@@ -1327,7 +1327,7 @@ pub fn emit_getitem(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
     chunks[current].emit_else(line);
     emit_throw_python_exception(&mut chunks[current], "KeyError", "", line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
@@ -1375,7 +1375,7 @@ pub fn emit_index(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     // `emit_exception_new_finalize` wants `[obj, obj, msg]` — STRUCT_NEW + dup
     // + message. Without the object it stamps the message string instead, which
     // yields an unmatchable exception with an empty message.
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_string_const("value not in sequence", line);
     vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -1403,7 +1403,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -1507,7 +1507,7 @@ pub fn emit_zip_strict(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunks[current].emit_op_u16(Op::LOCAL_GET, first_len, line);
         chunks[current].emit_op(Op::I32_NE, line);
         chunks[current].emit_if(line);
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("zip() argument lengths differ", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -1680,7 +1680,7 @@ pub fn emit_py_minmax(chunks: &mut [Chunk], current: usize, argc: u8, is_max: bo
     if let Some(default) = default {
         chunks[current].emit_op_u16(Op::LOCAL_GET, default, line);
     } else {
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("empty sequence", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -1689,21 +1689,21 @@ pub fn emit_py_minmax(chunks: &mut [Chunk], current: usize, argc: u8, is_max: bo
             line,
         );
         chunks[current].emit_dup(line);
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         chunks[current].emit_dup(line);
         chunks[current].emit_string_const("ValueError", line);
         let name_key = chunks[current].add_constant(vybe_runtime::Value::String(
             std::sync::Arc::from("__name__"),
         ));
-        chunks[current].emit_op_u16(Op::STRUCT_SET, name_key, line);
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
         chunks[current].emit_op(Op::DROP, line);
         let class_key = chunks[current].add_constant(vybe_runtime::Value::String(
             std::sync::Arc::from("__class__"),
         ));
-        chunks[current].emit_op_u16(Op::STRUCT_SET, class_key, line);
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, class_key, line);
         chunks[current].emit_op(Op::DROP, line);
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
@@ -1800,7 +1800,7 @@ pub fn emit_frozenset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     c.emit_dup(line);
     c.emit_string_const("Set", line);
     let tk = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__type")));
-    c.emit_op_u16(Op::STRUCT_SET, tk, line);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, tk, line);
     c.emit_op(Op::DROP, line);
     // Stamp `__frozenset = true` so repr renders `frozenset({...})`.
     c.emit_dup(line);
@@ -1808,7 +1808,7 @@ pub fn emit_frozenset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let k = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
         "__frozenset",
     )));
-    c.emit_op_u16(Op::STRUCT_SET, k, line);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     c.emit_op(Op::DROP, line);
 }
 
@@ -1829,7 +1829,7 @@ pub fn emit_add(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
     call_import(chunks, current, "ecma:set", "add", 2, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn emit_remove_impl(chunks: &mut [Chunk], current: usize, raises: bool, line: u32) {
@@ -1859,7 +1859,7 @@ fn emit_remove_impl(chunks: &mut [Chunk], current: usize, raises: bool, line: u3
         vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_op(Op::I32_EQZ, line); // 1 if NOT removed
         chunks[current].emit_if(line);
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -1873,7 +1873,7 @@ fn emit_remove_impl(chunks: &mut [Chunk], current: usize, raises: bool, line: u3
         chunks[current].emit_op(Op::DROP, line);
     }
     chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1899,7 +1899,7 @@ pub fn emit_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
 
@@ -1951,11 +1951,11 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_is_map(chunks, current, recv, line);
     chunks[current].emit_if_value(line);
     emit_map_merge_into(chunks, current, recv, src, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, keys_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keys_key, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
 
@@ -1972,7 +1972,7 @@ pub fn emit_update(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line); // close the is-Map outer if
     chunks[current].emit_end(line); // close the is-digest outer if
 }
@@ -1983,7 +1983,7 @@ fn emit_set_update_call(chunks: &mut [Chunk], current: usize, func: &str, line: 
     chunks[current].emit_op_u16(Op::LOCAL_GET, base + 1, line);
     call_import(chunks, current, "ecma:set", func, 2, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_intersection_update(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2046,7 +2046,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         core_wasm::i32_const(&mut chunks[current], line, 0);
         chunks[current].emit_op(Op::I32_EQ, line);
         chunks[current].emit_if(line);
-        chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunks[current].emit_struct_new(0, 0, line);
         core_wasm::dup(&mut chunks[current], line);
         chunks[current].emit_string_const("pop from an empty set", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(
@@ -2110,7 +2110,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         if argc >= 3 {
             chunks[current].emit_op_u16(Op::LOCAL_GET, base + 2, line);
         } else {
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
         chunks[current].emit_else(line);
         // present → delete the entry (Map-aware, like PHP's array adapter) and
@@ -2151,7 +2151,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__len__")));
     let len_method = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, len_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, len_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, len_method, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
@@ -2206,7 +2206,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // has `.size` (Set/Map) → use it, else Object.keys(recv).length
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, size_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, size_key, line);
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);

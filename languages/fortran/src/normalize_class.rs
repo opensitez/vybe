@@ -6,13 +6,11 @@
 //! consume Fortran derived types.
 
 use vybe_ast::{
-    Argument, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Span, StmtKind,
-};
+    Argument, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Span, StmtKind };
 use vybe_ast::class_normalize::{
     NormalMembers,
     Access, BaseCall, NormalClass, NormalConstructor, NormalField, SpecialMethod,
-    from_method_stmt,
-};
+    from_method_stmt };
 
 fn synthesize_fixed_array_init(bounds: &[Expression]) -> Option<Expression> {
     let size = bounds.first()?.clone();
@@ -22,8 +20,7 @@ fn synthesize_fixed_array_init(bounds: &[Expression]) -> Option<Expression> {
             Argument::positional(size),
             Argument::positional(Expression::new(ExprKind::Lit(Literal::Int(0)))),
         ],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 pub fn normalize_class(
@@ -64,8 +61,7 @@ pub fn normalize_class(
                     }),
                     array_bounds: array_bounds.clone(),
                     access: Access::Public,
-                    readonly: field_modifiers.is_readonly,
-                };
+                    readonly: field_modifiers.is_readonly };
                 m.push_field(field_modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -91,8 +87,7 @@ pub fn normalize_class(
                         } else {
                             BaseCall::Auto
                         },
-                        named_name: None,
-                    });
+                        named_name: None });
                     continue;
                 }
 
@@ -105,8 +100,7 @@ pub fn normalize_class(
                         m.special_methods.push(SpecialMethod {
                             kind,
                             canonical_name: canonical_name.clone(),
-                            source_name: source_name.to_string(),
-                        });
+                            source_name: source_name.to_string() });
                     }
                     m.push_method(method_modifiers.is_static, method);
                 }

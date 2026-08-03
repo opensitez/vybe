@@ -19,7 +19,7 @@ fn array_destructure_skip_elements() {
     assert_eq!(
         run_js(
             r#"
-const [,, third] = [10, 20, 30];
+const [,  third] = [10, 20, 30];
 console.log(third);
 "#
         ),
@@ -313,7 +313,7 @@ fn array_destructure_iterator_protocol() {
         run_js(
             r#"
 function* gen() { yield 10; yield 20; yield 30; }
-const [x, , z] = gen();
+const [x,  z] = gen();
 console.log(x, z);
 "#
         ),

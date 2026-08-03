@@ -353,8 +353,7 @@ function getTransform(string $name): callable {
         'upper' => strtoupper(...),
         'lower' => strtolower(...),
         'trim'  => trim(...),
-        default => fn($s) => $s,
-    };
+        default => fn($s) => $s };
 }
 echo getTransform('upper')('hello') . "\n";
 echo getTransform('lower')('WORLD') . "\n";

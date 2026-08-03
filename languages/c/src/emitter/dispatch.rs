@@ -54,10 +54,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
             let idx = chunks[current].add_import("wasm:js-string", "fromCharCode");
             chunks[current].emit_call(idx, 1, line);
         }
-        "c.strlen" => strings::emit_length(&mut chunks[current], line),
+        // NUL-terminated, not the JS string's length — see
+        // `strings::emit_cstr_length`. `wasm:js-string.length` counted past a
+        // `'\0'` written into a buffer, so `strlen` disagreed with `cc`.
+        "c.strlen" => strings::emit_cstr_length(chunks, current, line),
         "c.strupr" => strings::emit_to_upper(&mut chunks[current], line),
         "c.strlwr" => strings::emit_to_lower(&mut chunks[current], line),
-        "c.strcmp" | "c.strncmp" | "c.memcmp" => {
+        // `strcmp` compares up to the NUL on BOTH sides; `memcmp` deliberately
+        // does not — it is byte-wise over a given length and a NUL is ordinary
+        // content. Sharing one binding made `strcmp` compare whole JS strings,
+        // so a truncated buffer still compared as its untruncated self.
+        "c.strcmp" | "c.strncmp" => {
+            let rhs = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_SET, rhs, line);
+            strings::emit_cstr_truncate(chunks, current, line);
+            chunks[current].emit_op_u16(vybe_runtime::opcode::Op::LOCAL_GET, rhs, line);
+            strings::emit_cstr_truncate(chunks, current, line);
+            let idx = chunks[current].add_import("wasm:js-string", "compare");
+            chunks[current].emit_call(idx, 2, line);
+        }
+        "c.memcmp" => {
             let idx = chunks[current].add_import("wasm:js-string", "compare");
             chunks[current].emit_call(idx, 2, line);
         }
@@ -66,7 +82,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
             chunks[current].emit_call(idx, 1, line);
         }
         "c.qsort" => collections::emit_sort(chunks, current, line),
-        _ => return false,
-    }
+        _ => return false }
     true
 }

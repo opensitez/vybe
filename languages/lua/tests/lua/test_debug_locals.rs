@@ -34,5 +34,4 @@ lua_print! {
     debug_setlocal_in_coroutine => {
         "local co = coroutine.create(function(x) local y = 10; coroutine.yield() end)\ncoroutine.resume(co, 42)\ndebug.setlocal(co, 1, 1, 99)\nlocal _, val = debug.getlocal(co, 1, 1)\nprint(val)\n",
         "42"
-    },
-}
+    } }

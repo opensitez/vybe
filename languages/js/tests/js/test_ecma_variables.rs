@@ -116,7 +116,7 @@ fn destructure_array_skip() {
     let out = run_js(
         r#"
 const arr = [1, 2, 3, 4];
-const [a, , c] = arr;
+const [a,  c] = arr;
 console.log(a);
 console.log(c);
 "#,

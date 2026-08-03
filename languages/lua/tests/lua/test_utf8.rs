@@ -72,5 +72,4 @@ lua_print! {
     utf8_codepoint_invalid_range_raises_error => {
         "local ok, err = pcall(function() utf8.codepoint(\"abc\", 5) end)\nprint(ok)\n",
         "false"
-    },
-}
+    } }

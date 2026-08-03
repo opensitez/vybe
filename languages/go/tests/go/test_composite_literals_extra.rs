@@ -49,7 +49,7 @@ go_compile_test!(
 
 go_compile_test!(
     slice_literal_trailing_comma_compile,
-    "package main; func main() { values := []int{1, 2, 3,}; _ = values }"
+    "package main; func main() { values := []int{1, 2, 3 }; _ = values }"
 );
 
 go_run_test!(

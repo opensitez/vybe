@@ -13,8 +13,7 @@ function classify(int $score): string {
         $score >= 80 => "B",
         $score >= 70 => "C",
         $score >= 60 => "D",
-        default => "F",
-    };
+        default => "F" };
 }
 echo classify(95);
 echo classify(82);
@@ -36,8 +35,7 @@ function httpStatus(int $code): string {
         301, 302 => "redirect",
         404 => "not found",
         500, 502, 503 => "server error",
-        default => "unknown",
-    };
+        default => "unknown" };
 }
 echo httpStatus(200);
 echo httpStatus(301);
@@ -59,8 +57,7 @@ try {
     $x = 5;
     $result = match($x) {
         1 => "one",
-        2 => "two",
-    };
+        2 => "two" };
 } catch (\UnhandledMatchError $e) {
     echo "unhandled";
 }
@@ -79,8 +76,7 @@ $val = "0";
 $result = match($val) {
     0   => "int zero",
     "0" => "string zero",
-    default => "other",
-};
+    default => "other" };
 echo $result;
 "#
         ),
@@ -97,8 +93,7 @@ function getConfig(string $env): array {
     return match($env) {
         "dev"  => ["debug" => true,  "log" => "verbose"],
         "prod" => ["debug" => false, "log" => "error"],
-        default => ["debug" => false, "log" => "warning"],
-    };
+        default => ["debug" => false, "log" => "warning"] };
 }
 $cfg = getConfig("dev");
 echo $cfg["log"];
@@ -640,8 +635,7 @@ enum Currency: string implements HasSymbol {
         return match($this) {
             self::USD => "$",
             self::EUR => "€",
-            self::GBP => "£",
-        };
+            self::GBP => "£" };
     }
 }
 echo Currency::USD->symbol();
@@ -691,8 +685,7 @@ enum Suit: string {
 function color(Suit $s): string {
     return match($s) {
         Suit::Hearts, Suit::Diamonds => "red",
-        Suit::Clubs, Suit::Spades   => "black",
-    };
+        Suit::Clubs, Suit::Spades   => "black" };
 }
 echo color(Suit::Hearts);
 echo color(Suit::Spades);
@@ -757,8 +750,7 @@ function describe(Season $s): string {
         Season::Spring => "flowers",
         Season::Summer => "sun",
         Season::Autumn => "leaves",
-        Season::Winter => "snow",
-    };
+        Season::Winter => "snow" };
 }
 echo describe(Season::Winter);
 "#,
@@ -1070,8 +1062,7 @@ function display(mixed $value): string {
         "string"  => "str:$value",
         "array"   => "arr:" . count($value),
         "NULL"    => "null",
-        default   => "other",
-    };
+        default   => "other" };
 }
 echo display(42);
 echo display("hello");

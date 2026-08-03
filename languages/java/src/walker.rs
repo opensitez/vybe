@@ -39,8 +39,7 @@ struct JavaReflectionClassMeta {
     nested_classes: Vec<String>,
     modifiers: i64,
     is_interface: bool,
-    is_enum: bool,
-}
+    is_enum: bool }
 
 #[derive(Clone, Debug, Default)]
 struct JavaReflectionCallableMeta {
@@ -48,15 +47,13 @@ struct JavaReflectionCallableMeta {
     param_count: usize,
     param_types: Vec<String>,
     return_type: Option<String>,
-    modifiers: i64,
-}
+    modifiers: i64 }
 
 #[derive(Clone, Debug, Default)]
 struct JavaReflectionFieldMeta {
     name: String,
     type_name: Option<String>,
-    modifiers: i64,
-}
+    modifiers: i64 }
 
 const JAVA_MOD_PUBLIC: i64 = 0x0001;
 const JAVA_MOD_PRIVATE: i64 = 0x0002;
@@ -121,11 +118,147 @@ thread_local! {
         RefCell::new(Vec::new());
     // Locals declared as javax.xml.namespace.QName — common XML name runtime.
     static JAVA_QNAME_VARS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    // Every type this compilation unit declares → (superclass simple name,
+    // declared method names). Filled by a PRE-PASS over the parse tree, before
+    // any body is walked, because `JAVA_REFLECTION_CLASSES` is only populated
+    // as each class is walked — a call in the first class to a method of the
+    // last class would otherwise see nothing.
+    static JAVA_DECLARED_METHODS: RefCell<HashMap<String, (Option<String>, HashSet<String>)>> =
+        RefCell::new(HashMap::new());
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Entry point
 // ════════════════════════════════════════════════════════════════════════════
+
+/// Record every type declared in this compilation unit and the method names it
+/// declares, before a single body is walked.
+///
+/// JLS §15.12.1 resolves a method invocation against the *declared type* of the
+/// receiver. The JDK adapter rewrites below match on the method NAME alone
+/// (`length`, `trim`, `add`, …), so without this table a user class declaring
+/// `int length()` has `b.length()` rewritten to the String helper. The table is
+/// consulted by `java_user_class_declares_method`.
+fn java_prescan_declared_methods(pair: Pair<Rule>) {
+    match pair.as_rule() {
+        Rule::class_declaration
+        | Rule::interface_declaration
+        | Rule::record_declaration
+        | Rule::enum_declaration => {
+            let mut name: Option<String> = None;
+            let mut parent: Option<String> = None;
+            let mut methods: HashSet<String> = HashSet::new();
+            for child in pair.clone().into_inner() {
+                match child.as_rule() {
+                    Rule::ident_name if name.is_none() => {
+                        name = Some(child.as_str().to_string());
+                    }
+                    // The sole bare `type_ref` child of a class_declaration is
+                    // its `extends` clause; `implements` goes through
+                    // `type_ref_list`.
+                    Rule::type_ref if parent.is_none() => {
+                        parent =
+                            Some(java_type_simple_name(child.as_str().trim()).to_string());
+                    }
+                    _ => {}
+                }
+            }
+            // Methods declared DIRECTLY by this type — descend through the body
+            // but stop at a nested type, which owns its own methods.
+            fn collect(pair: Pair<Rule>, methods: &mut HashSet<String>) {
+                for child in pair.into_inner() {
+                    match child.as_rule() {
+                        Rule::method_declaration | Rule::default_method_declaration => {
+                            if let Some(ident) = child
+                                .into_inner()
+                                .find(|p| p.as_rule() == Rule::ident_name)
+                            {
+                                methods.insert(ident.as_str().to_string());
+                            }
+                        }
+                        // A nested type owns its own methods. So does an
+                        // ANONYMOUS class — a bare `class_body` under a `New`,
+                        // with no `class_declaration` to stop at — so every
+                        // construct that can hold statements or an initializer
+                        // expression is a stop too. A method of the enclosing
+                        // type can never be declared inside one of these, and
+                        // descending would attribute
+                        // `new Runnable(){ public void run() … }`'s `run` to
+                        // the enclosing class. (The `method_declaration` arm
+                        // above already reads the name without recursing, so
+                        // method bodies need no entry here.)
+                        Rule::class_declaration
+                        | Rule::interface_declaration
+                        | Rule::record_declaration
+                        | Rule::enum_declaration
+                        | Rule::constructor_declaration
+                        | Rule::static_initializer
+                        | Rule::instance_initializer
+                        | Rule::field_declaration => {}
+                        _ => collect(child, methods) }
+                }
+            }
+            collect(pair.clone(), &mut methods);
+            // Interfaces are deliberately NOT recorded. A variable of interface
+            // type holds either a class instance — whose own declaration is in
+            // this table under its class name — or a LAMBDA, and
+            // `MathOp op = x -> x + 1; op.apply(3)` must stay on the
+            // functional-interface path that rewrites `op.apply(3)` to `op(3)`.
+            if let Some(name) = name {
+                if pair.as_rule() != Rule::interface_declaration {
+                    JAVA_DECLARED_METHODS
+                        .with(|map| map.borrow_mut().insert(name, (parent, methods)));
+                }
+            }
+            // Nested types still need their own entry.
+            for child in pair.into_inner() {
+                java_prescan_declared_methods(child);
+            }
+        }
+        _ => {
+            for child in pair.into_inner() {
+                java_prescan_declared_methods(child);
+            }
+        }
+    }
+}
+
+/// True when `receiver`'s declared type is a class this program declares and
+/// that class (or a user-declared ancestor) declares `method`.
+///
+/// Such a call is that method — never a JDK adapter rewrite that happens to
+/// share the name. A user class extending a JDK type keeps the adapter for the
+/// methods it does NOT declare (`class MyList extends ArrayList` still gets the
+/// list `add`), which is why membership, not merely "is a user type", is the test.
+fn java_user_class_declares_method(receiver: &Expression, method: &str) -> bool {
+    let type_name = match &receiver.kind {
+        ExprKind::Ident(name) => JAVA_LOCAL_TYPES
+            .with(|types| types.borrow().get(name).cloned())
+            .or_else(|| JAVA_STATIC_FIELD_TYPES.with(|t| t.borrow().get(name).cloned())),
+        ExprKind::New { class, .. } => java_expr_dotted_name(class),
+        ExprKind::This => {
+            JAVA_CURRENT_CLASS_STACK.with(|stack| stack.borrow().last().cloned())
+        }
+        _ => None };
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    let mut current = java_type_simple_name(&type_name).to_string();
+    // Bounded by the declared-type count: a cycle in `extends` is not valid
+    // Java, but a malformed source must not hang the walker.
+    for _ in 0..JAVA_DECLARED_METHODS.with(|map| map.borrow().len()) + 1 {
+        let next = JAVA_DECLARED_METHODS.with(|map| {
+            map.borrow().get(&current).map(|(parent, methods)| {
+                (methods.contains(method), parent.clone())
+            })
+        });
+        match next {
+            Some((true, _)) => return true,
+            Some((false, Some(parent))) => current = parent,
+            _ => return false }
+    }
+    false
+}
 
 pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_INTERFACE_NAMES.with(|names| names.borrow_mut().clear());
@@ -171,10 +304,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     JAVA_MATCHER_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_QNAME_VARS.with(|vars| vars.borrow_mut().clear());
     JAVA_INSTANCEOF_BINDINGS.with(|b| b.borrow_mut().clear());
+    JAVA_DECLARED_METHODS.with(|m| m.borrow_mut().clear());
 
     let mut pairs =
         JavaParser::parse(Rule::program, source).map_err(|e| format!("Java parse error: {}", e))?;
     let program = pairs.next().ok_or("empty parse")?;
+    java_prescan_declared_methods(program.clone());
 
     let mut body = Vec::new();
     let mut imports = Vec::new();
@@ -210,10 +345,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     imports.push(Import {
                         kind: ImportKind::Simple {
                             path: member_path.to_string(),
-                            alias: None,
-                        },
-                        span: to_span(&pair),
-                    });
+                            alias: None },
+                        span: to_span(&pair) });
                 } else if let Some(imp) = walk_import(&pair) {
                     imports.push(imp);
                 }
@@ -267,11 +400,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(&class_name)),
                     field: "main".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![],
-                optional: false,
-            },
+                optional: false },
         ))));
     }
 
@@ -279,8 +410,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Java,
         body,
-        imports,
-    })
+        imports })
 }
 
 fn java_body_references_prelude(body: &[Statement], prelude: &[Statement]) -> bool {
@@ -386,7 +516,7 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                     .as_ref()
                     .is_some_and(|expr| java_expr_references_any_name(expr, names))
         }),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             targets
                 .iter()
                 .any(|expr| java_expr_references_any_name(expr, names))
@@ -400,8 +530,7 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             java_expr_references_any_name(cond, names)
                 || then_body
                     .iter()
@@ -421,8 +550,7 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             init.as_ref()
                 .is_some_and(|stmt| java_stmt_references_any_name(stmt, names))
                 || cond
@@ -453,8 +581,7 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             java_expr_references_any_name(cond, names)
                 || body
                     .iter()
@@ -472,8 +599,7 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             java_expr_references_any_name(expr, names)
                 || cases.iter().any(|case| {
                     case.conditions
@@ -520,8 +646,7 @@ fn java_stmt_references_any_name(stmt: &Statement, names: &HashSet<String>) -> b
                     .as_ref()
                     .is_some_and(|expr| java_expr_references_any_name(expr, names))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_class_member_references_any_name(member: &ClassMember, names: &HashSet<String>) -> bool {
@@ -590,8 +715,7 @@ fn java_class_member_references_any_name(member: &ClassMember, names: &HashSet<S
             .is_some_and(|type_name| names.contains(type_name)),
         // An augmentation names the type it draws from — that IS a reference to
         // it, and treating it as none would let a type look unused.
-        ClassMember::Augment(decl) => names.contains(&decl.from),
-    }
+        ClassMember::Augment(decl) => names.contains(&decl.from) }
 }
 
 fn java_case_condition_references_any_name(
@@ -669,22 +793,19 @@ fn java_expr_references_any_name(expr: &Expression, names: &HashSet<String>) -> 
             ObjectProperty::Method { value, .. } | ObjectProperty::Accessor { value, .. } => {
                 java_stmt_references_any_name(value, names)
             }
-            ObjectProperty::Shorthand(name) => names.contains(name),
-        }),
+            ObjectProperty::Shorthand(name) => names.contains(name) }),
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => java_expr_references_any_name(expr, names),
             LambdaBody::Block(body) => body
                 .iter()
-                .any(|stmt| java_stmt_references_any_name(stmt, names)),
-        },
+                .any(|stmt| java_stmt_references_any_name(stmt, names)) },
         ExprKind::NamedTuple { fields, .. } => fields
             .iter()
             .any(|(_, expr)| java_expr_references_any_name(expr, names)),
         ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
             InterpolPart::Expr(expr) => java_expr_references_any_name(expr, names),
             InterpolPart::Formatted(expr, _) => java_expr_references_any_name(expr, names),
-            InterpolPart::Text(_) => false,
-        }),
+            InterpolPart::Text(_) => false }),
         ExprKind::IsType { expr, type_name } => {
             names.contains(type_name) || java_expr_references_any_name(expr, names)
         }
@@ -743,8 +864,7 @@ fn java_expr_references_any_name(expr: &Expression, names: &HashSet<String>) -> 
             java_expr_references_any_name(class, names)
                 || java_expr_references_any_name(member, names)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -757,8 +877,7 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: line as u32,
         start_col: col as u32,
         end_line: line as u32,
-        end_col: col as u32,
-    }
+        end_col: col as u32 }
 }
 
 fn is_kw(rule: Rule) -> bool {
@@ -887,8 +1006,7 @@ fn rewrite_static_import_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             e(cond);
             b(then_body);
             for (elif_cond, elif_body) in elifs {
@@ -903,8 +1021,7 @@ fn rewrite_static_import_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_static_import_stmt(init, singles, on_demand, declared);
             }
@@ -931,8 +1048,7 @@ fn rewrite_static_import_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             e(expr);
             // Case conditions are constant expressions in Java — no
             // static-import call rewriting needed there.
@@ -961,7 +1077,7 @@ fn rewrite_static_import_stmt(
         StmtKind::Throw {
             expr: Some(expr), ..
         } => e(expr),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 e(target);
             }
@@ -998,8 +1114,7 @@ fn rewrite_static_import_expr(
                     ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::Ident(ty))),
                         field,
-                        null_safe: false,
-                    },
+                        null_safe: false },
                     span,
                 );
             }
@@ -1078,18 +1193,15 @@ fn walk_import(pair: &Pair<Rule>) -> Option<Import> {
         return None;
     }
     // `import java.util.*;` — the package is the namespace. Recorded as a
-    // Wildcard over the dotted package path (namespaceplan.md ambient
-    // shape); non-host wildcard paths are inert at link time, so this is
-    // data, not behavior — name resolution stays with [builtins] /
-    // known_types until ambient-from-imports plumbing lands.
+    // Wildcard over the dotted package path (namespaceplan.md ambient shape);
+    // resolution is handled by the shared namespace tree registered by the JVM
+    // platform, not by duplicating package entries in the Java profile.
     if let Some(package) = text.strip_suffix(".*") {
         return Some(Import {
             kind: ImportKind::Wildcard {
                 path: package.to_string(),
-                alias: None,
-            },
-            span,
-        });
+                alias: None },
+            span });
     }
     // `import java.util.HashMap;` — bind the simple name to its
     // fully-qualified dotted path via `Simple{alias}` (the same
@@ -1101,10 +1213,8 @@ fn walk_import(pair: &Pair<Rule>) -> Option<Import> {
     Some(Import {
         kind: ImportKind::Simple {
             path: text.to_string(),
-            alias: Some(name),
-        },
-        span,
-    })
+            alias: Some(name) },
+        span })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1116,8 +1226,7 @@ struct ParsedModifiers {
     visibility: Visibility,
     is_static: bool,
     is_abstract: bool,
-    is_final: bool,
-}
+    is_final: bool }
 
 impl Default for ParsedModifiers {
     fn default() -> Self {
@@ -1125,8 +1234,7 @@ impl Default for ParsedModifiers {
             visibility: Visibility::Public,
             is_static: false,
             is_abstract: false,
-            is_final: false,
-        }
+            is_final: false }
     }
 }
 
@@ -1176,8 +1284,7 @@ fn java_visibility_modifier_bits(visibility: Visibility) -> i64 {
         Visibility::Public => JAVA_MOD_PUBLIC,
         Visibility::Private => JAVA_MOD_PRIVATE,
         Visibility::Protected => JAVA_MOD_PROTECTED,
-        Visibility::Internal => 0,
-    }
+        Visibility::Internal => 0 }
 }
 
 fn java_parsed_modifier_bits(pm: ParsedModifiers) -> i64 {
@@ -1230,8 +1337,7 @@ fn java_modifier_static_predicate(method: &str, value: &Expression) -> Option<Ex
         "isStatic" => JAVA_MOD_STATIC,
         "isFinal" => JAVA_MOD_FINAL,
         "isAbstract" => JAVA_MOD_ABSTRACT,
-        _ => return None,
-    };
+        _ => return None };
     let ExprKind::Lit(Literal::Int(bits)) = &value.kind else {
         return None;
     };
@@ -1336,8 +1442,7 @@ fn walk_class(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces,
         members,
         modifiers: class_modifiers,
-        decorators: vec![],
-    })
+        decorators: vec![] })
 }
 
 fn inject_java_exception_stamps(
@@ -1349,27 +1454,23 @@ fn inject_java_exception_stamps(
         Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: f.to_string(),
-            null_safe: false,
-        })
+            null_safe: false })
     };
     let assign_stmt = |target: Expression, value: Expression| {
         Statement::new(StmtKind::Assign {
             targets: vec![target],
-            value,
-        })
+            value, by_ref: false })
     };
     let mut types_elems = vec![ArrayElement {
         key: None,
         value: Expression::string(class_name),
         spread: false,
-        by_ref: false,
-    }];
+        by_ref: false }];
     types_elems.extend(chain.iter().map(|t| ArrayElement {
         key: None,
         value: Expression::string(t),
         spread: false,
-        by_ref: false,
-    }));
+        by_ref: false }));
 
     let mut has_ctor = false;
     for member in members.iter_mut() {
@@ -1421,8 +1522,7 @@ fn inject_java_exception_stamps(
             ],
             base_args: None,
             initializer_target: ConstructorInitializerTarget::Base,
-            visibility: ParsedModifiers::default().visibility,
-        });
+            visibility: ParsedModifiers::default().visibility });
     }
 }
 
@@ -1462,6 +1562,7 @@ fn walk_class_body_with_owner(
                                 vars.borrow_mut().insert(key.clone());
                             });
                             if let Some(type_hint) = type_hint {
+                                java_register_field_receiver_type(name, type_hint);
                                 JAVA_STATIC_FIELD_TYPES.with(|types| {
                                     types.borrow_mut().insert(key, type_hint.clone());
                                 });
@@ -1520,8 +1621,7 @@ fn walk_class_body_with_owner(
                         handles: vec![],
                         is_async: false,
                         is_generator: false,
-                        is_sub: false,
-                    },
+                        is_sub: false },
                 ))));
             }
             Rule::annotation => {}
@@ -1585,8 +1685,7 @@ fn walk_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
         body,
         base_args,
         initializer_target,
-        visibility,
-    })
+        visibility })
 }
 
 fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
@@ -1653,8 +1752,7 @@ fn walk_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        },
+            is_sub: false },
     ))))
 }
 
@@ -1695,8 +1793,7 @@ fn walk_field(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                 init,
                 modifiers: modifiers.clone(),
                 with_events: false,
-                array_bounds: None,
-            });
+                array_bounds: None });
         }
     }
     Ok(fields)
@@ -1803,8 +1900,7 @@ fn walk_interface(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: vec![],
         members,
         modifiers: into_class_modifiers(pm),
-        decorators: vec![],
-    })
+        decorators: vec![] })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1857,8 +1953,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             enum_members.push(EnumMember {
                                 name: val_name.clone(),
                                 value: None,
-                                constructor_args: args.iter().map(|a| a.value.clone()).collect(),
-                            });
+                                constructor_args: args.iter().map(|a| a.value.clone()).collect() });
                             member_ctor_args.push(args);
                             if !overrides.is_empty() {
                                 member_overrides.push((val_name, overrides));
@@ -1907,20 +2002,17 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    };
+        is_nullable: false };
     let this_field = |f: &str| {
         Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: f.to_string(),
-            null_safe: false,
-        })
+            null_safe: false })
     };
     let stamp = |field: &str, param: &str| {
         Statement::new(StmtKind::Assign {
             targets: vec![this_field(field)],
-            value: Expression::ident(param),
-        })
+            value: Expression::ident(param), by_ref: false })
     };
 
     let mut has_ctor = false;
@@ -1940,8 +2032,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             body: vec![stamp("__name", "__name"), stamp("__ordinal", "__ordinal")],
             base_args: None,
             initializer_target: ConstructorInitializerTarget::Base,
-            visibility: ParsedModifiers::default().visibility,
-        });
+            visibility: ParsedModifiers::default().visibility });
     }
 
     let user_method_names: Vec<String> = body_members
@@ -1949,10 +2040,8 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         .filter_map(|m| match m {
             ClassMember::Method(s) => match &s.kind {
                 StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
-                _ => None,
-            },
-            _ => None,
-        })
+                _ => None },
+            _ => None })
         .collect();
     let make_method = |mname: &str, params: Vec<Param>, body: Vec<Statement>, is_static: bool| {
         let mut modifiers = Modifiers::default();
@@ -1966,8 +2055,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             handles: vec![],
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        })))
+            is_sub: false })))
     };
     for (mname, field) in [
         ("name", "__name"),
@@ -1988,8 +2076,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&name)),
             field: m.to_string(),
-            null_safe: false,
-        })
+            null_safe: false })
     };
     if !user_method_names.iter().any(|n| n == "values") {
         let values_array = Expression::new(ExprKind::Array(
@@ -1999,8 +2086,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     key: None,
                     value: member_access(&m.name),
                     spread: false,
-                    by_ref: false,
-                })
+                    by_ref: false })
                 .collect(),
         ));
         body_members.push(make_method(
@@ -2024,8 +2110,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         &m.name,
                     ))))],
                     elifs: vec![],
-                    else_body: None,
-                })
+                    else_body: None })
             })
             .collect();
         body.push(Statement::new(StmtKind::Throw {
@@ -2035,10 +2120,8 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     BinOp::Add,
                     Expression::string(&format!("No enum constant {name}.")),
                     Expression::ident("__s"),
-                ))],
-            })),
-            cause: None,
-        }));
+                ))] })),
+            cause: None }));
         // Not named `valueOf` — that name is intercepted by shared compiler
         // paths before the user-class static dispatch. The tostring post-pass
         // rewrites `EnumType.valueOf(x)` calls to this name.
@@ -2067,12 +2150,10 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             type_hint: Some(name.clone()),
             init: Some(Expression::new(ExprKind::New {
                 class: Box::new(Expression::ident(&name)),
-                args,
-            })),
+                args })),
             modifiers,
             with_events: false,
-            array_bounds: None,
-        });
+            array_bounds: None });
     }
 
     let enum_member_names: Vec<String> = enum_members
@@ -2106,8 +2187,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces,
         members: body_members,
         modifiers,
-        decorators: vec![],
-    })
+        decorators: vec![] })
 }
 
 fn qualify_java_enum_intrinsics_in_members(
@@ -2147,7 +2227,7 @@ fn qualify_java_enum_intrinsics_in_stmts(
                     }
                 }
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value, .. } => {
                 for target in targets {
                     qualify_java_enum_intrinsics_in_expr(target, enum_name, enum_members);
                 }
@@ -2163,8 +2243,7 @@ fn qualify_java_enum_intrinsics_in_stmts(
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 qualify_java_enum_intrinsics_in_expr(cond, enum_name, enum_members);
                 qualify_java_enum_intrinsics_in_stmts(then_body, enum_name, enum_members);
                 for (elif_cond, elif_body) in elifs {
@@ -2183,8 +2262,7 @@ fn qualify_java_enum_intrinsics_in_stmts(
                 init,
                 cond,
                 update,
-                body,
-            } => {
+                body } => {
                 if let Some(init) = init {
                     qualify_java_enum_intrinsics_in_stmts(
                         std::slice::from_mut(init),
@@ -2218,8 +2296,7 @@ fn qualify_java_enum_intrinsics_in_stmts(
             StmtKind::Switch {
                 expr,
                 cases,
-                default,
-            } => {
+                default } => {
                 qualify_java_enum_intrinsics_in_expr(expr, enum_name, enum_members);
                 for case in cases {
                     for condition in &mut case.conditions {
@@ -2268,11 +2345,9 @@ fn qualify_java_enum_intrinsics_in_expr(
                                 value: Expression::new(ExprKind::Member {
                                     object: Box::new(Expression::ident(enum_name)),
                                     field: member.clone(),
-                                    null_safe: false,
-                                }),
+                                    null_safe: false }),
                                 spread: false,
-                                by_ref: false,
-                            })
+                                by_ref: false })
                             .collect(),
                     ));
                     return;
@@ -2281,8 +2356,7 @@ fn qualify_java_enum_intrinsics_in_expr(
                     *callee = Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(enum_name)),
                         field: name.clone(),
-                        null_safe: false,
-                    }));
+                        null_safe: false }));
                 }
             }
             qualify_java_enum_intrinsics_in_expr(callee, enum_name, enum_members);
@@ -2301,11 +2375,9 @@ fn qualify_java_enum_intrinsics_in_expr(
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(enum_name)),
                         field: "__j_enum_value_of".to_string(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: vec![Argument::positional(Expression::string(&member))],
-                    optional: false,
-                });
+                    optional: false });
                 return;
             }
             qualify_java_enum_intrinsics_in_expr(object, enum_name, enum_members);
@@ -2354,8 +2426,7 @@ fn java_enum_values_constant_index_member(
     let index = match &index.kind {
         ExprKind::Lit(Literal::Int(value)) => *value,
         ExprKind::Lit(Literal::Float(value)) if value.fract() == 0.0 => *value as i64,
-        _ => return None,
-    };
+        _ => return None };
     if index < 0 {
         return None;
     }
@@ -2364,8 +2435,7 @@ fn java_enum_values_constant_index_member(
             matches!(&callee.kind, ExprKind::Ident(name) if name == "values")
         }
         ExprKind::Ident(name) => name == "values",
-        _ => false,
-    };
+        _ => false };
     if !values_call {
         return None;
     }
@@ -2428,8 +2498,7 @@ fn apply_java_enum_constant_method_overrides(
                     handles: vec![],
                     is_async: false,
                     is_generator: false,
-                    is_sub: false,
-                },
+                    is_sub: false },
             ))));
         }
     }
@@ -2444,8 +2513,7 @@ fn java_enum_override_dispatch_body(
     for (constant_name, method) in overrides {
         let override_body = match &method.kind {
             StmtKind::FunctionDecl { body, .. } => body.clone(),
-            _ => vec![Statement::new(StmtKind::Return(Some(Expression::null())))],
-        };
+            _ => vec![Statement::new(StmtKind::Return(Some(Expression::null())))] };
         body.push(Statement::new(StmtKind::If {
             cond: java_binary(
                 BinOp::Eq,
@@ -2453,13 +2521,11 @@ fn java_enum_override_dispatch_body(
                 Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(enum_name)),
                     field: constant_name.clone(),
-                    null_safe: false,
-                }),
+                    null_safe: false }),
             ),
             then_body: override_body,
             elifs: vec![],
-            else_body: None,
-        }));
+            else_body: None }));
     }
     body.extend(
         fallback
@@ -2514,8 +2580,7 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            });
+                                is_nullable: false });
                         }
                     }
                 }
@@ -2536,10 +2601,8 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 targets: vec![Expression::new(ExprKind::Member {
                     object: Box::new(Expression::new(ExprKind::This)),
                     field: java_record_storage_field(&p.name),
-                    null_safe: false,
-                })],
-                value: Expression::new(ExprKind::Ident(p.name.clone())),
-            })
+                    null_safe: false })],
+                value: Expression::new(ExprKind::Ident(p.name.clone())), by_ref: false })
         })
         .collect();
 
@@ -2549,8 +2612,7 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body: ctor_body,
         base_args: None,
         initializer_target: ConstructorInitializerTarget::Base,
-        visibility: Visibility::Public,
-    }];
+        visibility: Visibility::Public }];
     for param in &component_params {
         members.insert(
             0,
@@ -2560,8 +2622,7 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 init: None,
                 modifiers: Modifiers::default(),
                 with_events: false,
-                array_bounds: None,
-            },
+                array_bounds: None },
         );
     }
     for param in &component_params {
@@ -2574,15 +2635,13 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: java_record_storage_field(&param.name),
-                        null_safe: false,
-                    },
+                        null_safe: false },
                 ))))],
                 modifiers: Modifiers::default(),
                 handles: vec![],
                 is_async: false,
                 is_generator: false,
-                is_sub: false,
-            },
+                is_sub: false },
         ))));
     }
     JAVA_RECORD_COMPONENTS.with(|components| {
@@ -2602,8 +2661,7 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
         interfaces: vec![],
         members,
         modifiers: into_class_modifiers(pm),
-        decorators: vec![],
-    })
+        decorators: vec![] })
 }
 
 fn java_record_storage_field(name: &str) -> String {
@@ -2652,8 +2710,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             StmtKind::While {
                 cond,
                 body,
-                else_body: None,
-            }
+                else_body: None }
         }
 
         Rule::do_while_statement => {
@@ -2664,8 +2721,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             StmtKind::DoWhile {
                 body,
                 cond,
-                until: false,
-            }
+                until: false }
         }
 
         Rule::switch_statement => walk_switch(pair)?,
@@ -2686,8 +2742,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 .map(|p| p.as_str().to_string());
             StmtKind::Break(match label {
                 Some(l) if !l.is_empty() => BreakTarget::Label(l),
-                _ => BreakTarget::Implicit,
-            })
+                _ => BreakTarget::Implicit })
         }
 
         Rule::continue_statement => {
@@ -2697,16 +2752,14 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
                 .map(|p| p.as_str().to_string());
             StmtKind::Continue(match label {
                 Some(l) if !l.is_empty() => ContinueTarget::Label(l),
-                _ => ContinueTarget::Implicit,
-            })
+                _ => ContinueTarget::Implicit })
         }
 
         Rule::throw_statement => {
             let inner = pair.into_inner().next().ok_or("throw: missing expr")?;
             StmtKind::Throw {
                 expr: Some(walk_expression(inner)?),
-                cause: None,
-            }
+                cause: None }
         }
 
         Rule::try_statement | Rule::try_with_resources_statement => walk_try(pair)?,
@@ -2743,8 +2796,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             if let Some(body) = walk_statement(body_pair)? {
                 StmtKind::Labeled {
                     label,
-                    body: Box::new(body),
-                }
+                    body: Box::new(body) }
             } else {
                 return Ok(None);
             }
@@ -2776,8 +2828,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::This)),
                 args,
-                optional: false,
-            }))
+                optional: false }))
         }
 
         Rule::expression_statement => {
@@ -2812,8 +2863,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
         Rule::enum_declaration => walk_enum_decl(pair)?,
         Rule::record_declaration => walk_record(pair)?,
 
-        _ => return Ok(None),
-    };
+        _ => return Ok(None) };
     Ok(Some(Statement::with_span(kind, span)))
 }
 
@@ -2833,8 +2883,7 @@ fn walk_statement_into_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> 
     } else {
         match walk_statement(pair)? {
             Some(s) => Ok(vec![s]),
-            None => Ok(vec![]),
-        }
+            None => Ok(vec![]) }
     }
 }
 
@@ -3120,8 +3169,7 @@ fn walk_var_declarator(
             Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(callee)),
                 args: vec![Argument::positional(value)],
-                optional: false,
-            }))
+                optional: false }))
         } else if matches!(
             java_type_simple_name(hint),
             "byte" | "Byte" | "short" | "Short" | "int" | "Integer" | "long" | "Long"
@@ -3187,8 +3235,7 @@ fn walk_var_declarator(
         type_hint: emitted_type_hint,
         init,
         array_bounds: None,
-        with_events: false,
-    })
+        with_events: false })
 }
 
 fn java_initializer_is_functional_value(expr: &Expression) -> bool {
@@ -3198,8 +3245,7 @@ fn java_initializer_is_functional_value(expr: &Expression) -> bool {
         ExprKind::Sequence(items) => items
             .last()
             .is_some_and(java_initializer_is_functional_value),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn walk_initializer(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -3213,14 +3259,12 @@ fn walk_initializer(pair: Pair<Rule>) -> Result<Expression, String> {
                         key: None,
                         value: walk_initializer(el)?,
                         spread: false,
-                        by_ref: false,
-                    });
+                        by_ref: false });
                 }
             }
             Ok(Expression::new(ExprKind::Array(elems)))
         }
-        _ => walk_expression(inner),
-    }
+        _ => walk_expression(inner) }
 }
 
 fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3243,10 +3287,8 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
                         type_hint: Some(type_name),
                         init: Some(subject),
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Let,
-                })
+                        with_events: false }],
+                    kind: VarDeclKind::Let })
             })
             .collect();
         decls.append(&mut then_body);
@@ -3263,8 +3305,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 cond: elif_cond,
                 then_body: elif_body,
                 elifs: nested_elifs,
-                else_body: nested_else,
-            } = walk_if(else_pair)?
+                else_body: nested_else } = walk_if(else_pair)?
             {
                 elifs.push((elif_cond, elif_body));
                 elifs.extend(nested_elifs);
@@ -3279,8 +3320,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
         cond,
         then_body,
         elifs,
-        else_body,
-    })
+        else_body })
 }
 
 fn walk_for_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3326,8 +3366,7 @@ fn walk_for_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         init,
         cond,
         update,
-        body,
-    })
+        body })
 }
 
 fn walk_for_init(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -3357,8 +3396,7 @@ fn walk_for_init(pair: Pair<Rule>) -> Result<Statement, String> {
         }
         return Ok(Statement::new(StmtKind::VarDecl {
             declarations: decls,
-            kind,
-        }));
+            kind }));
     }
 
     // expression list
@@ -3413,8 +3451,7 @@ fn walk_enhanced_for(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         of: true,
         else_body: None,
-        is_async: false,
-    })
+        is_async: false })
 }
 
 fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
@@ -3482,8 +3519,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             labels,
             body,
             is_default: is_default_arm,
-            has_break: has_break || is_arrow,
-        });
+            has_break: has_break || is_arrow });
     }
 
     let any_label_match =
@@ -3501,8 +3537,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 Expression::ident(&matched_name),
                 Expression::new(ExprKind::Unary {
                     op: UnaryOp::Not,
-                    expr: Box::new(any_label_match.clone()),
-                }),
+                    expr: Box::new(any_label_match.clone()) }),
             )
         } else {
             let label_cond = java_or_exprs(
@@ -3518,8 +3553,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             BinOp::And,
             Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(Expression::ident(&done_name)),
-            }),
+                expr: Box::new(Expression::ident(&done_name)) }),
             raw_cond,
         );
         let mut then_body = vec![java_assign_stmt(&matched_name, Expression::bool(true))];
@@ -3548,8 +3582,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
             cond,
             then_body,
             elifs: vec![],
-            else_body: None,
-        }));
+            else_body: None }));
     }
 
     Ok(StmtKind::Block(lowered))
@@ -3570,14 +3603,12 @@ fn java_switch_discriminant_expr(expr: Expression) -> Expression {
             &callee.kind,
             ExprKind::Member { field, .. } if field == "charAt"
         ),
-        _ => false,
-    };
+        _ => false };
     if is_char_source {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_char_ord")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        })
+            optional: false })
     } else {
         expr
     }
@@ -3587,8 +3618,7 @@ struct JavaSwitchArm {
     labels: Vec<JavaSwitchLabel>,
     body: Vec<Statement>,
     is_default: bool,
-    has_break: bool,
-}
+    has_break: bool }
 
 fn walk_switch_rule_body_part(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     match pair.as_rule() {
@@ -3596,8 +3626,7 @@ fn walk_switch_rule_body_part(pair: Pair<Rule>) -> Result<Vec<Statement>, String
         Rule::throw_statement => Ok(vec![Statement::new(walk_statement(pair)?.unwrap().kind)]),
         Rule::expression => Ok(vec![Statement::new(StmtKind::Expr(walk_expression(pair)?))]),
         Rule::expression_statement => Ok(walk_statement(pair)?.into_iter().collect()),
-        _ => Ok(walk_statement(pair)?.into_iter().collect()),
-    }
+        _ => Ok(walk_statement(pair)?.into_iter().collect()) }
 }
 
 fn java_strip_top_level_switch_break(body: Vec<Statement>) -> (Vec<Statement>, bool) {
@@ -3617,15 +3646,12 @@ enum JavaSwitchLabel {
     Pattern {
         type_name: String,
         binding: String,
-        guard: Option<Expression>,
-    },
-}
+        guard: Option<Expression> } }
 
 fn java_switch_label_expr(label: JavaSwitchLabel) -> JavaSwitchLabel {
     match label {
         JavaSwitchLabel::Value(value) => JavaSwitchLabel::Value(java_char_numeric_cast_expr(value)),
-        other => other,
-    }
+        other => other }
 }
 
 fn walk_switch_label(pair: Pair<Rule>) -> Result<JavaSwitchLabel, String> {
@@ -3646,8 +3672,7 @@ fn walk_switch_label(pair: Pair<Rule>) -> Result<JavaSwitchLabel, String> {
                         expr = Expression::new(ExprKind::Member {
                             object: Box::new(expr),
                             field: part.to_string(),
-                            null_safe: false,
-                        });
+                            null_safe: false });
                     }
                     value = Some(expr);
                 } else {
@@ -3666,8 +3691,7 @@ fn walk_switch_label(pair: Pair<Rule>) -> Result<JavaSwitchLabel, String> {
                                 Expression::new(ExprKind::Member {
                                     object: Box::new(Expression::ident(enum_name)),
                                     field: text.to_string(),
-                                    null_safe: false,
-                                })
+                                    null_safe: false })
                             })
                         })
                     });
@@ -3681,8 +3705,7 @@ fn walk_switch_label(pair: Pair<Rule>) -> Result<JavaSwitchLabel, String> {
     if is_negative {
         Ok(JavaSwitchLabel::Value(Expression::new(ExprKind::Unary {
             op: UnaryOp::Neg,
-            expr: Box::new(expr),
-        })))
+            expr: Box::new(expr) })))
     } else {
         Ok(JavaSwitchLabel::Value(expr))
     }
@@ -3704,8 +3727,7 @@ fn walk_switch_pattern_label(pair: Pair<Rule>) -> Result<JavaSwitchLabel, String
     Ok(JavaSwitchLabel::Pattern {
         type_name,
         binding,
-        guard,
-    })
+        guard })
 }
 
 fn java_switch_label_match(value_name: &str, label: &JavaSwitchLabel) -> Expression {
@@ -3716,8 +3738,7 @@ fn java_switch_label_match(value_name: &str, label: &JavaSwitchLabel) -> Express
         JavaSwitchLabel::Pattern {
             type_name,
             binding,
-            guard,
-        } => {
+            guard } => {
             let type_match = java_pattern_type_match_expr(value_name, type_name);
             if let Some(guard) = guard {
                 let mut guard = guard.clone();
@@ -3743,8 +3764,7 @@ fn java_pattern_type_match_expr(value_name: &str, type_name: &str) -> Expression
             Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_trunc_cast")),
                 args: vec![Argument::positional(Expression::ident(value_name))],
-                optional: false,
-            }),
+                optional: false }),
         );
         return java_binary(BinOp::And, builtin_match, integral_match);
     }
@@ -3783,8 +3803,7 @@ fn java_enum_pattern_match_expr(value_name: &str, enum_name: &str) -> Option<Exp
                         BinOp::Eq,
                         Expression::ident(value_name),
                         Expression::null(),
-                    )),
-                }),
+                    )) }),
             )
         })
     })
@@ -3810,8 +3829,7 @@ fn java_type_test_expr(subject: &Expression, stamped_name: &str) -> Expression {
     let is_type = |name: &str| {
         Expression::new(ExprKind::IsType {
             expr: Box::new(subject.clone()),
-            type_name: name.to_string(),
-        })
+            type_name: name.to_string() })
     };
     if stamped_name.trim_end().ends_with("[]") {
         // An array is a JS array, and its element type lives nowhere on the
@@ -3827,21 +3845,18 @@ fn java_type_test_expr(subject: &Expression, stamped_name: &str) -> Expression {
         let first = Expression::new(ExprKind::Index {
             object: Box::new(subject.clone()),
             index: Box::new(Expression::int(0)),
-            null_safe: false,
-        });
+            null_safe: false });
         let empty = java_binary(
             BinOp::Eq,
             Expression::new(ExprKind::Member {
                 object: Box::new(subject.clone()),
                 field: "length".to_string(),
-                null_safe: false,
-            }),
+                null_safe: false }),
             Expression::int(0),
         );
         let element_matches = Expression::new(ExprKind::IsType {
             expr: Box::new(first),
-            type_name: element.to_string(),
-        });
+            type_name: element.to_string() });
         return java_binary(
             BinOp::And,
             is_array,
@@ -3873,7 +3888,7 @@ fn rewrite_java_record_accessors_stmt(stmt: &mut Statement, binding: &str, type_
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 rewrite_java_record_accessors_expr(target, binding, type_name);
             }
@@ -3888,8 +3903,7 @@ fn rewrite_java_record_accessors_stmt(stmt: &mut Statement, binding: &str, type_
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_java_record_accessors_expr(cond, binding, type_name);
             for nested in then_body {
                 rewrite_java_record_accessors_stmt(nested, binding, type_name);
@@ -3920,8 +3934,7 @@ fn rewrite_java_record_accessors_expr(expr: &mut Expression, binding: &str, type
                     *expr = Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(binding)),
                         field: java_record_storage_field(field),
-                        null_safe: false,
-                    });
+                        null_safe: false });
                     return;
                 }
             }
@@ -4035,17 +4048,14 @@ fn java_var_decl_typed(
             type_hint,
             init,
             array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Let,
-    })
+            with_events: false }],
+        kind: VarDeclKind::Let })
 }
 
 fn java_assign_stmt(name: &str, value: Expression) -> Statement {
     Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(name)],
-        value,
-    })
+        value, by_ref: false })
 }
 
 fn walk_switch_expression(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -4118,15 +4128,12 @@ fn walk_switch_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(result)),
             captures: vec![],
-            is_async: false,
-        })),
+            is_async: false })),
         args: vec![Argument::positional(subject)],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn java_switch_rule_body_expr(pair: Pair<Rule>) -> Result<Option<Expression>, String> {
@@ -4196,8 +4203,7 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     var_name,
                     stack_var: None,
                     body: catch_body,
-                    when_clause: None,
-                });
+                    when_clause: None });
             }
             Rule::finally_clause => {
                 if let Some(blk) = p.into_inner().next() {
@@ -4212,8 +4218,7 @@ fn walk_try(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         catches,
         else_body: None,
-        finally,
-    })
+        finally })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4272,8 +4277,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
         is_rest,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    })
+        is_nullable: false })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4311,30 +4315,24 @@ fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
                         args: vec![Argument::positional(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__java_trunc_cast")),
                             args: vec![Argument::positional(expr)],
-                            optional: false,
-                        }))],
-                        optional: false,
-                    }))
+                            optional: false }))],
+                        optional: false }))
                 } else if matches!(simple_ty, "double" | "Double" | "float" | "Float") {
                     Ok(Expression::new(ExprKind::Cast {
                         type_name: simple_ty.to_string(),
-                        expr: Box::new(expr),
-                    }))
+                        expr: Box::new(expr) }))
                 } else if simple_ty == "char" {
                     Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_from_char_code")),
                         args: vec![Argument::positional(java_char_numeric_cast_expr(expr))],
-                        optional: false,
-                    }))
+                        optional: false }))
                 } else if let Some(callee) = java_numeric_cast_fn(ty) {
                     Ok(Expression::new(ExprKind::Cast {
                         type_name: simple_ty.to_string(),
                         expr: Box::new(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(callee)),
                             args: vec![Argument::positional(expr)],
-                            optional: false,
-                        })),
-                    }))
+                            optional: false })) }))
                 } else {
                     Ok(expr)
                 }
@@ -4371,8 +4369,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
         if op_str == "=" {
             return Ok(Expression::new(ExprKind::Assign {
                 target: Box::new(lhs),
-                value: Box::new(rhs),
-            }));
+                value: Box::new(rhs) }));
         }
         // Compound assignment: `x += v` → `x = x + v`
         let bin_op = compound_op_to_binop(&op_str);
@@ -4381,9 +4378,7 @@ fn walk_assignment(pair: Pair<Rule>) -> Result<Expression, String> {
             value: Box::new(Expression::new(ExprKind::Binary {
                 op: bin_op,
                 left: Box::new(lhs),
-                right: Box::new(rhs),
-            })),
-        }));
+                right: Box::new(rhs) })) }));
     }
 
     walk_expression(first)
@@ -4398,8 +4393,7 @@ fn walk_ternary(pair: Pair<Rule>) -> Result<Expression, String> {
         Ok(Expression::new(ExprKind::Ternary {
             cond: Box::new(cond),
             then: Box::new(then_e),
-            else_: Box::new(else_e),
-        }))
+            else_: Box::new(else_e) }))
     } else {
         Ok(cond)
     }
@@ -4454,8 +4448,7 @@ fn java_binary_with_string_concat(op: BinOp, left: Expression, right: Expression
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_string_concat")),
             args: vec![Argument::positional(left), Argument::positional(right)],
-            optional: false,
-        })
+            optional: false })
     } else {
         let effective_op = if op == BinOp::Div
             && !is_java_double_arithmetic_expr(&left)
@@ -4468,16 +4461,14 @@ fn java_binary_with_string_concat(op: BinOp, left: Expression, right: Expression
         let expr = Expression::new(ExprKind::Binary {
             op: effective_op,
             left: Box::new(left),
-            right: Box::new(right),
-        });
+            right: Box::new(right) });
         if matches!(effective_op, BinOp::Add | BinOp::Sub | BinOp::Mul)
             && contains_java_integer_bound_constant(&expr)
         {
             Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_i32")),
                 args: vec![Argument::positional(expr)],
-                optional: false,
-            })
+                optional: false })
         } else {
             expr
         }
@@ -4490,14 +4481,16 @@ fn is_java_string_concat_operand(expr: &Expression) -> bool {
         ExprKind::Call { ref callee, .. } => {
             matches!(callee.kind, ExprKind::Ident(ref name) if name == "__java_string_concat")
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn contains_java_integer_bound_constant(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Member { object, field, .. } => {
-            matches!(&object.kind, ExprKind::Ident(name) if name == "Integer")
+            matches!(
+                java_expr_dotted_name(object).as_deref(),
+                Some("Integer") | Some("java.lang.Integer")
+            )
                 && matches!(field.as_str(), "MAX_VALUE" | "MIN_VALUE")
         }
         ExprKind::Unary { expr, .. } => contains_java_integer_bound_constant(expr),
@@ -4508,8 +4501,7 @@ fn contains_java_integer_bound_constant(expr: &Expression) -> bool {
         ExprKind::Call { args, .. } => args
             .iter()
             .any(|arg| contains_java_integer_bound_constant(&arg.value)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn is_java_double_arithmetic_expr(expr: &Expression) -> bool {
@@ -4548,8 +4540,7 @@ fn is_java_double_arithmetic_expr(expr: &Expression) -> bool {
             is_java_double_arithmetic_expr(left) || is_java_double_arithmetic_expr(right)
         }
         ExprKind::Unary { expr, .. } => is_java_double_arithmetic_expr(expr),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_expr_is_long_value(expr: &Expression) -> bool {
@@ -4567,8 +4558,7 @@ fn java_print_arg(arg: Argument) -> Argument {
         Argument::positional(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_double_to_string")),
             args: vec![Argument::positional(arg.value)],
-            optional: false,
-        }))
+            optional: false }))
     } else {
         arg
     }
@@ -4583,8 +4573,7 @@ fn java_wrapper_constant_print_string(expr: &Expression) -> Option<Expression> {
         ("Long", "MAX_VALUE") | ("java.lang.Long", "MAX_VALUE") => "9.223372036854776E18",
         ("Long", "MIN_VALUE") | ("java.lang.Long", "MIN_VALUE") => "-9.223372036854776E18",
         ("Double", "MAX_VALUE") | ("java.lang.Double", "MAX_VALUE") => "1.7976931348623157E308",
-        _ => return None,
-    };
+        _ => return None };
     Some(Expression::string(text))
 }
 
@@ -4593,16 +4582,14 @@ fn java_numeric_cast_fn(ty: &str) -> Option<&'static str> {
         "byte" | "Byte" => Some("__j_byte"),
         "short" | "Short" => Some("__j_short"),
         "int" | "long" | "Integer" | "Long" => Some("__java_trunc_cast"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_numeric_width_fn(ty: &str) -> Option<&'static str> {
     match java_type_simple_name(ty) {
         "byte" | "Byte" => Some("__j_byte"),
         "short" | "Short" => Some("__j_short"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_char_numeric_cast_expr(expr: Expression) -> Expression {
@@ -4610,33 +4597,27 @@ fn java_char_numeric_cast_expr(expr: Expression) -> Expression {
         ExprKind::Lit(Literal::Char(_)) => Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_char_ord")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        }),
+            optional: false }),
         ExprKind::Lit(Literal::Str(ref value)) if value.chars().count() == 1 => {
             Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_char_ord")),
                 args: vec![Argument::positional(expr)],
-                optional: false,
-            })
+                optional: false })
         }
         ExprKind::Binary { op, left, right } => Expression::new(ExprKind::Binary {
             op,
             left: Box::new(java_char_numeric_cast_expr(*left)),
-            right: Box::new(java_char_numeric_cast_expr(*right)),
-        }),
+            right: Box::new(java_char_numeric_cast_expr(*right)) }),
         ExprKind::Index {
             object,
             index,
-            null_safe,
-        } => Expression::new(ExprKind::Call {
+            null_safe } => Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_char_ord")),
             args: vec![Argument::positional(Expression::new(ExprKind::Index {
                 object,
                 index,
-                null_safe,
-            }))],
-            optional: false,
-        }),
+                null_safe }))],
+            optional: false }),
         ExprKind::Call { callee, args, .. }
             if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_string_concat")
                 && args.len() == 2 =>
@@ -4647,15 +4628,12 @@ fn java_char_numeric_cast_expr(expr: Expression) -> Expression {
             Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(java_char_numeric_cast_expr(left)),
-                right: Box::new(java_char_numeric_cast_expr(right)),
-            })
+                right: Box::new(java_char_numeric_cast_expr(right)) })
         }
         ExprKind::Unary { op, expr } => Expression::new(ExprKind::Unary {
             op,
-            expr: Box::new(java_char_numeric_cast_expr(*expr)),
-        }),
-        _ => expr,
-    }
+            expr: Box::new(java_char_numeric_cast_expr(*expr)) }),
+        _ => expr }
 }
 
 fn java_expr_is_char_numeric_source(
@@ -4673,8 +4651,7 @@ fn java_expr_is_char_numeric_source(
             ExprKind::Member { field, .. } if field == "charAt"
         ),
         ExprKind::Cast { type_name, .. } => java_type_simple_name(type_name) == "char",
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_expr_is_string_value(expr: &Expression, local_types: &HashMap<String, String>) -> bool {
@@ -4691,8 +4668,7 @@ fn java_expr_is_string_value(expr: &Expression, local_types: &HashMap<String, St
             ExprKind::Ident(name) if name == "__java_string_concat"
         ),
         ExprKind::Cast { type_name, .. } => java_type_simple_name(type_name) == "String",
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_cast_char_numeric_operand(
@@ -4703,8 +4679,7 @@ fn java_cast_char_numeric_operand(
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_char_ord")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        })
+            optional: false })
     } else {
         java_char_numeric_cast_expr(expr)
     }
@@ -4773,12 +4748,10 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
             "-" => UnaryOp::Neg,
             "+" => UnaryOp::Pos,
             "~" => UnaryOp::BitNot,
-            _ => UnaryOp::Not,
-        };
+            _ => UnaryOp::Not };
         return Ok(Expression::new(ExprKind::Unary {
             op,
-            expr: Box::new(operand),
-        }));
+            expr: Box::new(operand) }));
     }
     walk_expression(first)
 }
@@ -4790,12 +4763,10 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<Expression, String> {
         let unop = match op.as_str() {
             "++" => UnaryOp::PostInc,
             "--" => UnaryOp::PostDec,
-            _ => UnaryOp::PostInc,
-        };
+            _ => UnaryOp::PostInc };
         Ok(Expression::new(ExprKind::Unary {
             op: unop,
-            expr: Box::new(base),
-        }))
+            expr: Box::new(base) }))
     } else {
         Ok(base)
     }
@@ -4817,8 +4788,7 @@ fn java_inner_new_receiver_type(receiver: &Expression) -> Option<String> {
             let owner = java_inner_new_receiver_type(object)?;
             java_class_field_type(&owner, field)
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -4865,8 +4835,7 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                 args.insert(0, Argument::positional(current));
                 current = Expression::new(ExprKind::New {
                     class: Box::new(Expression::ident(&qualified)),
-                    args,
-                });
+                    args });
             }
             Rule::method_call_suffix => {
                 let mut ci = chain.into_inner().peekable();
@@ -4909,8 +4878,7 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                     current = Expression::new(ExprKind::Member {
                         object: Box::new(current),
                         field,
-                        null_safe: false,
-                    });
+                        null_safe: false });
                 }
             }
             Rule::index_suffix => {
@@ -4918,8 +4886,7 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                 current = Expression::new(ExprKind::Index {
                     object: Box::new(current),
                     index: Box::new(idx),
-                    null_safe: false,
-                });
+                    null_safe: false });
             }
             Rule::call_suffix => {
                 // Bare function call: callee(args) — the base is the callee.
@@ -4939,8 +4906,7 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                 if let ExprKind::Member {
                     object,
                     field,
-                    null_safe: _,
-                } = current.kind
+                    null_safe: _ } = current.kind
                 {
                     current = normalise_method_call(*object, field, args);
                     continue;
@@ -4950,8 +4916,7 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                         current = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(callee)),
                             args,
-                            optional: false,
-                        });
+                            optional: false });
                         continue;
                     }
                     if matches!(name.as_str(), "wait" | "notify" | "notifyAll") {
@@ -4966,8 +4931,7 @@ fn walk_primary_chain(pair: Pair<Rule>) -> Result<Expression, String> {
                 current = Expression::new(ExprKind::Call {
                     callee: Box::new(current),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             _ => {}
         }
@@ -4980,8 +4944,7 @@ fn java_dotted_static_call_name(name: &str) -> Option<&'static str> {
         "Executors.newFixedThreadPool" | "java.util.concurrent.Executors.newFixedThreadPool" => {
             "__j_exec_new"
         }
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_double_constant_expr(object: &Expression, field: &str) -> Option<Expression> {
@@ -4991,15 +4954,28 @@ fn java_double_constant_expr(object: &Expression, field: &str) -> Option<Express
         Expression::new(ExprKind::Binary {
             op: BinOp::Div,
             left: Box::new(left),
-            right: Box::new(right),
-        })
+            right: Box::new(right) })
     };
-    if type_name == "StrictMath" || type_name == "java.lang.StrictMath" {
+    if matches!(
+        type_name.as_str(),
+        "Math" | "java.lang.Math" | "StrictMath" | "java.lang.StrictMath"
+    ) {
         return match field {
             "PI" => Some(f64_lit(std::f64::consts::PI)),
             "E" => Some(f64_lit(std::f64::consts::E)),
-            _ => None,
-        };
+            _ => None };
+    }
+    if matches!(type_name.as_str(), "Integer" | "java.lang.Integer") {
+        return match field {
+            "MAX_VALUE" => Some(Expression::int(2147483647)),
+            "MIN_VALUE" => Some(Expression::int(-2147483648)),
+            _ => None };
+    }
+    if matches!(type_name.as_str(), "Long" | "java.lang.Long") {
+        return match field {
+            "MAX_VALUE" => Some(f64_lit(9.223372036854776e18)),
+            "MIN_VALUE" => Some(f64_lit(-9.223372036854776e18)),
+            _ => None };
     }
     if type_name != "Double" && type_name != "java.lang.Double" {
         return None;
@@ -5011,8 +4987,7 @@ fn java_double_constant_expr(object: &Expression, field: &str) -> Option<Express
         "NaN" => Some(div(f64_lit(0.0), f64_lit(0.0))),
         "POSITIVE_INFINITY" => Some(div(f64_lit(1.0), f64_lit(0.0))),
         "NEGATIVE_INFINITY" => Some(div(f64_lit(-1.0), f64_lit(0.0))),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_locale_constant_expr(object: &Expression, field: &str) -> Option<Expression> {
@@ -5029,8 +5004,7 @@ fn java_locale_constant_expr(object: &Expression, field: &str) -> Option<Express
         "JAPAN" => "JP",
         "CANADA" => "CA",
         "CANADA_FRENCH" => "FR_CA",
-        _ => return None,
-    };
+        _ => return None };
     Some(Expression::string(value))
 }
 
@@ -5041,8 +5015,7 @@ fn java_calendar_constant_expr(object: &Expression, field: &str) -> Option<Expre
     }
     match field {
         "MILLISECOND" => Some(Expression::int(14)),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Build one PrintStream write. Basic print/println are profile/common
@@ -5053,8 +5026,7 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(name)),
             args,
-            optional: false,
-        })
+            optional: false })
     };
     let first_or_empty = |args: Vec<Argument>| {
         args.into_iter()
@@ -5073,11 +5045,9 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(csq),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![start, end],
-                optional: false,
-            });
+                optional: false });
             build("__java_print", vec![Argument::positional(sub)])
         }
         "print" => build("__java_print", vec![java_print_arg(first_or_empty(args))]),
@@ -5093,8 +5063,7 @@ fn java_print_stream_write(method: &str, args: Vec<Argument>) -> Expression {
                     key: None,
                     value: arg.value,
                     spread: false,
-                    by_ref: false,
-                })
+                    by_ref: false })
                 .collect();
             java_rewrite_printstream_format_literal(&mut fmt.value, &mut rest);
             build(
@@ -5146,16 +5115,31 @@ fn java_rewrite_printstream_format_literal(fmt: &mut Expression, args: &mut [Arr
 fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argument>) -> Expression {
     let receiver = java_reflection_indexed_token(&receiver).unwrap_or(receiver);
 
+    // JLS §15.12.1 — the receiver's declared type decides. Everything below
+    // rewrites by method NAME alone, so a user class declaring `length()`,
+    // `trim()`, `add()` … would lose its own method to a JDK adapter.
+    // `toString` is excluded: the shared layer already carves it out
+    // (`primitives/calls.rs` — "every language expects the builtin there") and
+    // java has its own user-toString detection. Intercepting it here would
+    // change a hot path as a side effect of this fix.
+    if method != "toString" && java_user_class_declares_method(&receiver, &method) {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(receiver),
+                field: method,
+                null_safe: false })),
+            args,
+            optional: false });
+    }
+
     if let Some(interface_name) = java_interface_super_receiver(&receiver) {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: java_interface_default_method_name(&interface_name, &method),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if args.is_empty() {
@@ -5252,16 +5236,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     ExprKind::Ident(n) if matches!(n.as_str(), "__j_print" | "__j_println" | "__j_printf" | "__java_print" | "__java_println" | "__java_printf")
                 )
             ),
-            _ => false,
-        };
+            _ => false };
         if stream_receiver {
             let write = java_print_stream_write(&method, args);
             // Chained receivers carry earlier writes as side effects —
             // keep them, in order, ahead of this one.
             return match receiver.kind {
                 ExprKind::Member { .. } | ExprKind::Ident(_) => write,
-                _ => Expression::new(ExprKind::Sequence(vec![receiver, write])),
-            };
+                _ => Expression::new(ExprKind::Sequence(vec![receiver, write])) };
         }
     }
 
@@ -5272,8 +5254,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_runnable_run")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "filter" && args.len() == 1 && java_optional_receiver(&receiver) {
@@ -5282,8 +5263,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_optional_filter")),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "map" && args.len() == 1 && java_optional_receiver(&receiver) {
@@ -5292,8 +5272,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_optional_map")),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "flatMap" && args.len() == 1 && java_optional_receiver(&receiver) {
@@ -5302,8 +5281,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_optional_flat_map")),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "ifPresentOrElse" && args.len() == 2 && java_optional_receiver(&receiver) {
@@ -5312,16 +5290,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_optional_if_present_or_else")),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "isEmpty" && args.is_empty() && java_optional_receiver(&receiver) {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_optional_is_empty")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "or" && args.len() == 1 && java_optional_receiver(&receiver) {
@@ -5335,16 +5311,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 "__java_optional_or"
             })),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "stream" && args.is_empty() && java_optional_receiver(&receiver) {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_optional_stream")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "equals" && args.len() == 1 && java_optional_receiver(&receiver) {
@@ -5353,24 +5327,21 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_optional_equals")),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "toString" && args.is_empty() && java_optional_receiver(&receiver) {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_optional_to_string")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "get" && args.is_empty() && java_optional_receiver(&receiver) {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_stream_optional_get")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if java_functional_receiver(&receiver) {
@@ -5387,8 +5358,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Sequence(vec![receiver]))),
             args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if java_list_result_receiver(&receiver) {
@@ -5398,8 +5368,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(internal)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5410,8 +5379,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(internal)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5422,8 +5390,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(internal)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5434,8 +5401,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(internal)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5447,8 +5413,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     Argument::positional(receiver),
                     Argument::positional(java_args_to_array(&args)),
                 ],
-                optional: false,
-            });
+                optional: false });
         }
         if let Some(internal) = java_process_builder_method_name(method.as_str(), args.len()) {
             let mut call_args = vec![Argument::positional(receiver)];
@@ -5456,8 +5421,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(internal)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5468,8 +5432,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(internal)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5477,31 +5440,27 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_file_get_path")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if java_redirect_receiver(&receiver) && method == "type" && args.is_empty() {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_pb_redirect_type")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if matches!(method.as_str(), "wait" | "notify" | "notifyAll") {
         let prelude_fn = match method.as_str() {
             "wait" => "__j_object_wait",
             "notify" => "__j_object_notify",
-            _ => "__j_object_notify_all",
-        };
+            _ => "__j_object_notify_all" };
         let mut call_args = vec![Argument::positional(receiver)];
         call_args.extend(args);
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(prelude_fn)),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if let ExprKind::Ident(name) = &receiver.kind {
@@ -5512,14 +5471,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         vec![Argument::positional(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(&class_name)),
                             field: name.clone(),
-                            null_safe: false,
-                        }))];
+                            null_safe: false }))];
                     call_args.extend(args);
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(internal)),
                         args: call_args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
             if java_type_is_queue_or_deque(Some(&type_name)) {
@@ -5530,14 +5487,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         vec![Argument::positional(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(&class_name)),
                             field: name.clone(),
-                            null_safe: false,
-                        }))];
+                            null_safe: false }))];
                     call_args.extend(args);
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(internal)),
                         args: call_args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
             if java_type_is_semaphore(Some(&type_name)) {
@@ -5546,14 +5501,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         vec![Argument::positional(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(&class_name)),
                             field: name.clone(),
-                            null_safe: false,
-                        }))];
+                            null_safe: false }))];
                     call_args.extend(args);
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(internal)),
                         args: call_args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
             if java_type_is_count_down_latch(Some(&type_name)) {
@@ -5562,14 +5515,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         vec![Argument::positional(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(&class_name)),
                             field: name.clone(),
-                            null_safe: false,
-                        }))];
+                            null_safe: false }))];
                     call_args.extend(args);
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(internal)),
                         args: call_args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
             if java_type_is_future_task(Some(&type_name)) {
@@ -5578,14 +5529,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         vec![Argument::positional(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(&class_name)),
                             field: name.clone(),
-                            null_safe: false,
-                        }))];
+                            null_safe: false }))];
                     call_args.extend(args);
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(internal)),
                         args: call_args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
             if java_type_is_executor_service(Some(&type_name)) {
@@ -5594,14 +5543,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         vec![Argument::positional(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(&class_name)),
                             field: name.clone(),
-                            null_safe: false,
-                        }))];
+                            null_safe: false }))];
                     call_args.extend(args);
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(internal)),
                         args: call_args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
         }
@@ -5614,8 +5561,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(internal)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5627,8 +5573,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(internal)),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
         if java_type_is_count_down_latch(Some(&type_name)) {
@@ -5638,8 +5583,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(internal)),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
         if java_type_is_future_task(Some(&type_name)) {
@@ -5649,8 +5593,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(internal)),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
         if java_type_is_executor_service(Some(&type_name)) {
@@ -5660,8 +5603,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(internal)),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
     }
@@ -5671,15 +5613,13 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_thread_current" | "__j_thread_new"))
         }
-        _ => false,
-    };
+        _ => false };
     if thread_receiver {
         if method == "start" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_thread_start")),
                 args: vec![Argument::positional(receiver.clone())],
-                optional: false,
-            });
+                optional: false });
         }
         let prelude_fn = match method.as_str() {
             "join" => {
@@ -5687,8 +5627,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     ExprKind::Ident(name) => {
                         JAVA_THREAD_UNSAFE_TARGETS.with(|targets| targets.borrow().contains(name))
                     }
-                    _ => false,
-                };
+                    _ => false };
                 Some(if unsafe_target {
                     "__j_thread_join"
                 } else {
@@ -5702,16 +5641,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "setPriority" => Some("__j_thread_set_priority"),
             "interrupt" => Some("__j_thread_interrupt"),
             "isInterrupted" => Some("__j_thread_is_interrupted"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5720,8 +5657,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if n == "__java_random_new")
         }
-        _ => false,
-    };
+        _ => false };
     if tlr_receiver || java_random_receiver(&receiver) {
         let prelude_fn = match method.as_str() {
             "setSeed" => Some("__java_random_set_seed"),
@@ -5736,16 +5672,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "longs" => Some("__java_random_longs"),
             "doubles" => Some("__java_random_doubles"),
             "nextBytes" => Some("__java_random_next_bytes"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5772,18 +5706,15 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             Argument::positional(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_i32")),
                 args: vec![value],
-                optional: false,
-            })),
+                optional: false })),
         );
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("Integer")),
                 field: method,
-                null_safe: false,
-            })),
+                null_safe: false })),
             args,
-            optional: false,
-        });
+            optional: false });
     }
 
     // Integer.to{Binary,Hex,Octal}String → __j_to_radix (unsigned 32-bit
@@ -5794,16 +5725,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "toBinaryString" => Some(2),
             "toOctalString" => Some(8),
             "toHexString" => Some(16),
-            _ => None,
-        };
+            _ => None };
         if let Some(radix) = radix {
             let mut call_args = args;
             call_args.push(Argument::positional(Expression::int(radix)));
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_to_radix")),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5821,8 +5750,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 key: None,
                 value: arg.value,
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect();
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_sprintf")),
@@ -5830,8 +5758,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 fmt,
                 Argument::positional(Expression::new(ExprKind::Array(rest))),
             ],
-            optional: false,
-        });
+            optional: false });
     }
     if let ExprKind::Member {
         object: ref root_obj,
@@ -5845,8 +5772,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__process_exit")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
     }
@@ -5856,8 +5782,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_char_unicode_block_of")),
             args,
-            optional: false,
-        });
+            optional: false });
     }
     // StringBuilder/StringBuffer receivers → the __j_sb_* runtime
     // (emitter/format_runtime.rs; the builder stores its text in
@@ -5883,8 +5808,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     | "__j_sb_reverse"
             )
         ),
-        _ => false,
-    };
+        _ => false };
     if sb_receiver {
         let prelude_fn = match method.as_str() {
             "toString" => Some("__j_sb_to_string"),
@@ -5902,16 +5826,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "ensureCapacity" => Some("__j_sb_ensure_capacity"),
             "compareTo" => Some("__j_sb_compare_to"),
             "appendCodePoint" => Some("__j_sb_append_code_point"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
         if matches!(
             method.as_str(),
@@ -5926,26 +5848,22 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             let as_string = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_sb_to_string")),
                 args: vec![Argument::positional(receiver)],
-                optional: false,
-            });
+                optional: false });
             if method == "codePointCount" {
                 let mut call_args = vec![Argument::positional(as_string)];
                 call_args.extend(args);
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_string_code_point_count")),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(as_string),
                     field: method,
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5955,14 +5873,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             ExprKind::Ident(c) => java_type_simple_name(c) == "BigInteger",
             ExprKind::Member { .. } => java_qualified_static_type(class)
                 .is_some_and(|name| java_type_simple_name(&name) == "BigInteger"),
-            _ => false,
-        },
+            _ => false },
         ExprKind::Call { callee, .. } => matches!(
             &callee.kind,
             ExprKind::Ident(n) if n.starts_with("__java_bigint") || n == "__java_bigint"
         ),
-        _ => java_bigint_constant_replacement(&receiver).is_some(),
-    };
+        _ => java_bigint_constant_replacement(&receiver).is_some() };
     if bigint_receiver {
         if let Some(prelude_fn) = java_bigint_method_name(&method) {
             let mut call_args = vec![Argument::positional(receiver)];
@@ -5970,8 +5886,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -5981,14 +5896,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             ExprKind::Ident(c) => java_type_simple_name(c) == "BigDecimal",
             ExprKind::Member { .. } => java_qualified_static_type(class)
                 .is_some_and(|name| java_type_simple_name(&name) == "BigDecimal"),
-            _ => false,
-        },
+            _ => false },
         ExprKind::Call { callee, .. } => matches!(
             &callee.kind,
             ExprKind::Ident(n) if java_bigdecimal_function_returns_bigdecimal(n)
         ),
-        _ => java_bigdecimal_constant_replacement(&receiver).is_some(),
-    };
+        _ => java_bigdecimal_constant_replacement(&receiver).is_some() };
     if bigdecimal_receiver {
         if let Some(prelude_fn) = java_bigdecimal_method_name(&method, args.len()) {
             let mut call_args = vec![Argument::positional(receiver)];
@@ -5996,8 +5909,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6009,8 +5921,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             &callee.kind,
             ExprKind::Ident(n) if matches!(n.as_str(), "__j_df_new" | "__j_df_currency" | "__j_df_percent" | "__j_df_clone")
         ),
-        _ => false,
-    };
+        _ => false };
     if decimal_format_receiver {
         if let Some(prelude_fn) = java_decimal_format_method_name(&method) {
             let mut call_args = vec![Argument::positional(receiver)];
@@ -6018,8 +5929,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6030,8 +5940,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_double_to_string")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if java_stream_builder_receiver(&receiver) {
@@ -6044,8 +5953,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_stream_builder_add")),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6053,8 +5961,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_stream_is_parallel")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "compareTo"
@@ -6068,8 +5975,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_string_compare_to")),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     let string_prelude_fn = match method.as_str() {
@@ -6086,8 +5992,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         "codePoints" => Some("__j_string_code_points"),
         "stripIndent" => Some("__j_string_strip_indent"),
         "translateEscapes" => Some("__j_string_translate_escapes"),
-        _ => None,
-    };
+        _ => None };
     if method == "length" && args.is_empty() {
         if let ExprKind::Call {
             callee,
@@ -6101,14 +6006,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Member {
                     object: Box::new(call_args[0].value.clone()),
                     field: "length".to_string(),
-                    null_safe: false,
-                });
+                    null_safe: false });
             }
         }
         if let ExprKind::New {
             class,
-            args: ctor_args,
-        } = &receiver.kind
+            args: ctor_args } = &receiver.kind
         {
             if matches!(&class.kind, ExprKind::Ident(name) if name == "String")
                 && ctor_args.len() == 1
@@ -6124,21 +6027,18 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     return Expression::new(ExprKind::Member {
                         object: Box::new(source.value.clone()),
                         field: "length".to_string(),
-                        null_safe: false,
-                    });
+                        null_safe: false });
                 }
             }
         }
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_str_length")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
     let receiver_is_static_type = match &receiver.kind {
         ExprKind::Ident(name) => is_java_type_or_util(name),
-        _ => java_qualified_static_type(&receiver).is_some(),
-    };
+        _ => java_qualified_static_type(&receiver).is_some() };
     // Pattern.split is java.util.regex semantics, not String.split — leave
     // it for the Pattern-receiver arm below.
     let receiver_is_pattern = match &receiver.kind {
@@ -6146,8 +6046,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_pat_compile")
         }
-        _ => false,
-    };
+        _ => false };
     if !receiver_is_static_type && !receiver_is_pattern {
         if let Some(prelude_fn) = string_prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
@@ -6155,8 +6054,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6167,8 +6065,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_sj_new" | "__j_sj_add" | "__j_sj_merge" | "__j_sj_set_empty_value"))
         }
-        _ => false,
-    };
+        _ => false };
     if string_joiner_receiver {
         let prelude_fn = match method.as_str() {
             "add" => Some("__j_sj_add"),
@@ -6176,16 +6073,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "setEmptyValue" => Some("__j_sj_set_empty_value"),
             "length" => Some("__j_sj_length"),
             "toString" => Some("__j_sj_to_string"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6196,23 +6091,20 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_st_new")
         }
-        _ => false,
-    };
+        _ => false };
     if string_tokenizer_receiver {
         let prelude_fn = match method.as_str() {
             "hasMoreTokens" | "hasMoreElements" => Some("__j_st_has_more"),
             "nextToken" | "nextElement" => Some("__j_st_next"),
             "countTokens" => Some("__j_st_count"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6221,8 +6113,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_sc_new" | "__j_sc_use_delim" | "__j_sc_use_locale" | "__j_sc_use_radix"))
         }
-        _ => false,
-    };
+        _ => false };
     if scanner_receiver {
         let prelude_fn = match method.as_str() {
             "next" => Some("__j_sc_next"),
@@ -6241,16 +6132,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "skip" => Some("__j_sc_skip"),
             "findInLine" | "findWithinHorizon" => Some("__j_sc_find"),
             "close" => Some("__j_sc_close"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6259,16 +6148,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_fmt_new" | "__j_fmt_format"))
         }
-        _ => false,
-    };
+        _ => false };
     if formatter_receiver {
         let prelude_fn = match method.as_str() {
             "format" => Some("__j_fmt_format"),
             "toString" => Some("__j_fmt_to_string"),
             "locale" => Some("__j_fmt_locale"),
             "out" => Some("__j_fmt_out"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             if method == "format" && !args.is_empty() {
@@ -6279,8 +6166,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         key: None,
                         value: arg.value,
                         spread: false,
-                        by_ref: false,
-                    })
+                        by_ref: false })
                     .collect();
                 call_args.push(fmt);
                 call_args.push(Argument::positional(Expression::new(ExprKind::Array(rest))));
@@ -6290,8 +6176,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6302,8 +6187,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if matches!(n.as_str(), "__j_mf_new" | "__j_mf_clone"))
         }
-        _ => false,
-    };
+        _ => false };
     if message_format_receiver {
         let prelude_fn = match method.as_str() {
             "format" => Some("__j_mf_format"),
@@ -6313,16 +6197,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             "parse" => Some("__j_mf_parse"),
             "clone" => Some("__j_mf_clone"),
             "equals" => Some("__j_mf_equals"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6331,22 +6213,19 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_cal_new")
         }
-        _ => false,
-    };
+        _ => false };
     if calendar_receiver {
         let prelude_fn = match method.as_str() {
             "set" => Some("__j_cal_set"),
             "getTime" => Some("__j_cal_get_time"),
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6366,23 +6245,20 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_pat_compile_flags")),
                     args: vec![re, flags],
-                    optional: false,
-                });
+                    optional: false });
             }
             let re = args.into_iter().next().expect("regex");
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_pat_compile")),
                 args: vec![re],
-                optional: false,
-            });
+                optional: false });
         }
         let pattern_recv = match &receiver.kind {
             ExprKind::Ident(n) => JAVA_PATTERN_VARS.with(|vars| vars.borrow().contains(n.as_str())),
             ExprKind::Call { callee, .. } => {
                 matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_pat_compile")
             }
-            _ => false,
-        };
+            _ => false };
         if pattern_recv {
             let prelude_fn = match method.as_str() {
                 "matcher" => Some("__j_pat_matcher"),
@@ -6390,16 +6266,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 "split" => Some("__j_pat_split"),
                 "pattern" | "toString" => Some("__j_pat_pattern"),
                 "flags" => Some("__j_pat_flags"),
-                _ => None,
-            };
+                _ => None };
             if let Some(prelude_fn) = prelude_fn {
                 let mut call_args = vec![Argument::positional(receiver)];
                 call_args.extend(args);
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(prelude_fn)),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
         let matcher_recv = match &receiver.kind {
@@ -6407,8 +6281,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             ExprKind::Call { callee, .. } => {
                 matches!(&callee.kind, ExprKind::Ident(n) if n == "__j_pat_matcher")
             }
-            _ => false,
-        };
+            _ => false };
         if matcher_recv {
             let prelude_fn = match method.as_str() {
                 "find" => Some("__j_m_find"),
@@ -6420,8 +6293,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 "appendReplacement" => Some("__j_m_append_replacement"),
                 "appendTail" => Some("__j_m_append_tail"),
                 "reset" => Some("__j_m_reset"),
-                _ => None,
-            };
+                _ => None };
             if let Some(prelude_fn) = prelude_fn {
                 let mut call_args = vec![Argument::positional(receiver)];
                 if method == "group" && args.is_empty() {
@@ -6432,8 +6304,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(prelude_fn)),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
     }
@@ -6446,8 +6317,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 &callee.kind,
                 ExprKind::Ident(n) if matches!(n.as_str(), "__java_xml_name" | "__java_xml_node_name")
             ),
-            _ => false,
-        };
+            _ => false };
         if qname_recv {
             let prelude_fn = match method.as_str() {
                 "getLocalPart" => Some("__java_xml_local"),
@@ -6455,16 +6325,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 "getPrefix" => Some("__java_xml_prefix"),
                 "toString" => Some("__java_xml_qualified"),
                 "equals" if args.len() == 1 => Some("__java_xml_equal"),
-                _ => None,
-            };
+                _ => None };
             if let Some(prelude_fn) = prelude_fn {
                 let mut call_args = vec![Argument::positional(receiver)];
                 call_args.extend(args);
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(prelude_fn)),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
     }
@@ -6486,24 +6354,21 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         | "__j_b64_without_padding"
                 )
             ),
-            _ => false,
-        };
+            _ => false };
         if b64_recv {
             let prelude_fn = match method.as_str() {
                 "withoutPadding" => Some("__j_b64_without_padding"),
                 "encodeToString" => Some("__j_b64_encode_to_string"),
                 "encode" => Some("__j_b64_encode"),
                 "decode" => Some("__j_b64_decode"),
-                _ => None,
-            };
+                _ => None };
             if let Some(prelude_fn) = prelude_fn {
                 let mut call_args = vec![Argument::positional(receiver)];
                 call_args.extend(args);
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(prelude_fn)),
                     args: call_args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
     }
@@ -6528,16 +6393,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             {
                 Some("__j_props_class")
             }
-            _ => None,
-        };
+            _ => None };
         if let Some(prelude_fn) = prelude_fn {
             let mut call_args = vec![Argument::positional(receiver)];
             call_args.extend(args);
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(prelude_fn)),
                 args: call_args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6547,15 +6410,13 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Member {
             object: Box::new(receiver),
             field: "message".to_string(),
-            null_safe: false,
-        });
+            null_safe: false });
     }
     if method == "getCause" && args.is_empty() {
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_get_cause")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
     if method == "initCause" && args.len() == 1 {
         let mut call_args = vec![Argument::positional(receiver)];
@@ -6563,8 +6424,22 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_init_cause")),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
+    }
+
+    // System.exit(status) → __process_exit(status), the profile binding for
+    // `wasi:cli/exit.exit-with-code`.
+    //
+    // The rewrite below (root_name == "System" && root_field == "exit") only
+    // matches `System.exit.<something>(…)` — it never fired for the real call,
+    // so `System.exit(4)` reached codegen as a member call on the undefined
+    // global `System` and threw "undefined is not callable" (measured
+    // 2026-08-02). Receiver here is the plain `System` identifier.
+    if method == "exit" && matches!(&receiver.kind, ExprKind::Ident(n) if n == "System") {
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__process_exit")),
+            args,
+            optional: false });
     }
 
     // System.arraycopy(src, srcPos, dest, destPos, len) →
@@ -6573,8 +6448,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_arraycopy")),
             args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if java_expr_dotted_name(&receiver).as_deref() == Some("java.math.BigInteger")
@@ -6583,8 +6457,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_bigint")),
             args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if let Some(type_name) = java_expr_dotted_name(&receiver) {
@@ -6592,15 +6465,13 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_stream_support_stream")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "Runtime" && method == "getRuntime" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_runtime_get")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -6621,8 +6492,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_list_remove_value")),
             args: call_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if let Some(type_name) = java_qualified_static_type(&receiver) {
@@ -6633,15 +6503,13 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_bigint")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "BigDecimal" && method == "valueOf" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_bd_new")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "Optional"
             && method == "of"
@@ -6651,55 +6519,51 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_optional_of_long")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "NumberFormat" && method == "getCurrencyInstance" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_df_currency")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "NumberFormat" && method == "getPercentInstance" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_df_percent")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "MessageFormat" && method == "format" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_mf_static_format")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "TimeZone" && method == "getTimeZone" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_tz_get")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "Objects" {
             if let Some(expr) = java_objects_static_call(method.as_str(), args.clone()) {
                 return expr;
             }
         }
-        if type_name == "StrictMath" && method == "copySign" {
+        if java_type_simple_name(&type_name) == "StrictMath" && method == "copySign" {
             if java_args_are_copy_sign_negative_zero(&args) {
                 return Expression::string("-0.0");
             }
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_double_to_string")),
                 args: vec![Argument::positional(Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::ident("StrictMath.copySign")),
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: Box::new(Expression::ident(&type_name)),
+                        field: "copySign".to_string(),
+                        null_safe: false })),
                     args,
-                    optional: false,
-                }))],
-                optional: false,
-            });
+                    optional: false }))],
+                optional: false });
         }
         if type_name == "Comparator" {
             if let Some(expr) = normalise_comparator_static_call(&method, args.clone()) {
@@ -6711,8 +6575,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(callee)),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
         if type_name == "Base64" {
@@ -6735,23 +6598,20 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__java_random_new")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
         if java_type_simple_name(&type_name) == "StreamSupport" && method == "stream" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_stream_support_stream")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if java_type_simple_name(&type_name) == "Runtime" && method == "getRuntime" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_runtime_get")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
             return java_boolean_parse_call(args);
@@ -6770,22 +6630,19 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(callee)),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if type_name == "String" && method == "format" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_string_format")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if type_name == "String" && method == "join" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_string_join")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if type_name == "String" && matches!(method.as_str(), "copyValueOf" | "translateEscapes") {
             let callee = if method == "copyValueOf" && args.len() == 3 {
@@ -6798,42 +6655,23 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(callee)),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if type_name == "Character" {
             if let Some(callee) = java_character_prelude_fn(&method) {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(callee)),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
         }
         if type_name == "Character.UnicodeBlock" && method == "of" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_char_unicode_block_of")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
-        if type_name.contains('.') {
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::new(ExprKind::Member {
-                    object: Box::new(Expression::ident(&type_name)),
-                    field: method,
-                    null_safe: false,
-                })),
-                args,
-                optional: false,
-            });
-        }
-        let dotted = format!("{}.{}", type_name, method);
-        return Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::ident(&dotted)),
-            args,
-            optional: false,
-        });
+        return java_static_member_call(&type_name, method, args);
     }
 
     // Static type method calls: Integer.parseInt("42") → call "Integer.parseInt"
@@ -6853,8 +6691,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     ExprKind::Lit(Literal::Str(name)) => {
                         is_java_type_or_util(name.rsplit('.').next().unwrap_or(name))
                     }
-                    _ => false,
-                };
+                    _ => false };
                 if jdk_type {
                     return args[0].value.clone();
                 }
@@ -6864,10 +6701,8 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                         name: None,
                         value: args[0].value.clone(),
                         by_ref: false,
-                        spread: false,
-                    }],
-                    optional: false,
-                });
+                        spread: false }],
+                    optional: false });
             }
             if let Some(expr) = java_functional_static_call(type_name, method.as_str(), &args) {
                 return expr;
@@ -6882,8 +6717,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(callee)),
                         args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
             if type_name == "Base64" {
@@ -6906,23 +6740,20 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__java_random_new")),
                         args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
             if java_type_simple_name(type_name) == "StreamSupport" && method == "stream" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_stream_support_stream")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if java_type_simple_name(type_name) == "Runtime" && method == "getRuntime" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_runtime_get")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if type_name == "Boolean" && matches!(method.as_str(), "parseBoolean" | "valueOf") {
                 return java_boolean_parse_call(args);
@@ -6934,8 +6765,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_bd_new")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if type_name == "Optional"
                 && method == "of"
@@ -6945,55 +6775,51 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__java_optional_of_long")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if type_name == "NumberFormat" && method == "getCurrencyInstance" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_df_currency")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if type_name == "NumberFormat" && method == "getPercentInstance" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_df_percent")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if java_type_simple_name(&type_name) == "MessageFormat" && method == "format" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_mf_static_format")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if java_type_simple_name(&type_name) == "TimeZone" && method == "getTimeZone" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_tz_get")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if java_type_simple_name(&type_name) == "Objects" {
                 if let Some(expr) = java_objects_static_call(method.as_str(), args.clone()) {
                     return expr;
                 }
             }
-            if type_name == "StrictMath" && method == "copySign" {
+            if java_type_simple_name(type_name) == "StrictMath" && method == "copySign" {
                 if java_args_are_copy_sign_negative_zero(&args) {
                     return Expression::string("-0.0");
                 }
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__java_double_to_string")),
                     args: vec![Argument::positional(Expression::new(ExprKind::Call {
-                        callee: Box::new(Expression::ident("StrictMath.copySign")),
+                        callee: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident("StrictMath")),
+                            field: "copySign".to_string(),
+                            null_safe: false })),
                         args,
-                        optional: false,
-                    }))],
-                    optional: false,
-                });
+                        optional: false }))],
+                    optional: false });
             }
             if type_name == "String" && method == "valueOf" {
                 let callee = if args.len() == 3 {
@@ -7006,22 +6832,19 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(callee)),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if type_name == "String" && method == "format" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__java_string_format")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if type_name == "String" && method == "join" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__java_string_join")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if type_name == "String"
                 && matches!(method.as_str(), "copyValueOf" | "translateEscapes")
@@ -7036,24 +6859,21 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(callee)),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if type_name == "Character" {
                 if let Some(callee) = java_character_prelude_fn(&method) {
                     return Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(callee)),
                         args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
             if type_name == "Character.UnicodeBlock" && method == "of" {
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_char_unicode_block_of")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if java_type_base_simple_name(&type_name) == "Executors"
                 && method == "newFixedThreadPool"
@@ -7061,20 +6881,14 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
                 return Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__j_exec_new")),
                     args,
-                    optional: false,
-                });
+                    optional: false });
             }
             if java_type_base_simple_name(&type_name) == "Modifier" && args.len() == 1 {
                 if let Some(expr) = java_modifier_static_predicate(&method, &args[0].value) {
                     return expr;
                 }
             }
-            let dotted = format!("{}.{}", type_name, method);
-            return Expression::new(ExprKind::Call {
-                callee: Box::new(Expression::ident(&dotted)),
-                args,
-                optional: false,
-            });
+            return java_static_member_call(type_name, method, args);
         }
     }
 
@@ -7088,15 +6902,13 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_bigint")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
         if type_name == "Executors" && method == "newFixedThreadPool" {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_exec_new")),
                 args,
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -7104,8 +6916,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_to_char_array")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "formatted" && java_string_method_receiver(&receiver) {
@@ -7115,8 +6926,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_string_format")),
             args: format_args,
-            optional: false,
-        });
+            optional: false });
     }
 
     if method == "reversed" && args.is_empty() {
@@ -7131,8 +6941,7 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         return Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_object_get_class")),
             args: vec![Argument::positional(receiver)],
-            optional: false,
-        });
+            optional: false });
     }
 
     if args.is_empty() && java_is_class_token_expr(&receiver) {
@@ -7142,14 +6951,12 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         let callee = match method.as_str() {
             "getName" => Some("__java_class_name"),
             "getSimpleName" => Some("__java_class_simple_name"),
-            _ => None,
-        };
+            _ => None };
         if let Some(callee) = callee {
             return Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(callee)),
                 args: vec![Argument::positional(receiver)],
-                optional: false,
-            });
+                optional: false });
         }
     }
 
@@ -7167,11 +6974,9 @@ fn normalise_method_call(receiver: Expression, method: String, args: Vec<Argumen
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver),
             field: method,
-            null_safe: false,
-        })),
+            null_safe: false })),
         args,
-        optional: false,
-    })
+        optional: false })
 }
 
 fn java_reflection_meta(
@@ -7200,8 +7005,7 @@ fn java_reflection_meta(
                     fields.push(JavaReflectionFieldMeta {
                         name: name.clone(),
                         type_name: type_hint.clone(),
-                        modifiers: java_member_modifier_bits(modifiers),
-                    });
+                        modifiers: java_member_modifier_bits(modifiers) });
                 }
             }
             ClassMember::Method(stmt) => {
@@ -7227,8 +7031,7 @@ fn java_reflection_meta(
                                 })
                                 .collect(),
                             return_type: return_type.clone(),
-                            modifiers: java_member_modifier_bits(modifiers),
-                        });
+                            modifiers: java_member_modifier_bits(modifiers) });
                     }
                 }
             }
@@ -7248,8 +7051,7 @@ fn java_reflection_meta(
                         })
                         .collect(),
                     return_type: None,
-                    modifiers: java_visibility_modifier_bits(*visibility),
-                });
+                    modifiers: java_visibility_modifier_bits(*visibility) });
             }
             ClassMember::NestedType(stmt) => {
                 if let StmtKind::ClassDecl { name, .. }
@@ -7272,8 +7074,7 @@ fn java_reflection_meta(
         nested_classes,
         modifiers: class_modifiers,
         is_interface,
-        is_enum,
-    }
+        is_enum }
 }
 
 fn java_string_method_receiver(receiver: &Expression) -> bool {
@@ -7287,8 +7088,7 @@ fn java_interface_super_receiver(receiver: &Expression) -> Option<String> {
     let ExprKind::Member {
         object,
         field,
-        null_safe: false,
-    } = &receiver.kind
+        null_safe: false } = &receiver.kind
     else {
         return None;
     };
@@ -7433,8 +7233,7 @@ fn java_class_token_method(
                     .unwrap_or(JAVA_MOD_PUBLIC),
             ))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_string_array_expr(values: Vec<String>) -> Expression {
@@ -7462,8 +7261,7 @@ fn java_reflection_callable_array_expr(
                     value.modifiers,
                 ),
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     ))
 }
@@ -7507,8 +7305,7 @@ fn java_reflection_token_expr(
 fn java_reflection_token_name(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
-        _ => common_reflection::member_token(expr).map(|token| token.name),
-    }
+        _ => common_reflection::member_token(expr).map(|token| token.name) }
 }
 
 fn java_reflection_token(expr: &Expression) -> Option<common_reflection::MemberToken> {
@@ -7550,18 +7347,15 @@ fn java_reflection_token_operation(
             Some(Expression::new(ExprKind::Member {
                 object: Box::new(java_reflection_target_expr(&token.owner, &args[0].value)),
                 field: token.name,
-                null_safe: false,
-            }))
+                null_safe: false }))
         }
         (common_reflection::MEMBER_KIND_FIELD, "set") if args.len() == 2 => {
             Some(Expression::new(ExprKind::Assign {
                 target: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(java_reflection_target_expr(&token.owner, &args[0].value)),
                     field: token.name,
-                    null_safe: false,
-                })),
-                value: Box::new(args[1].value.clone()),
-            }))
+                    null_safe: false })),
+                value: Box::new(args[1].value.clone()) }))
         }
         (common_reflection::MEMBER_KIND_METHOD, "invoke") if !args.is_empty() => {
             let call_args = java_reflection_call_args(&args[1..]);
@@ -7569,11 +7363,9 @@ fn java_reflection_token_operation(
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(java_reflection_target_expr(&token.owner, &args[0].value)),
                     field: token.name,
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: call_args.into_iter().map(Argument::positional).collect(),
-                optional: false,
-            }))
+                optional: false }))
         }
         (common_reflection::MEMBER_KIND_CONSTRUCTOR, "newInstance") => {
             Some(Expression::new(ExprKind::New {
@@ -7581,11 +7373,9 @@ fn java_reflection_token_operation(
                 args: java_reflection_call_args(args)
                     .into_iter()
                     .map(Argument::positional)
-                    .collect(),
-            }))
+                    .collect() }))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_reflection_target_expr(owner: &str, target: &Expression) -> Expression {
@@ -7630,8 +7420,7 @@ fn java_class_token_noarg_method(receiver: &Expression, method: &str) -> Option<
                 .map(|name| Expression::string(&name))
                 .unwrap_or_else(Expression::null),
         ),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_class_package_name(name: &str) -> String {
@@ -7655,11 +7444,9 @@ fn java_class_token_name(expr: &Expression) -> Option<String> {
         ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_object_get_class") => {
             args.first().and_then(|arg| match &arg.value.kind {
                 ExprKind::New { class, .. } => java_expr_dotted_name(class),
-                _ => None,
-            })
+                _ => None })
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_class_name_is_primitive(name: &str) -> bool {
@@ -7768,8 +7555,7 @@ fn java_is_class_token_expr(expr: &Expression) -> bool {
                         | "__j_props_class"
                 )
         ),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_expr_dotted_name(expr: &Expression) -> Option<String> {
@@ -7781,8 +7567,7 @@ fn java_expr_dotted_name(expr: &Expression) -> Option<String> {
             prefix.push_str(field);
             Some(prefix)
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_double_static_prelude_fn(method: &str) -> Option<&'static str> {
@@ -7790,8 +7575,7 @@ fn java_double_static_prelude_fn(method: &str) -> Option<&'static str> {
         "compare" => Some("__j_double_compare"),
         "isInfinite" => Some("__j_double_is_infinite"),
         "isFinite" => Some("__j_double_is_finite"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_base64_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
@@ -7802,13 +7586,11 @@ fn java_base64_static_call(method: &str, args: Vec<Argument>) -> Option<Expressi
         "getDecoder" => "__j_b64_decoder",
         "getUrlDecoder" => "__j_b64_url_decoder",
         "getMimeDecoder" => "__j_b64_mime_decoder",
-        _ => return None,
-    };
+        _ => return None };
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(callee)),
         args,
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn java_system_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
@@ -7818,13 +7600,11 @@ fn java_system_static_call(method: &str, args: Vec<Argument>) -> Option<Expressi
         "clearProperty" => "__j_system_clear_property",
         "getProperties" => "__j_system_get_properties",
         "getenv" => "__j_system_getenv",
-        _ => return None,
-    };
+        _ => return None };
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(callee)),
         args,
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn java_thread_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
@@ -7832,13 +7612,11 @@ fn java_thread_static_call(method: &str, args: Vec<Argument>) -> Option<Expressi
         "currentThread" => "__j_thread_current",
         "sleep" => "__j_thread_sleep",
         "interrupted" => "__j_thread_interrupted",
-        _ => return None,
-    };
+        _ => return None };
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(callee)),
         args,
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn java_args_to_array(args: &[Argument]) -> Expression {
@@ -7848,8 +7626,7 @@ fn java_args_to_array(args: &[Argument]) -> Expression {
                 key: None,
                 value: arg.value.clone(),
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     ))
 }
@@ -7863,8 +7640,7 @@ fn java_boolean_parse_call(args: Vec<Argument>) -> Expression {
     Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(value),
-        right: Box::new(Expression::string("true")),
-    })
+        right: Box::new(Expression::string("true")) })
 }
 
 fn java_integer_to_string_call(args: Vec<Argument>) -> Expression {
@@ -7876,14 +7652,12 @@ fn java_integer_to_string_call(args: Vec<Argument>) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_to_radix")),
             args: vec![value, radix],
-            optional: false,
-        })
+            optional: false })
     } else {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_string_value_of")),
             args: vec![value],
-            optional: false,
-        })
+            optional: false })
     }
 }
 
@@ -7897,8 +7671,7 @@ fn normalise_comparator_static_call(method: &str, args: Vec<Argument>) -> Option
             args[1].value.clone(),
         )),
         "nullsLast" if args.len() == 1 => Some(java_comparator_nulls_last(args[0].value.clone())),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_lambda_param(name: &str) -> Param {
@@ -7910,8 +7683,7 @@ fn java_lambda_param(name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    }
+        is_nullable: false }
 }
 
 fn java_one_arg_lambda(body: Expression) -> Expression {
@@ -7919,8 +7691,7 @@ fn java_one_arg_lambda(body: Expression) -> Expression {
         params: vec![java_lambda_param("__value__")],
         body: LambdaBody::Expr(Box::new(body)),
         is_async: false,
-        captures: vec![],
-    })
+        captures: vec![] })
 }
 
 fn java_two_arg_lambda(body: Expression) -> Expression {
@@ -7928,31 +7699,27 @@ fn java_two_arg_lambda(body: Expression) -> Expression {
         params: vec![java_lambda_param("__a__"), java_lambda_param("__b__")],
         body: LambdaBody::Expr(Box::new(body)),
         is_async: false,
-        captures: vec![],
-    })
+        captures: vec![] })
 }
 
 fn java_functional_value_call(function: Expression, args: Vec<Argument>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Sequence(vec![function]))),
         args,
-        optional: false,
-    })
+        optional: false })
 }
 
 fn java_binary(op: BinOp, left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right),
-    })
+        right: Box::new(right) })
 }
 
 fn java_not(expr: Expression) -> Expression {
     Expression::new(ExprKind::Unary {
         op: UnaryOp::Not,
-        expr: Box::new(expr),
-    })
+        expr: Box::new(expr) })
 }
 
 fn java_sequence(items: Vec<Expression>) -> Expression {
@@ -7963,8 +7730,7 @@ fn java_objects_equals(left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__j_objects_equals")),
         args: vec![Argument::positional(left), Argument::positional(right)],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn java_objects_static_call(method: &str, args: Vec<Argument>) -> Option<Expression> {
@@ -7977,29 +7743,35 @@ fn java_objects_static_call(method: &str, args: Vec<Argument>) -> Option<Express
         "nonNull" => "__j_objects_non_null",
         "compare" => "__j_objects_compare",
         "toString" => "__j_objects_to_string",
-        _ => return None,
-    };
+        _ => return None };
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(callee)),
         args,
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn java_ternary(cond: Expression, then_expr: Expression, else_expr: Expression) -> Expression {
     Expression::new(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(then_expr),
-        else_: Box::new(else_expr),
-    })
+        else_: Box::new(else_expr) })
 }
 
 fn java_call(callee: Expression, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
+}
+
+fn java_static_member_call(type_name: &str, method: String, args: Vec<Argument>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(type_name)),
+            field: method,
+            null_safe: false })),
+        args,
+        optional: false })
 }
 
 fn java_compare_expr(left: Expression, right: Expression, reverse: bool) -> Expression {
@@ -8077,8 +7849,7 @@ fn java_comparator_then_comparing(comparator: Expression, next: Expression) -> E
         ExprKind::Lambda { params, .. } if params.len() == 2 => {
             java_comparator_call(next, "__a__", "__b__")
         }
-        _ => java_key_compare_expr(next, "__a__", "__b__"),
-    };
+        _ => java_key_compare_expr(next, "__a__", "__b__") };
     java_two_arg_lambda(java_ternary(
         java_binary(BinOp::NotEq, primary_for_cond, Expression::int(0)),
         primary_for_result,
@@ -8145,8 +7916,7 @@ fn collect_member_chain<'a>(expr: &'a Expression, parts: &mut Vec<&'a str>) -> O
             parts.push(field.as_str());
             Some(())
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_character_prelude_fn(method: &str) -> Option<&'static str> {
@@ -8185,8 +7955,7 @@ fn java_character_prelude_fn(method: &str) -> Option<&'static str> {
         "isMirrored" => Some("__j_char_is_mirrored"),
         "toTitleCase" => Some("__j_char_to_title_case"),
         "isSurrogatePair" => Some("__j_char_is_surrogate_pair"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_is_functional_interface_type(type_name: &str) -> bool {
@@ -8233,8 +8002,7 @@ fn java_functional_receiver(receiver: &Expression) -> bool {
     match &receiver.kind {
         ExprKind::Ident(name) => JAVA_FUNCTIONAL_VARS.with(|vars| vars.borrow().contains(name)),
         ExprKind::Lambda { .. } => true,
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_optional_receiver(receiver: &Expression) -> bool {
@@ -8263,8 +8031,7 @@ fn java_optional_receiver(receiver: &Expression) -> bool {
                 ExprKind::Member { field, .. } if matches!(field.as_str(), "findFirst" | "findAny" | "min" | "max")
             )
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_functional_method(method: &str) -> bool {
@@ -8315,8 +8082,7 @@ fn java_functional_type_of(receiver: &Expression) -> Option<String> {
         ExprKind::Ident(name) => {
             JAVA_FUNCTIONAL_TYPES.with(|types| types.borrow().get(name).cloned())
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_functional_is_consumer(receiver: &Expression) -> bool {
@@ -8330,8 +8096,7 @@ fn java_functional_is_bi(receiver: &Expression) -> bool {
         ExprKind::Lambda { params, .. } => params.len() == 2,
         _ => java_functional_type_of(receiver)
             .map(|type_name| java_type_simple_name(&type_name).starts_with("Bi"))
-            .unwrap_or(false),
-    }
+            .unwrap_or(false) }
 }
 
 fn java_forward_args(is_bi: bool) -> Vec<Argument> {
@@ -8408,8 +8173,7 @@ fn java_functional_default_method(
             );
             Some(java_forwarding_lambda(is_bi, second))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_functional_static_call(
@@ -8457,8 +8221,7 @@ fn java_functional_static_call(
                 Expression::ident("__b__"),
             )))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_arg_is_char_array(arg: &Argument) -> bool {
@@ -8492,8 +8255,7 @@ fn java_string_ctor_arg_is_array_source(arg: &Argument) -> bool {
                         | "__j_b64_decode"
                 )
         ),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn is_java_type_or_util(name: &str) -> bool {
@@ -8588,8 +8350,7 @@ fn walk_primary_atom(pair: Pair<Rule>) -> Result<Expression, String> {
         )),
         Rule::method_reference => walk_method_reference(inner),
         Rule::ident_name => Ok(Expression::ident(inner.as_str())),
-        _ => walk_expression(inner),
-    }
+        _ => walk_expression(inner) }
 }
 
 fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -8672,8 +8433,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__java_xml_name")),
                         args: call_args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(
                     class_name.as_str(),
@@ -8683,36 +8443,31 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_pb_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(class_name.as_str(), "File" | "java.io.File") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_file_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(class_name.as_str(), "Properties" | "java.util.Properties") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_props_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_simple_name(&class_name), "BigDecimal") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_bd_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_simple_name(&class_name), "DecimalFormatSymbols") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_df_symbols")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_simple_name(&class_name), "DecimalFormat") {
                     let mut args = args;
@@ -8724,15 +8479,13 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_df_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_simple_name(&class_name), "Formatter") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_fmt_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_simple_name(&class_name), "MessageFormat") {
                     let mut args = args;
@@ -8742,8 +8495,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_mf_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(
                     java_type_simple_name(&class_name),
@@ -8752,8 +8504,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_cal_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(
                     class_name.as_str(),
@@ -8765,28 +8516,24 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_sb_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_simple_name(&class_name), "String") && args.len() == 3 {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_code_points_to_string")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_simple_name(&class_name), "String") && args.len() == 1 {
                     if java_string_ctor_arg_is_array_source(&args[0]) {
                         return Ok(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__j_string_from_array")),
                             args,
-                            optional: false,
-                        }));
+                            optional: false }));
                     }
                     return Ok(Expression::new(ExprKind::New {
                         class: Box::new(Expression::ident("String")),
-                        args,
-                    }));
+                        args }));
                 }
                 if matches!(
                     class_name.as_str(),
@@ -8800,8 +8547,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(callee)),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(
                     class_name.as_str(),
@@ -8810,27 +8556,23 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     let callee = match args.len() {
                         2 => "__j_st_new2",
                         3 => "__j_st_new3",
-                        _ => "__j_st_new",
-                    };
+                        _ => "__j_st_new" };
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(callee)),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(class_name.as_str(), "Scanner" | "java.util.Scanner") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_sc_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(class_name.as_str(), "Thread" | "java.lang.Thread") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_thread_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(
                     class_name.as_str(),
@@ -8839,15 +8581,13 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__java_semaphore_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_base_simple_name(&class_name), "CountDownLatch") {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_latch_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 if matches!(java_type_base_simple_name(&class_name), "FutureTask") {
                     let mut args = args;
@@ -8861,13 +8601,11 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_future_task_new")),
                         args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 return Ok(Expression::new(ExprKind::New {
                     class: Box::new(Expression::ident(&class_name)),
-                    args,
-                }));
+                    args }));
             }
             Rule::type_ref => {
                 anonymous_interfaces.push(extract_ref_name(&p));
@@ -8916,8 +8654,7 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                             Argument::positional(sizes[0].clone()),
                             Argument::positional(sizes[1].clone()),
                         ],
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
                 // new int[5] → __new_array(5)
                 if let Some(sz) = sizes.into_iter().next() {
@@ -8925,13 +8662,11 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
                         "boolean" | "boolean[]" => "__new_bool_array",
                         "byte" | "short" | "int" | "long" | "char" | "byte[]" | "short[]"
                         | "int[]" | "long[]" | "char[]" => "__new_int_array",
-                        _ => "__new_array",
-                    };
+                        _ => "__new_array" };
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(callee)),
                         args: vec![Argument::positional(sz)],
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
             }
             Rule::anonymous_class_body => {
@@ -8955,14 +8690,12 @@ fn walk_new(pair: Pair<Rule>) -> Result<Expression, String> {
         return Ok(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__j_fmt_new")),
             args: vec![],
-            optional: false,
-        }));
+            optional: false }));
     }
 
     Ok(Expression::new(ExprKind::New {
         class: Box::new(Expression::ident(&class_name)),
-        args: vec![],
-    }))
+        args: vec![] }))
 }
 
 fn walk_anonymous_class_new(
@@ -8984,12 +8717,10 @@ fn walk_anonymous_class_new(
         name: None,
         parent,
         interfaces,
-        members,
-    });
+        members });
     Ok(Expression::new(ExprKind::New {
         class: Box::new(class_expr),
-        args,
-    }))
+        args }))
 }
 
 fn java_anonymous_interface_target(class_name: &str) -> bool {
@@ -9065,7 +8796,7 @@ fn erase_java_interface_param_hints_with_types(
                     }
                 }
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value, .. } => {
                 for target in targets {
                     erase_java_interface_hints_expr(target);
                 }
@@ -9121,8 +8852,7 @@ fn java_initializer_is_class_object(
         ExprKind::Sequence(items) => items
             .last()
             .is_some_and(|expr| java_initializer_is_class_object(expr, concrete_locals)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_concrete_initializer_type(
@@ -9132,23 +8862,20 @@ fn java_concrete_initializer_type(
     match &expr.kind {
         ExprKind::New { class, .. } => match &class.kind {
             ExprKind::Ident(name) => Some(name.clone()),
-            _ => None,
-        },
+            _ => None },
         ExprKind::Cast { expr, .. } => java_concrete_initializer_type(expr, concrete_locals),
         ExprKind::Ident(name) => concrete_locals.get(name).cloned(),
         ExprKind::Sequence(items) => items
             .last()
             .and_then(|expr| java_concrete_initializer_type(expr, concrete_locals)),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn erase_java_interface_hints_expr(expr: &mut Expression) {
     match &mut expr.kind {
         ExprKind::Cast {
             expr: inner,
-            type_name,
-        } if java_anonymous_interface_target(type_name) => {
+            type_name } if java_anonymous_interface_target(type_name) => {
             *expr = (**inner).clone();
         }
         ExprKind::Call { callee, args, .. } => {
@@ -9195,8 +8922,7 @@ fn erase_java_interface_hints_expr(expr: &mut Expression) {
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => erase_java_interface_hints_expr(expr),
-            LambdaBody::Block(stmts) => erase_java_interface_param_hints(stmts),
-        },
+            LambdaBody::Block(stmts) => erase_java_interface_param_hints(stmts) },
         _ => {}
     }
 }
@@ -9373,8 +9099,7 @@ fn reject_java_direct_abstract_instantiation_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             reject_java_direct_abstract_instantiation_expr(cond, abstract_classes)?;
             for stmt in then_body {
                 reject_java_direct_abstract_instantiation_stmt(stmt, abstract_classes)?;
@@ -9391,7 +9116,7 @@ fn reject_java_direct_abstract_instantiation_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 reject_java_direct_abstract_instantiation_expr(target, abstract_classes)?;
             }
@@ -9471,8 +9196,7 @@ fn walk_anonymous_comparator(pair: Pair<Rule>) -> Result<Option<Expression>, Str
                 params,
                 body: LambdaBody::Block(body),
                 is_async: false,
-                captures: vec![],
-            })));
+                captures: vec![] })));
         }
     }
     Ok(None)
@@ -9492,13 +9216,11 @@ fn walk_array_creation(pair: Pair<Rule>) -> Result<Expression, String> {
                 let callee = match prim_type.as_str() {
                     "boolean" => "__new_bool_array",
                     "byte" | "short" | "int" | "long" | "char" => "__new_int_array",
-                    _ => "__new_array",
-                };
+                    _ => "__new_array" };
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(callee)),
                     args: vec![Argument::positional(sz)],
-                    optional: false,
-                }));
+                    optional: false }));
             }
             _ => {}
         }
@@ -9514,8 +9236,7 @@ fn walk_initializer_as_array(pair: Pair<Rule>) -> Result<Expression, String> {
                 key: None,
                 value: walk_initializer(el)?,
                 spread: false,
-                by_ref: false,
-            });
+                by_ref: false });
         }
     }
     Ok(Expression::new(ExprKind::Array(elems)))
@@ -9539,8 +9260,7 @@ fn walk_super_call(pair: Pair<Rule>) -> Result<Expression, String> {
     };
     Ok(Expression::new(ExprKind::SuperCall {
         method: Some(method_name),
-        args,
-    }))
+        args }))
 }
 
 fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -9559,8 +9279,7 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
             let callee = match element_type {
                 "boolean" => "__new_bool_array",
                 "byte" | "short" | "int" | "long" | "char" => "__new_int_array",
-                _ => "__new_array",
-            };
+                _ => "__new_array" };
             return Ok(Expression::new(ExprKind::Lambda {
                 params: vec![Param {
                     name: "__size__".to_string(),
@@ -9570,16 +9289,13 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false,
-                }],
+                    is_nullable: false }],
                 body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(callee)),
                     args: vec![Argument::positional(Expression::ident("__size__"))],
-                    optional: false,
-                }))),
+                    optional: false }))),
                 is_async: false,
-                captures: vec![],
-            }));
+                captures: vec![] }));
         }
         return Ok(Expression::new(ExprKind::Lambda {
             params: vec![Param {
@@ -9590,15 +9306,12 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_rest: true,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::New {
                 class: Box::new(obj_expr),
-                args: vec![],
-            }))),
+                args: vec![] }))),
             is_async: false,
-            captures: vec![],
-        }));
+            captures: vec![] }));
     }
 
     if matches!(
@@ -9621,8 +9334,7 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 Argument::positional(Expression::ident("__a__")),
                 Argument::positional(Expression::ident("__b__")),
             ],
-            optional: false,
-        })));
+            optional: false })));
     }
 
     if matches!(
@@ -9632,8 +9344,7 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
         return Ok(java_two_arg_lambda(Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(Expression::ident("__a__")),
-            right: Box::new(Expression::ident("__b__")),
-        })));
+            right: Box::new(Expression::ident("__b__")) })));
     }
 
     if obj_name == "String" && method == "concat" {
@@ -9643,8 +9354,7 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 Argument::positional(Expression::ident("__a__")),
                 Argument::positional(Expression::ident("__b__")),
             ],
-            optional: false,
-        })));
+            optional: false })));
     }
 
     if matches!(obj_name.as_str(), "Objects" | "java.util.Objects") && method == "requireNonNull" {
@@ -9657,12 +9367,10 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(Expression::ident("__value__"))),
             is_async: false,
-            captures: vec![],
-        }));
+            captures: vec![] }));
     }
 
     if matches!(obj_name.as_str(), "Optional" | "java.util.Optional") && method == "empty" {
@@ -9671,11 +9379,9 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("Optional.empty")),
                 args: vec![],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        }));
+            captures: vec![] }));
     }
 
     if matches!(obj_name.as_str(), "Optional" | "java.util.Optional") && method == "isPresent" {
@@ -9688,16 +9394,13 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_optional_is_present")),
                 args: vec![Argument::positional(Expression::ident("__value__"))],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        }));
+            captures: vec![] }));
     }
 
     if obj_name == "Math" || obj_name == "StrictMath" {
@@ -9711,16 +9414,13 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(&callee)),
                 args: vec![Argument::positional(Expression::ident("__value__"))],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        }));
+            captures: vec![] }));
     }
 
     if obj_name == "System.out" && matches!(method.as_str(), "print" | "println") {
@@ -9738,16 +9438,13 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(callee)),
                 args: vec![Argument::positional(Expression::ident("__value__"))],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        }));
+            captures: vec![] }));
     }
 
     if matches!(
@@ -9768,8 +9465,7 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(
                     if obj_name == "String" && method == "valueOf" {
@@ -9779,11 +9475,9 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                     },
                 )),
                 args: vec![Argument::positional(Expression::ident("__value__"))],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        }));
+            captures: vec![] }));
     }
 
     if obj_name == "String" && method == "compareTo" {
@@ -9793,8 +9487,7 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 Argument::positional(Expression::ident("__a__")),
                 Argument::positional(Expression::ident("__b__")),
             ],
-            optional: false,
-        })));
+            optional: false })));
     }
 
     if matches!(
@@ -9836,8 +9529,7 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
             ("String", "trim") | ("String", "strip") => Some("__j_str_trim"),
             ("String", "toUpperCase") => Some("__j_str_to_upper"),
             ("String", "toLowerCase") => Some("__j_str_to_lower"),
-            _ => None,
-        };
+            _ => None };
         if let Some(callee) = direct_callee {
             return Ok(Expression::new(ExprKind::Lambda {
                 params: vec![Param {
@@ -9848,16 +9540,13 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false,
-                }],
+                    is_nullable: false }],
                 body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(callee)),
                     args: vec![Argument::positional(Expression::ident("__value__"))],
-                    optional: false,
-                }))),
+                    optional: false }))),
                 is_async: false,
-                captures: vec![],
-            }));
+                captures: vec![] }));
         }
         return Ok(Expression::new(ExprKind::Lambda {
             params: vec![Param {
@@ -9868,20 +9557,16 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident("__value__")),
                     field: method,
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![],
-                optional: false,
-            }))),
+                optional: false }))),
             is_async: false,
-            captures: vec![],
-        }));
+            captures: vec![] }));
     }
 
     if obj_name
@@ -9899,20 +9584,16 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false,
-                }],
+                    is_nullable: false }],
                 body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(&obj_name)),
                         field: method,
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: vec![Argument::positional(Expression::ident("__value__"))],
-                    optional: false,
-                }))),
+                    optional: false }))),
                 is_async: false,
-                captures: vec![],
-            }));
+                captures: vec![] }));
         }
 
         if matches!(
@@ -9925,22 +9606,18 @@ fn walk_method_reference(pair: Pair<Rule>) -> Result<Expression, String> {
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(&obj_name)),
                         field: method,
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: vec![],
-                    optional: false,
-                }))),
+                    optional: false }))),
                 is_async: false,
-                captures: vec![],
-            }));
+                captures: vec![] }));
         }
     }
 
     Ok(Expression::new(ExprKind::Member {
         object: Box::new(obj_expr),
         field: method,
-        null_safe: false,
-    }))
+        null_safe: false }))
 }
 
 fn walk_lambda(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -9956,14 +9633,12 @@ fn walk_lambda(pair: Pair<Rule>) -> Result<Expression, String> {
     }
     let body = match body_pair.as_rule() {
         Rule::function_body_block => LambdaBody::Block(walk_block(body_pair)?),
-        _ => LambdaBody::Expr(Box::new(walk_expression(body_pair)?)),
-    };
+        _ => LambdaBody::Expr(Box::new(walk_expression(body_pair)?)) };
     Ok(Expression::new(ExprKind::Lambda {
         params,
         body,
         is_async: false,
-        captures: vec![],
-    }))
+        captures: vec![] }))
 }
 
 fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
@@ -9998,8 +9673,7 @@ fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     is_rest: false,
                                     is_kwargs: false,
                                     is_optional: false,
-                                    is_nullable: false,
-                                });
+                                    is_nullable: false });
                             }
                         }
                     }
@@ -10014,8 +9688,7 @@ fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     is_rest: false,
                                     is_kwargs: false,
                                     is_optional: false,
-                                    is_nullable: false,
-                                });
+                                    is_nullable: false });
                             }
                         }
                     }
@@ -10028,8 +9701,7 @@ fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             is_rest: false,
                             is_kwargs: false,
                             is_optional: false,
-                            is_nullable: false,
-                        });
+                            is_nullable: false });
                     }
                     _ => {}
                 }
@@ -10044,8 +9716,7 @@ fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            });
+                is_nullable: false });
         }
         _ => {}
     }
@@ -10064,8 +9735,7 @@ fn walk_arguments(pair: Pair<Rule>) -> Result<Vec<Argument>, String> {
                     value: e,
                     name: None,
                     by_ref: false,
-                    spread: true,
-                });
+                    spread: true });
             } else {
                 args.push(Argument::positional(walk_expression(first)?));
             }
@@ -10107,8 +9777,7 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             };
             Ok(Expression::new(ExprKind::Cast {
                 type_name: "long".to_string(),
-                expr: Box::new(Expression::int(v)),
-            }))
+                expr: Box::new(Expression::int(v)) }))
         }
         Rule::float_literal => {
             let s = inner.as_str().replace('_', "");
@@ -10122,8 +9791,7 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             if let Some(type_name) = type_name {
                 Ok(Expression::new(ExprKind::Cast {
                     type_name: type_name.to_string(),
-                    expr: Box::new(expr),
-                }))
+                    expr: Box::new(expr) }))
             } else {
                 Ok(expr)
             }
@@ -10149,8 +9817,7 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
             let raw = s.trim_start_matches("\"\"\"").trim_end_matches("\"\"\"");
             Ok(Expression::string(&java_text_block_content(raw)))
         }
-        _ => Ok(Expression::null()),
-    }
+        _ => Ok(Expression::null()) }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -10176,8 +9843,7 @@ fn inject_implicit_super(members: &mut Vec<ClassMember>) {
                                     if matches!(&callee.kind, ExprKind::Super)
                             ) || matches!(&e.kind, ExprKind::SuperCall { .. })
                         }
-                        _ => false,
-                    })
+                        _ => false })
                     .unwrap_or(false);
                 if !already_has_super {
                     *base_args = Some(vec![]);
@@ -10201,8 +9867,7 @@ fn inject_java_thread_stamps(members: &mut Vec<ClassMember>) {
                 body: vec![java_thread_init_stmt(None)],
                 base_args: None,
                 initializer_target: ConstructorInitializerTarget::Base,
-                visibility: Visibility::Public,
-            },
+                visibility: Visibility::Public },
         );
         return;
     }
@@ -10253,7 +9918,7 @@ fn rewrite_java_thread_bare_calls_stmt(stmt: &mut Statement) {
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 rewrite_java_thread_bare_calls_expr(target);
             }
@@ -10273,8 +9938,7 @@ fn rewrite_java_thread_bare_calls_stmt(stmt: &mut Statement) {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_java_thread_bare_calls_expr(cond);
             for nested in then_body {
                 rewrite_java_thread_bare_calls_stmt(nested);
@@ -10301,8 +9965,7 @@ fn rewrite_java_thread_bare_calls_stmt(stmt: &mut Statement) {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_java_thread_bare_calls_stmt(init);
             }
@@ -10320,8 +9983,7 @@ fn rewrite_java_thread_bare_calls_stmt(stmt: &mut Statement) {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for nested in body {
                 rewrite_java_thread_bare_calls_stmt(nested);
             }
@@ -10363,8 +10025,7 @@ fn rewrite_java_thread_bare_calls_expr(expr: &mut Expression) {
                     "setPriority" => Some("__j_thread_set_priority"),
                     "interrupt" => Some("__j_thread_interrupt"),
                     "isInterrupted" => Some("__j_thread_is_interrupted"),
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(prelude_fn) = prelude_fn {
                     *callee = Box::new(Expression::ident(prelude_fn));
                     args.insert(0, Argument::positional(Expression::new(ExprKind::This)));
@@ -10400,8 +10061,7 @@ fn java_thread_init_stmt(name_arg: Option<Expression>) -> Statement {
                 name_arg.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Undefined))),
             ),
         ],
-        optional: false,
-    })))
+        optional: false })))
 }
 
 /// Extract an explicit `super(...)` / `this(...)` call from the top of a
@@ -10420,20 +10080,16 @@ fn extract_base_call_from_body(
             ExprKind::Call { callee, .. } => match &callee.kind {
                 ExprKind::Super => Some(ConstructorInitializerTarget::Base),
                 ExprKind::This => Some(ConstructorInitializerTarget::This),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    };
+                _ => None },
+            _ => None },
+        _ => None };
     if let Some(target) = target {
         let s = body.remove(0);
         if let StmtKind::Expr(e) = s.kind {
             let args_exprs: Vec<Expression> = match e.kind {
                 ExprKind::SuperCall { args, .. } => args.into_iter().map(|a| a.value).collect(),
                 ExprKind::Call { args, .. } => args.into_iter().map(|a| a.value).collect(),
-                _ => vec![],
-            };
+                _ => vec![] };
             *base_args = Some(args_exprs);
             *initializer_target = target;
         }
@@ -10445,8 +10101,7 @@ fn default_expr_for_java_type(type_name: &str) -> Option<Expression> {
         "byte" | "short" | "int" | "long" | "char" => Some(Expression::int(0)),
         "float" | "double" => Some(Expression::float(0.0)),
         "boolean" => Some(Expression::bool(false)),
-        _ => None,
-    }
+        _ => None }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -10537,8 +10192,7 @@ fn hoist_local_classes_in_body(
                     .iter()
                     .filter_map(|m| match m {
                         ClassMember::Field { name, .. } => Some(name.clone()),
-                        _ => None,
-                    })
+                        _ => None })
                     .collect();
                 let mut captures: Vec<String> = used
                     .into_iter()
@@ -10565,8 +10219,7 @@ fn hoist_local_classes_in_body(
                     interfaces: vec![],
                     members: std::mem::take(local_members),
                     modifiers,
-                    decorators: vec![],
-                });
+                    decorators: vec![] });
                 hoisted.push(ClassMember::NestedType(Box::new(hoisted_stmt)));
                 mappings.push((old_name, new_name, capture_vals));
 
@@ -10642,8 +10295,7 @@ fn java_thread_local_class_captures(members: &mut Vec<ClassMember>, captures: &[
                 init: None,
                 modifiers: Modifiers::default(),
                 with_events: false,
-                array_bounds: None,
-            },
+                array_bounds: None },
         );
     }
     // The ctor param must NOT share the capture field's name — the
@@ -10658,17 +10310,14 @@ fn java_thread_local_class_captures(members: &mut Vec<ClassMember>, captures: &[
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    };
+        is_nullable: false };
     let store = |name: &str| {
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: name.to_string(),
-                null_safe: false,
-            })],
-            value: Expression::ident(&format!("__cap_{name}")),
-        })
+                null_safe: false })],
+            value: Expression::ident(&format!("__cap_{name}")), by_ref: false })
     };
     let mut saw_ctor = false;
     for member in members.iter_mut() {
@@ -10689,8 +10338,7 @@ fn java_thread_local_class_captures(members: &mut Vec<ClassMember>, captures: &[
             body: captures.iter().map(|n| store(n)).collect(),
             base_args: None,
             initializer_target: ConstructorInitializerTarget::Base,
-            visibility: ParsedModifiers::default().visibility,
-        });
+            visibility: ParsedModifiers::default().visibility });
     }
 }
 
@@ -10728,7 +10376,7 @@ fn java_collect_idents_stmt(stmt: &Statement, out: &mut HashSet<String>) {
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for t in targets {
                 java_collect_idents_expr(t, out);
             }
@@ -10742,8 +10390,7 @@ fn java_collect_idents_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             java_collect_idents_expr(cond, out);
             java_collect_idents_stmts(then_body, out);
             for (c, b) in elifs {
@@ -10758,8 +10405,7 @@ fn java_collect_idents_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(i) = init {
                 java_collect_idents_stmt(i, out);
             }
@@ -10856,7 +10502,7 @@ fn rewrite_java_new_local_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for t in targets {
                 rewrite_java_new_local_expr(t, old_name, new_name, capture_vals);
             }
@@ -10870,8 +10516,7 @@ fn rewrite_java_new_local_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_java_new_local_expr(cond, old_name, new_name, capture_vals);
             for s in then_body.iter_mut() {
                 rewrite_java_new_local_stmt(s, old_name, new_name, capture_vals);
@@ -11072,8 +10717,7 @@ fn java_instance_field_names(members: &[ClassMember]) -> HashSet<String> {
             ClassMember::Field {
                 name, modifiers, ..
             } if !modifiers.is_static => Some(name.clone()),
-            _ => None,
-        })
+            _ => None })
         .collect()
 }
 
@@ -11084,8 +10728,7 @@ fn java_static_field_names(members: &[ClassMember]) -> HashSet<String> {
             ClassMember::Field {
                 name, modifiers, ..
             } if modifiers.is_static => Some(name.clone()),
-            _ => None,
-        })
+            _ => None })
         .collect()
 }
 
@@ -11101,8 +10744,7 @@ fn java_static_field_inits(members: &[ClassMember]) -> HashMap<String, Expressio
             } if modifiers.is_static && java_static_field_init_is_inlineable(init) => {
                 Some((name.clone(), init.clone()))
             }
-            _ => None,
-        })
+            _ => None })
         .collect()
 }
 
@@ -11119,8 +10761,7 @@ fn java_static_field_init_is_inlineable(expr: &Expression) -> bool {
         ExprKind::Array(elems) => elems
             .iter()
             .all(|elem| java_static_field_init_is_inlineable(&elem.value)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_instance_method_names(members: &[ClassMember]) -> HashSet<String> {
@@ -11131,10 +10772,8 @@ fn java_instance_method_names(members: &[ClassMember]) -> HashSet<String> {
                 StmtKind::FunctionDecl {
                     name, modifiers, ..
                 } if !modifiers.is_static => Some(name.clone()),
-                _ => None,
-            },
-            _ => None,
-        })
+                _ => None },
+            _ => None })
         .collect()
 }
 
@@ -11203,8 +10842,7 @@ fn adapt_java_inner_class(
                 init: None,
                 modifiers: Modifiers::default(),
                 with_events: false,
-                array_bounds: None,
-            },
+                array_bounds: None },
         );
     }
 
@@ -11273,8 +10911,7 @@ fn adapt_java_inner_class(
             body,
             base_args: None,
             initializer_target: ConstructorInitializerTarget::Base,
-            visibility: Visibility::Public,
-        });
+            visibility: Visibility::Public });
     }
 }
 
@@ -11298,8 +10935,7 @@ fn java_inner_class_needs_outer(
         ClassMember::Method(stmt) => {
             java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
         }
-        _ => false,
-    })
+        _ => false })
 }
 
 fn java_stmt_needs_java_outer(
@@ -11320,7 +10956,7 @@ fn java_stmt_needs_java_outer(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             java_expr_needs_java_outer(expr, owner_name, owner_fields, owner_methods)
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             java_expr_needs_java_outer(value, owner_name, owner_fields, owner_methods)
                 || targets.iter().any(|target| {
                     java_expr_needs_java_outer(target, owner_name, owner_fields, owner_methods)
@@ -11334,8 +10970,7 @@ fn java_stmt_needs_java_outer(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             java_expr_needs_java_outer(cond, owner_name, owner_fields, owner_methods)
                 || then_body.iter().any(|stmt| {
                     java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
@@ -11363,8 +10998,7 @@ fn java_stmt_needs_java_outer(
                     java_stmt_needs_java_outer(stmt, owner_name, owner_fields, owner_methods)
                 })
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_expr_needs_java_outer(
@@ -11415,8 +11049,7 @@ fn java_expr_needs_java_outer(
                     java_expr_needs_java_outer(&arg.value, owner_name, owner_fields, owner_methods)
                 })
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn rewrite_java_outer_static_refs_nested(
@@ -11504,7 +11137,7 @@ fn rewrite_java_outer_static_refs_stmt(
                 owner_static_field_inits,
             );
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             rewrite_java_outer_static_refs_expr(
                 value,
                 owner_name,
@@ -11538,8 +11171,7 @@ fn rewrite_java_outer_static_refs_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_java_outer_static_refs_expr(
                 cond,
                 owner_name,
@@ -11652,8 +11284,7 @@ fn rewrite_java_outer_static_refs_expr(
             } else {
                 expr.kind = ExprKind::StaticAccess {
                     class: Box::new(Expression::ident(owner_name)),
-                    member: Box::new(Expression::ident(&field)),
-                };
+                    member: Box::new(Expression::ident(&field)) };
             }
         }
         ExprKind::Member { object, field, .. }
@@ -11666,8 +11297,7 @@ fn rewrite_java_outer_static_refs_expr(
             } else {
                 expr.kind = ExprKind::StaticAccess {
                     class: Box::new(Expression::ident(owner_name)),
-                    member: Box::new(Expression::ident(&field)),
-                };
+                    member: Box::new(Expression::ident(&field)) };
             }
         }
         ExprKind::Call { callee, args, .. } => {
@@ -11825,8 +11455,7 @@ fn java_outer_param(owner_name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    }
+        is_nullable: false }
 }
 
 fn java_outer_assign_stmt() -> Statement {
@@ -11834,10 +11463,8 @@ fn java_outer_assign_stmt() -> Statement {
         targets: vec![Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: "__java_outer".to_string(),
-            null_safe: false,
-        })],
-        value: Expression::ident("__java_outer"),
-    })
+            null_safe: false })],
+        value: Expression::ident("__java_outer"), by_ref: false })
 }
 
 fn java_inner_field_init_assign_stmt(name: &str, value: Expression) -> Statement {
@@ -11845,10 +11472,8 @@ fn java_inner_field_init_assign_stmt(name: &str, value: Expression) -> Statement
         targets: vec![Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: name.to_string(),
-            null_safe: false,
-        })],
-        value,
-    })
+            null_safe: false })],
+        value, by_ref: false })
 }
 
 fn java_insert_inner_field_inits(body: &mut Vec<Statement>, field_inits: &[Statement]) {
@@ -11876,15 +11501,13 @@ fn java_outer_expr() -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::This)),
         field: "__java_outer".to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn java_typed_outer_expr(owner_name: &str) -> Expression {
     Expression::new(ExprKind::Cast {
         expr: Box::new(java_outer_expr()),
-        type_name: owner_name.to_string(),
-    })
+        type_name: owner_name.to_string() })
 }
 
 fn rewrite_java_nested_type_refs_in_members(
@@ -11941,7 +11564,7 @@ fn rewrite_java_nested_type_refs_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             rewrite_java_nested_type_refs_expr(expr, nested_types);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             rewrite_java_nested_type_refs_expr(value, nested_types);
             for target in targets {
                 rewrite_java_nested_type_refs_expr(target, nested_types);
@@ -11951,8 +11574,7 @@ fn rewrite_java_nested_type_refs_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_java_nested_type_refs_expr(cond, nested_types);
             rewrite_java_nested_type_refs_stmts(then_body, nested_types);
             for (elif_cond, elif_body) in elifs {
@@ -11971,8 +11593,7 @@ fn rewrite_java_nested_type_refs_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_java_nested_type_refs_stmt(init, nested_types);
             }
@@ -12033,8 +11654,7 @@ fn rewrite_java_nested_type_refs_expr(
                 if let Some(type_name) = java_registered_nested_type_name(object) {
                     callee.kind = ExprKind::StaticAccess {
                         class: Box::new(Expression::ident(&type_name)),
-                        member: Box::new(Expression::ident(field)),
-                    };
+                        member: Box::new(Expression::ident(field)) };
                 }
             }
             rewrite_java_nested_type_refs_expr(callee, nested_types);
@@ -12049,8 +11669,7 @@ fn rewrite_java_nested_type_refs_expr(
                 };
                 expr.kind = ExprKind::StaticAccess {
                     class: Box::new(Expression::ident(&type_name)),
-                    member: Box::new(Expression::ident(field)),
-                };
+                    member: Box::new(Expression::ident(field)) };
                 return;
             }
             rewrite_java_nested_type_refs_expr(object, nested_types);
@@ -12125,7 +11744,7 @@ fn rewrite_java_inner_outer_refs_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             rewrite_java_inner_outer_refs_expr(expr, owner_name, owner_fields, owner_methods);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             rewrite_java_inner_outer_refs_expr(value, owner_name, owner_fields, owner_methods);
             for target in targets {
                 rewrite_java_inner_outer_refs_expr(target, owner_name, owner_fields, owner_methods);
@@ -12135,8 +11754,7 @@ fn rewrite_java_inner_outer_refs_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_java_inner_outer_refs_expr(cond, owner_name, owner_fields, owner_methods);
             rewrite_java_inner_outer_refs_stmts(then_body, owner_name, owner_fields, owner_methods);
             for (elif_cond, elif_body) in elifs {
@@ -12193,8 +11811,7 @@ fn rewrite_java_inner_outer_refs_expr(
             expr.kind = ExprKind::Member {
                 object: Box::new(java_typed_outer_expr(owner_name)),
                 field,
-                null_safe: false,
-            };
+                null_safe: false };
         }
         ExprKind::Call { callee, args, .. } => {
             for arg in &mut *args {
@@ -12211,8 +11828,7 @@ fn rewrite_java_inner_outer_refs_expr(
                     callee.kind = ExprKind::Member {
                         object: Box::new(java_typed_outer_expr(owner_name)),
                         field: method,
-                        null_safe: false,
-                    };
+                        null_safe: false };
                     return;
                 }
             }
@@ -12302,10 +11918,8 @@ fn java_expr_reads_java_outer(expr: &Expression) -> bool {
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(expr) => java_expr_reads_java_outer(expr),
-            LambdaBody::Block(stmts) => stmts.iter().any(java_stmt_reads_java_outer),
-        },
-        _ => false,
-    }
+            LambdaBody::Block(stmts) => stmts.iter().any(java_stmt_reads_java_outer) },
+        _ => false }
 }
 
 fn java_stmt_reads_java_outer(stmt: &Statement) -> bool {
@@ -12317,7 +11931,7 @@ fn java_stmt_reads_java_outer(stmt: &Statement) -> bool {
             .iter()
             .any(|decl| decl.init.as_ref().is_some_and(java_expr_reads_java_outer)),
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => java_expr_reads_java_outer(expr),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             java_expr_reads_java_outer(value) || targets.iter().any(java_expr_reads_java_outer)
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -12327,8 +11941,7 @@ fn java_stmt_reads_java_outer(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             java_expr_reads_java_outer(cond)
                 || then_body.iter().any(java_stmt_reads_java_outer)
                 || elifs.iter().any(|(cond, body)| {
@@ -12341,8 +11954,7 @@ fn java_stmt_reads_java_outer(stmt: &Statement) -> bool {
         StmtKind::While { cond, body, .. } | StmtKind::DoWhile { cond, body, .. } => {
             java_expr_reads_java_outer(cond) || body.iter().any(java_stmt_reads_java_outer)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn rewrite_java_user_tostring_calls(body: &mut [Statement]) {
@@ -12540,8 +12152,7 @@ fn rewrite_java_tostring_stmts(
                         } if matches!(type_hint.as_str(), "double" | "Double") => {
                             Some(name.clone())
                         }
-                        _ => None,
-                    })
+                        _ => None })
                     .collect();
                 let field_types: HashMap<String, String> = members
                     .iter()
@@ -12549,8 +12160,7 @@ fn rewrite_java_tostring_stmts(
                         ClassMember::Field {
                             name, type_hint, ..
                         } => type_hint.as_ref().map(|t| (name.clone(), t.clone())),
-                        _ => None,
-                    })
+                        _ => None })
                     .collect();
                 let method_return_types: HashMap<String, String> = members
                     .iter()
@@ -12564,10 +12174,8 @@ fn rewrite_java_tostring_stmts(
                             } if params.is_empty() => {
                                 Some((format!("{name}()"), return_type.clone()))
                             }
-                            _ => None,
-                        },
-                        _ => None,
-                    })
+                            _ => None },
+                        _ => None })
                     .collect();
                 JAVA_STATIC_FIELD_VARS.with(|vars| {
                     let mut vars = vars.borrow_mut();
@@ -12582,6 +12190,7 @@ fn rewrite_java_tostring_stmts(
                             if modifiers.is_static {
                                 vars.insert(format!("{name}.{field_name}"));
                                 if let Some(type_hint) = type_hint {
+                                    java_register_field_receiver_type(field_name, type_hint);
                                     JAVA_STATIC_FIELD_TYPES.with(|types| {
                                         types.borrow_mut().insert(
                                             format!("{name}.{field_name}"),
@@ -12688,7 +12297,7 @@ fn rewrite_java_tostring_stmts(
                     }
                 }
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value, .. } => {
                 rewrite_java_tostring_expr(
                     value,
                     tostring_classes,
@@ -12742,8 +12351,7 @@ fn rewrite_java_tostring_stmts(
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 rewrite_java_tostring_expr(
                     cond,
                     tostring_classes,
@@ -12850,8 +12458,7 @@ fn rewrite_java_tostring_stmts(
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 rewrite_java_tostring_stmts(
                     body,
                     tostring_classes,
@@ -12895,8 +12502,7 @@ fn rewrite_java_tostring_stmts(
                 init,
                 cond,
                 update,
-                body,
-            } => {
+                body } => {
                 if let Some(init) = init {
                     rewrite_java_tostring_stmts(
                         std::slice::from_mut(init),
@@ -12968,8 +12574,7 @@ fn rewrite_java_map_for_each_stmt(stmt: &mut Statement) {
             StmtKind::Expr((**inner).clone()),
             span,
         )],
-        LambdaBody::Block(stmts) => stmts.clone(),
-    };
+        LambdaBody::Block(stmts) => stmts.clone() };
     for body_stmt in &mut body_stmts {
         substitute_java_map_for_each_params_stmt(body_stmt, &key_name, &value_name, &entry_name);
     }
@@ -12977,8 +12582,7 @@ fn rewrite_java_map_for_each_stmt(stmt: &mut Statement) {
     let iter = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("__java_map_entry_set")),
         args: vec![Argument::positional(args[0].value.clone())],
-        optional: false,
-    });
+        optional: false });
     stmt.kind = StmtKind::ForIn {
         var: entry_name,
         key: None,
@@ -12986,16 +12590,14 @@ fn rewrite_java_map_for_each_stmt(stmt: &mut Statement) {
         body: body_stmts,
         of: true,
         else_body: None,
-        is_async: false,
-    };
+        is_async: false };
 }
 
 fn java_map_for_each_entry_expr(entry_name: &str, index: i64) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(Expression::ident(entry_name)),
         index: Box::new(Expression::new(ExprKind::Lit(Literal::Int(index)))),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn substitute_java_map_for_each_params_stmt(
@@ -13017,7 +12619,7 @@ fn substitute_java_map_for_each_params_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 substitute_java_map_for_each_params_expr(target, key_name, value_name, entry_name);
             }
@@ -13036,8 +12638,7 @@ fn substitute_java_map_for_each_params_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             substitute_java_map_for_each_params_expr(cond, key_name, value_name, entry_name);
             for nested in then_body {
                 substitute_java_map_for_each_params_stmt(nested, key_name, value_name, entry_name);
@@ -13070,8 +12671,7 @@ fn substitute_java_map_for_each_params_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 substitute_java_map_for_each_params_stmt(init, key_name, value_name, entry_name);
             }
@@ -13221,8 +12821,7 @@ fn rewrite_java_double_field_prints(stmts: &mut [Statement], double_fields: &Has
         args[0].value = Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_double_to_string")),
             args: vec![Argument::positional(value)],
-            optional: false,
-        });
+            optional: false });
     }
 }
 
@@ -13244,8 +12843,7 @@ fn rewrite_java_double_method_prints(stmts: &mut [Statement], double_methods: &H
             args[0].value = Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_double_to_string")),
                 args: vec![Argument::positional(value)],
-                optional: false,
-            });
+                optional: false });
             continue;
         }
         let ExprKind::Call { callee: inner, .. } = &args[0].value.kind else {
@@ -13261,8 +12859,7 @@ fn rewrite_java_double_method_prints(stmts: &mut [Statement], double_methods: &H
         args[0].value = Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("__java_double_to_string")),
             args: vec![Argument::positional(value)],
-            optional: false,
-        });
+            optional: false });
     }
 }
 
@@ -13270,10 +12867,26 @@ fn java_is_double_print_call(expr: &Expression) -> bool {
     let ExprKind::Call { callee, .. } = &expr.kind else {
         return false;
     };
-    matches!(
-        &callee.kind,
-        ExprKind::Ident(name) if matches!(name.as_str(), "Math.copySign" | "StrictMath.copySign")
-    )
+    match &callee.kind {
+        ExprKind::Ident(name) => {
+            matches!(name.as_str(), "Math.copySign" | "StrictMath.copySign")
+                || matches!(
+                    name.rsplit_once('.'),
+                    Some((owner, "copySign"))
+                        if owner
+                            .rsplit('.')
+                            .next()
+                            .is_some_and(|tail| matches!(tail, "Math" | "StrictMath"))
+                )
+        }
+        ExprKind::Member { object, field, .. } if field == "copySign" => {
+            java_expr_dotted_name(object).is_some_and(|name| {
+                name.rsplit('.')
+                    .next()
+                    .is_some_and(|tail| matches!(tail, "Math" | "StrictMath"))
+            })
+        }
+        _ => false }
 }
 
 fn rewrite_java_tostring_expr(
@@ -13357,8 +12970,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Member {
                                 object: Box::new((**object).clone()),
                                 field: java_record_storage_field(field),
-                                null_safe: false,
-                            });
+                                null_safe: false });
                             return;
                         }
                     }
@@ -13390,8 +13002,7 @@ fn rewrite_java_tostring_expr(
                                                 args: vec![Argument::positional(
                                                     (**map_object).clone(),
                                                 )],
-                                                optional: false,
-                                            });
+                                                optional: false });
                                             return;
                                         }
                                     }
@@ -13425,8 +13036,7 @@ fn rewrite_java_tostring_expr(
                                                     Argument::positional((**map_object).clone()),
                                                     args[0].clone(),
                                                 ],
-                                                optional: false,
-                                            });
+                                                optional: false });
                                             return;
                                         }
                                     }
@@ -13452,8 +13062,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident("__j_enum_has_more")),
                                 args: vec![Argument::positional((**object).clone())],
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13476,8 +13085,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13489,8 +13097,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13502,8 +13109,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13515,8 +13121,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13528,8 +13133,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13541,8 +13145,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13554,8 +13157,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13569,8 +13171,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13586,8 +13187,7 @@ fn rewrite_java_tostring_expr(
                                 *expr = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::ident(internal)),
                                     args: new_args,
-                                    optional: false,
-                                });
+                                    optional: false });
                                 return;
                             }
                         }
@@ -13600,8 +13200,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident("__java_sorted_map_key_set")),
                                 args: vec![Argument::positional((**object).clone())],
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                         if java_type_is_hashtable(locals.get(name).map(String::as_str)) {
@@ -13609,8 +13208,7 @@ fn rewrite_java_tostring_expr(
                                 "put" => Some("__java_hashtable_put"),
                                 "keys" => Some("__java_hashtable_keys"),
                                 "elements" => Some("__java_hashtable_elements"),
-                                _ => None,
-                            };
+                                _ => None };
                             if let Some(internal) = internal {
                                 let mut new_args = Vec::with_capacity(args.len() + 1);
                                 new_args.push(Argument::positional((**object).clone()));
@@ -13618,8 +13216,7 @@ fn rewrite_java_tostring_expr(
                                 *expr = Expression::new(ExprKind::Call {
                                     callee: Box::new(Expression::ident(internal)),
                                     args: new_args,
-                                    optional: false,
-                                });
+                                    optional: false });
                                 return;
                             }
                         }
@@ -13632,8 +13229,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13643,8 +13239,7 @@ fn rewrite_java_tostring_expr(
                             "poll" => Some("__java_sorted_poll"),
                             "peek" | "element" => Some("__java_priority_peek"),
                             "remove" if args.len() == 1 => Some("__java_set_remove"),
-                            _ => None,
-                        };
+                            _ => None };
                         if let Some(internal) = internal {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
@@ -13652,8 +13247,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13669,8 +13263,7 @@ fn rewrite_java_tostring_expr(
                             "set" => Some("__java_stack_set"),
                             "clone" => Some("__java_stack_clone"),
                             "remove" if args.len() == 1 => Some("__java_list_remove"),
-                            _ => None,
-                        };
+                            _ => None };
                         if let Some(internal) = internal {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
@@ -13678,8 +13271,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13695,8 +13287,7 @@ fn rewrite_java_tostring_expr(
                             "trimToSize" => Some("__java_vector_trim_to_size"),
                             "setSize" => Some("__java_vector_set_size"),
                             "elements" => Some("__java_vector_elements"),
-                            _ => None,
-                        };
+                            _ => None };
                         if let Some(internal) = internal {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
@@ -13704,8 +13295,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13715,8 +13305,7 @@ fn rewrite_java_tostring_expr(
                                 Some("__java_enumeration_has_more")
                             }
                             "nextElement" | "nextToken" => Some("__java_enumeration_next"),
-                            _ => None,
-                        };
+                            _ => None };
                         if let Some(internal) = internal {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
@@ -13724,8 +13313,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13742,8 +13330,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13757,8 +13344,7 @@ fn rewrite_java_tostring_expr(
                             "add" if matches!(simple_type, "TreeSet") => Some("__java_sorted_add"),
                             "add" => Some("__java_set_add"),
                             "remove" => Some("__java_set_remove"),
-                            _ => None,
-                        };
+                            _ => None };
                         if let Some(internal) = internal {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
                             new_args.push(Argument::positional((**object).clone()));
@@ -13766,8 +13352,7 @@ fn rewrite_java_tostring_expr(
                             *expr = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident(internal)),
                                 args: new_args,
-                                optional: false,
-                            });
+                                optional: false });
                             return;
                         }
                     }
@@ -13794,8 +13379,7 @@ fn rewrite_java_tostring_expr(
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(internal)),
                         args: new_args,
-                        optional: false,
-                    });
+                        optional: false });
                     return;
                 }
                 if let Some(name) = java_bigint_method_name(field) {
@@ -13806,8 +13390,7 @@ fn rewrite_java_tostring_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(name)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -13819,8 +13402,7 @@ fn rewrite_java_tostring_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(name)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -13867,8 +13449,7 @@ fn rewrite_java_tostring_expr(
                     "UNICODE_CASE" => Some(64),
                     "CANON_EQ" => Some(128),
                     "UNICODE_CHARACTER_CLASS" => Some(256),
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(value) = flag {
                     *expr = Expression::int(value);
                     return;
@@ -13888,8 +13469,7 @@ fn rewrite_java_tostring_expr(
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__java_zone_id_short_ids")),
                     args: vec![],
-                    optional: false,
-                });
+                    optional: false });
                 return;
             }
             rewrite_java_tostring_expr(
@@ -13940,13 +13520,11 @@ fn rewrite_java_tostring_expr(
                     enum_values,
                     current_class,
                     &mut lambda_locals,
-                ),
-            }
+                ) }
         }
         ExprKind::IsType {
             expr: inner,
-            type_name,
-        } => {
+            type_name } => {
             rewrite_java_tostring_expr(inner, tostring_classes, enum_values, current_class, locals);
             if enum_values.contains_key(java_type_simple_name(type_name)) {
                 if java_enum_type_from_member_expr(inner).map(java_type_simple_name)
@@ -14014,14 +13592,12 @@ fn rewrite_java_tostring_expr(
                             key: None,
                             value: Expression::string(simple),
                             spread: false,
-                            by_ref: false,
-                        }];
+                            by_ref: false }];
                         chain_elems.extend(chain.iter().map(|parent| ArrayElement {
                             key: None,
                             value: Expression::string(parent),
                             spread: false,
-                            by_ref: false,
-                        }));
+                            by_ref: false }));
                         let mut call_args = vec![
                             Argument::positional(Expression::string(simple)),
                             Argument::positional(Expression::new(ExprKind::Array(chain_elems))),
@@ -14030,8 +13606,7 @@ fn rewrite_java_tostring_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__j_exc")),
                             args: call_args,
-                            optional: false,
-                        });
+                            optional: false });
                     }
                 }
             }
@@ -14079,8 +13654,7 @@ fn java_builtin_exception_chain(name: &str) -> Option<&'static [&'static str]> {
         | "NoSuchFieldException"
         | "ClassNotFoundException"
         | "ParseException" => CHECKED,
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Canonical chains for exception types the shared emitter DOES recognize
@@ -14092,8 +13666,7 @@ fn java_known_exception_chain(name: &str) -> Option<&'static [&'static str]> {
         "Throwable" => &["Throwable"],
         "IOException" => &["IOError", "Exception", "Throwable"],
         "FileNotFoundException" => &["FileNotFoundError", "IOError", "Exception", "Throwable"],
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Full supertype list (excluding self) for a built-in exception name,
@@ -14116,8 +13689,7 @@ fn rewrite_java_switch_enum_label(
 ) {
     let switch_type = match &maybe_switch_value.kind {
         ExprKind::Ident(name) if name.starts_with("__java_switch_value_") => locals.get(name),
-        _ => None,
-    };
+        _ => None };
     let Some(type_hint) = switch_type else {
         return;
     };
@@ -14130,8 +13702,7 @@ fn rewrite_java_switch_enum_label(
     *maybe_label = Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident(java_type_simple_name(type_hint))),
         field: label.clone(),
-        null_safe: false,
-    });
+        null_safe: false });
 }
 
 fn rewrite_java_enum_set_static_call(
@@ -14165,8 +13736,7 @@ fn rewrite_java_enum_set_static_call(
             java_enum_names_expr(enum_values, enum_name)?
         }
         "copyOf" | "complementOf" => Expression::null(),
-        _ => return None,
-    };
+        _ => return None };
     let internal = match field.as_str() {
         "noneOf" => "__java_enum_set_none_of",
         "allOf" => "__java_enum_set_all_of",
@@ -14174,8 +13744,7 @@ fn rewrite_java_enum_set_static_call(
         "copyOf" => "__java_enum_set_copy_of",
         "complementOf" => "__java_enum_set_complement_of",
         "range" => "__java_enum_set_range",
-        _ => return None,
-    };
+        _ => return None };
     let mut new_args = Vec::with_capacity(args.len() + 1);
     match field.as_str() {
         "copyOf" | "complementOf" => new_args.extend(args.iter().cloned()),
@@ -14188,13 +13757,11 @@ fn rewrite_java_enum_set_static_call(
                 arg
             }));
         }
-        _ => new_args.push(Argument::positional(names)),
-    }
+        _ => new_args.push(Argument::positional(names)) }
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(internal)),
         args: new_args,
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn java_member_chain_ends_with(expr: &Expression, expected: &str) -> bool {
@@ -14254,8 +13821,7 @@ fn java_enum_names_expr(
                 key: None,
                 value: Expression::string(name),
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     )))
 }
@@ -14286,8 +13852,7 @@ fn java_enum_set_method_name(method: &str) -> Option<&'static str> {
         "hashCode" => "__java_enum_set_hash_code",
         "iterator" => "__java_enum_set_iterator",
         "getClass" => "__java_enum_set_get_class",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_map(type_name: Option<&str>) -> bool {
@@ -14402,8 +13967,7 @@ fn java_list_method_name(method: &str, argc: usize) -> Option<&'static str> {
         "equals" if argc == 1 => "__java_list_equals",
         "indexOf" if argc == 1 => "__java_list_index_of",
         "spliterator" if argc == 0 => "__j_spliterator_from_array",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_spliterator(type_name: Option<&str>) -> bool {
@@ -14432,8 +13996,7 @@ fn java_random_receiver(receiver: &Expression) -> bool {
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name) if name == "__java_random_new")
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_list_result_receiver(expr: &Expression) -> bool {
@@ -14468,8 +14031,7 @@ fn java_spliterator_method_name(method: &str, argc: usize) -> Option<&'static st
         "characteristics" if argc == 0 => "__j_spliterator_characteristics",
         "trySplit" if argc == 0 => "__j_spliterator_try_split",
         "getComparator" if argc == 0 => "__j_spliterator_get_comparator",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_spliterator_constant(name: &str) -> Option<i64> {
@@ -14482,8 +14044,7 @@ fn java_spliterator_constant(name: &str) -> Option<i64> {
         "IMMUTABLE" => 0x0400,
         "CONCURRENT" => 0x1000,
         "SUBSIZED" => 0x4000,
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_runtime(type_name: Option<&str>) -> bool {
@@ -14511,8 +14072,7 @@ fn java_runtime_method_name(method: &str, argc: usize) -> Option<&'static str> {
         "maxMemory" if argc == 0 => "__j_runtime_max_memory",
         "gc" if argc == 0 => "__j_runtime_noop",
         "runFinalization" if argc == 0 => "__j_runtime_noop",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_process_builder(type_name: Option<&str>) -> bool {
@@ -14547,8 +14107,7 @@ fn java_process_builder_method_name(method: &str, argc: usize) -> Option<&'stati
         "redirectOutput" if argc == 1 => "__j_pb_redirect_output_set",
         "redirectError" if argc == 0 => "__j_pb_redirect_error_get",
         "start" if argc == 0 => "__j_pb_start",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_process(type_name: Option<&str>) -> bool {
@@ -14575,8 +14134,7 @@ fn java_process_method_name(method: &str, argc: usize) -> Option<&'static str> {
         "getInputStream" if argc == 0 => "__j_process_input_stream",
         "exitValue" if argc == 0 => "__j_process_exit_value",
         "destroy" if argc == 0 => "__j_process_destroy",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_file(type_name: Option<&str>) -> bool {
@@ -14653,8 +14211,7 @@ fn java_queue_method_name(
             "peek" if argc == 0 => "__java_queue_peek",
             "element" if argc == 0 => "__java_queue_element_checked",
             "remove" if argc == 1 => "__java_set_remove",
-            _ => return None,
-        }
+            _ => return None }
     } else {
         match method {
             "add" | "offer" if argc == 1 => "__java_queue_add",
@@ -14667,8 +14224,7 @@ fn java_queue_method_name(
             "push" if argc == 1 => "__java_deque_push",
             "pop" if argc == 0 => "__java_deque_pop",
             "remove" if argc == 1 => "__java_set_remove",
-            _ => return None,
-        }
+            _ => return None }
     })
 }
 
@@ -14689,8 +14245,7 @@ fn java_semaphore_method_name(method: &str) -> Option<&'static str> {
         "hasQueuedThreads" => "__java_semaphore_has_queued",
         "getQueueLength" => "__java_semaphore_queue_length",
         "isFair" => "__java_semaphore_is_fair",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_count_down_latch(type_name: Option<&str>) -> bool {
@@ -14706,8 +14261,7 @@ fn java_count_down_latch_method_name(method: &str, argc: usize) -> Option<&'stat
         "getCount" if argc == 0 => "__j_latch_get_count",
         "await" if argc == 0 => "__j_latch_await",
         "await" if argc == 2 => "__j_latch_await_timeout",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_future_task(type_name: Option<&str>) -> bool {
@@ -14725,8 +14279,7 @@ fn java_future_task_method_name(method: &str, argc: usize) -> Option<&'static st
         "isDone" if argc == 0 => "__j_future_task_is_done",
         "isCancelled" if argc == 0 => "__j_future_task_is_cancelled",
         "runAndReset" if argc == 0 => "__j_future_task_run_and_reset",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_executor_service(type_name: Option<&str>) -> bool {
@@ -14747,8 +14300,7 @@ fn java_executor_method_name(method: &str, argc: usize) -> Option<&'static str> 
         "shutdownNow" if argc == 0 => "__j_exec_shutdown_now",
         "isShutdown" if argc == 0 => "__j_exec_is_shutdown",
         "awaitTermination" if argc == 2 => "__j_exec_await",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_properties_method_name(method: &str) -> Option<&'static str> {
@@ -14759,8 +14311,7 @@ fn java_properties_method_name(method: &str) -> Option<&'static str> {
         "keys" => "__j_props_keys",
         "elements" => "__j_props_elements",
         "getClass" => "__j_props_class",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_map_method_name(method: &str) -> Option<&'static str> {
@@ -14807,8 +14358,7 @@ fn java_map_method_name(method: &str) -> Option<&'static str> {
         "subMap" => "__java_map_sub_map",
         "headMap" => "__java_map_head_map",
         "tailMap" => "__java_map_tail_map",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_type_is_bitset(type_name: Option<&str>) -> bool {
@@ -14910,8 +14460,7 @@ fn java_instant_method_name(method: &str) -> Option<&'static str> {
         "equals" => "__java_instant_equals",
         "toString" => "__java_instant_to_string",
         "hashCode" => "__java_instant_hash_code",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_time_method_name(method: &str) -> Option<&'static str> {
@@ -14922,32 +14471,28 @@ fn java_time_method_name(method: &str) -> Option<&'static str> {
         "isAfter" => "__java_instant_is_after",
         "hashCode" => "__java_instant_hash_code",
         "toString" => "__java_time_to_string",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_duration_method_name(method: &str) -> Option<&'static str> {
     Some(match method {
         "plusHours" => "__java_duration_plus_hours",
         "minusMinutes" => "__java_duration_minus_minutes",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_zone_method_name(method: &str) -> Option<&'static str> {
     Some(match method {
         "compareTo" => "__java_zone_compare_to",
         "hashCode" => "__java_zone_hash_code",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_uuid_method_name(method: &str) -> Option<&'static str> {
     Some(match method {
         "compareTo" => "__java_uuid_compare_to",
         "hashCode" => "__java_uuid_hash_code",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_bitset_method_name(method: &str) -> Option<&'static str> {
@@ -14975,8 +14520,7 @@ fn java_bitset_method_name(method: &str) -> Option<&'static str> {
         "toLongArray" | "toByteArray" => "__java_bitset_to_array",
         "toString" => "__java_bitset_to_string",
         "hashCode" => "__java_bitset_hash_code",
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn java_bigint_method_name(method: &str) -> Option<&'static str> {
@@ -15004,8 +14548,7 @@ fn java_bigint_method_name(method: &str) -> Option<&'static str> {
         "not" => Some("__java_bigint_not"),
         "isProbablePrime" => Some("__java_bigint_is_probable_prime"),
         "nextProbablePrime" => Some("__java_bigint_next_probable_prime"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_bigdecimal_method_name(method: &str, argc: usize) -> Option<&'static str> {
@@ -15033,8 +14576,7 @@ fn java_bigdecimal_method_name(method: &str, argc: usize) -> Option<&'static str
         "min" => Some("__j_bd_min"),
         "remainder" => Some("__j_bd_remainder"),
         "equals" => Some("__j_bd_equals"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_decimal_format_method_name(method: &str) -> Option<&'static str> {
@@ -15055,8 +14597,7 @@ fn java_decimal_format_method_name(method: &str) -> Option<&'static str> {
         "setParseIntegerOnly" => Some("__j_df_set_parse_integer"),
         "clone" => Some("__j_df_clone"),
         "equals" => Some("__j_df_equals"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_stream_builder_receiver(expr: &Expression) -> bool {
@@ -15095,8 +14636,7 @@ fn java_expr_is_negative_f64(expr: &Expression) -> bool {
             java_expr_is_zero_f64(expr)
                 || matches!(expr.kind, ExprKind::Lit(Literal::Float(value)) if value > 0.0)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_expr_is_bigint(
@@ -15112,16 +14652,13 @@ fn java_expr_is_bigint(
             ExprKind::Member { .. } => {
                 java_qualified_static_type(class).is_some_and(|name| name == "BigInteger")
             }
-            _ => false,
-        },
+            _ => false },
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) => {
                 name.starts_with("__java_bigint") || name == "BigInteger.valueOf"
             }
-            _ => false,
-        },
-        _ => java_bigint_constant_replacement(expr).is_some(),
-    }
+            _ => false },
+        _ => java_bigint_constant_replacement(expr).is_some() }
 }
 
 fn java_expr_is_bigdecimal(
@@ -15136,13 +14673,11 @@ fn java_expr_is_bigdecimal(
             ExprKind::Ident(name) => java_type_simple_name(name) == "BigDecimal",
             ExprKind::Member { .. } => java_qualified_static_type(class)
                 .is_some_and(|name| java_type_simple_name(&name) == "BigDecimal"),
-            _ => false,
-        },
+            _ => false },
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name) if java_bigdecimal_function_returns_bigdecimal(name))
         }
-        _ => java_bigdecimal_constant_replacement(expr).is_some(),
-    }
+        _ => java_bigdecimal_constant_replacement(expr).is_some() }
 }
 
 fn java_bigdecimal_function_returns_bigdecimal(name: &str) -> bool {
@@ -15178,15 +14713,13 @@ fn java_bigint_constant_replacement(expr: &Expression) -> Option<Expression> {
                 "ZERO" => "0",
                 "ONE" => "1",
                 "TEN" => "10",
-                _ => return None,
-            };
+                _ => return None };
             return Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__java_bigint")),
                 args: vec![Argument::positional(Expression::int(
                     value.parse::<i64>().unwrap_or(0),
                 ))],
-                optional: false,
-            }));
+                optional: false }));
         }
     }
     None
@@ -15204,13 +14737,11 @@ fn java_bigdecimal_constant_replacement(expr: &Expression) -> Option<Expression>
                 "ZERO" => "0",
                 "ONE" => "1",
                 "TEN" => "10",
-                _ => return None,
-            };
+                _ => return None };
             return Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__j_bd_new")),
                 args: vec![Argument::positional(Expression::string(value))],
-                optional: false,
-            }));
+                optional: false }));
         }
     }
     None
@@ -15243,11 +14774,9 @@ fn java_tostring_call(receiver: Expression) -> Expression {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver),
             field: "tostring".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn java_expr_enum_type(
@@ -15314,8 +14843,7 @@ fn java_expr_enum_type(
                     ExprKind::Ident(type_name) if enum_values.contains_key(type_name.as_str()) => {
                         Some(type_name.clone())
                     }
-                    _ => java_expr_enum_type(object, enum_values, current_class, locals),
-                };
+                    _ => java_expr_enum_type(object, enum_values, current_class, locals) };
                 if let Some(receiver_type) = receiver_type {
                     if let Some(return_type) = java_class_method_return_type(&receiver_type, field)
                     {
@@ -15356,10 +14884,8 @@ fn java_expr_enum_type(
                 }
                 None
             }
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn java_class_method_return_type(class_name: &str, method_name: &str) -> Option<String> {
@@ -15399,10 +14925,8 @@ fn java_expr_has_user_tostring(
         ExprKind::This => current_class.is_some_and(|name| tostring_classes.contains(name)),
         ExprKind::New { class, .. } => match &class.kind {
             ExprKind::Ident(name) => tostring_classes.contains(name),
-            _ => false,
-        },
-        _ => false,
-    }
+            _ => false },
+        _ => false }
 }
 
 fn normalize_java_class_tree(body: &mut [Statement]) {
@@ -15432,11 +14956,9 @@ fn inject_java_static_initializer_calls(body: &mut Vec<Statement>) {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&class_name)),
                 field: "__static_init_block__".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![],
-            optional: false,
-        })))
+            optional: false })))
     });
     body.extend(calls);
 }
@@ -15864,8 +15386,7 @@ fn lower_java_anonymous_class_captures_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             lower_java_anonymous_class_captures_expr(cond, locals);
             lower_java_anonymous_class_captures_tree(then_body, &mut locals.clone());
             for (elif_cond, elif_body) in elifs {
@@ -15880,8 +15401,7 @@ fn lower_java_anonymous_class_captures_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut loop_locals = locals.clone();
             if let Some(init) = init {
                 lower_java_anonymous_class_captures_stmt(init, &mut loop_locals);
@@ -15916,8 +15436,7 @@ fn lower_java_anonymous_class_captures_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             lower_java_anonymous_class_captures_expr(cond, locals);
             lower_java_anonymous_class_captures_tree(body, &mut locals.clone());
             if let Some(else_body) = else_body {
@@ -15928,7 +15447,7 @@ fn lower_java_anonymous_class_captures_stmt(
             lower_java_anonymous_class_captures_tree(body, &mut locals.clone());
             lower_java_anonymous_class_captures_expr(cond, locals);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 lower_java_anonymous_class_captures_expr(target, locals);
             }
@@ -16006,8 +15525,7 @@ fn lower_java_anonymous_class_captures_expr(
             let mut used = std::collections::HashSet::new();
             match body {
                 LambdaBody::Expr(inner) => collect_java_lambda_used_idents_expr(inner, &mut used),
-                LambdaBody::Block(stmts) => collect_java_lambda_used_idents_stmts(stmts, &mut used),
-            }
+                LambdaBody::Block(stmts) => collect_java_lambda_used_idents_stmts(stmts, &mut used) }
             let mut inner_locals: std::collections::HashSet<String> =
                 params.iter().map(|param| param.name.clone()).collect();
             if let LambdaBody::Block(stmts) = body {
@@ -16101,7 +15619,7 @@ fn collect_java_lambda_used_idents_stmts(
             StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
                 collect_java_lambda_used_idents_expr(expr, out);
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value, .. } => {
                 for target in targets {
                     collect_java_lambda_used_idents_expr(target, out);
                 }
@@ -16116,8 +15634,7 @@ fn collect_java_lambda_used_idents_stmts(
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 collect_java_lambda_used_idents_expr(cond, out);
                 collect_java_lambda_used_idents_stmts(then_body, out);
                 for (elif_cond, elif_body) in elifs {
@@ -16136,8 +15653,7 @@ fn collect_java_lambda_used_idents_stmts(
                 init,
                 cond,
                 update,
-                body,
-            } => {
+                body } => {
                 if let Some(init) = init {
                     collect_java_lambda_used_idents_stmts(std::slice::from_ref(init), out);
                 }
@@ -16260,8 +15776,7 @@ fn inject_java_anonymous_captures(
                 init: None,
                 modifiers: Modifiers::default(),
                 with_events: false,
-                array_bounds: None,
-            },
+                array_bounds: None },
         );
     }
 
@@ -16283,8 +15798,7 @@ fn inject_java_anonymous_captures(
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false,
-        });
+            is_nullable: false });
         base_args.push(Expression::ident(&name));
     }
     for (_, field_name) in &capture_fields {
@@ -16296,8 +15810,7 @@ fn inject_java_anonymous_captures(
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false,
-        });
+            is_nullable: false });
     }
 
     let body = capture_fields
@@ -16307,10 +15820,8 @@ fn inject_java_anonymous_captures(
                 targets: vec![Expression::new(ExprKind::Member {
                     object: Box::new(Expression::new(ExprKind::This)),
                     field: field_name.clone(),
-                    null_safe: false,
-                })],
-                value: Expression::ident(field_name),
-            })
+                    null_safe: false })],
+                value: Expression::ident(field_name), by_ref: false })
         })
         .collect();
 
@@ -16322,8 +15833,7 @@ fn inject_java_anonymous_captures(
             body,
             base_args: (parent.is_some() && original_arg_count > 0).then_some(base_args),
             initializer_target: ConstructorInitializerTarget::Base,
-            visibility: Visibility::Public,
-        },
+            visibility: Visibility::Public },
     );
 }
 
@@ -16369,8 +15879,7 @@ fn collect_java_capture_idents_stmts(
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 collect_java_capture_idents_expr(cond, locals, member_names, out);
                 collect_java_capture_idents_stmts(
                     then_body,
@@ -16396,7 +15905,7 @@ fn collect_java_capture_idents_stmts(
                     );
                 }
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value, .. } => {
                 for target in targets {
                     collect_java_capture_idents_expr(target, locals, member_names, out);
                 }
@@ -16491,7 +16000,7 @@ fn rewrite_java_capture_refs_stmts(
             StmtKind::Block(body) => {
                 rewrite_java_capture_refs_stmts(body, &mut locals.clone(), capture_fields)
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value, .. } => {
                 for target in targets {
                     rewrite_java_capture_refs_expr(target, locals, capture_fields);
                 }
@@ -16519,8 +16028,7 @@ fn rewrite_java_capture_refs_expr(
                 expr.kind = ExprKind::Member {
                     object: Box::new(Expression::new(ExprKind::This)),
                     field: field_name.clone(),
-                    null_safe: false,
-                };
+                    null_safe: false };
             }
         }
         ExprKind::Binary { left, right, .. } => {
@@ -16633,8 +16141,7 @@ fn normalize_java_anonymous_class_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             normalize_java_anonymous_class_expr(cond, class_members);
             normalize_java_anonymous_class_tree(then_body, class_members);
             for (elif_cond, elif_body) in elifs {
@@ -16649,8 +16156,7 @@ fn normalize_java_anonymous_class_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 normalize_java_anonymous_class_stmt(init, class_members);
             }
@@ -16677,8 +16183,7 @@ fn normalize_java_anonymous_class_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             normalize_java_anonymous_class_expr(cond, class_members);
             normalize_java_anonymous_class_tree(body, class_members);
             if let Some(else_body) = else_body {
@@ -16692,8 +16197,7 @@ fn normalize_java_anonymous_class_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             normalize_java_anonymous_class_expr(expr, class_members);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -16709,8 +16213,7 @@ fn normalize_java_anonymous_class_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             normalize_java_anonymous_class_tree(body, class_members);
             for catch in catches {
                 normalize_java_anonymous_class_tree(&mut catch.body, class_members);
@@ -16736,7 +16239,7 @@ fn normalize_java_anonymous_class_stmt(
             normalize_java_anonymous_class_expr(expr, class_members);
             normalize_java_anonymous_class_tree(body, class_members);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value, .. } => {
             for target in targets {
                 normalize_java_anonymous_class_expr(target, class_members);
             }
@@ -16778,8 +16281,7 @@ fn normalize_java_anonymous_class_stmt(
         }
         StmtKind::InputFile {
             file_number,
-            variables,
-        } => {
+            variables } => {
             normalize_java_anonymous_class_expr(file_number, class_members);
             for variable in variables {
                 normalize_java_anonymous_class_expr(variable, class_members);
@@ -16890,8 +16392,7 @@ fn normalize_java_anonymous_class_expr(
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Expr(inner) => normalize_java_anonymous_class_expr(inner, class_members),
-            LambdaBody::Block(stmts) => normalize_java_anonymous_class_tree(stmts, class_members),
-        },
+            LambdaBody::Block(stmts) => normalize_java_anonymous_class_tree(stmts, class_members) },
         ExprKind::Array(elems) => {
             for elem in elems {
                 normalize_java_anonymous_class_expr(&mut elem.value, class_members);
@@ -17026,8 +16527,7 @@ fn java_parent_expr_name(expr: &Expression) -> Option<&str> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.as_str()),
         ExprKind::Member { field, .. } => Some(field.as_str()),
-        _ => None,
-    }
+        _ => None }
 }
 
 #[derive(Clone, Default)]
@@ -17038,15 +16538,13 @@ struct JavaClassMemberNames {
     static_methods: std::collections::HashSet<String>,
     default_methods: Vec<Box<Statement>>,
     instance_overloads: HashMap<String, Vec<JavaOverloadTarget>>,
-    static_overloads: HashMap<String, Vec<JavaOverloadTarget>>,
-}
+    static_overloads: HashMap<String, Vec<JavaOverloadTarget>> }
 
 #[derive(Clone)]
 struct JavaOverloadTarget {
     mangled_name: String,
     param_types: Vec<String>,
-    return_type: Option<String>,
-}
+    return_type: Option<String> }
 
 impl JavaClassMemberNames {
     fn from_members(members: &[ClassMember]) -> Self {
@@ -17056,8 +16554,7 @@ impl JavaClassMemberNames {
                 ClassMember::Field {
                     name, modifiers, ..
                 } if !modifiers.is_static => Some(name.clone()),
-                _ => None,
-            })
+                _ => None })
             .collect();
         let field_types = members
             .iter()
@@ -17065,8 +16562,7 @@ impl JavaClassMemberNames {
                 ClassMember::Field {
                     name, type_hint, ..
                 } => type_hint.as_ref().map(|t| (name.clone(), t.clone())),
-                _ => None,
-            })
+                _ => None })
             .collect();
         let methods = members
             .iter()
@@ -17075,10 +16571,8 @@ impl JavaClassMemberNames {
                     StmtKind::FunctionDecl {
                         name, modifiers, ..
                     } if !modifiers.is_static => Some(name.clone()),
-                    _ => None,
-                },
-                _ => None,
-            })
+                    _ => None },
+                _ => None })
             .collect();
         let static_methods = members
             .iter()
@@ -17087,10 +16581,8 @@ impl JavaClassMemberNames {
                     StmtKind::FunctionDecl {
                         name, modifiers, ..
                     } if modifiers.is_static => Some(name.clone()),
-                    _ => None,
-                },
-                _ => None,
-            })
+                    _ => None },
+                _ => None })
             .collect();
         let default_methods = members
             .iter()
@@ -17099,10 +16591,8 @@ impl JavaClassMemberNames {
                     StmtKind::FunctionDecl {
                         body, modifiers, ..
                     } if !modifiers.is_static && !body.is_empty() => Some(func.clone()),
-                    _ => None,
-                },
-                _ => None,
-            })
+                    _ => None },
+                _ => None })
             .collect();
         let instance_overloads = java_collect_overload_targets(members, false);
         let static_overloads = java_collect_overload_targets(members, true);
@@ -17113,8 +16603,7 @@ impl JavaClassMemberNames {
             static_methods,
             default_methods,
             instance_overloads,
-            static_overloads,
-        }
+            static_overloads }
     }
 }
 
@@ -17256,8 +16745,7 @@ fn java_collect_overload_targets(
             .push(JavaOverloadTarget {
                 mangled_name: java_overload_mangled_name(name, &param_types),
                 param_types,
-                return_type: return_type.clone(),
-            });
+                return_type: return_type.clone() });
     }
     overloads
 }
@@ -17322,8 +16810,7 @@ fn java_overload_type_key(type_hint: &str) -> String {
             .chars()
             .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
             .collect::<String>()
-            .to_ascii_lowercase(),
-    }
+            .to_ascii_lowercase() }
 }
 
 fn java_expr_overload_type(expr: &Expression) -> Option<String> {
@@ -17336,10 +16823,8 @@ fn java_expr_overload_type(expr: &Expression) -> Option<String> {
         ExprKind::Cast { type_name, .. } => Some(java_overload_type_key(type_name)),
         ExprKind::Unary {
             op: UnaryOp::Neg | UnaryOp::Pos,
-            expr,
-        } => java_expr_overload_type(expr),
-        _ => None,
-    }
+            expr } => java_expr_overload_type(expr),
+        _ => None }
 }
 
 fn select_java_overload_target<'a>(
@@ -17374,16 +16859,14 @@ fn java_overload_args_match_with_char_fallback(param_types: &[String], args: &[A
                 Some(arg_type) if arg_type == "string" && param_type == "char" => {
                     matches!(&arg.value.kind, ExprKind::Lit(Literal::Str(s)) if s.chars().count() == 1)
                 }
-                _ => false,
-            })
+                _ => false })
 }
 
 fn java_overload_return_cast_type(return_type: Option<&str>) -> Option<String> {
     match return_type.map(java_type_simple_name) {
         Some("double") | Some("Double") => Some("double".to_string()),
         Some("float") | Some("Float") => Some("float".to_string()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_overload_receiver_type(
@@ -17394,8 +16877,7 @@ fn java_overload_receiver_type(
         ExprKind::Ident(name) => local_types.get(name).cloned(),
         ExprKind::This => None,
         ExprKind::New { class, .. } => java_expr_dotted_name(class),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn java_static_field_receiver(
@@ -17414,8 +16896,48 @@ fn java_static_field_receiver(
     Some(Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident(class_name)),
         field: field_name.clone(),
-        null_safe: false,
-    }))
+        null_safe: false }))
+}
+
+/// Register a FIELD's declared type into the same receiver-classification sets
+/// that locals get in `walk_var_declarator`.
+///
+/// Those sets — `JAVA_SB_VARS`, `JAVA_PRINTSTREAM_VARS`, … — are what turn
+/// `x.append(y)` into the `__j_sb_*` runtime call. They were populated from
+/// local declarations ONLY, so a field of the same type stayed an ordinary
+/// member call and failed at run time with `undefined is not callable`:
+///
+/// ```java
+/// static StringBuilder SB = new StringBuilder();
+/// SB.append("x");                 // threw; `StringBuilder l = SB; l.append("x")` worked
+/// ```
+///
+/// Only the branches keyed purely on the declared type are replayed here; the
+/// ones that also inspect an initializer (Runnable / functional interfaces)
+/// need the initializer expression, which is not available at the field site.
+fn java_register_field_receiver_type(name: &str, type_hint: &str) {
+    let simple = java_type_simple_name(type_hint);
+    if type_hint.contains("StringBuilder") || type_hint.contains("StringBuffer") {
+        JAVA_SB_VARS.with(|vars| vars.borrow_mut().insert(name.to_string()));
+    }
+    if simple == "String" {
+        JAVA_STRING_VARS.with(|vars| vars.borrow_mut().insert(name.to_string()));
+    }
+    if matches!(simple, "double" | "Double" | "float" | "Float") {
+        JAVA_DOUBLE_VARS.with(|vars| vars.borrow_mut().insert(name.to_string()));
+    }
+    if type_hint.contains("StringJoiner") {
+        JAVA_STRING_JOINER_VARS.with(|vars| vars.borrow_mut().insert(name.to_string()));
+    }
+    if type_hint.contains("StringTokenizer") {
+        JAVA_STRING_TOKENIZER_VARS.with(|vars| vars.borrow_mut().insert(name.to_string()));
+    }
+    if type_hint.contains("Scanner") {
+        JAVA_SCANNER_VARS.with(|vars| vars.borrow_mut().insert(name.to_string()));
+    }
+    if simple == "Thread" || JAVA_THREAD_TYPES.with(|types| types.borrow().contains(simple)) {
+        JAVA_THREAD_VARS.with(|vars| vars.borrow_mut().insert(name.to_string()));
+    }
 }
 
 fn java_static_field_type(object: &Expression) -> Option<String> {
@@ -17446,7 +16968,32 @@ fn java_receiver_type(
     object: &Expression,
     local_types: &HashMap<String, String>,
 ) -> Option<String> {
-    java_overload_receiver_type(object, local_types).or_else(|| java_static_field_type(object))
+    java_overload_receiver_type(object, local_types)
+        .or_else(|| java_static_field_type(object))
+        .or_else(|| java_bare_static_field_type(object, local_types))
+}
+
+/// `SB.append(x)` written inside the class that declares `static StringBuilder
+/// SB` — the receiver parses as a bare `Ident`, so neither branch above sees a
+/// type: `java_overload_receiver_type` only consults locals, and
+/// `java_static_field_type` only matches the qualified `Main.SB` form.
+///
+/// Without this the jvm tree lookup — which is keyed by DECLARED TYPE, e.g.
+/// `("append", "java.lang.StringBuilder")` — finds nothing and the call fails
+/// at run time with `undefined is not callable`, while the identical call on a
+/// local works. A shadowing local always wins, so this only fires when the
+/// name is not a local.
+fn java_bare_static_field_type(
+    object: &Expression,
+    local_types: &HashMap<String, String>,
+) -> Option<String> {
+    let ExprKind::Ident(name) = &object.kind else {
+        return None;
+    };
+    if local_types.contains_key(name) {
+        return None;
+    }
+    java_current_static_field_type(name).map(|(_, type_name)| type_name)
 }
 
 fn java_lookup_class_members<'a>(
@@ -17471,8 +17018,7 @@ fn java_expr_reads_any_local(expr: &Expression, locals: &HashSet<String>) -> boo
                 LambdaBody::Expr(inner) => java_expr_reads_any_local(inner, &nested),
                 LambdaBody::Block(stmts) => stmts
                     .iter()
-                    .any(|stmt| java_stmt_reads_any_local(stmt, &nested)),
-            }
+                    .any(|stmt| java_stmt_reads_any_local(stmt, &nested)) }
         }
         ExprKind::Call { callee, args, .. } => {
             java_expr_reads_any_local(callee, locals)
@@ -17514,13 +17060,11 @@ fn java_expr_reads_any_local(expr: &Expression, locals: &HashSet<String>) -> boo
             }
             ObjectProperty::Spread(value) => java_expr_reads_any_local(value, locals),
             ObjectProperty::Shorthand(name) => locals.contains(name),
-            _ => true,
-        }),
+            _ => true }),
         ExprKind::Sequence(exprs) => exprs
             .iter()
             .any(|expr| java_expr_reads_any_local(expr, locals)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_stmt_reads_any_local(stmt: &Statement, locals: &HashSet<String>) -> bool {
@@ -17540,8 +17084,7 @@ fn java_stmt_reads_any_local(stmt: &Statement, locals: &HashSet<String>) -> bool
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             java_expr_reads_any_local(cond, locals)
                 || then_body
                     .iter()
@@ -17567,8 +17110,7 @@ fn java_stmt_reads_any_local(stmt: &Statement, locals: &HashSet<String>) -> bool
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             init.as_ref()
                 .is_some_and(|stmt| java_stmt_reads_any_local(stmt, locals))
                 || cond
@@ -17607,8 +17149,7 @@ fn java_stmt_reads_any_local(stmt: &Statement, locals: &HashSet<String>) -> bool
                 })
         }
         StmtKind::Return(None) | StmtKind::Break(_) | StmtKind::Continue(_) => false,
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_thread_target_is_unsafe(target: &Expression, locals: &HashSet<String>) -> bool {
@@ -17617,8 +17158,7 @@ fn java_thread_target_is_unsafe(target: &Expression, locals: &HashSet<String>) -
             JAVA_RUNNABLE_UNSAFE_TARGETS.with(|targets| targets.borrow().contains(name))
         }
         ExprKind::Lambda { .. } => java_expr_reads_any_local(target, locals),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn java_resolve_runnable_target(target: Expression) -> Expression {
@@ -17650,8 +17190,7 @@ fn java_rewrite_spawned_thread_sleep_expr(expr: &mut Expression) {
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__java_blocking_queue_put")),
                         args: new_args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
         }
@@ -17726,8 +17265,7 @@ fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             java_rewrite_spawned_thread_sleep_expr(cond);
             for stmt in then_body {
                 java_rewrite_spawned_thread_sleep_stmt(stmt);
@@ -17754,8 +17292,7 @@ fn java_rewrite_spawned_thread_sleep_stmt(stmt: &mut Statement) {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 java_rewrite_spawned_thread_sleep_stmt(init);
             }
@@ -17871,8 +17408,7 @@ fn normalize_java_stmts(
                         (BindingPattern::Ident(name), None) => {
                             JAVA_LOCAL_TYPES.with(|types| types.borrow().get(name).cloned())
                         }
-                        _ => None,
-                    };
+                        _ => None };
                     collect_binding_types(
                         &decl.pattern,
                         decl.type_hint.as_deref().or(restored_type.as_deref()),
@@ -17880,7 +17416,7 @@ fn normalize_java_stmts(
                     );
                 }
             }
-            StmtKind::Assign { targets, value } => {
+            StmtKind::Assign { targets, value, .. } => {
                 normalize_java_expr(
                     value,
                     fields,
@@ -17969,8 +17505,7 @@ fn normalize_java_stmts(
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 normalize_java_expr(
                     cond,
                     fields,
@@ -18037,8 +17572,7 @@ fn normalize_java_stmts(
                 init,
                 cond,
                 update,
-                body,
-            } => {
+                body } => {
                 let mut loop_locals = locals.clone();
                 let mut loop_local_types = local_types.clone();
                 if let Some(init_stmt) = init.as_mut() {
@@ -18189,8 +17723,7 @@ fn normalize_java_stmts(
             StmtKind::Switch {
                 expr,
                 cases,
-                default,
-            } => {
+                default } => {
                 normalize_java_expr(
                     expr,
                     fields,
@@ -18309,8 +17842,7 @@ fn normalize_java_stmts(
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 normalize_java_stmts(
                     body,
                     fields,
@@ -18452,8 +17984,7 @@ fn normalize_java_expr(
             expr.kind = ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field,
-                null_safe: false,
-            };
+                null_safe: false };
         }
         ExprKind::Ident(name)
             if !locals.contains(name)
@@ -18471,8 +18002,7 @@ fn normalize_java_expr(
             expr.kind = ExprKind::Member {
                 object: Box::new(Expression::ident(class_name)),
                 field,
-                null_safe: false,
-            };
+                null_safe: false };
         }
         ExprKind::Call { callee, args, .. } => {
             for arg in args.iter_mut() {
@@ -18521,8 +18051,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__java_thread_start_with")),
                             args: vec![args[0].clone(), Argument::positional(target)],
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18536,8 +18065,7 @@ fn normalize_java_expr(
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_exec_new")),
                         args: args.iter().cloned().collect(),
-                        optional: false,
-                    });
+                        optional: false });
                     return;
                 }
                 if let Some(type_name) = java_expr_dotted_name(object) {
@@ -18553,8 +18081,7 @@ fn normalize_java_expr(
                                 let inner = expr.clone();
                                 *expr = Expression::new(ExprKind::Cast {
                                     type_name,
-                                    expr: Box::new(inner),
-                                });
+                                    expr: Box::new(inner) });
                             }
                             return;
                         }
@@ -18588,8 +18115,7 @@ fn normalize_java_expr(
                                 let inner = expr.clone();
                                 *expr = Expression::new(ExprKind::Cast {
                                     type_name,
-                                    expr: Box::new(inner),
-                                });
+                                    expr: Box::new(inner) });
                             }
                             return;
                         }
@@ -18603,8 +18129,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18617,8 +18142,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18630,8 +18154,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18644,8 +18167,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18660,8 +18182,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18673,8 +18194,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18686,8 +18206,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18699,8 +18218,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18713,8 +18231,7 @@ fn normalize_java_expr(
                                 Argument::positional((**object).clone()),
                                 Argument::positional(java_args_to_array(args)),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                     if let Some(internal) = java_process_builder_method_name(field, args.len()) {
@@ -18724,8 +18241,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18737,8 +18253,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident(internal)),
                             args: new_args,
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18749,8 +18264,7 @@ fn normalize_java_expr(
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_file_get_path")),
                         args: vec![Argument::positional((**object).clone())],
-                        optional: false,
-                    });
+                        optional: false });
                     return;
                 }
                 if java_type_is_redirect(java_receiver_type(object, local_types).as_deref())
@@ -18760,8 +18274,7 @@ fn normalize_java_expr(
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_pb_redirect_type")),
                         args: vec![Argument::positional((**object).clone())],
-                        optional: false,
-                    });
+                        optional: false });
                     return;
                 }
             }
@@ -18775,8 +18288,7 @@ fn normalize_java_expr(
                     callee.kind = ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: method,
-                        null_safe: false,
-                    };
+                        null_safe: false };
                     return;
                 }
                 if static_methods.contains(name) && !locals.contains(name) {
@@ -18788,16 +18300,14 @@ fn normalize_java_expr(
                         callee.kind = ExprKind::Member {
                             object: Box::new(Expression::ident(class_name)),
                             field: method,
-                            null_safe: false,
-                        };
+                            null_safe: false };
                         if let Some(type_name) = target.and_then(|target| {
                             java_overload_return_cast_type(target.return_type.as_deref())
                         }) {
                             let inner = expr.clone();
                             *expr = Expression::new(ExprKind::Cast {
                                 type_name,
-                                expr: Box::new(inner),
-                            });
+                                expr: Box::new(inner) });
                         }
                         return;
                     }
@@ -18829,8 +18339,7 @@ fn normalize_java_expr(
                         *expr = Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__j_pb_redirect")),
                             args: vec![Argument::positional(Expression::string(field))],
-                            optional: false,
-                        });
+                            optional: false });
                         return;
                     }
                 }
@@ -18917,8 +18426,7 @@ fn normalize_java_expr(
                         Argument::positional(new_left),
                         Argument::positional(new_right),
                     ],
-                    optional: false,
-                });
+                    optional: false });
                 return;
             }
             let has_char_numeric_operand = java_expr_is_char_numeric_source(left, local_types)
@@ -18979,16 +18487,12 @@ fn normalize_java_expr(
                         left: Box::new(Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::ident("__java_char_ord")),
                             args: vec![Argument::positional(target.clone())],
-                            optional: false,
-                        })),
-                        right: Box::new(Expression::int(delta)),
-                    }))],
-                    optional: false,
-                });
+                            optional: false })),
+                        right: Box::new(Expression::int(delta)) }))],
+                    optional: false });
                 *expr = Expression::new(ExprKind::Assign {
                     target: Box::new(target),
-                    value: Box::new(value),
-                });
+                    value: Box::new(value) });
                 return;
             }
             rewrite_java_this_field_update(expr);
@@ -19119,8 +18623,7 @@ fn normalize_java_expr(
                     current_class,
                     &mut lambda_locals,
                     &mut lambda_types,
-                ),
-            }
+                ) }
         }
         ExprKind::StaticAccess { class, member } => {
             normalize_java_expr(
@@ -19162,8 +18665,7 @@ fn normalize_java_expr(
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__j_pb_redirect")),
                         args: vec![Argument::positional(Expression::string(&member_name))],
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
         }
@@ -19190,8 +18692,7 @@ fn rewrite_java_this_field_assign(expr: &mut Expression) {
             Argument::positional(Expression::string(&field)),
             Argument::positional((**value).clone()),
         ],
-        optional: false,
-    });
+        optional: false });
 }
 
 fn rewrite_java_this_field_update(expr: &mut Expression) {
@@ -19201,8 +18702,7 @@ fn rewrite_java_this_field_update(expr: &mut Expression) {
     let delta = match op {
         UnaryOp::PreInc | UnaryOp::PostInc => 1,
         UnaryOp::PreDec | UnaryOp::PostDec => -1,
-        _ => return,
-    };
+        _ => return };
     let Some((object, field)) = java_this_member(inner) else {
         return;
     };
@@ -19213,8 +18713,7 @@ fn rewrite_java_this_field_update(expr: &mut Expression) {
             Argument::positional(Expression::string(&field)),
             Argument::positional(Expression::int(delta)),
         ],
-        optional: false,
-    });
+        optional: false });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -19281,8 +18780,7 @@ fn str_to_binop(s: &str) -> BinOp {
         "<<" => BinOp::Shl,
         ">>" => BinOp::Shr,
         ">>>" => BinOp::UShr,
-        _ => BinOp::Add,
-    }
+        _ => BinOp::Add }
 }
 
 fn compound_op_to_binop(s: &str) -> BinOp {
@@ -19298,8 +18796,7 @@ fn compound_op_to_binop(s: &str) -> BinOp {
         "<<" => BinOp::Shl,
         ">>" => BinOp::Shr,
         ">>>" => BinOp::UShr,
-        _ => BinOp::Add,
-    }
+        _ => BinOp::Add }
 }
 
 /// JLS §3.10.6 text-block content: strip the opening line, remove incidental
@@ -19311,8 +18808,7 @@ fn java_text_block_content(raw: &str) -> String {
     // The opening line holds only optional whitespace before its terminator.
     let raw = match raw.find('\n') {
         Some(pos) => &raw[pos + 1..],
-        None => raw,
-    };
+        None => raw };
     let lines: Vec<&str> = raw.split('\n').collect();
     let last_index = lines.len().saturating_sub(1);
     let closing_on_own_line = lines

@@ -171,5 +171,4 @@ lua_print! {
     },
     math_log_base_ten => {
         "print(math.log(100, 10))\n", "2"
-    },
-}
+    } }

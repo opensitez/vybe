@@ -44,5 +44,4 @@ lua_print! {
     vararg_recursive => {
         "local function concat(...)\n  local out = ''\n  for i = 1, select('#', ...) do out = out .. tostring(select(i, ...)) end\n  return out\nend\nprint(concat(1, 2, 3))\n",
         "123"
-    },
-}
+    } }

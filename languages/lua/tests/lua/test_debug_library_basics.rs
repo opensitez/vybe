@@ -36,5 +36,4 @@ lua_print! {
     getlocal_nil => {
         "local name, val = debug.getlocal(1, 100)\nprint(tostring(name))\n",
         "nil"
-    },
-}
+    } }

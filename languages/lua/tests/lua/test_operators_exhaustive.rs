@@ -52,5 +52,4 @@ lua_print! {
     op_precedence_mul_add => { "print(2 + 3 * 4)\n", "14" },
     op_precedence_pow_unm => { "print(-2 ^ 2)\n", "-4.0" },
     op_precedence_concat_add => { "print(\"a\" .. 1 + 2)\n", "a3" },
-    op_precedence_bit_shift => { "print(1 + 2 << 1)\n", "6" },
-}
+    op_precedence_bit_shift => { "print(1 + 2 << 1)\n", "6" } }

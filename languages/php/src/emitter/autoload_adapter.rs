@@ -20,8 +20,7 @@ use vybe_compiler::primitives::dynamic_symbols::{self, ResolverStack};
 fn php_autoload_stack() -> ResolverStack<'static> {
     ResolverStack {
         stack_global: "__php_autoload_stack",
-        invoke_member: Some("__invoke"),
-    }
+        invoke_member: Some("__invoke") }
 }
 
 fn php_class_spelling(name: &str) -> String {
@@ -127,12 +126,12 @@ pub fn emit_spl_autoload_functions(chunks: &mut [Chunk], current: usize, argc: u
 pub fn emit_spl_autoload_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     if argc == 0 {
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     for _ in 1..argc {
         chunk.emit_op(Op::DROP, line);
     }
     dynamic_symbols::emit_resolver_stack_invoke(chunk, php_autoload_stack(), None, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

@@ -512,7 +512,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `argc` includes receiver: `argc == N + 1`. Inline emit chains
         // ARRAY_GET (polymorphic over Map / Object / Array) with
         // null-short-circuit at every step.
-        _ => return false,
-    }
+        _ => return false }
     true
 }

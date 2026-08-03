@@ -6,8 +6,7 @@ use vybe_runtime::{Chunk, Value};
 
 use vybe_compiler::primitives::functions::create_function_chunk;
 use vybe_compiler::primitives::object::{
-    emit_bind_bound_method, emit_bind_getter, emit_bind_setter,
-};
+    emit_bind_bound_method, emit_bind_getter, emit_bind_setter };
 
 const SERIAL_KIND_KEY: &str = "vybe$php_ser_kind";
 
@@ -19,7 +18,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
@@ -78,12 +77,12 @@ fn ref_func(chunk: &mut Chunk, func_idx: usize, line: u32) {
 
 fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -226,8 +225,7 @@ fn emit_apply_header(
             chunk.emit_call(add_header, 2, line);
             chunk.emit_end(line);
         }
-        None => chunk.emit_call(set_header, 2, line),
-    }
+        None => chunk.emit_call(set_header, 2, line) }
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
@@ -380,7 +378,7 @@ pub fn emit_php_header(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         chunk.emit_end(line);
     }
 
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_php_extension_loaded(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -622,8 +620,7 @@ fn helper_loop_start(chunk: &mut Chunk, line: u32) -> vybe_compiler::primitives:
     vybe_compiler::primitives::loops::LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None,
-    }
+        body_block_patch: None }
 }
 
 fn helper_loop_cond(chunk: &mut Chunk, line: u32) {
@@ -646,7 +643,7 @@ fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) {
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op(Op::RETURN, line);
     chunk.emit_else(line);
     {
@@ -654,7 +651,7 @@ fn emit_nullish_return(chunk: &mut Chunk, value_slot: u16, line: u32) {
         chunk.emit_call(undef_idx, 1, line);
     }
     chunk.emit_if(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op(Op::RETURN, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
@@ -686,13 +683,18 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         let imports = &mut chunks[0];
         emit_nullish_return(&mut helper, class_slot, line);
 
-        for ty in types.iter().filter(|ty| !ty.is_interface) {
+        for (idx, ty) in types.iter().enumerate().filter(|(_, ty)| !ty.is_interface) {
             lget(&mut helper, class_slot, line);
             push_str(&mut helper, &ty.name, line);
             vybe_compiler::primitives::ops::emit_dyn_eq(&mut helper, line);
             helper.emit_if(line);
 
-            helper.emit_op_u16(Op::STRUCT_NEW, 0, line);
+            // `struct.new_default $T` — `unserialize()` revives an instance
+            // without running its constructor, so allocation is the ONLY place
+            // its identity can be established, and the spec instruction does it
+            // there. `idx + 1` is the 1-based module type-table index, the same
+            // convention `reserve_type_slot` / `register_gc_array_type` use.
+            helper.emit_op_u16(Op::STRUCT_NEW_DEFAULT, idx as u16 + 1, line);
             lset(&mut helper, obj_slot, line);
 
             lget(&mut helper, obj_slot, line);
@@ -703,17 +705,14 @@ fn build_php_alloc_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
             push_str(&mut helper, &ty.name.to_lowercase(), line);
             struct_set_key(&mut helper, "__control_name", line);
 
-            let tid_name =
-                helper.add_constant(Value::String(Arc::from(format!("__tid_{}", ty.name))));
-            lget(&mut helper, obj_slot, line);
-            helper.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
-            let tid_key = helper.add_constant(Value::String(Arc::from("__type_id")));
-            helper.emit_op_u16(Op::STRUCT_SET, tid_key, line);
-            helper.emit_op(Op::DROP, line);
+            // No identity stamp here — `struct.new_default $T` above already
+            // set the rtt at allocation. The `GLOBAL_GET __tid_<class>` +
+            // `__type_id` property write that used to live here fed a property
+            // nothing in the VM ever reads.
 
             for field in &ty.fields {
                 lget(&mut helper, obj_slot, line);
-                helper.emit_op(Op::NULL, line);
+                helper.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
                 struct_set_key(&mut helper, field, line);
             }
 
@@ -925,7 +924,7 @@ pub fn emit_php_json_normalize(
     };
     {
         let c = &mut chunks[current];
-        c.emit_op(Op::NULL, line); // default (no encoder hook)
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // default (no encoder hook)
         lset(c, default_slot, line);
         c.emit_bool_const(false, line); // sort_keys
         lset(c, sort_slot, line);
@@ -1679,7 +1678,7 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 
     lget(chunk, value_slot, line);
     let assoc_key = chunk.add_constant(Value::String(Arc::from("vybe$assoc_keys_csv")));
-    chunk.emit_op_u16(Op::STRUCT_GET, assoc_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, assoc_key, line);
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
@@ -1755,7 +1754,7 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         c.arity = 1; // this
         let weak_k = c.add_constant(Value::String(Arc::from("__weak")));
         c.emit_op_u16(Op::LOCAL_GET, 0, line);
-        c.emit_op_u16(Op::STRUCT_GET, weak_k, line);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, weak_k, line);
         {
             let idx = c.add_import("ecma:weakref", "deref");
             c.emit_call(idx, 1, line);
@@ -1774,7 +1773,7 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
 
     // Create struct, store weak ref
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     // this.__weak = REF_MAKE_WEAK(obj)
@@ -1785,7 +1784,7 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         chunk.emit_call(idx, 1, line);
     }
     let weak_k = chunk.add_constant(Value::String(Arc::from("__weak")));
-    chunk.emit_op_u16(Op::STRUCT_SET, weak_k, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, weak_k, line);
     chunk.emit_op(Op::DROP, line);
 
     // Bind get method
@@ -1793,7 +1792,7 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     chunk.emit_op_u16(Op::REF_FUNC, get_idx as u16, line);
     chunk.emit(0, line);
     let get_k = chunk.add_constant(Value::String(Arc::from("get")));
-    chunk.emit_op_u16(Op::STRUCT_SET, get_k, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, get_k, line);
     chunk.emit_op(Op::DROP, line);
 
     // Return the struct

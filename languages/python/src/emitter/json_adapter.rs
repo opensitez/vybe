@@ -29,13 +29,11 @@ pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         for i in argc..6 {
             match i {
                 1 | 3 => {
-                    let k = c.add_constant(vybe_runtime::Value::Null);
-                    c.emit_op_u16(Op::CONST, k, line);
+                    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
                 }
                 2 => c.emit_i32_const(0, line),
                 4 => c.emit_string_const(", ", line),
-                _ => c.emit_string_const(": ", line),
-            }
+                _ => c.emit_string_const(": ", line) }
         }
     }
 
@@ -89,7 +87,7 @@ pub fn emit_json_dumps(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         c.emit_op(Op::I32_EQZ, line);
         c.emit_if_value(line);
         c.emit_op_u16(Op::LOCAL_GET, norm_slot, line);
-        c.emit_op(Op::NULL, line);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         c.emit_op_u16(Op::LOCAL_GET, indent_slot, line);
         let idx = c.add_import("ecma:json", "stringify");
         c.emit_call(idx, 3, line);

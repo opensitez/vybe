@@ -395,7 +395,7 @@ implements_line = _{ implements_statement ~ (NEWLINE | EOI) }
 interface_decl = {
     attribute_line* ~ visibility_modifier? ~ ^"Interface" ~ identifier ~ generic_suffix? ~ (NEWLINE | EOI | ":")
     ~ inherits_line?
-    ~ (!interface_end ~ (inherits_statement ~ ":" | interface_decl | interface_sub | interface_function | interface_property | interface_event | NEWLINE | COMMENT))*
+    ~ (!interface_end ~ (inherits_statement ~ ":" | interface_decl | delegate_line | interface_sub | interface_function | interface_property | interface_event | NEWLINE | COMMENT))*
     ~ interface_end
 }
 interface_end = { ^"End" ~ ^"Interface" }
@@ -706,6 +706,7 @@ type_name = {
     (
         (^"Integer" | ^"Long" | ^"Single" | ^"Double" | ^"String" | ^"Boolean" | ^"Variant" | ^"Object")
         ~ !(ASCII_ALPHANUMERIC | "_")
+        | identifier
         | dotted_identifier
     ) ~ fixed_length_suffix? ~ (generic_suffix | array_type_suffix)? ~ ("." ~ member_identifier ~ (generic_suffix | array_type_suffix)?)* ~ "*"* ~ "?"?
 }

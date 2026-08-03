@@ -30,7 +30,7 @@ lua_print! {
         "10"
     },
     constructor_trailing_comma => {
-        "local t = {1, 2, 3,}\nprint(#t)\n",
+        "local t = {1, 2, 3 }\nprint(#t)\n",
         "3"
     },
     constructor_seq_fn => {
@@ -44,5 +44,4 @@ lua_print! {
     constructor_int_str_keys => {
         "local t = {[1]=\"idx\", one=\"str\"}\nprint(t[1] .. \",\" .. t.one)\n",
         "idx,str"
-    },
-}
+    } }

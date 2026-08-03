@@ -40,5 +40,4 @@ lua_print! {
     unpack_concat_spread => {
         "local function join(...) return table.concat({...}, \"-\") end\nprint(join(table.unpack({\"a\", \"b\", \"c\"})))\n",
         "a-b-c"
-    },
-}
+    } }

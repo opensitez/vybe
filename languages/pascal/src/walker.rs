@@ -20,8 +20,7 @@ struct PascalPreludeNeeds {
     tinterfacedobject: bool,
     collections: bool,
     tbits: bool,
-    assert_error_proc: bool,
-}
+    assert_error_proc: bool }
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let original_source = source.trim_start_matches('\u{feff}');
@@ -60,10 +59,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
                             imports.push(Import {
                                 kind: ImportKind::Simple {
                                     path: p.as_str().to_string(),
-                                    alias: None,
-                                },
-                                span,
-                            });
+                                    alias: None },
+                                span });
                         } else if p.as_rule() == Rule::uses_item {
                             let mut unit_name: Option<String> = None;
                             let mut source_path: Option<String> = None;
@@ -89,8 +86,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                             if let Some(path) = source_path.or(unit_name) {
                                 imports.push(Import {
                                     kind: ImportKind::Simple { path, alias: None },
-                                    span,
-                                });
+                                    span });
                             }
                         }
                     }
@@ -145,8 +141,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
                     Some(name.to_lowercase())
                 }
-                _ => None,
-            })
+                _ => None })
             .collect();
         let mut prelude = Vec::new();
         if prelude_needs.exceptions && !existing_classes.contains("exception") {
@@ -173,8 +168,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
                     StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
                         !existing_classes.contains(&name.to_lowercase())
                     }
-                    _ => true,
-                };
+                    _ => true };
                 if should_insert {
                     prelude.push(stmt);
                 }
@@ -218,8 +212,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         ImportKind::Simple { path, .. }
         | ImportKind::Named { path, .. }
         | ImportKind::Wildcard { path, .. }
-        | ImportKind::Default { path, .. } => vybe_platform_plib::emitter::gcl::is_gcl_unit(path),
-    });
+        | ImportKind::Default { path, .. } => vybe_platform_plib::emitter::gcl::is_gcl_unit(path) });
     if uses_gcl {
         normalize_pascal_gcl_form_classes(&mut body);
         normalize_pascal_gcl_exprs(&mut body);
@@ -236,8 +229,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
             StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
                 Some(name.to_lowercase())
             }
-            _ => None,
-        })
+            _ => None })
         .collect();
     if uses_gcl {
         for class in vybe_platform_plib::emitter::gcl::gcl_classes() {
@@ -250,8 +242,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
             StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
                 Some((name.to_lowercase(), name.clone()))
             }
-            _ => None,
-        })
+            _ => None })
         .collect();
     if uses_gcl {
         for class in vybe_platform_plib::emitter::gcl::gcl_classes() {
@@ -514,8 +505,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name,
         language: Lang::Pascal,
         body,
-        imports,
-    })
+        imports })
 }
 
 fn lower_pascal_final_result_assignments(body: &mut [Statement]) {
@@ -582,8 +572,7 @@ fn lower_pascal_final_result_assignment_stmt(stmt: &mut Statement) {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             lower_pascal_final_result_assignments(body);
             for catch in catches {
                 lower_pascal_final_result_assignments(&mut catch.body);
@@ -618,7 +607,7 @@ fn lower_pascal_final_result_assignment_member(member: &mut ClassMember) {
 }
 
 fn pascal_final_result_assignment_value(stmt: &Statement) -> Option<Expression> {
-    let StmtKind::Assign { targets, value } = &stmt.kind else {
+    let StmtKind::Assign { targets, value , ..} = &stmt.kind else {
         return None;
     };
     if targets.len() == 1
@@ -661,7 +650,7 @@ fn rewrite_pascal_json_xml_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             rewrite_pascal_json_xml_expr(value, types);
             for target in targets.iter_mut() {
                 rewrite_pascal_json_xml_expr(target, types);
@@ -688,8 +677,7 @@ fn rewrite_pascal_json_xml_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_json_xml_expr(cond, types);
             rewrite_pascal_json_xml_body_scoped(then_body, types);
             for (cond, body) in elifs {
@@ -704,8 +692,7 @@ fn rewrite_pascal_json_xml_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_json_xml_stmt(init, &mut types.clone());
             }
@@ -732,8 +719,7 @@ fn rewrite_pascal_json_xml_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_json_xml_expr(cond, types);
             rewrite_pascal_json_xml_body_scoped(body, types);
             if let Some(body) = else_body {
@@ -747,8 +733,7 @@ fn rewrite_pascal_json_xml_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_pascal_json_xml_expr(expr, types);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -764,8 +749,7 @@ fn rewrite_pascal_json_xml_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_json_xml_body_scoped(body, types);
             for catch in catches {
                 rewrite_pascal_json_xml_body_scoped(&mut catch.body, types);
@@ -1026,8 +1010,7 @@ fn pascal_json_xml_rewrite_expr(
                 "tjsonfalse" => Some(Expression::bool(false)),
                 "tjsonnull" => Some(Expression::null()),
                 "txmldocument" => Some(call_expr("__pascal_xml_document_new", Vec::new())),
-                _ => None,
-            }
+                _ => None }
         }
         ExprKind::Call { callee, args, .. } => {
             if let ExprKind::Member { object, field, .. } = &callee.kind {
@@ -1095,8 +1078,7 @@ fn pascal_json_xml_rewrite_expr(
                             call_expr("__pascal_xml_remove_child", vec![parent, arg.value.clone()])
                         })
                     }
-                    _ => None,
-                }
+                    _ => None }
             } else {
                 None
             }
@@ -1146,8 +1128,7 @@ fn pascal_json_xml_rewrite_expr(
                     ),
                     int_expr(0),
                 )),
-                _ => None,
-            }
+                _ => None }
         }
         ExprKind::Index { object, index, .. } => {
             if let Some(parent) = pascal_xml_child_collection_parent(object) {
@@ -1163,8 +1144,7 @@ fn pascal_json_xml_rewrite_expr(
         ExprKind::IsType { expr, type_name } if type_name.eq_ignore_ascii_case("TJSONNull") => {
             Some(bin_expr(BinOp::Eq, (**expr).clone(), Expression::null()))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn rewrite_pascal_xml_assignment(targets: &[Expression], value: &Expression) -> Option<Statement> {
@@ -1175,8 +1155,7 @@ fn rewrite_pascal_xml_assignment(targets: &[Expression], value: &Expression) -> 
         {
             return Some(Statement::new(StmtKind::Assign {
                 targets: vec![index_expr((**object).clone(), str_expr("__dom"))],
-                value: Expression::null(),
-            }));
+                value: Expression::null(), by_ref: false }));
         }
         if field.eq_ignore_ascii_case("Active") {
             return Some(Statement::new(StmtKind::Expr(Expression::null())));
@@ -1210,8 +1189,7 @@ fn rewrite_pascal_json_xml_expr_stmt(expr: &Expression) -> Option<Statement> {
         let target = args.first()?.value.clone();
         return Some(Statement::new(StmtKind::Assign {
             targets: vec![target],
-            value: call_expr("__pascal_xml_save", vec![(**object).clone()]),
-        }));
+            value: call_expr("__pascal_xml_save", vec![(**object).clone()]), by_ref: false }));
     }
     None
 }
@@ -1219,8 +1197,7 @@ fn rewrite_pascal_json_xml_expr_stmt(expr: &Expression) -> Option<Statement> {
 fn pascal_expr_name(expr: &Expression) -> Option<&str> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.as_str()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_expr_type_name(
@@ -1229,8 +1206,7 @@ fn pascal_expr_type_name(
 ) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => types.get(&name.to_ascii_lowercase()).cloned(),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_is_json_type(type_name: &str) -> bool {
@@ -1255,16 +1231,14 @@ fn index_expr(object: Expression, index: Expression) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(object),
         index: Box::new(index),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 #[derive(Clone, Copy)]
 struct PascalCondFrame {
     parent_active: bool,
     current_active: bool,
-    branch_taken: bool,
-}
+    branch_taken: bool }
 
 fn preprocess_pascal_conditional_directives(source: &str) -> String {
     let mut defines = std::collections::HashSet::<String>::new();
@@ -1287,8 +1261,7 @@ fn preprocess_pascal_conditional_directives(source: &str) -> String {
                 stack.push(PascalCondFrame {
                     parent_active,
                     current_active: cond,
-                    branch_taken: cond,
-                });
+                    branch_taken: cond });
                 out.push('\n');
                 continue;
             }
@@ -1299,8 +1272,7 @@ fn preprocess_pascal_conditional_directives(source: &str) -> String {
                 stack.push(PascalCondFrame {
                     parent_active,
                     current_active: cond,
-                    branch_taken: cond,
-                });
+                    branch_taken: cond });
                 out.push('\n');
                 continue;
             }
@@ -1310,8 +1282,7 @@ fn preprocess_pascal_conditional_directives(source: &str) -> String {
                 stack.push(PascalCondFrame {
                     parent_active,
                     current_active: cond,
-                    branch_taken: cond,
-                });
+                    branch_taken: cond });
                 out.push('\n');
                 continue;
             }
@@ -1408,16 +1379,14 @@ fn eval_pascal_cond_expr(expr: &str, defines: &std::collections::HashSet<String>
     let mut parser = PascalCondExprParser {
         tokens: &tokens,
         pos: 0,
-        defines,
-    };
+        defines };
     parser.parse_or()
 }
 
 struct PascalCondExprParser<'a> {
     tokens: &'a [String],
     pos: usize,
-    defines: &'a std::collections::HashSet<String>,
-}
+    defines: &'a std::collections::HashSet<String> }
 
 impl<'a> PascalCondExprParser<'a> {
     fn parse_or(&mut self) -> bool {
@@ -1579,8 +1548,7 @@ fn default_init_struct_locals_stmt(
                         {
                             decl.init = Some(Expression::new(ExprKind::New {
                                 class: Box::new(Expression::ident(bare)),
-                                args: Vec::new(),
-                            }));
+                                args: Vec::new() }));
                         } else if explicit_ctor_record_names.contains(&bare.to_lowercase()) {
                             decl.type_hint = None;
                         } else if let Some((count, element_type)) =
@@ -1775,8 +1743,7 @@ fn collect_pascal_array_type_aliases(
     for stmt in body {
         let StmtKind::VarDecl {
             declarations,
-            kind: VarDeclKind::Const,
-        } = &stmt.kind
+            kind: VarDeclKind::Const } = &stmt.kind
         else {
             continue;
         };
@@ -1883,8 +1850,7 @@ fn collect_pascal_dynamic_array_types_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             collect_pascal_dynamic_array_types_body(body, aliases, out);
             for catch in catches {
                 collect_pascal_dynamic_array_types_body(&catch.body, aliases, out);
@@ -1969,8 +1935,7 @@ fn resolve_pascal_array_element_aliases(
 fn assign_result_expr(value: Expression) -> Statement {
     Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident("Result")],
-        value,
-    })
+        value, by_ref: false })
 }
 
 fn rewrite_pascal_array_alias_return_types(
@@ -2039,8 +2004,7 @@ fn rewrite_pascal_array_alias_return_types_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_array_alias_return_types(body, aliases);
             for catch in catches {
                 rewrite_pascal_array_alias_return_types(&mut catch.body, aliases);
@@ -2103,7 +2067,7 @@ fn rewrite_pascal_result_fixed_array_indexes_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_result_fixed_array_indexes_expr(target, current_bounds);
             }
@@ -2129,8 +2093,7 @@ fn rewrite_pascal_result_fixed_array_indexes_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_result_fixed_array_indexes_expr(cond, current_bounds);
             for stmt in then_body {
                 rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
@@ -2150,8 +2113,7 @@ fn rewrite_pascal_result_fixed_array_indexes_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_result_fixed_array_indexes_expr(cond, current_bounds);
             for stmt in body {
                 rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
@@ -2172,8 +2134,7 @@ fn rewrite_pascal_result_fixed_array_indexes_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_result_fixed_array_indexes_stmt(init, current_bounds);
             }
@@ -2207,8 +2168,7 @@ fn rewrite_pascal_result_fixed_array_indexes_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_pascal_result_fixed_array_indexes_stmt(stmt, current_bounds);
             }
@@ -2385,8 +2345,7 @@ struct PascalOverloadCandidate {
     internal_name: String,
     params: Vec<Param>,
     return_type: Option<String>,
-    order: usize,
-}
+    order: usize }
 
 fn repair_pascal_overload_prototype_bodies(body: &mut Vec<Statement>) {
     let mut repaired = Vec::with_capacity(body.len());
@@ -2410,8 +2369,7 @@ fn repair_pascal_overload_prototype_bodies(body: &mut Vec<Statement>) {
                     StmtKind::FunctionDecl {
                         name: nested_name, ..
                     } => nested_name.eq_ignore_ascii_case(&name_lower),
-                    _ => false,
-                });
+                    _ => false });
 
                 if has_same_name_impl {
                     hoisted = Some(std::mem::take(fn_body));
@@ -2485,7 +2443,7 @@ fn rewrite_pascal_result_ident_in_stmt(stmt: &mut Statement, alias: &str) {
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
             rewrite_pascal_result_ident_in_expr(expr, alias);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_result_ident_in_expr(target, alias);
             }
@@ -2507,8 +2465,7 @@ fn rewrite_pascal_result_ident_in_stmt(stmt: &mut Statement, alias: &str) {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_result_ident_in_expr(cond, alias);
             rewrite_pascal_result_ident_in_body(then_body, alias);
             for (cond, body) in elifs {
@@ -2534,8 +2491,7 @@ fn rewrite_pascal_result_ident_in_stmt(stmt: &mut Statement, alias: &str) {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_result_ident_in_stmt(init, alias);
             }
@@ -2700,8 +2656,7 @@ fn rewrite_pascal_nested_result_captures_in_function(
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            },
+                is_nullable: false },
         );
         captured.insert(name.to_lowercase());
     }
@@ -2722,7 +2677,7 @@ fn rewrite_pascal_nested_result_call_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Throw { expr: Some(expr), .. } => {
             rewrite_pascal_nested_result_call_expr(expr, captured);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_nested_result_call_expr(target, captured);
             }
@@ -2748,8 +2703,7 @@ fn rewrite_pascal_nested_result_call_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_nested_result_call_expr(cond, captured);
             for stmt in then_body {
                 rewrite_pascal_nested_result_call_stmt(stmt, captured);
@@ -2787,8 +2741,7 @@ fn rewrite_pascal_nested_result_call_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_nested_result_call_stmt(init, captured);
             }
@@ -2899,8 +2852,7 @@ fn normalize_pascal_free_function_overloads(body: &mut Vec<Statement>) {
                 internal_name: name.clone(),
                 params: params.clone(),
                 return_type: return_type.clone(),
-                order,
-            });
+                order });
     }
 
     grouped.retain(|_, candidates| candidates.len() > 1);
@@ -2953,8 +2905,7 @@ fn normalize_pascal_class_method_overloads(body: &mut Vec<Statement>) {
         let (name, members) = match &mut stmt.kind {
             StmtKind::ClassDecl { name, members, .. }
             | StmtKind::StructDecl { name, members, .. } => (name, members),
-            _ => continue,
-        };
+            _ => continue };
         let class_key = name.to_lowercase();
         let mut grouped: std::collections::BTreeMap<String, Vec<(usize, PascalOverloadCandidate)>> =
             std::collections::BTreeMap::new();
@@ -2985,8 +2936,7 @@ fn normalize_pascal_class_method_overloads(body: &mut Vec<Statement>) {
                         internal_name: name.clone(),
                         params: params.clone(),
                         return_type: return_type.clone(),
-                        order,
-                    },
+                        order },
                 ));
         }
 
@@ -3123,7 +3073,7 @@ fn rewrite_pascal_class_overload_stmt(
         } => {
             rewrite_pascal_class_overload_expr(expr, overloads, return_types, enum_members, scope);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_class_overload_expr(
                     target,
@@ -3149,8 +3099,7 @@ fn rewrite_pascal_class_overload_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_class_overload_expr(cond, overloads, return_types, enum_members, scope);
             let mut scoped = scope.clone();
             for stmt in then_body {
@@ -3197,8 +3146,7 @@ fn rewrite_pascal_class_overload_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_class_overload_expr(cond, overloads, return_types, enum_members, scope);
             let mut scoped = scope.clone();
             for stmt in body {
@@ -3246,8 +3194,7 @@ fn rewrite_pascal_class_overload_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = scope.clone();
             if let Some(init) = init {
                 rewrite_pascal_class_overload_stmt(
@@ -3320,8 +3267,7 @@ fn rewrite_pascal_class_overload_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut scoped = scope.clone();
             for stmt in body {
                 rewrite_pascal_class_overload_stmt(
@@ -3481,8 +3427,7 @@ fn rewrite_pascal_class_overload_expr(
                 );
                 let receiver_type = match &object.kind {
                     ExprKind::Ident(name) => Some(name.to_lowercase()),
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(class_key) = receiver_type {
                     let call_key = format!("{}.{}", class_key, field.to_lowercase());
                     if let Some(candidates) = overloads.get(&call_key) {
@@ -3751,7 +3696,7 @@ fn rewrite_pascal_overload_stmt(
         } => {
             rewrite_pascal_overload_expr(expr, overloads, return_types, enum_members, scope);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_overload_expr(target, overloads, return_types, enum_members, scope);
             }
@@ -3765,8 +3710,7 @@ fn rewrite_pascal_overload_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_overload_expr(cond, overloads, return_types, enum_members, scope);
             let mut then_scope = scope.clone();
             for stmt in then_body {
@@ -3821,8 +3765,7 @@ fn rewrite_pascal_overload_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = scope.clone();
             if let Some(init) = init {
                 rewrite_pascal_overload_stmt(
@@ -3877,8 +3820,7 @@ fn rewrite_pascal_overload_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_pascal_overload_expr(expr, overloads, return_types, enum_members, scope);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -4158,8 +4100,7 @@ fn pascal_overload_arg_score(
             Some(4)
         }
         (Some(_), Some(_)) => Some(30),
-        (None, Some(_)) => Some(15),
-    }
+        (None, Some(_)) => Some(15) }
 }
 
 fn pascal_overload_expr_type(
@@ -4196,16 +4137,13 @@ fn pascal_overload_expr_type(
         } => Some("boolean".to_string()),
         ExprKind::Unary {
             op: UnaryOp::Neg | UnaryOp::Pos,
-            expr,
-        } => pascal_overload_expr_type(expr, return_types, enum_members, scope),
+            expr } => pascal_overload_expr_type(expr, return_types, enum_members, scope),
         ExprKind::Binary { op, .. } => match op {
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                 Some("boolean".to_string())
             }
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn pascal_overload_is_assignable(expr: &Expression) -> bool {
@@ -4222,8 +4160,7 @@ fn pascal_overload_is_assignable(expr: &Expression) -> bool {
 struct PascalOperatorMethod {
     name: String,
     params: Vec<Param>,
-    return_type: Option<String>,
-}
+    return_type: Option<String> }
 
 fn lower_pascal_operator_overloads(body: &mut Vec<Statement>) {
     let operators = collect_pascal_operator_methods(body);
@@ -4264,8 +4201,7 @@ fn collect_pascal_operator_methods(
                 methods.push(PascalOperatorMethod {
                     name: operator_name.to_string(),
                     params: params.clone(),
-                    return_type: return_type.clone(),
-                });
+                    return_type: return_type.clone() });
             }
         }
     }
@@ -4371,7 +4307,7 @@ fn lower_pascal_operator_overload_stmt(
                 lower_pascal_operator_overload_expr(expr, operators, scope);
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets.iter_mut() {
                 lower_pascal_operator_overload_expr(target, operators, scope);
             }
@@ -4383,8 +4319,7 @@ fn lower_pascal_operator_overload_stmt(
                     stmt.kind = if returns_value {
                         StmtKind::Assign {
                             targets: vec![targets[0].clone()],
-                            value: call,
-                        }
+                            value: call, by_ref: false }
                     } else {
                         StmtKind::Expr(call)
                     };
@@ -4409,8 +4344,7 @@ fn lower_pascal_operator_overload_stmt(
                 {
                     stmt.kind = StmtKind::Assign {
                         targets: vec![target.clone()],
-                        value: call,
-                    };
+                        value: call, by_ref: false };
                 }
             }
         }
@@ -4418,8 +4352,7 @@ fn lower_pascal_operator_overload_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_operator_overload_expr(cond, operators, scope);
             let mut then_scope = scope.clone();
             lower_pascal_operator_overload_body(then_body, operators, &mut then_scope);
@@ -4442,8 +4375,7 @@ fn lower_pascal_operator_overload_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = scope.clone();
             if let Some(init) = init {
                 lower_pascal_operator_overload_stmt(init, operators, &mut scoped);
@@ -4464,8 +4396,7 @@ fn lower_pascal_operator_overload_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             lower_pascal_operator_overload_expr(expr, operators, scope);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -4575,8 +4506,7 @@ fn lower_pascal_operator_overload_expr(
                 UnaryOp::Neg => Some("Negative"),
                 UnaryOp::Pos => Some("Positive"),
                 UnaryOp::Not => Some("Not"),
-                _ => None,
-            };
+                _ => None };
             if let Some(method) = method {
                 if let Some(call) = pascal_unary_operator_call(method, inner, operators, scope) {
                     *expr = call;
@@ -4585,8 +4515,7 @@ fn lower_pascal_operator_overload_expr(
         }
         ExprKind::Cast {
             expr: inner,
-            type_name,
-        } => {
+            type_name } => {
             lower_pascal_operator_overload_expr(inner, operators, scope);
             if let Some(call) = pascal_explicit_operator_call(type_name, inner, operators, scope) {
                 *expr = call;
@@ -4657,8 +4586,7 @@ fn pascal_operator_method_for_binop(op: BinOp) -> Option<&'static str> {
         BinOp::Shl => Some("LeftShift"),
         BinOp::Shr => Some("RightShift"),
         BinOp::In => Some("In"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_operator_method_for_compound(op: CompoundOp) -> Option<&'static str> {
@@ -4674,8 +4602,7 @@ fn pascal_operator_method_for_compound(op: CompoundOp) -> Option<&'static str> {
         CompoundOp::BitXor => Some("BitwiseXor"),
         CompoundOp::Shl => Some("LeftShift"),
         CompoundOp::Shr => Some("RightShift"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_binary_operator_call(
@@ -4823,8 +4750,7 @@ fn pascal_inc_dec_operator_assignment(
     let method = match op {
         BinOp::Add => "Inc",
         BinOp::Sub => "Dec",
-        _ => return None,
-    };
+        _ => return None };
     if !pascal_expr_same_place(target, left) {
         return None;
     }
@@ -4867,8 +4793,7 @@ fn choose_pascal_operator_owner(
                                     || is_pascal_numeric_type(param_type)
                             }
                             (Some(_), None) => true,
-                            (None, _) => true,
-                        },
+                            (None, _) => true },
                     )
         })
         .map(|_| first_type.clone())
@@ -4891,11 +4816,9 @@ fn pascal_static_operator_call(type_name: &str, method: &str, args: Vec<Expressi
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(type_name)),
             field: method,
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
 }
 
 fn pascal_static_operator_call_with_params(
@@ -4909,8 +4832,7 @@ fn pascal_static_operator_call_with_params(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(type_name)),
             field: method,
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: args
             .into_iter()
             .enumerate()
@@ -4922,8 +4844,7 @@ fn pascal_static_operator_call_with_params(
                 arg
             })
             .collect(),
-        optional: false,
-    })
+        optional: false })
 }
 
 fn pascal_operator_arg_matches(
@@ -4939,8 +4860,7 @@ fn pascal_operator_arg_matches(
             bare_type_name(param_type).eq_ignore_ascii_case(&value_type)
                 || is_pascal_numeric_type(param_type)
         }
-        None => true,
-    }
+        None => true }
 }
 
 fn pascal_operator_expr_type(
@@ -4983,8 +4903,7 @@ fn pascal_operator_expr_type(
                 .map(|ty| bare_type_name(ty).to_lowercase())
                 .or_else(|| Some(format!("{}.{}", type_name, field).to_lowercase()))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_expr_same_place(a: &Expression, b: &Expression) -> bool {
@@ -5014,8 +4933,7 @@ fn pascal_expr_same_place(a: &Expression, b: &Expression) -> bool {
                 ..
             },
         ) => pascal_expr_same_place(ao, bo) && format!("{:?}", ai.kind) == format!("{:?}", bi.kind),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn is_pascal_numeric_type(type_name: &str) -> bool {
@@ -5163,7 +5081,7 @@ fn rewrite_pascal_integer_bit_ops_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_integer_bit_ops_expr(target, return_types, scope);
             }
@@ -5210,8 +5128,7 @@ fn rewrite_pascal_integer_bit_ops_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_integer_bit_ops_expr(cond, return_types, scope);
             let mut then_scope = scope.clone();
             rewrite_pascal_integer_bit_ops_body(then_body, return_types, &mut then_scope);
@@ -5228,8 +5145,7 @@ fn rewrite_pascal_integer_bit_ops_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_integer_bit_ops_expr(cond, return_types, scope);
             let mut scoped = scope.clone();
             rewrite_pascal_integer_bit_ops_body(body, return_types, &mut scoped);
@@ -5247,8 +5163,7 @@ fn rewrite_pascal_integer_bit_ops_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = scope.clone();
             if let Some(init) = init {
                 rewrite_pascal_integer_bit_ops_stmt(init, return_types, &mut scoped);
@@ -5269,8 +5184,7 @@ fn rewrite_pascal_integer_bit_ops_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_pascal_integer_bit_ops_expr(expr, return_types, scope);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -5535,10 +5449,8 @@ fn pascal_expr_is_integer_like(
                 pascal_expr_is_integer_like(left, return_types, scope)
                     || pascal_expr_is_integer_like(right, return_types, scope)
             }
-            _ => false,
-        },
-        _ => false,
-    }
+            _ => false },
+        _ => false }
 }
 
 fn const_pascal_integer_expr(expr: &Expression) -> Option<i64> {
@@ -5549,14 +5461,11 @@ fn const_pascal_integer_expr(expr: &Expression) -> Option<i64> {
         }
         ExprKind::Unary {
             op: UnaryOp::Neg,
-            expr,
-        } => const_pascal_integer_expr(expr).map(|value| -value),
+            expr } => const_pascal_integer_expr(expr).map(|value| -value),
         ExprKind::Unary {
             op: UnaryOp::Pos,
-            expr,
-        } => const_pascal_integer_expr(expr),
-        _ => None,
-    }
+            expr } => const_pascal_integer_expr(expr),
+        _ => None }
 }
 
 fn pascal_wide_integer_expr(value: i64) -> Expression {
@@ -5572,8 +5481,7 @@ struct PascalMethodPointerInfo {
     fields: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
     methods: std::collections::HashMap<String, std::collections::HashSet<String>>,
     parents: std::collections::HashMap<String, Vec<String>>,
-    routines: std::collections::HashMap<String, Vec<Param>>,
-}
+    routines: std::collections::HashMap<String, Vec<Param>> }
 
 fn lower_pascal_method_pointers(body: &mut Vec<Statement>) {
     let info = collect_pascal_method_pointer_info(body);
@@ -5587,8 +5495,7 @@ fn collect_pascal_method_pointer_info(body: &[Statement]) -> PascalMethodPointer
         fields: std::collections::HashMap::new(),
         methods: std::collections::HashMap::new(),
         parents: std::collections::HashMap::new(),
-        routines: std::collections::HashMap::new(),
-    };
+        routines: std::collections::HashMap::new() };
     for stmt in body {
         match &stmt.kind {
             StmtKind::VarDecl { declarations, kind } if *kind == VarDeclKind::Const => {
@@ -5687,7 +5594,7 @@ fn lower_pascal_method_pointer_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             lower_pascal_method_pointer_expr(value, info, var_types);
             if pascal_method_pointer_target_type(&targets[0], info, var_types)
                 .is_some_and(|ty| is_pascal_procedural_type(&ty, info))
@@ -5697,7 +5604,7 @@ fn lower_pascal_method_pointer_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 lower_pascal_method_pointer_expr(target, info, var_types);
             }
@@ -5743,8 +5650,7 @@ fn lower_pascal_method_pointer_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_method_pointer_expr(cond, info, var_types);
             for stmt in then_body {
                 lower_pascal_method_pointer_stmt(stmt, info, &mut var_types.clone());
@@ -5765,8 +5671,7 @@ fn lower_pascal_method_pointer_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
                 lower_pascal_method_pointer_stmt(init, info, &mut scoped);
@@ -5797,8 +5702,7 @@ fn lower_pascal_method_pointer_expr(
             lower_pascal_method_pointer_expr(callee, info, var_types);
             let params = match &callee.kind {
                 ExprKind::Ident(name) => info.routines.get(&name.to_lowercase()).cloned(),
-                _ => None,
-            };
+                _ => None };
             for (idx, arg) in args.iter_mut().enumerate() {
                 lower_pascal_method_pointer_expr(&mut arg.value, info, var_types);
                 if params
@@ -5857,8 +5761,7 @@ fn pascal_method_pointer_target_type(
                 .get(&field.to_lowercase())
                 .cloned()
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_method_pointer_expr_type(
@@ -5877,8 +5780,7 @@ fn pascal_method_pointer_expr_type(
                 .get(&field.to_lowercase())
                 .map(|ty| bare_type_name(ty).to_lowercase())
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn is_pascal_procedural_type(type_hint: &str, info: &PascalMethodPointerInfo) -> bool {
@@ -5911,12 +5813,10 @@ fn pascal_method_pointer_lambda(
             ExprKind::Call {
                 callee: Box::new(expr.clone()),
                 args: Vec::new(),
-                optional: false,
-            },
+                optional: false },
         )))]),
         is_async: false,
-        captures: Vec::new(),
-    }))
+        captures: Vec::new() }))
 }
 
 fn pascal_type_has_zero_arg_method(
@@ -6029,8 +5929,7 @@ fn collect_record_array_types_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 collect_record_array_types_stmt(stmt, struct_names, out);
             }
@@ -6231,7 +6130,7 @@ fn rewrite_bare_parameterless_method_refs_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_bare_parameterless_method_refs_expr(target, method_names);
             }
@@ -6256,8 +6155,7 @@ fn rewrite_bare_parameterless_method_refs_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_bare_parameterless_method_refs_expr(cond, method_names);
             for stmt in then_body {
                 rewrite_bare_parameterless_method_refs_stmt(stmt, method_names);
@@ -6278,8 +6176,7 @@ fn rewrite_bare_parameterless_method_refs_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_bare_parameterless_method_refs_stmt(init, method_names);
             }
@@ -6312,8 +6209,7 @@ fn rewrite_bare_parameterless_method_refs_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_bare_parameterless_method_refs_expr(cond, method_names);
             for stmt in body {
                 rewrite_bare_parameterless_method_refs_stmt(stmt, method_names);
@@ -6334,8 +6230,7 @@ fn rewrite_bare_parameterless_method_refs_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_bare_parameterless_method_refs_stmt(stmt, method_names);
             }
@@ -6382,13 +6277,11 @@ fn rewrite_bare_parameterless_method_refs_expr(
             let callee = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: name.clone(),
-                null_safe: false,
-            });
+                null_safe: false });
             expr.kind = ExprKind::Call {
                 callee: Box::new(callee),
                 args: Vec::new(),
-                optional: false,
-            };
+                optional: false };
         }
         ExprKind::Call { args, .. } => {
             for arg in args {
@@ -6472,8 +6365,7 @@ struct PascalIndexedPropertyInfo {
     getter: Option<String>,
     setter: Option<String>,
     is_default: bool,
-    index_arg: Option<Expression>,
-}
+    index_arg: Option<Expression> }
 
 type PascalIndexedPropertyMap = std::collections::HashMap<String, Vec<PascalIndexedPropertyInfo>>;
 
@@ -6481,8 +6373,7 @@ type PascalIndexedPropertyMap = std::collections::HashMap<String, Vec<PascalInde
 struct PascalStaticPropertyInfo {
     name: String,
     getter: Option<String>,
-    setter: Option<String>,
-}
+    setter: Option<String> }
 
 type PascalStaticPropertyMap = std::collections::HashMap<String, Vec<PascalStaticPropertyInfo>>;
 
@@ -6501,8 +6392,7 @@ fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropert
                         name,
                         type_hint,
                         is_readonly,
-                        is_writeonly,
-                    } = member
+                        is_writeonly } = member
                     else {
                         return None;
                     };
@@ -6520,8 +6410,7 @@ fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropert
                         getter,
                         setter,
                         is_default: true,
-                        index_arg: None,
-                    })
+                        index_arg: None })
                 })
                 .collect();
             if !props.is_empty() {
@@ -6537,8 +6426,7 @@ fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropert
                 ..
             } => (name, parents.as_slice(), members),
             StmtKind::StructDecl { name, members, .. } => (name, &[][..], members),
-            _ => continue,
-        };
+            _ => continue };
         parents.insert(
             name.to_lowercase(),
             class_parents
@@ -6585,8 +6473,7 @@ fn collect_pascal_indexed_properties(body: &[Statement]) -> PascalIndexedPropert
                     .as_ref()
                     .and_then(|setter| property_body_setter_name(&setter.body)),
                 is_default,
-                index_arg,
-            });
+                index_arg });
         }
         if !props.is_empty() {
             out.insert(name.to_lowercase(), props);
@@ -6711,8 +6598,7 @@ fn collect_pascal_instance_properties(body: &[Statement]) -> PascalInstancePrope
                     setter: (!*is_readonly).then(|| {
                         pascal_interface_plain_property_setter(members, type_hint.as_deref())
                             .unwrap_or_else(|| format!("Set{}", name))
-                    }),
-                });
+                    }) });
             }
             if !props.is_empty() {
                 out.insert(name.to_lowercase(), props);
@@ -6754,8 +6640,7 @@ fn collect_pascal_instance_properties(body: &[Statement]) -> PascalInstancePrope
                     .and_then(|body| property_body_accessor_name(body)),
                 setter: setter
                     .as_ref()
-                    .and_then(|setter| property_body_setter_name(&setter.body)),
-            });
+                    .and_then(|setter| property_body_setter_name(&setter.body)) });
         }
         if !props.is_empty() {
             out.insert(name.to_lowercase(), props);
@@ -6900,7 +6785,7 @@ fn rewrite_pascal_instance_property_setters_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             rewrite_pascal_instance_property_setters_expr(value, properties, env);
             if let Some(call) =
                 pascal_instance_property_setter_call(&targets[0], value.clone(), properties, env)
@@ -6910,7 +6795,7 @@ fn rewrite_pascal_instance_property_setters_stmt(
                 rewrite_pascal_instance_property_setters_expr(&mut targets[0], properties, env);
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_instance_property_setters_expr(target, properties, env);
             }
@@ -6954,8 +6839,7 @@ fn rewrite_pascal_instance_property_setters_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_instance_property_setters_expr(cond, properties, env);
             let mut scoped = env.clone();
             rewrite_pascal_instance_property_setters_body(then_body, properties, &mut scoped);
@@ -6973,8 +6857,7 @@ fn rewrite_pascal_instance_property_setters_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 rewrite_pascal_instance_property_setters_stmt(init, properties, &mut scoped);
@@ -6990,8 +6873,7 @@ fn rewrite_pascal_instance_property_setters_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_instance_property_setters_expr(cond, properties, env);
             let mut scoped = env.clone();
             rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
@@ -7004,8 +6886,7 @@ fn rewrite_pascal_instance_property_setters_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut scoped = env.clone();
             rewrite_pascal_instance_property_setters_body(body, properties, &mut scoped);
             for catch in catches {
@@ -7117,11 +6998,9 @@ fn rewrite_pascal_instance_property_setters_expr(
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new((**object).clone()),
                         field: getter,
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: Vec::new(),
-                    optional: false,
-                };
+                    optional: false };
             }
         }
         ExprKind::Index { object, index, .. } => {
@@ -7160,8 +7039,7 @@ fn pascal_instance_property_getter_name(
         ExprKind::This => env.get("self"),
         ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
         ExprKind::Ident(name) => env.get(&name.to_lowercase()),
-        _ => None,
-    }?;
+        _ => None }?;
     properties
         .get(class_name)?
         .iter()
@@ -7193,11 +7071,9 @@ fn pascal_instance_property_setter_call(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new((**object).clone()),
             field: setter,
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(value)],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn collect_pascal_static_properties(body: &[Statement]) -> PascalStaticPropertyMap {
@@ -7230,8 +7106,7 @@ fn collect_pascal_static_properties(body: &[Statement]) -> PascalStaticPropertyM
                     .and_then(|body| property_body_accessor_name(body)),
                 setter: setter
                     .as_ref()
-                    .and_then(|setter| property_body_setter_name(&setter.body)),
-            });
+                    .and_then(|setter| property_body_setter_name(&setter.body)) });
         }
         if !props.is_empty() {
             out.insert(name.to_lowercase(), props);
@@ -7251,7 +7126,7 @@ fn rewrite_pascal_static_properties_stmt(
     properties: &PascalStaticPropertyMap,
 ) {
     match &mut stmt.kind {
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             rewrite_pascal_static_properties_expr(value, properties);
             if let Some(call) =
                 pascal_static_property_setter_call(&targets[0], value.clone(), properties)
@@ -7261,7 +7136,7 @@ fn rewrite_pascal_static_properties_stmt(
                 rewrite_pascal_static_properties_expr(&mut targets[0], properties);
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_static_properties_expr(target, properties);
             }
@@ -7291,8 +7166,7 @@ fn rewrite_pascal_static_properties_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_static_properties_expr(cond, properties);
             for stmt in then_body {
                 rewrite_pascal_static_properties_stmt(stmt, properties);
@@ -7313,8 +7187,7 @@ fn rewrite_pascal_static_properties_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_static_properties_stmt(init, properties);
             }
@@ -7331,8 +7204,7 @@ fn rewrite_pascal_static_properties_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_static_properties_expr(cond, properties);
             for stmt in body {
                 rewrite_pascal_static_properties_stmt(stmt, properties);
@@ -7397,11 +7269,9 @@ fn rewrite_pascal_static_properties_expr(
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(class_name)),
                             field: getter,
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: Vec::new(),
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
         }
@@ -7450,11 +7320,9 @@ fn pascal_static_property_setter_call(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(class_name)),
             field: setter,
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(value)],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn inherit_pascal_indexed_properties(
@@ -7499,10 +7367,8 @@ fn property_body_setter_name(body: &[Statement]) -> Option<String> {
         StmtKind::Assign { targets, .. } if targets.len() == 1 => match &targets[0].kind {
             ExprKind::Ident(name) => Some(name.clone()),
             ExprKind::Member { field, .. } => Some(field.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn property_call_accessor_name(expr: &Expression) -> Option<String> {
@@ -7512,8 +7378,7 @@ fn property_call_accessor_name(expr: &Expression) -> Option<String> {
     match &callee.kind {
         ExprKind::Member { field, .. } => Some(field.clone()),
         ExprKind::Ident(name) => Some(name.clone()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn rewrite_pascal_indexed_properties(
@@ -7580,11 +7445,9 @@ fn rewrite_pascal_collection_for_in_stmt(
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(iter.clone()),
                         field: "ToArray".to_string(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: Vec::new(),
-                    optional: false,
-                });
+                    optional: false });
             } else if let Some(enumerator_expr) =
                 pascal_custom_enumerator_expr(iter, var_types, enumerators, helper_enumerators)
             {
@@ -7602,15 +7465,12 @@ fn rewrite_pascal_collection_for_in_stmt(
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(&enum_name)),
                         field: "GetCurrent".to_string(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: Vec::new(),
-                    optional: false,
-                });
+                    optional: false });
                 let mut while_body = vec![Statement::new(StmtKind::Assign {
                     targets: vec![Expression::ident(var)],
-                    value: current,
-                })];
+                    value: current, by_ref: false })];
                 while_body.append(body);
                 *stmt = Statement::new(StmtKind::Block(vec![
                     Statement::new(StmtKind::VarDecl {
@@ -7619,23 +7479,18 @@ fn rewrite_pascal_collection_for_in_stmt(
                             type_hint: None,
                             init: Some(enumerator_expr),
                             array_bounds: None,
-                            with_events: false,
-                        }],
-                        kind: VarDeclKind::Dim,
-                    }),
+                            with_events: false }],
+                        kind: VarDeclKind::Dim }),
                     Statement::new(StmtKind::While {
                         cond: Expression::new(ExprKind::Call {
                             callee: Box::new(Expression::new(ExprKind::Member {
                                 object: Box::new(Expression::ident(&enum_name)),
                                 field: "MoveNext".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: Vec::new(),
-                            optional: false,
-                        }),
+                            optional: false }),
                         body: while_body,
-                        else_body: None,
-                    }),
+                        else_body: None }),
                 ]));
                 return;
             }
@@ -7772,8 +7627,7 @@ fn rewrite_pascal_collection_for_in_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_collection_for_in_body(
                 body,
                 &mut var_types.clone(),
@@ -7943,8 +7797,7 @@ fn rewrite_pascal_string_delete_stmt(stmt: &mut Statement) {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_string_delete_statements(body);
             for catch in catches {
                 rewrite_pascal_string_delete_statements(&mut catch.body);
@@ -7988,8 +7841,7 @@ fn pascal_string_delete_assignment(expr: &Expression) -> Option<Statement> {
     let target = args.first()?.value.clone();
     Some(Statement::new(StmtKind::Assign {
         targets: vec![target],
-        value: expr.clone(),
-    }))
+        value: expr.clone(), by_ref: false }))
 }
 
 fn rewrite_pascal_writeln_bool_vars(body: &mut [Statement]) {
@@ -8029,7 +7881,7 @@ fn rewrite_pascal_writeln_bool_vars_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             rewrite_pascal_writeln_bool_vars_expr(expr, var_types);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_writeln_bool_vars_expr(target, var_types);
             }
@@ -8143,8 +7995,7 @@ fn pascal_writeln_arg_needs_bool_display(
             pascal_writeln_arg_needs_bool_display(left, var_types)
                 || pascal_writeln_arg_needs_bool_display(right, var_types)
         }
-        _ => pascal_expr_is_any_comparison(expr),
-    }
+        _ => pascal_expr_is_any_comparison(expr) }
 }
 
 fn rewrite_pascal_comparer_exprs(body: &mut [Statement]) {
@@ -8187,7 +8038,7 @@ fn rewrite_pascal_comparer_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets.iter_mut() {
                 rewrite_pascal_comparer_expr(target, var_types);
             }
@@ -8230,8 +8081,7 @@ fn rewrite_pascal_comparer_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_comparer_expr(cond, var_types);
             rewrite_pascal_comparer_body(then_body, &mut var_types.clone());
             for (cond, body) in elifs {
@@ -8245,8 +8095,7 @@ fn rewrite_pascal_comparer_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_comparer_expr(cond, var_types);
             rewrite_pascal_comparer_body(body, &mut var_types.clone());
             if let Some(body) = else_body {
@@ -8261,8 +8110,7 @@ fn rewrite_pascal_comparer_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
                 rewrite_pascal_comparer_stmt(init, &mut scoped);
@@ -8343,11 +8191,9 @@ fn rewrite_pascal_comparer_expr(
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: object.clone(),
                         field: method.to_string(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: Vec::new(),
-                    optional: false,
-                });
+                    optional: false });
                 return;
             }
             if field.eq_ignore_ascii_case("Default") {
@@ -8425,18 +8271,15 @@ fn rewrite_pascal_comparer_expr(
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new((**object).clone()),
                             field: "ToArray".to_string(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: Vec::new(),
-                        optional: false,
-                    });
+                        optional: false });
                     let assign = Expression::new(ExprKind::Assign {
                         target: Box::new(args[1].value.clone()),
                         value: Box::new(call_expr(
                             "__vybe_array_binary_search",
                             vec![array_expr, args[0].value.clone()],
-                        )),
-                    });
+                        )) });
                     let check = bin_expr(BinOp::GtEq, args[1].value.clone(), int_expr(0));
                     *expr = Expression::new(ExprKind::Sequence(vec![assign, check]));
                     return;
@@ -8461,8 +8304,7 @@ fn rewrite_pascal_comparer_expr(
                     *callee = Box::new(Expression::new(ExprKind::Index {
                         object: Box::new((**object).clone()),
                         index: Box::new(index),
-                        null_safe: false,
-                    }));
+                        null_safe: false }));
                     return;
                 }
             }
@@ -8517,8 +8359,7 @@ fn pascal_expr_contains_comparer_bool_call(
                 || pascal_expr_contains_comparer_bool_call(then, var_types)
                 || pascal_expr_contains_comparer_bool_call(else_, var_types)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_contains_comparer_call(
@@ -8549,8 +8390,7 @@ fn pascal_expr_contains_comparer_call(
                 || pascal_expr_contains_comparer_call(then, var_types)
                 || pascal_expr_contains_comparer_call(else_, var_types)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_is_dictionary_bool_output(
@@ -8573,8 +8413,7 @@ fn pascal_expr_is_dictionary_bool_output(
             .is_some_and(|ty| pascal_tdictionary_value_type(&ty).is_some_and(|v| {
                 v.eq_ignore_ascii_case("Boolean")
             })),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_tdictionary_value_type(type_name: &str) -> Option<String> {
@@ -8618,8 +8457,7 @@ fn pascal_expr_is_equality_comparer_callee(
                     || ty.eq_ignore_ascii_case("__pascal_default_iequalitycomparer")
             })
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn is_pascal_equality_comparer_default_expr(expr: &Expression) -> bool {
@@ -8631,8 +8469,7 @@ fn is_pascal_equality_comparer_default_expr(expr: &Expression) -> bool {
         ExprKind::Call { callee, args, .. } if args.is_empty() => {
             is_pascal_equality_comparer_default_expr(callee)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_default_compare_lambda() -> Expression {
@@ -8652,12 +8489,9 @@ fn pascal_default_compare_lambda() -> Expression {
                     Expression::ident("R"),
                 )),
                 then: Box::new(pascal_int(1)),
-                else_: Box::new(pascal_int(0)),
-            })),
-        }))),
+                else_: Box::new(pascal_int(0)) })) }))),
         is_async: false,
-        captures: Vec::new(),
-    })
+        captures: Vec::new() })
 }
 
 fn pascal_default_equals_lambda() -> Expression {
@@ -8669,8 +8503,7 @@ fn pascal_default_equals_lambda() -> Expression {
             Expression::ident("R"),
         ))),
         is_async: false,
-        captures: Vec::new(),
-    })
+        captures: Vec::new() })
 }
 
 fn pascal_default_hash_lambda() -> Expression {
@@ -8678,8 +8511,7 @@ fn pascal_default_hash_lambda() -> Expression {
         params: vec![pascal_simple_param("Value")],
         body: LambdaBody::Expr(Box::new(Expression::ident("Value"))),
         is_async: false,
-        captures: Vec::new(),
-    })
+        captures: Vec::new() })
 }
 
 fn pascal_equality_comparer_object(equals: Expression, hash: Expression) -> Expression {
@@ -8695,14 +8527,12 @@ fn pascal_equality_comparer_tuple(equals: Expression, hash: Expression) -> Expre
             key: None,
             value: equals,
             spread: false,
-            by_ref: false,
-        },
+            by_ref: false },
         ArrayElement {
             key: None,
             value: hash,
             spread: false,
-            by_ref: false,
-        },
+            by_ref: false },
     ]))
 }
 
@@ -8715,8 +8545,7 @@ fn pascal_simple_param(name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    }
+        is_nullable: false }
 }
 
 fn rewrite_pascal_stringbuilder_exprs(body: &mut [Statement]) {
@@ -8751,12 +8580,11 @@ fn rewrite_pascal_stringbuilder_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             if pascal_invalid_stringtoguid_expr(value) {
                 stmt.kind = StmtKind::Throw {
                     expr: Some(pascal_econvert_error_expr("Invalid GUID")),
-                    cause: None,
-                };
+                    cause: None };
                 return;
             }
             rewrite_pascal_stringbuilder_expr(value, var_types);
@@ -8846,8 +8674,7 @@ fn rewrite_pascal_stringbuilder_stmt(
             if pascal_invalid_stringtoguid_expr(expr) {
                 stmt.kind = StmtKind::Throw {
                     expr: Some(pascal_econvert_error_expr("Invalid GUID")),
-                    cause: None,
-                };
+                    cause: None };
                 return;
             }
             if let Some(stmt_block) = pascal_set_environment_stmt(expr) {
@@ -8896,8 +8723,7 @@ fn rewrite_pascal_stringbuilder_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_stringbuilder_expr(cond, var_types);
             rewrite_pascal_stringbuilder_body(then_body, &mut var_types.clone());
             for (cond, body) in elifs {
@@ -8911,8 +8737,7 @@ fn rewrite_pascal_stringbuilder_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_stringbuilder_expr(cond, var_types);
             rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
             if let Some(body) = else_body {
@@ -8923,8 +8748,7 @@ fn rewrite_pascal_stringbuilder_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
                 rewrite_pascal_stringbuilder_stmt(init, &mut scoped);
@@ -8952,8 +8776,7 @@ fn rewrite_pascal_stringbuilder_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_stringbuilder_body(body, &mut var_types.clone());
             for catch in catches {
                 rewrite_pascal_stringbuilder_body(&mut catch.body, &mut var_types.clone());
@@ -9484,10 +9307,8 @@ fn pascal_tmemorystream_init_block(
         return Some(vec![Statement::new(StmtKind::Throw {
             expr: Some(Expression::new(ExprKind::New {
                 class: Box::new(Expression::ident("EFOpenError")),
-                args: vec![Argument::positional(str_expr("File not found"))],
-            })),
-            cause: None,
-        })]);
+                args: vec![Argument::positional(str_expr("File not found"))] })),
+            cause: None })]);
     }
     let ExprKind::Ident(name) = &target.kind else {
         return None;
@@ -9496,12 +9317,10 @@ fn pascal_tmemorystream_init_block(
     Some(vec![
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&pascal_tmemorystream_hidden_size_name(name))],
-            value: size,
-        }),
+            value: size, by_ref: false }),
         Statement::new(StmtKind::Assign {
             targets: vec![target.clone()],
-            value,
-        }),
+            value, by_ref: false }),
     ])
 }
 
@@ -9609,12 +9428,10 @@ fn pascal_stream_wrapper_init_block(
     Some(vec![
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&pascal_stream_wrapper_hidden_stream_name(name))],
-            value: stream,
-        }),
+            value: stream, by_ref: false }),
         Statement::new(StmtKind::Assign {
             targets: vec![target.clone()],
-            value,
-        }),
+            value, by_ref: false }),
     ])
 }
 
@@ -9663,8 +9480,7 @@ fn pascal_stream_wrapper_property_expr(
             }
         }
         "peekchar" if kind == "tbinaryreader" => Some(pascal_stream_peek_char_code_expr(stream, var_types)),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_stream_wrapper_method_call(
@@ -9684,8 +9500,7 @@ fn pascal_stream_wrapper_method_call(
             "writeline" => pascal_stream_write_text_expr(stream, args.first()?.value.clone(), true, var_types),
             "flush" => object.clone(),
             "free" => pascal_tmemorystream_method_call(&stream, "free", &[], var_types).unwrap_or_else(|| object.clone()),
-            _ => return None,
-        }
+            _ => return None }
     } else if matches!(kind.as_str(), "tstreamreader") {
         match field.to_ascii_lowercase().as_str() {
             "readline" => pascal_stream_read_line_expr(stream, var_types),
@@ -9693,14 +9508,12 @@ fn pascal_stream_wrapper_method_call(
             "read" => pascal_stream_read_char_code_expr(stream, var_types),
             "peek" => pascal_stream_peek_char_code_expr(stream, var_types),
             "free" => object.clone(),
-            _ => return None,
-        }
+            _ => return None }
     } else if matches!(kind.as_str(), "tbinarywriter") {
         match field.to_ascii_lowercase().as_str() {
             "write" => pascal_stream_write_binary_expr(stream, args.first()?.value.clone(), var_types),
             "free" => pascal_tmemorystream_method_call(&stream, "free", &[], var_types).unwrap_or_else(|| object.clone()),
-            _ => return None,
-        }
+            _ => return None }
     } else if matches!(kind.as_str(), "tbinaryreader") {
         match field.to_ascii_lowercase().as_str() {
             "readint32" | "readint64" | "readuint16" | "readuint32" | "readbyte" | "readsingle"
@@ -9715,8 +9528,7 @@ fn pascal_stream_wrapper_method_call(
             "readbytes" => pascal_stream_read_bytes_expr(stream, args.first()?.value.clone(), var_types),
             "peekchar" => pascal_stream_peek_char_code_expr(stream, var_types),
             "free" => object.clone(),
-            _ => return None,
-        }
+            _ => return None }
     } else {
         return None;
     };
@@ -9752,8 +9564,7 @@ fn pascal_stream_write_text_expr(
     let combined = Expression::new(ExprKind::Ternary {
         cond: Box::new(bin_expr(BinOp::Eq, existing.clone(), Expression::null())),
         then: Box::new(text.clone()),
-        else_: Box::new(bin_expr(BinOp::Add, existing, text)),
-    });
+        else_: Box::new(bin_expr(BinOp::Add, existing, text)) });
     let new_size = call_expr("Max", vec![size, bin_expr(BinOp::Add, pos.clone(), int_expr(1))]);
     let mut items = vec![pascal_assign_expr(
         pascal_index_expr(data, pos),
@@ -9810,8 +9621,7 @@ fn pascal_expr_is_byte_array_value(
             ty == "tbytes" || ty.starts_with("array")
         }),
         ExprKind::Array(_) => true,
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_static_array_len_expr(
@@ -9824,8 +9634,7 @@ fn pascal_static_array_len_expr(
             .get(&name.to_lowercase())
             .and_then(|ty| fixed_array_length(ty))
             .map(|len| len as i64),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_stream_write_slot_expr(
@@ -9887,8 +9696,7 @@ fn pascal_stream_read_bytes_expr(
             Expression::new(ExprKind::Ternary {
                 cond: Box::new(bin_expr(BinOp::Eq, next, Expression::null())),
                 then: Box::new(first),
-                else_: Box::new(gathered),
-            }),
+                else_: Box::new(gathered) }),
         ),
         pascal_assign_expr(
             pascal_tstringstream_position_expr(stream, var_types),
@@ -9912,8 +9720,7 @@ fn pascal_stream_read_line_expr(
             Expression::new(ExprKind::Ternary {
                 cond: Box::new(bin_expr(BinOp::Eq, stored.clone(), Expression::null())),
                 then: Box::new(str_expr("")),
-                else_: Box::new(stored),
-            }),
+                else_: Box::new(stored) }),
         ),
         pascal_assign_expr(pascal_tstringstream_position_expr(stream, var_types), bin_expr(BinOp::Add, pos, int_expr(1))),
         tmp,
@@ -9950,8 +9757,7 @@ fn pascal_stream_peek_char_code_expr(
     let safe_line = Expression::new(ExprKind::Ternary {
         cond: Box::new(bin_expr(BinOp::Eq, line.clone(), Expression::null())),
         then: Box::new(str_expr("")),
-        else_: Box::new(line),
-    });
+        else_: Box::new(line) });
     call_expr("Ord", vec![pascal_copy_expr(safe_line, int_expr(1), int_expr(1))])
 }
 
@@ -9970,8 +9776,7 @@ fn pascal_stream_read_char_code_expr(
             Expression::new(ExprKind::Ternary {
                 cond: Box::new(bin_expr(BinOp::Eq, line.clone(), Expression::null())),
                 then: Box::new(str_expr("")),
-                else_: Box::new(line),
-            }),
+                else_: Box::new(line) }),
         ),
         pascal_assign_expr(char_tmp.clone(), pascal_copy_expr(line_tmp.clone(), int_expr(1), int_expr(1))),
         pascal_assign_expr(
@@ -9990,8 +9795,7 @@ fn pascal_tstreamwriter_text_value(value: Expression) -> Expression {
             bin_expr(BinOp::Add, str_expr(""), *object)
         }
         kind @ ExprKind::Lit(Literal::Str(_)) => Expression { kind, ..value },
-        kind => bin_expr(BinOp::Add, str_expr(""), Expression { kind, ..value }),
-    }
+        kind => bin_expr(BinOp::Add, str_expr(""), Expression { kind, ..value }) }
 }
 
 fn pascal_tstringlist_create_expr() -> Expression {
@@ -10003,6 +9807,8 @@ fn pascal_tstringlist_create_expr() -> Expression {
         pascal_obj_prop("__names", Expression::new(ExprKind::Array(Vec::new()))),
         pascal_obj_prop("__valuefromindex", Expression::new(ExprKind::Array(Vec::new()))),
         pascal_obj_prop("Delimiter", str_expr(",")),
+        // fpc's default quote char; `DelimitedText` encloses with it.
+        pascal_obj_prop("QuoteChar", str_expr("\"")),
         pascal_obj_prop("StrictDelimiter", Expression::bool(false)),
         pascal_obj_prop("Sorted", Expression::bool(false)),
         pascal_obj_prop("Duplicates", Expression::ident("dupAccept")),
@@ -10049,6 +9855,7 @@ fn pascal_tstringlist_init_block(
         ("names", Expression::new(ExprKind::Array(Vec::new()))),
         ("valuefromindex", Expression::new(ExprKind::Array(Vec::new()))),
         ("delimiter", str_expr(",")),
+        ("quotechar", str_expr("\"")),
         ("strictdelimiter", Expression::bool(false)),
         ("sorted", Expression::bool(false)),
         ("duplicates", Expression::ident("dupAccept")),
@@ -10058,13 +9865,11 @@ fn pascal_tstringlist_init_block(
     ] {
         stmts.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&pascal_tstringlist_hidden_name(name, field))],
-            value: init,
-        }));
+            value: init, by_ref: false }));
     }
     stmts.push(Statement::new(StmtKind::Assign {
         targets: vec![target.clone()],
-        value,
-    }));
+        value, by_ref: false }));
     Some(stmts)
 }
 
@@ -10091,14 +9896,14 @@ fn pascal_tstringlist_valuefromindex_expr(receiver: Expression) -> Expression {
 fn pascal_tstringlist_prop_expr(receiver: Expression, field: &str) -> Expression {
     let hidden = match field.to_ascii_lowercase().as_str() {
         "delimiter" => Some("delimiter"),
+        "quotechar" => Some("quotechar"),
         "strictdelimiter" => Some("strictdelimiter"),
         "sorted" => Some("sorted"),
         "duplicates" => Some("duplicates"),
         "casesensitive" => Some("casesensitive"),
         "namevalueseparator" => Some("namevalueseparator"),
         "ownsobjects" => Some("ownsobjects"),
-        _ => None,
-    };
+        _ => None };
     if let Some(hidden) = hidden {
         if let Some(expr) = pascal_tstringlist_hidden_expr(&receiver, hidden) {
             return expr;
@@ -10170,9 +9975,7 @@ fn pascal_array_call(array: Expression, method: &str, args: Vec<Expression>) -> 
         _ => Expression::new(ExprKind::Call {
             callee: Box::new(pascal_member_expr(array, method)),
             args: args.into_iter().map(Argument::positional).collect(),
-            optional: false,
-        }),
-    }
+            optional: false }) }
 }
 
 fn pascal_string_call(text: Expression, method: &str, args: Vec<Expression>) -> Expression {
@@ -10184,9 +9987,7 @@ fn pascal_string_call(text: Expression, method: &str, args: Vec<Expression>) -> 
         _ => Expression::new(ExprKind::Call {
             callee: Box::new(pascal_member_expr(text, method)),
             args: args.into_iter().map(Argument::positional).collect(),
-            optional: false,
-        }),
-    }
+            optional: false }) }
 }
 
 fn pascal_string_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
@@ -10232,8 +10033,7 @@ fn pascal_string_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expres
             args[1].value.clone(),
             args[2].value.clone(),
         ),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_environment_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
@@ -10258,13 +10058,7 @@ fn pascal_environment_builtin_rewrite(name: &str, args: &[Argument]) -> Option<E
         "findcmdlineswitch" if args.len() >= 1 => Some(Expression::new(ExprKind::Lit(
             Literal::Bool(false),
         ))),
-        "strtointdef" if args.len() == 2 => Some(ternary_expr(
-            bin_expr(BinOp::Eq, args[0].value.clone(), str_expr("")),
-            args[1].value.clone(),
-            call_expr("StrToInt", vec![args[0].value.clone()]),
-        )),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_environment_ident_expr(name: &str) -> Option<Expression> {
@@ -10272,8 +10066,7 @@ fn pascal_environment_ident_expr(name: &str) -> Option<Expression> {
         "paramcount" => Some(int_expr(0)),
         "cmdline" => Some(str_expr("program")),
         "exitcode" => Some(Expression::ident("__pascal_exitcode")),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_environment_member_expr(object: &Expression, field: &str) -> Option<Expression> {
@@ -10284,8 +10077,7 @@ fn pascal_environment_member_expr(object: &Expression, field: &str) -> Option<Ex
     match field.to_ascii_lowercase().as_str() {
         "tostring" => Some(str_expr("Vybe Pascal")),
         "architecture" | "platform" | "major" | "minor" | "build" => Some(int_expr(0)),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_set_environment_stmt(expr: &Expression) -> Option<Vec<Statement>> {
@@ -10300,8 +10092,7 @@ fn pascal_set_environment_stmt(expr: &Expression) -> Option<Vec<Statement>> {
     let key = pascal_environment_key_expr(&args[0].value)?;
     Some(vec![Statement::new(StmtKind::Assign {
         targets: vec![key],
-        value: args[1].value.clone(),
-    })])
+        value: args[1].value.clone(), by_ref: false })])
 }
 
 fn pascal_environment_get_expr(key: &Expression) -> Option<Expression> {
@@ -10359,8 +10150,7 @@ fn pascal_guid_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expressi
             ),
             int_expr(0),
         ]))),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_invalid_stringtoguid_expr(expr: &Expression) -> bool {
@@ -10378,8 +10168,7 @@ fn pascal_invalid_stringtoguid_expr(expr: &Expression) -> bool {
 fn pascal_econvert_error_expr(message: &str) -> Expression {
     Expression::new(ExprKind::New {
         class: Box::new(Expression::ident("EConvertError")),
-        args: vec![Argument::positional(str_expr(message))],
-    })
+        args: vec![Argument::positional(str_expr(message))] })
 }
 
 fn pascal_createguid_stmt(expr: &Expression) -> Option<Vec<Statement>> {
@@ -10393,8 +10182,7 @@ fn pascal_createguid_stmt(expr: &Expression) -> Option<Vec<Statement>> {
     }
     Some(vec![Statement::new(StmtKind::Assign {
         targets: vec![args[0].value.clone()],
-        value: pascal_guid_object_expr(&pascal_generated_guid_for_expr(&args[0].value)),
-    })])
+        value: pascal_guid_object_expr(&pascal_generated_guid_for_expr(&args[0].value)), by_ref: false })])
 }
 
 fn pascal_createguid_assign_block(target: Expression, value: Expression) -> Option<Vec<Statement>> {
@@ -10409,12 +10197,10 @@ fn pascal_createguid_assign_block(target: Expression, value: Expression) -> Opti
     Some(vec![
         Statement::new(StmtKind::Assign {
             targets: vec![args[0].value.clone()],
-            value: pascal_guid_object_expr(&pascal_generated_guid_for_expr(&args[0].value)),
-        }),
+            value: pascal_guid_object_expr(&pascal_generated_guid_for_expr(&args[0].value)), by_ref: false }),
         Statement::new(StmtKind::Assign {
             targets: vec![target],
-            value: int_expr(0),
-        }),
+            value: int_expr(0), by_ref: false }),
     ])
 }
 
@@ -10470,8 +10256,7 @@ fn pascal_guid_string_value(value: Expression) -> Expression {
             .unwrap_or(value),
         ExprKind::Member { field, .. } if field == "__guid" => value,
         ExprKind::Lit(Literal::Str(_)) => pascal_guid_normalized_string_expr(value),
-        _ => pascal_member_expr(value, "__guid"),
-    }
+        _ => pascal_member_expr(value, "__guid") }
 }
 
 fn pascal_expr_is_tguid_value(
@@ -10487,8 +10272,7 @@ fn pascal_expr_is_tguid_value(
                 if matches!(&key.kind, ExprKind::Lit(Literal::Str(name)) if name == "__guid"))
         }),
         ExprKind::Member { field, .. } => field == "__guid",
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_guid_normalized_string_expr(value: Expression) -> Expression {
@@ -10578,8 +10362,7 @@ fn pascal_random_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expres
         "randomfrom" if args.len() == 1 => {
             Some(pascal_index_expr(args[0].value.clone(), int_expr(0)))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_randomize_stmt(expr: &Expression) -> Option<Vec<Statement>> {
@@ -10593,8 +10376,7 @@ fn pascal_randomize_stmt(expr: &Expression) -> Option<Vec<Statement>> {
     }
     Some(vec![Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident("RandSeed")],
-        value: int_expr(1),
-    })])
+        value: int_expr(1), by_ref: false })])
 }
 
 fn pascal_math_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expression> {
@@ -10704,8 +10486,7 @@ fn pascal_math_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expressi
             call_expr("__len__", vec![args[0].value.clone()]),
         )),
         "poly" if args.len() == 2 => Some(pascal_poly_expr(args[0].value.clone(), args[1].value.clone())),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_array_sum_expr(array: Expression) -> Expression {
@@ -10769,12 +10550,10 @@ fn pascal_reduce_expr_with_initial(
                 params: vec![pascal_simple_param(acc_name), pascal_simple_param(value_name)],
                 body: LambdaBody::Expr(Box::new(body)),
                 is_async: false,
-                captures: Vec::new(),
-            })),
+                captures: Vec::new() })),
             Argument::positional(initial),
         ],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn pascal_reduce_indexed_expr(
@@ -10795,12 +10574,10 @@ fn pascal_reduce_indexed_expr(
                 ],
                 body: LambdaBody::Expr(Box::new(body)),
                 is_async: false,
-                captures: Vec::new(),
-            })),
+                captures: Vec::new() })),
             Argument::positional(int_expr(0)),
         ],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn collect_pascal_interface_guids(source: &str) -> std::collections::HashMap<String, String> {
@@ -10850,7 +10627,7 @@ fn rewrite_pascal_interface_guid_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             rewrite_pascal_interface_guid_expr(expr, guids);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_interface_guid_expr(target, guids);
             }
@@ -10871,8 +10648,7 @@ fn rewrite_pascal_interface_guid_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_interface_guid_expr(cond, guids);
             rewrite_pascal_interface_guid_refs(then_body, guids);
             for (cond, body) in elifs {
@@ -10886,8 +10662,7 @@ fn rewrite_pascal_interface_guid_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_interface_guid_expr(cond, guids);
             rewrite_pascal_interface_guid_refs(body, guids);
             if let Some(body) = else_body {
@@ -10898,8 +10673,7 @@ fn rewrite_pascal_interface_guid_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_interface_guid_stmt(init, guids);
             }
@@ -10923,8 +10697,7 @@ fn rewrite_pascal_interface_guid_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_interface_guid_refs(body, guids);
             for catch in catches {
                 rewrite_pascal_interface_guid_refs(&mut catch.body, guids);
@@ -11065,16 +10838,14 @@ fn pascal_strutils_builtin_rewrite(name: &str, args: &[Argument]) -> Option<Expr
         "extractword" if args.len() >= 2 => {
             pascal_extractword_expr(args[0].value.clone(), args[1].value.clone())
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_string_method_call(receiver: Expression, method: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(pascal_member_expr(receiver, method)),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
 }
 
 fn pascal_quotedstr_expr(value: Expression) -> Expression {
@@ -11219,8 +10990,7 @@ fn pascal_flags_contain(flags: &Expression, name: &str) -> bool {
             .iter()
             .any(|item| matches!(&item.kind, ExprKind::Ident(flag) if flag.eq_ignore_ascii_case(name))),
         ExprKind::Ident(flag) => flag.eq_ignore_ascii_case(name),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_literal_replace(
@@ -11274,8 +11044,7 @@ fn pascal_array_literal(values: Vec<Expression>) -> Expression {
                 key: None,
                 value,
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     ))
 }
@@ -11293,16 +11062,26 @@ fn pascal_tstringlist_property_expr(
     match field.to_ascii_lowercase().as_str() {
         "count" => Some(call_expr("__len__", vec![items])),
         "text" => Some(pascal_array_call(items, "join", vec![str_expr("\n")])),
-        "commatext" => Some(pascal_array_call(items, "join", vec![str_expr(",")])),
-        "delimitedtext" => Some(pascal_array_call(
-            items,
-            "join",
-            vec![pascal_tstringlist_prop_expr(receiver, "Delimiter")],
+        // `CommaText`/`DelimitedText` are CSV, not a join: fpc encloses a field
+        // containing the delimiter, the quote char or whitespace and doubles an
+        // embedded quote. A bare `join` produced `apple,has,comma,has space`
+        // where real fpc gives `apple,"has,comma","has space"`.
+        "commatext" => Some(call_expr(
+            "__pascal_csv_join",
+            vec![items, str_expr(","), str_expr("\"")],
         )),
-        "delimiter" | "strictdelimiter" | "sorted" | "duplicates" | "casesensitive"
+        "delimitedtext" => Some(call_expr(
+            "__pascal_csv_join",
+            vec![
+                items,
+                pascal_tstringlist_prop_expr(receiver.clone(), "Delimiter"),
+                pascal_tstringlist_prop_expr(receiver, "QuoteChar"),
+            ],
+        )),
+        "delimiter" | "quotechar" | "strictdelimiter" | "sorted" | "duplicates"
+        | "casesensitive"
         | "namevalueseparator" | "ownsobjects" => Some(pascal_tstringlist_prop_expr(receiver, field)),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_tstringlist_indexed_property_expr(
@@ -11320,8 +11099,7 @@ fn pascal_tstringlist_indexed_property_expr(
             pascal_tstringlist_valuefromindex_expr(receiver),
             index,
         )),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_tstringlist_method_call(
@@ -11347,8 +11125,7 @@ fn pascal_tstringlist_method_call(
                     int_expr(0),
                 )),
                 then: Box::new(pascal_array_call(items.clone(), "push", vec![value])),
-                else_: Box::new(Expression::null()),
-            }));
+                else_: Box::new(Expression::null()) }));
             seq.push(pascal_array_call(objects, "push", vec![Expression::null()]));
             seq.push(receiver);
             Expression::new(ExprKind::Sequence(seq))
@@ -11459,12 +11236,9 @@ fn pascal_tstringlist_method_call(
                     "Destroy",
                 )),
                 args: Vec::new(),
-                optional: false,
-            })),
-            else_: Box::new(Expression::null()),
-        }),
-        _ => return None,
-    };
+                optional: false })),
+            else_: Box::new(Expression::null()) }),
+        _ => return None };
     Some(rewritten)
 }
 
@@ -11496,8 +11270,7 @@ fn pascal_tstringlist_split_name_value(text: &str) -> Option<(String, String)> {
         (Some(eq), Some(colon)) => eq.min(colon),
         (Some(eq), None) => eq,
         (None, Some(colon)) => colon,
-        (None, None) => return None,
-    };
+        (None, None) => return None };
     Some((text[..sep].to_string(), text[sep + 1..].to_string()))
 }
 
@@ -11512,12 +11285,12 @@ fn pascal_tstringlist_assignment_expr(
         {
             let receiver = (**object).clone();
             match field.to_ascii_lowercase().as_str() {
-                "delimiter" | "strictdelimiter" | "sorted" | "duplicates" | "casesensitive"
+                "delimiter" | "quotechar" | "strictdelimiter" | "sorted" | "duplicates"
+                | "casesensitive"
                 | "namevalueseparator" | "ownsobjects" => {
                     Some((pascal_tstringlist_prop_expr(receiver, field), value))
                 }
-                _ => None,
-            }
+                _ => None }
         }
         ExprKind::Index { object, index, .. } => {
             if let ExprKind::Member {
@@ -11540,8 +11313,7 @@ fn pascal_tstringlist_assignment_expr(
             }
             None
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_tstringlist_assignment_block(
@@ -11553,8 +11325,7 @@ fn pascal_tstringlist_assignment_block(
         return pascal_tstringlist_assignment_expr(target, value, var_types).map(|(target, value)| {
             vec![Statement::new(StmtKind::Assign {
                 targets: vec![target],
-                value,
-            })]
+                value, by_ref: false })]
         });
     };
     if !pascal_expr_is_tstringlist(object, var_types) {
@@ -11572,29 +11343,33 @@ fn pascal_tstringlist_assignment_block(
             if let Some(values) = pascal_csv_literal_values(&value) {
                 pascal_array_literal(values.into_iter().map(|v| str_expr(&v)).collect())
             } else {
-                pascal_string_call(value, "split", vec![str_expr(",")])
+                call_expr(
+                    "__pascal_csv_split",
+                    vec![value, str_expr(","), str_expr("\"")],
+                )
             }
         }
-        "delimitedtext" => pascal_string_call(
-            value,
-            "split",
-            vec![pascal_tstringlist_prop_expr(receiver, "Delimiter")],
+        "delimitedtext" => call_expr(
+            "__pascal_csv_split",
+            vec![
+                value,
+                pascal_tstringlist_prop_expr(receiver.clone(), "Delimiter"),
+                pascal_tstringlist_prop_expr(receiver, "QuoteChar"),
+            ],
         ),
         _ => {
             return pascal_tstringlist_assignment_expr(target, value, var_types).map(
                 |(target, value)| {
                     vec![Statement::new(StmtKind::Assign {
                         targets: vec![target],
-                        value,
-                    })]
+                        value, by_ref: false })]
                 },
             )
         }
     };
     Some(vec![Statement::new(StmtKind::Assign {
         targets: vec![items],
-        value,
-    })])
+        value, by_ref: false })])
 }
 
 fn pascal_csv_literal_values(value: &Expression) -> Option<Vec<String>> {
@@ -11611,8 +11386,7 @@ fn pascal_csv_literal_values(value: &Expression) -> Option<Vec<String>> {
                 out.push(current.trim().trim_matches('"').to_string());
                 current.clear();
             }
-            _ => current.push(ch),
-        }
+            _ => current.push(ch) }
     }
     out.push(current.trim().trim_matches('"').to_string());
     Some(out)
@@ -11679,16 +11453,13 @@ fn pascal_tstringstream_init_block(
     Some(vec![
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&pascal_tstringstream_hidden_data_name(name))],
-            value: data,
-        }),
+            value: data, by_ref: false }),
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&pascal_tstringstream_hidden_pos_name(name))],
-            value: pos,
-        }),
+            value: pos, by_ref: false }),
         Statement::new(StmtKind::Assign {
             targets: vec![target.clone()],
-            value,
-        }),
+            value, by_ref: false }),
     ])
 }
 
@@ -11708,8 +11479,7 @@ fn pascal_tstringstream_object_member(receiver: Expression, field: &str) -> Expr
     Expression::new(ExprKind::Member {
         object: Box::new(receiver),
         field: field.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn pascal_tstringstream_data_expr(
@@ -11808,8 +11578,7 @@ fn pascal_tstringstream_property_expr(
                 Some(call_expr("__len__", vec![pascal_tstringstream_object_member(receiver, "__data")]))
             }
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_tstringstream_method_call(
@@ -11909,8 +11678,7 @@ fn pascal_tstringstream_method_call(
                         Expression::new(ExprKind::Index {
                             object: object.clone(),
                             index: Box::new(int_expr(base_index + offset)),
-                            null_safe: false,
-                        }),
+                            null_safe: false }),
                         pascal_copy_expr(
                             data.clone(),
                             bin_expr(BinOp::Add, pos.clone(), int_expr(offset + 1)),
@@ -11925,8 +11693,7 @@ fn pascal_tstringstream_method_call(
             }
         }
         "free" => Expression::null(),
-        _ => return None,
-    };
+        _ => return None };
     Some(rewritten)
 }
 
@@ -11964,8 +11731,7 @@ fn pascal_tmemorystream_method_call(
             let stored = pascal_index_expr(data, pos.clone());
             let assign_target = match target.kind {
                 ExprKind::Index { object, .. } => *object,
-                _ => target,
-            };
+                _ => target };
             let new_pos = bin_expr(BinOp::Add, pos, count);
             let mut items = vec![
                 pascal_assign_expr(assign_target, call_expr("__pascal_structured_clone", vec![stored])),
@@ -12113,8 +11879,7 @@ fn pascal_tmemorystream_method_call(
                 Expression::new(ExprKind::Sequence(vec![receiver]))
             }
         }
-        _ => return None,
-    };
+        _ => return None };
     Some(rewritten)
 }
 
@@ -12180,8 +11945,7 @@ fn pascal_tstream_string_value(value: Expression) -> Expression {
         }
         ExprKind::Lit(Literal::Bool(true)) => str_expr("True"),
         ExprKind::Lit(Literal::Bool(false)) => str_expr("False"),
-        kind => Expression { kind, ..value },
-    }
+        kind => Expression { kind, ..value } }
 }
 
 fn pascal_int_literal_value(expr: &Expression) -> Option<i64> {
@@ -12190,8 +11954,7 @@ fn pascal_int_literal_value(expr: &Expression) -> Option<i64> {
         ExprKind::Lit(Literal::Float(value)) => Some(*value as i64),
         ExprKind::Unary { op: UnaryOp::Neg, expr } => pascal_int_literal_value(expr).map(|value| -value),
         ExprKind::Unary { op: UnaryOp::Pos, expr } => pascal_int_literal_value(expr),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_float_literal_value(expr: &Expression) -> Option<f64> {
@@ -12200,8 +11963,7 @@ fn pascal_float_literal_value(expr: &Expression) -> Option<f64> {
         ExprKind::Lit(Literal::Float(value)) => Some(*value),
         ExprKind::Unary { op: UnaryOp::Neg, expr } => pascal_float_literal_value(expr).map(|value| -value),
         ExprKind::Unary { op: UnaryOp::Pos, expr } => pascal_float_literal_value(expr),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_replace_all_expr(source: Expression, old: &str, new: &str) -> Expression {
@@ -12209,14 +11971,12 @@ fn pascal_replace_all_expr(source: Expression, old: &str, new: &str) -> Expressi
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(source),
             field: "replaceAll".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional(str_expr(old)),
             Argument::positional(str_expr(new)),
         ],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn pascal_tstringstream_assignment(
@@ -12238,8 +11998,7 @@ fn pascal_tstringstream_assignment(
                 "datastring" => Some((data, value)),
                 "position" => Some((pos, value)),
                 "size" => Some((data.clone(), pascal_copy_expr(data, int_expr(1), value))),
-                _ => None,
-            }
+                _ => None }
         }
         ExprKind::Member { object, field, .. }
             if pascal_expr_is_tmemorystream(object, var_types)
@@ -12247,8 +12006,7 @@ fn pascal_tstringstream_assignment(
         {
             Some((pascal_tmemorystream_size_expr((**object).clone()), value))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_tstringstream_assignment_block(
@@ -12280,16 +12038,14 @@ fn pascal_tstringstream_assignment_block(
             pascal_tstringstream_object_member(receiver, "Capacity"),
             value,
         )],
-        _ => return None,
-    };
+        _ => return None };
 
     let mut stmts = Vec::new();
     for expr in exprs {
         if let ExprKind::Assign { target, value } = expr.kind {
             stmts.push(Statement::new(StmtKind::Assign {
                 targets: vec![*target],
-                value: *value,
-            }));
+                value: *value, by_ref: false }));
         }
     }
     Some(stmts)
@@ -12309,8 +12065,7 @@ fn pascal_expr_is_tstringstream(
         ExprKind::Sequence(items) => items
             .last()
             .is_some_and(|last| pascal_expr_is_tstringstream(last, var_types)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_is_tmemorystream(
@@ -12326,8 +12081,7 @@ fn pascal_expr_is_tmemorystream(
                     "tmemorystream" | "tfilestream"
                 )
             }),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_is_polymorphic_tstream(
@@ -12341,8 +12095,7 @@ fn pascal_expr_is_polymorphic_tstream(
         ExprKind::Sequence(items) => items
             .last()
             .is_some_and(|last| pascal_expr_is_polymorphic_tstream(last, var_types)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_is_tstringlist(
@@ -12356,8 +12109,7 @@ fn pascal_expr_is_tstringlist(
         ExprKind::Sequence(items) => items
             .last()
             .is_some_and(|last| pascal_expr_is_tstringlist(last, var_types)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_is_stream_wrapper(
@@ -12371,8 +12123,7 @@ fn pascal_expr_is_stream_wrapper(
         ExprKind::Sequence(items) => items
             .last()
             .is_some_and(|last| pascal_expr_is_stream_wrapper(last, var_types)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_stringbuilder_create_expr(args: &[Argument]) -> Expression {
@@ -12489,14 +12240,12 @@ fn pascal_stringbuilder_method_call(
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(text.clone()),
                     field: "replaceAll".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![
                     Argument::positional(args.first()?.value.clone()),
                     Argument::positional(args.get(1)?.value.clone()),
                 ],
-                optional: false,
-            });
+                optional: false });
             prefix.push(pascal_stringbuilder_replace_receiver(receiver.clone(), replaced));
             prefix.push(receiver);
             Expression::new(ExprKind::Sequence(prefix))
@@ -12508,8 +12257,7 @@ fn pascal_stringbuilder_method_call(
         }
         "tostring" => text,
         "free" => Expression::null(),
-        _ => return None,
-    };
+        _ => return None };
     Some(rewritten)
 }
 
@@ -12526,8 +12274,7 @@ fn pascal_stringbuilder_property_expr(
         "tostring" => Some(pascal_stringbuilder_text_member(receiver)),
         "length" => Some(call_expr("__len__", vec![pascal_stringbuilder_text_member(receiver)])),
         "capacity" => Some(int_expr(1024)),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_stringbuilder_expr_stmt_block(expr: &Expression) -> Option<Vec<Statement>> {
@@ -12540,8 +12287,7 @@ fn pascal_stringbuilder_expr_stmt_block(expr: &Expression) -> Option<Vec<Stateme
             ExprKind::Assign { target, value } => {
                 stmts.push(Statement::new(StmtKind::Assign {
                     targets: vec![(**target).clone()],
-                    value: (**value).clone(),
-                }));
+                    value: (**value).clone(), by_ref: false }));
             }
             ExprKind::Sequence(_) => {
                 if let Some(nested) = pascal_stringbuilder_expr_stmt_block(item) {
@@ -12549,8 +12295,7 @@ fn pascal_stringbuilder_expr_stmt_block(expr: &Expression) -> Option<Vec<Stateme
                 }
             }
             ExprKind::Ident(_) | ExprKind::Object(_) | ExprKind::Lit(Literal::Null) => {}
-            _ => stmts.push(Statement::new(StmtKind::Expr(item.clone()))),
-        }
+            _ => stmts.push(Statement::new(StmtKind::Expr(item.clone()))) }
     }
     if stmts.is_empty() {
         None
@@ -12611,8 +12356,7 @@ fn pascal_stringbuilder_assignment(
             );
             Some((receiver, new_text))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_expr_is_stringbuilder(
@@ -12626,8 +12370,7 @@ fn pascal_expr_is_stringbuilder(
         ExprKind::Sequence(items) => items
             .last()
             .is_some_and(|last| pascal_expr_is_stringbuilder(last, var_types)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_contains_stringbuilder_member(
@@ -12649,8 +12392,7 @@ fn pascal_expr_contains_stringbuilder_member(
                     .iter()
                     .any(|arg| pascal_expr_contains_stringbuilder_member(&arg.value, var_types))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_contains_tstringstream_member(
@@ -12675,8 +12417,7 @@ fn pascal_expr_contains_tstringstream_member(
                     .iter()
                     .any(|arg| pascal_expr_contains_tstringstream_member(&arg.value, var_types))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_contains_stream_wrapper_member(
@@ -12705,8 +12446,7 @@ fn pascal_expr_contains_stream_wrapper_member(
                     .iter()
                     .any(|arg| pascal_expr_contains_stream_wrapper_member(&arg.value, var_types))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_stringbuilder_receiver(expr: Expression) -> (Vec<Expression>, Expression) {
@@ -12718,8 +12458,7 @@ fn pascal_stringbuilder_receiver(expr: Expression) -> (Vec<Expression>, Expressi
                 (Vec::new(), Expression::new(ExprKind::Sequence(Vec::new())))
             }
         }
-        kind => (Vec::new(), Expression { kind, ..expr }),
-    }
+        kind => (Vec::new(), Expression { kind, ..expr }) }
 }
 
 fn pascal_stringbuilder_text_member(receiver: Expression) -> Expression {
@@ -12735,8 +12474,7 @@ fn pascal_stringbuilder_value_expr(value: Expression) -> Expression {
     match value.kind {
         ExprKind::Lit(Literal::Bool(true)) => str_expr("True"),
         ExprKind::Lit(Literal::Bool(false)) => str_expr("False"),
-        _ => value,
-    }
+        _ => value }
 }
 
 fn pascal_copy_expr(source: Expression, start: Expression, len: Expression) -> Expression {
@@ -12746,8 +12484,7 @@ fn pascal_copy_expr(source: Expression, start: Expression, len: Expression) -> E
 fn pascal_assign_expr(target: Expression, value: Expression) -> Expression {
     Expression::new(ExprKind::Assign {
         target: Box::new(target),
-        value: Box::new(value),
-    })
+        value: Box::new(value) })
 }
 
 fn collect_pascal_enumerator_operators(
@@ -12801,26 +12538,22 @@ fn pascal_custom_enumerator_expr(
         return Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(function_name)),
             args: vec![Argument::positional(iter.clone())],
-            optional: false,
-        }));
+            optional: false }));
     }
     if let Some(function_name) = helper_enumerators.get(&normalized) {
         return Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident(function_name)),
             args: vec![Argument::positional(iter.clone())],
-            optional: false,
-        }));
+            optional: false }));
     }
     if pascal_type_supports_get_enumerator(&normalized) {
         return Some(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(iter.clone()),
                 field: "GetEnumerator".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: Vec::new(),
-            optional: false,
-        }));
+            optional: false }));
     }
     None
 }
@@ -12861,8 +12594,7 @@ fn pascal_expr_is_collection_value(
         ExprKind::Ident(name) => var_types
             .get(&name.to_lowercase())
             .is_some_and(|type_name| is_pascal_generic_collection_type(type_name)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn is_pascal_generic_collection_type(type_name: &str) -> bool {
@@ -12918,7 +12650,7 @@ fn rewrite_pascal_indexed_properties_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             rewrite_pascal_indexed_properties_expr(value, properties, var_types, current_class);
             if let Some(call) = pascal_indexed_property_setter_call(
                 &targets[0],
@@ -12946,7 +12678,7 @@ fn rewrite_pascal_indexed_properties_stmt(
                 );
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_indexed_properties_expr(
                     target,
@@ -12999,8 +12731,7 @@ fn rewrite_pascal_indexed_properties_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_indexed_properties_expr(cond, properties, var_types, current_class);
             for stmt in then_body {
                 rewrite_pascal_indexed_properties_stmt(
@@ -13036,8 +12767,7 @@ fn rewrite_pascal_indexed_properties_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
                 rewrite_pascal_indexed_properties_stmt(
@@ -13075,8 +12805,7 @@ fn rewrite_pascal_indexed_properties_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_indexed_properties_expr(cond, properties, var_types, current_class);
             for stmt in body {
                 rewrite_pascal_indexed_properties_stmt(
@@ -13187,11 +12916,9 @@ fn rewrite_pascal_indexed_properties_expr(
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(receiver),
                             field: getter.clone(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: indices.into_iter().map(Argument::positional).collect(),
-                        optional: false,
-                    });
+                        optional: false });
                     return;
                 }
             }
@@ -13297,8 +13024,7 @@ fn pascal_property_getter_call(
     let ExprKind::Member {
         object,
         field,
-        null_safe,
-    } = &expr.kind
+        null_safe } = &expr.kind
     else {
         return None;
     };
@@ -13318,11 +13044,9 @@ fn pascal_property_getter_call(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: object.clone(),
             field: getter.clone(),
-            null_safe: *null_safe,
-        })),
+            null_safe: *null_safe })),
         args,
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn pascal_named_indexed_property_setter_call(
@@ -13335,8 +13059,7 @@ fn pascal_named_indexed_property_setter_call(
     let ExprKind::Member {
         object,
         field,
-        null_safe,
-    } = &target.kind
+        null_safe } = &target.kind
     else {
         return None;
     };
@@ -13351,11 +13074,9 @@ fn pascal_named_indexed_property_setter_call(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: object.clone(),
             field: setter.clone(),
-            null_safe: *null_safe,
-        })),
+            null_safe: *null_safe })),
         args: vec![Argument::positional(index_arg), Argument::positional(value)],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn pascal_indexed_property_getter_call(
@@ -13378,11 +13099,9 @@ fn pascal_indexed_property_getter_call(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver),
             field: getter.clone(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(index)],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn pascal_indexed_property_setter_call(
@@ -13401,11 +13120,9 @@ fn pascal_indexed_property_setter_call(
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(receiver),
                 field: setter.clone(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: indices.into_iter().map(Argument::positional).collect(),
-            optional: false,
-        }));
+            optional: false }));
     }
     let ExprKind::Index { object, index, .. } = &target.kind else {
         return None;
@@ -13423,14 +13140,12 @@ fn pascal_indexed_property_setter_call(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver),
             field: setter.clone(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional((**index).clone()),
             Argument::positional(value),
         ],
-        optional: false,
-    }))
+        optional: false }))
 }
 
 fn pascal_indexed_property_target_for_index(
@@ -13494,8 +13209,7 @@ fn pascal_indexed_property_target_for_index(
             let prop = choose_pascal_indexed_property(candidates, index)?;
             Some((object.clone(), prop))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn choose_pascal_indexed_property(
@@ -13546,8 +13260,7 @@ fn pascal_expr_class_name(
     match &expr.kind {
         ExprKind::This => current_class.map(str::to_string),
         ExprKind::Ident(name) => var_types.get(&name.to_lowercase()).cloned(),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn method_names_without_params(
@@ -13565,8 +13278,7 @@ fn target_array_name(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.to_lowercase()),
         ExprKind::Member { field, .. } => Some(field.to_lowercase()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn setlength_record_slot_assign(
@@ -13577,19 +13289,15 @@ fn setlength_record_slot_assign(
     let index = Expression::new(ExprKind::Binary {
         op: BinOp::Sub,
         left: Box::new(len),
-        right: Box::new(Expression::int(1)),
-    });
+        right: Box::new(Expression::int(1)) });
     Statement::new(StmtKind::Assign {
         targets: vec![Expression::new(ExprKind::Index {
             object: Box::new(target),
             index: Box::new(index),
-            null_safe: false,
-        })],
+            null_safe: false })],
         value: Expression::new(ExprKind::New {
             class: Box::new(Expression::ident(element_type)),
-            args: Vec::new(),
-        }),
-    })
+            args: Vec::new() }), by_ref: false })
 }
 
 fn materialize_record_array_setlength_stmt(
@@ -13634,8 +13342,7 @@ fn materialize_record_array_setlength_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             materialize_record_array_setlength_body(body, record_arrays);
             for catch in catches {
                 materialize_record_array_setlength_body(&mut catch.body, record_arrays);
@@ -13674,10 +13381,8 @@ fn materialize_record_array_setlength_body(
                             )
                         })
                 }
-                _ => None,
-            },
-            _ => None,
-        };
+                _ => None },
+            _ => None };
         if let Some(stmt) = extra {
             body.insert(i + 1, stmt);
             i += 2;
@@ -13776,8 +13481,7 @@ fn lower_pascal_multidim_setlength_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             lower_pascal_multidim_setlength_body(body, counter, array_types, struct_names);
             for catch in catches {
                 lower_pascal_multidim_setlength_body(
@@ -13811,8 +13515,7 @@ fn lower_pascal_multidim_setlength_body(
             StmtKind::Expr(expr) => {
                 pascal_multidim_setlength_replacement(expr, counter, array_types, struct_names)
             }
-            _ => None,
-        };
+            _ => None };
         if let Some(mut stmts) = replacement {
             let count = stmts.len();
             body.splice(i..=i, stmts.drain(..));
@@ -13947,27 +13650,21 @@ fn pascal_multidim_setlength_level(
         Statement::new(StmtKind::For {
             init: Some(Box::new(Statement::new(StmtKind::Assign {
                 targets: vec![Expression::ident(&index_name)],
-                value: Expression::int(0),
-            }))),
+                value: Expression::int(0), by_ref: false }))),
             cond: Some(Expression::new(ExprKind::Binary {
                 op: BinOp::LtEq,
                 left: Box::new(Expression::ident(&index_name)),
                 right: Box::new(Expression::new(ExprKind::Binary {
                     op: BinOp::Sub,
                     left: Box::new(lengths[level - 1].clone()),
-                    right: Box::new(Expression::int(1)),
-                })),
-            })),
+                    right: Box::new(Expression::int(1)) })) })),
             update: Some(Expression::new(ExprKind::Assign {
                 target: Box::new(Expression::ident(&index_name)),
                 value: Box::new(Expression::new(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(Expression::ident(&index_name)),
-                    right: Box::new(Expression::int(1)),
-                })),
-            })),
-            body: loop_body,
-        }),
+                    right: Box::new(Expression::int(1)) })) })),
+            body: loop_body }),
     ]
 }
 
@@ -13979,17 +13676,14 @@ fn pascal_setlength_stmt(target: Expression, len: Expression) -> Statement {
                 value: target,
                 name: None,
                 by_ref: false,
-                spread: false,
-            },
+                spread: false },
             Argument {
                 value: len,
                 name: None,
                 by_ref: false,
-                spread: false,
-            },
+                spread: false },
         ],
-        optional: false,
-    })))
+        optional: false })))
 }
 
 fn pascal_resize_nested_array_stmt(
@@ -14001,15 +13695,12 @@ fn pascal_resize_nested_array_stmt(
         cond: Expression::new(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(target.clone()),
-            right: Box::new(Expression::null()),
-        }),
+            right: Box::new(Expression::null()) }),
         then_body: vec![Statement::new(StmtKind::Assign {
             targets: vec![target.clone()],
-            value: pascal_array_new_expr(len.clone(), init.clone()),
-        })],
+            value: pascal_array_new_expr(len.clone(), init.clone()), by_ref: false })],
         elifs: Vec::new(),
-        else_body: Some(vec![pascal_setlength_stmt(target, len)]),
-    })
+        else_body: Some(vec![pascal_setlength_stmt(target, len)]) })
 }
 
 fn pascal_array_new_expr(len: Expression, init: Option<Expression>) -> Expression {
@@ -14017,21 +13708,18 @@ fn pascal_array_new_expr(len: Expression, init: Option<Expression>) -> Expressio
         value: len,
         name: None,
         by_ref: false,
-        spread: false,
-    }];
+        spread: false }];
     if let Some(init) = init {
         args.push(Argument {
             value: init,
             name: None,
             by_ref: false,
-            spread: false,
-        });
+            spread: false });
     }
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("Array")),
         args,
-        optional: false,
-    })
+        optional: false })
 }
 
 fn pascal_setlength_default_for_target(
@@ -14083,23 +13771,20 @@ fn pascal_setlength_default_for_root(
 fn pascal_index_root_expr(expr: &Expression) -> Option<&Expression> {
     match &expr.kind {
         ExprKind::Index { object, .. } => pascal_index_root_expr(object),
-        _ => Some(expr),
-    }
+        _ => Some(expr) }
 }
 
 fn pascal_index_root_name(expr: &Expression) -> Option<&str> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name),
         ExprKind::Member { field, .. } => Some(field),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_index_depth(expr: &Expression) -> usize {
     match &expr.kind {
         ExprKind::Index { object, .. } => 1 + pascal_index_depth(object),
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 fn pascal_dynamic_array_dim_count(type_hint: &str) -> usize {
@@ -14149,8 +13834,7 @@ fn pascal_default_expr_for_type(
     if struct_names.contains(&lower) {
         return Some(Expression::new(ExprKind::New {
             class: Box::new(Expression::ident(bare)),
-            args: Vec::new(),
-        }));
+            args: Vec::new() }));
     }
     match lower.as_str() {
         "boolean" | "bool" => Some(Expression::bool(false)),
@@ -14161,8 +13845,7 @@ fn pascal_default_expr_for_type(
         | "int64" | "qword" | "real" | "double" | "single" | "extended" | "currency" => {
             Some(Expression::int(0))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_integer_var_decl(name: &str) -> Statement {
@@ -14172,10 +13855,8 @@ fn pascal_integer_var_decl(name: &str) -> Statement {
             type_hint: Some("Integer".to_string()),
             init: None,
             array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Dim,
-    })
+            with_events: false }],
+        kind: VarDeclKind::Dim })
 }
 
 fn pascal_indexed_expr(root: Expression, indices: &[String]) -> Expression {
@@ -14183,8 +13864,7 @@ fn pascal_indexed_expr(root: Expression, indices: &[String]) -> Expression {
         Expression::new(ExprKind::Index {
             object: Box::new(object),
             index: Box::new(Expression::ident(index_name)),
-            null_safe: false,
-        })
+            null_safe: false })
     })
 }
 
@@ -14193,9 +13873,7 @@ fn assign_result_new_record(type_name: &str) -> Statement {
         targets: vec![Expression::ident("Result")],
         value: Expression::new(ExprKind::New {
             class: Box::new(Expression::ident(type_name)),
-            args: Vec::new(),
-        }),
-    })
+            args: Vec::new() }), by_ref: false })
 }
 
 fn collect_pascal_destructible_class_names(
@@ -14295,8 +13973,7 @@ fn synthesize_pascal_default_destructors(body: &mut [Statement]) {
                             Expression::new(ExprKind::Member {
                                 object: Box::new(Expression::new(ExprKind::This)),
                                 field: name.clone(),
-                                null_safe: false,
-                            }),
+                                null_safe: false }),
                         )))
                     })
             })
@@ -14315,8 +13992,7 @@ fn synthesize_pascal_default_destructors(body: &mut [Statement]) {
                 handles: Vec::new(),
                 is_async: false,
                 is_generator: false,
-                is_sub: true,
-            },
+                is_sub: true },
         ))));
     }
 }
@@ -14361,11 +14037,10 @@ fn lower_pascal_interface_releases_body(
                 }
                 out.push(stmt);
             }
-            StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
                 let target_name = match &targets[0].kind {
                     ExprKind::Ident(name) => Some(name.to_lowercase()),
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(target_name) = target_name.filter(|name| env.contains_key(name)) {
                     if matches!(value.kind, ExprKind::Lit(Literal::Null)) {
                         if pascal_interface_alias_count(&aliases, &target_name) <= 1 {
@@ -14419,8 +14094,7 @@ fn lower_pascal_interface_releases_body(
                 }
                 out.push(stmt);
             }
-            _ => out.push(stmt),
-        }
+            _ => out.push(stmt) }
     }
     let mut released = std::collections::HashSet::new();
     for (name, group) in aliases {
@@ -14468,8 +14142,7 @@ fn synthesize_pascal_inherited_constructors(body: &mut [Statement]) {
             .iter()
             .filter_map(|member| match member {
                 ClassMember::Constructor { .. } => Some(member.clone()),
-                _ => None,
-            })
+                _ => None })
             .collect();
         if !ctors.is_empty() {
             parent_ctors.insert(name.to_lowercase(), ctors);
@@ -14517,8 +14190,7 @@ fn synthesize_pascal_inherited_constructors(body: &mut [Statement]) {
                 body,
                 base_args: None,
                 initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-                visibility: visibility.clone(),
-            });
+                visibility: visibility.clone() });
         }
     }
 }
@@ -14549,7 +14221,7 @@ fn rewrite_pascal_free_calls_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_free_calls_expr(target, destructible_classes, var_types);
             }
@@ -14601,8 +14273,7 @@ fn rewrite_pascal_free_calls_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_free_calls_expr(cond, destructible_classes, var_types);
             rewrite_pascal_free_calls_body(then_body, destructible_classes, &mut var_types.clone());
             for (cond, body) in elifs {
@@ -14616,8 +14287,7 @@ fn rewrite_pascal_free_calls_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_free_calls_expr(cond, destructible_classes, var_types);
             rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             if let Some(body) = else_body {
@@ -14632,8 +14302,7 @@ fn rewrite_pascal_free_calls_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
                 rewrite_pascal_free_calls_stmt(init, destructible_classes, &mut scoped);
@@ -14654,8 +14323,7 @@ fn rewrite_pascal_free_calls_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_free_calls_body(body, destructible_classes, &mut var_types.clone());
             for catch in catches {
                 rewrite_pascal_free_calls_body(
@@ -14856,20 +14524,16 @@ fn pascal_nil_safe_destroy_expr(receiver: Expression) -> Expression {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver.clone()),
             field: "Destroy".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: Vec::new(),
-        optional: false,
-    });
+        optional: false });
     Expression::new(ExprKind::Ternary {
         cond: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(receiver),
-            right: Box::new(Expression::null()),
-        })),
+            right: Box::new(Expression::null()) })),
         then: Box::new(destroy_call),
-        else_: Box::new(Expression::null()),
-    })
+        else_: Box::new(Expression::null()) })
 }
 
 fn pascal_free_receiver_is_destructible(
@@ -14885,13 +14549,11 @@ fn pascal_free_receiver_is_destructible(
             ExprKind::Ident(class_name) => {
                 destructible_classes.contains(&class_name.to_lowercase())
             }
-            _ => false,
-        },
+            _ => false },
         ExprKind::Cast { type_name, .. } => {
             destructible_classes.contains(&type_name.to_lowercase())
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn fixed_record_array(
@@ -14995,8 +14657,7 @@ fn default_init_record_array_fields_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             default_init_record_array_fields(body, struct_names, explicit_ctor_record_names);
             for catch in catches {
                 default_init_record_array_fields(
@@ -15116,8 +14777,7 @@ fn default_init_pascal_array_locals_stmt(stmt: &mut Statement) {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             default_init_pascal_array_locals(body);
             for catch in catches {
                 default_init_pascal_array_locals(&mut catch.body);
@@ -15164,11 +14824,9 @@ fn record_array_initializer(count: usize, element_type: &str) -> Expression {
             key: None,
             value: Expression::new(ExprKind::New {
                 class: Box::new(Expression::ident(element_type)),
-                args: Vec::new(),
-            }),
+                args: Vec::new() }),
             spread: false,
-            by_ref: false,
-        })
+            by_ref: false })
         .collect();
     Expression::new(ExprKind::Array(elements))
 }
@@ -15179,8 +14837,7 @@ fn null_array_initializer(count: usize) -> Expression {
             key: None,
             value: Expression::null(),
             spread: false,
-            by_ref: false,
-        })
+            by_ref: false })
         .collect();
     Expression::new(ExprKind::Array(elements))
 }
@@ -15191,8 +14848,7 @@ fn repeated_array_initializer(count: usize, value: Expression) -> Expression {
             key: None,
             value: value.clone(),
             spread: false,
-            by_ref: false,
-        })
+            by_ref: false })
         .collect();
     Expression::new(ExprKind::Array(elements))
 }
@@ -15316,8 +14972,7 @@ fn flatten_pascal_multidim_fixed_array_type_hints_stmt(stmt: &mut Statement) {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             flatten_pascal_multidim_fixed_array_type_hints(body);
             for catch in catches {
                 flatten_pascal_multidim_fixed_array_type_hints(&mut catch.body);
@@ -15399,8 +15054,7 @@ fn default_field_init_for_type(type_hint: &str) -> Option<Expression> {
         "string" | "ansistring" | "unicodestring" | "widestring" | "char" => {
             Some(Expression::string(""))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn default_init_const_bounded_arrays(body: &mut [Statement]) {
@@ -15416,8 +15070,7 @@ fn collect_pascal_int_consts(body: &[Statement], out: &mut std::collections::Has
         match &stmt.kind {
             StmtKind::VarDecl {
                 declarations,
-                kind: VarDeclKind::Const,
-            } => {
+                kind: VarDeclKind::Const } => {
                 for decl in declarations {
                     if let (BindingPattern::Ident(name), Some(init)) = (&decl.pattern, &decl.init) {
                         if let Some(value) = const_int_expr(init) {
@@ -15518,8 +15171,7 @@ fn collect_struct_fields(body: &[Statement]) -> std::collections::HashMap<String
                 .iter()
                 .filter_map(|member| match member {
                     ClassMember::Field { name, .. } => Some(name.clone()),
-                    _ => None,
-                })
+                    _ => None })
                 .collect::<Vec<_>>();
             fields.insert(name.to_lowercase(), names);
         }
@@ -15589,7 +15241,7 @@ fn rewrite_zero_based_string_indexes_stmt(
         StmtKind::Throw {
             cause: Some(cause), ..
         } => rewrite_zero_based_string_indexes_expr(cause, string_vars, zero_based_loop_vars),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_zero_based_string_indexes_expr(target, string_vars, zero_based_loop_vars);
             }
@@ -15603,8 +15255,7 @@ fn rewrite_zero_based_string_indexes_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_zero_based_string_indexes_expr(cond, string_vars, zero_based_loop_vars);
             for stmt in then_body {
                 rewrite_zero_based_string_indexes_stmt(stmt, string_vars, zero_based_loop_vars);
@@ -15624,8 +15275,7 @@ fn rewrite_zero_based_string_indexes_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_zero_based_string_indexes_expr(cond, string_vars, zero_based_loop_vars);
             for stmt in body {
                 rewrite_zero_based_string_indexes_stmt(stmt, string_vars, zero_based_loop_vars);
@@ -15646,8 +15296,7 @@ fn rewrite_zero_based_string_indexes_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_zero_based_string_indexes_stmt(init, string_vars, zero_based_loop_vars);
             }
@@ -15689,8 +15338,7 @@ fn rewrite_zero_based_string_indexes_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_zero_based_string_indexes_expr(expr, string_vars, zero_based_loop_vars);
             for case in cases {
                 for stmt in &mut case.body {
@@ -15707,8 +15355,7 @@ fn rewrite_zero_based_string_indexes_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_zero_based_string_indexes_stmt(stmt, string_vars, zero_based_loop_vars);
             }
@@ -15788,7 +15435,7 @@ fn rewrite_zero_based_string_indexes_member(member: &mut ClassMember) {
 
 fn zero_based_for_var(stmt: &Statement, cond: Option<&Expression>) -> Option<String> {
     match &stmt.kind {
-        StmtKind::Assign { targets, value } if targets.len() == 1 && expr_is_int(value, 0) => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 && expr_is_int(value, 0) => {
             if let ExprKind::Ident(name) = &targets[0].kind {
                 return Some(name.to_lowercase());
             }
@@ -15818,8 +15465,7 @@ fn zero_based_for_var(stmt: &Statement, cond: Option<&Expression>) -> Option<Str
                 None
             }
         }
-        _ => None,
-    };
+        _ => None };
     if let (Some(name), Some(cond)) = (var_name, cond) {
         if for_condition_ends_at_zero(cond, &name) {
             return Some(name);
@@ -15833,12 +15479,10 @@ fn for_condition_ends_at_zero(cond: &Expression, var_name: &str) -> bool {
         ExprKind::Binary {
             op: BinOp::GtEq,
             left,
-            right,
-        } if expr_is_int(right, 0) => {
+            right } if expr_is_int(right, 0) => {
             matches!(&left.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case(var_name))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn rewrite_zero_based_string_indexes_expr(
@@ -15856,8 +15500,7 @@ fn rewrite_zero_based_string_indexes_expr(
                 **index = Expression::new(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new((**index).clone()),
-                    right: Box::new(Expression::int(1)),
-                });
+                    right: Box::new(Expression::int(1)) });
             }
         }
         ExprKind::Binary { left, right, .. } => {
@@ -16020,7 +15663,7 @@ fn rewrite_pascal_datetime_arithmetic_stmt(
         StmtKind::Throw {
             cause: Some(cause), ..
         } => rewrite_pascal_datetime_arithmetic_expr(cause, datetime_vars),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_datetime_arithmetic_expr(target, datetime_vars);
             }
@@ -16034,8 +15677,7 @@ fn rewrite_pascal_datetime_arithmetic_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_datetime_arithmetic_expr(cond, datetime_vars);
             for stmt in then_body {
                 rewrite_pascal_datetime_arithmetic_stmt(stmt, datetime_vars);
@@ -16055,8 +15697,7 @@ fn rewrite_pascal_datetime_arithmetic_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_datetime_arithmetic_expr(cond, datetime_vars);
             for stmt in body {
                 rewrite_pascal_datetime_arithmetic_stmt(stmt, datetime_vars);
@@ -16077,8 +15718,7 @@ fn rewrite_pascal_datetime_arithmetic_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_datetime_arithmetic_stmt(init, datetime_vars);
             }
@@ -16111,8 +15751,7 @@ fn rewrite_pascal_datetime_arithmetic_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_pascal_datetime_arithmetic_expr(expr, datetime_vars);
             for case in cases {
                 for stmt in &mut case.body {
@@ -16129,8 +15768,7 @@ fn rewrite_pascal_datetime_arithmetic_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_pascal_datetime_arithmetic_stmt(stmt, datetime_vars);
             }
@@ -16334,8 +15972,7 @@ fn expr_is_datetime_value(
         ExprKind::Call { callee, .. } => {
             matches!(&callee.kind, ExprKind::Ident(name) if name == "__pascal_date_utc")
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn expr_is_fixed_datetime_delta(expr: &Expression) -> bool {
@@ -16343,10 +15980,8 @@ fn expr_is_fixed_datetime_delta(expr: &Expression) -> bool {
         ExprKind::Binary {
             op: BinOp::Mul,
             left,
-            right,
-        } => expr_is_time_unit_ms(left) || expr_is_time_unit_ms(right),
-        _ => false,
-    }
+            right } => expr_is_time_unit_ms(left) || expr_is_time_unit_ms(right),
+        _ => false }
 }
 
 fn expr_is_time_unit_ms(expr: &Expression) -> bool {
@@ -16417,8 +16052,7 @@ fn expr_references_any_var(expr: &Expression, names: &std::collections::HashSet<
         ExprKind::StaticAccess { class, member } => {
             expr_references_any_var(class, names) || expr_references_any_var(member, names)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_references_except_state(expr: &Expression) -> bool {
@@ -16460,7 +16094,7 @@ fn lower_struct_copy_assignments_in_block(
                 }
                 lowered.push(stmt);
             }
-            StmtKind::Assign { targets, value } if targets.len() == 1 => {
+            StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
                 let copy = match (&targets[0].kind, &value.kind) {
                     (ExprKind::Ident(target), ExprKind::Ident(source)) => {
                         let target_type = env.get(&target.to_lowercase());
@@ -16474,8 +16108,7 @@ fn lower_struct_copy_assignments_in_block(
                                 })
                             })
                     }
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(stmts) = copy {
                     lowered.extend(stmts);
                 } else {
@@ -16586,23 +16219,18 @@ fn build_struct_copy_statements(
         targets: vec![Expression::ident(target)],
         value: Expression::new(ExprKind::New {
             class: Box::new(Expression::ident(type_name)),
-            args: Vec::new(),
-        }),
-    })];
+            args: Vec::new() }), by_ref: false })];
 
     for field in fields {
         stmts.push(Statement::new(StmtKind::Assign {
             targets: vec![Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(target)),
                 field: field.clone(),
-                null_safe: false,
-            })],
+                null_safe: false })],
             value: Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(source)),
                 field: field.clone(),
-                null_safe: false,
-            }),
-        }));
+                null_safe: false }), by_ref: false }));
     }
 
     stmts
@@ -16627,7 +16255,7 @@ fn lower_pascal_small_set_move_stmt(
     env: &mut std::collections::HashMap<String, i64>,
 ) {
     match &mut stmt.kind {
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             if let Some(name) = pascal_expr_ident_name(&targets[0]) {
                 if let Some(mask) = pascal_small_set_byte_mask(value) {
                     env.insert(name.to_lowercase(), mask);
@@ -16640,8 +16268,7 @@ fn lower_pascal_small_set_move_stmt(
             {
                 stmt.kind = StmtKind::Assign {
                     targets: vec![target],
-                    value,
-                };
+                    value, by_ref: false };
             }
         }
         StmtKind::Block(body) | StmtKind::NamespaceDecl { body, .. } => {
@@ -16712,7 +16339,7 @@ fn lower_pascal_array_value_semantics_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             lower_pascal_array_value_semantics_expr(value, env);
             if let Some(name) = pascal_expr_ident_name(&targets[0]) {
                 if let Some(mask) = pascal_small_set_byte_mask(value) {
@@ -16728,7 +16355,7 @@ fn lower_pascal_array_value_semantics_stmt(
             }
             lower_pascal_array_value_semantics_expr(&mut targets[0], env);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 lower_pascal_array_value_semantics_expr(target, env);
             }
@@ -16738,21 +16365,18 @@ fn lower_pascal_array_value_semantics_stmt(
             if let Some((target, value)) = pascal_fillchar_index_assignment(expr) {
                 stmt.kind = StmtKind::Assign {
                     targets: vec![target],
-                    value,
-                };
+                    value, by_ref: false };
                 lower_pascal_array_value_semantics_stmt(stmt, env);
             } else if let Some((target, value)) = pascal_fillchar_zero_assignment(expr, env) {
                 stmt.kind = StmtKind::Assign {
                     targets: vec![target],
-                    value,
-                };
+                    value, by_ref: false };
             } else if pascal_fillchar_zero_var(expr) {
                 stmt.kind = StmtKind::Empty;
             } else if let Some((target, value)) = pascal_move_small_set_byte_assignment(expr, env) {
                 stmt.kind = StmtKind::Assign {
                     targets: vec![target],
-                    value,
-                };
+                    value, by_ref: false };
             } else {
                 lower_pascal_array_value_semantics_expr(expr, env);
             }
@@ -16788,8 +16412,7 @@ fn lower_pascal_array_value_semantics_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_array_value_semantics_expr(cond, env);
             let mut then_scope = env.clone();
             lower_pascal_array_value_semantics_block(then_body, &mut then_scope);
@@ -16807,8 +16430,7 @@ fn lower_pascal_array_value_semantics_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 lower_pascal_array_value_semantics_stmt(init, &mut scoped);
@@ -16829,8 +16451,7 @@ fn lower_pascal_array_value_semantics_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_array_value_semantics_expr(cond, env);
             let mut scoped = env.clone();
             lower_pascal_array_value_semantics_block(body, &mut scoped);
@@ -16848,8 +16469,7 @@ fn lower_pascal_array_value_semantics_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut try_scope = env.clone();
             lower_pascal_array_value_semantics_block(body, &mut try_scope);
             for catch in catches {
@@ -16929,8 +16549,7 @@ fn lower_pascal_array_value_semantics_expr(
                     if matches!(target.kind, ExprKind::Index { .. }) {
                         *expr = Expression::new(ExprKind::Assign {
                             target: Box::new(target),
-                            value: Box::new(args[2].value.clone()),
-                        });
+                            value: Box::new(args[2].value.clone()) });
                     }
                 } else if name.eq_ignore_ascii_case("copy") && args.len() == 1 {
                     let source = args[0].value.clone();
@@ -17036,8 +16655,7 @@ fn pascal_expr_is_array_like(
                 if name.eq_ignore_ascii_case("__pascal_array_slice")
                     || name.eq_ignore_ascii_case("__pascal_array_concat")
         ),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_fillchar_index_assignment(expr: &Expression) -> Option<(Expression, Expression)> {
@@ -17199,8 +16817,7 @@ fn pascal_expr_array_type_hint(
             .map(|hint| resolve_pascal_type_alias_in_env(hint, env)),
         ExprKind::Index { object, .. } => pascal_expr_array_type_hint(object, env)
             .and_then(|hint| pascal_array_element_type(&hint)),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_array_type_depth(type_hint: &str) -> usize {
@@ -17263,8 +16880,7 @@ fn pascal_expr_is_pascal_integer_like(
                 | BinOp::Shr
         ) && (pascal_expr_is_pascal_integer_like(left, env)
             || pascal_expr_is_pascal_integer_like(right, env)),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_array_index_is_integer(
@@ -17277,8 +16893,7 @@ fn pascal_array_index_is_integer(
             .and_then(|hint| pascal_array_element_type(hint))
             .is_some_and(|element| pascal_type_hint_is_integer(&element)),
         ExprKind::Index { object, .. } => pascal_array_index_is_integer(object, env),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_type_hint_is_integer(type_hint: &str) -> bool {
@@ -17388,8 +17003,7 @@ fn rewrite_pascal_contains_function_body(
                 Expression::ident(items_field),
                 Expression::ident(&item_name),
             ],
-        ),
-    })];
+        ), by_ref: false })];
 }
 
 fn pascal_body_mentions_ident(body: &[Statement], name: &str) -> bool {
@@ -17409,7 +17023,7 @@ fn pascal_stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
                 .as_ref()
                 .is_some_and(|init| pascal_expr_mentions_ident(init, name))
         }),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             targets
                 .iter()
                 .any(|target| pascal_expr_mentions_ident(target, name))
@@ -17425,8 +17039,7 @@ fn pascal_stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             pascal_expr_mentions_ident(cond, name)
                 || pascal_body_mentions_ident(then_body, name)
                 || elifs.iter().any(|(cond, body)| {
@@ -17440,8 +17053,7 @@ fn pascal_stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             init.as_deref()
                 .is_some_and(|stmt| pascal_stmt_mentions_ident(stmt, name))
                 || cond
@@ -17455,8 +17067,7 @@ fn pascal_stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             pascal_expr_mentions_ident(cond, name)
                 || pascal_body_mentions_ident(body, name)
                 || else_body
@@ -17466,8 +17077,7 @@ fn pascal_stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
         StmtKind::DoWhile { body, cond, .. } => {
             pascal_body_mentions_ident(body, name) || pascal_expr_mentions_ident(cond, name)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_mentions_ident(expr: &Expression, name: &str) -> bool {
@@ -17503,8 +17113,7 @@ fn pascal_expr_mentions_ident(expr: &Expression, name: &str) -> bool {
                 || pascal_expr_mentions_ident(then, name)
                 || pascal_expr_mentions_ident(else_, name)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn rewrite_pascal_fast_integer_equality_body(
@@ -17533,7 +17142,7 @@ fn rewrite_pascal_fast_integer_equality_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_fast_integer_equality_expr(target, env);
             }
@@ -17561,8 +17170,7 @@ fn rewrite_pascal_fast_integer_equality_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_fast_integer_equality_expr(cond, env);
             let mut then_env = env.clone();
             rewrite_pascal_fast_integer_equality_body(then_body, &mut then_env);
@@ -17580,8 +17188,7 @@ fn rewrite_pascal_fast_integer_equality_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut loop_env = env.clone();
             if let Some(init) = init {
                 rewrite_pascal_fast_integer_equality_stmt(init, &mut loop_env);
@@ -17597,8 +17204,7 @@ fn rewrite_pascal_fast_integer_equality_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_fast_integer_equality_expr(cond, env);
             let mut loop_env = env.clone();
             rewrite_pascal_fast_integer_equality_body(body, &mut loop_env);
@@ -17630,8 +17236,7 @@ fn rewrite_pascal_fast_integer_equality_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut try_env = env.clone();
             rewrite_pascal_fast_integer_equality_body(body, &mut try_env);
             for catch in catches {
@@ -17833,8 +17438,7 @@ fn rewrite_pascal_fast_integer_equality_expr(
                 vec![(**left).clone(), (**right).clone()],
             ))
         }
-        _ => None,
-    };
+        _ => None };
     if let Some(replacement) = replacement {
         *expr = replacement;
     }
@@ -17852,8 +17456,7 @@ fn pascal_fast_eq_expr_is_integer_like(
         ExprKind::Index { object, .. } => pascal_fast_eq_index_element_type(object, env)
             .is_some_and(|hint| pascal_type_hint_is_integer(&hint)),
         ExprKind::Cast { type_name, .. } => pascal_type_hint_is_integer(type_name),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_fast_eq_index_element_type(
@@ -17871,8 +17474,7 @@ fn pascal_fast_eq_index_element_type(
             let nested = pascal_fast_eq_index_element_type(object, env)?;
             pascal_array_element_type(&nested)
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 #[derive(Clone, Default)]
@@ -17881,14 +17483,12 @@ struct PascalSubrangeEnv {
     fields: std::collections::HashMap<(String, String), String>,
     properties: std::collections::HashMap<(String, String), String>,
     aliases: std::collections::HashMap<String, String>,
-    temp_counter: usize,
-}
+    temp_counter: usize }
 
 #[derive(Clone)]
 enum PascalSubrangeBound {
     Int(i64),
-    Char(String),
-}
+    Char(String) }
 
 fn rewrite_pascal_subrange_checks(body: &mut Vec<Statement>) {
     let mut env = PascalSubrangeEnv {
@@ -17927,7 +17527,7 @@ fn rewrite_pascal_subrange_checks_stmt(stmt: &mut Statement, env: &mut PascalSub
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_subrange_checks_expr(target, env);
             }
@@ -17959,8 +17559,7 @@ fn rewrite_pascal_subrange_checks_stmt(stmt: &mut Statement, env: &mut PascalSub
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_subrange_checks_expr(cond, env);
             let mut then_scope = env.clone();
             rewrite_pascal_subrange_checks_body(then_body, &mut then_scope);
@@ -17981,8 +17580,7 @@ fn rewrite_pascal_subrange_checks_stmt(stmt: &mut Statement, env: &mut PascalSub
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 rewrite_pascal_subrange_checks_stmt(init, &mut scoped);
@@ -18005,8 +17603,7 @@ fn rewrite_pascal_subrange_checks_stmt(stmt: &mut Statement, env: &mut PascalSub
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_subrange_checks_expr(cond, env);
             let mut scoped = env.clone();
             rewrite_pascal_subrange_checks_body(body, &mut scoped);
@@ -18027,8 +17624,7 @@ fn rewrite_pascal_subrange_checks_stmt(stmt: &mut Statement, env: &mut PascalSub
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut try_scope = env.clone();
             rewrite_pascal_subrange_checks_body(body, &mut try_scope);
             env.temp_counter = env.temp_counter.max(try_scope.temp_counter);
@@ -18174,7 +17770,7 @@ fn pascal_subrange_guarded_assignment(
     stmt: &Statement,
     env: &mut PascalSubrangeEnv,
 ) -> Option<Vec<Statement>> {
-    let StmtKind::Assign { targets, value } = &stmt.kind else {
+    let StmtKind::Assign { targets, value , ..} = &stmt.kind else {
         return None;
     };
     let [target] = targets.as_slice() else {
@@ -18191,10 +17787,8 @@ fn pascal_subrange_guarded_assignment(
             type_hint: None,
             init: Some(value.clone()),
             array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Dim,
-    });
+            with_events: false }],
+        kind: VarDeclKind::Dim });
     let guard = Statement::new(StmtKind::If {
         cond: pascal_subrange_out_of_bounds_expr(temp_expr.clone(), low, high),
         then_body: vec![Statement::new(StmtKind::Throw {
@@ -18202,17 +17796,13 @@ fn pascal_subrange_guarded_assignment(
                 class: Box::new(Expression::ident("ERangeError")),
                 args: vec![Argument::positional(Expression::string(
                     "Range check error",
-                ))],
-            })),
-            cause: None,
-        })],
+                ))] })),
+            cause: None })],
         elifs: Vec::new(),
-        else_body: None,
-    });
+        else_body: None });
     let assign = Statement::new(StmtKind::Assign {
         targets: vec![target.clone()],
-        value: temp_expr,
-    });
+        value: temp_expr, by_ref: false });
     Some(vec![temp_decl, guard, assign])
 }
 
@@ -18226,21 +17816,17 @@ fn pascal_subrange_out_of_bounds_expr(
         left: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Lt,
             left: Box::new(value.clone()),
-            right: Box::new(pascal_subrange_bound_expr(low)),
-        })),
+            right: Box::new(pascal_subrange_bound_expr(low)) })),
         right: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Gt,
             left: Box::new(value),
-            right: Box::new(pascal_subrange_bound_expr(high)),
-        })),
-    })
+            right: Box::new(pascal_subrange_bound_expr(high)) })) })
 }
 
 fn pascal_subrange_bound_expr(bound: PascalSubrangeBound) -> Expression {
     match bound {
         PascalSubrangeBound::Int(value) => Expression::new(ExprKind::Lit(Literal::Int(value))),
-        PascalSubrangeBound::Char(value) => Expression::new(ExprKind::Lit(Literal::Str(value))),
-    }
+        PascalSubrangeBound::Char(value) => Expression::new(ExprKind::Lit(Literal::Str(value))) }
 }
 
 fn pascal_subrange_type_for_target(target: &Expression, env: &PascalSubrangeEnv) -> Option<String> {
@@ -18253,8 +17839,7 @@ fn pascal_subrange_type_for_target(target: &Expression, env: &PascalSubrangeEnv)
                 .or_else(|| env.fields.get(&(class_name, field.to_lowercase())))
                 .cloned()
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_subrange_object_type(object: &Expression, env: &PascalSubrangeEnv) -> Option<String> {
@@ -18271,8 +17856,7 @@ fn pascal_subrange_object_type(object: &Expression, env: &PascalSubrangeEnv) -> 
             .vars
             .get(&name.to_lowercase())
             .map(|ty| bare_type_name(ty).to_lowercase()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn collect_pascal_subrange_aliases(
@@ -18282,8 +17866,7 @@ fn collect_pascal_subrange_aliases(
     for stmt in body {
         let StmtKind::VarDecl {
             declarations,
-            kind: VarDeclKind::Const,
-        } = &stmt.kind
+            kind: VarDeclKind::Const } = &stmt.kind
         else {
             continue;
         };
@@ -18312,8 +17895,7 @@ fn collect_pascal_subrange_fields(
         let (class_name, members) = match &stmt.kind {
             StmtKind::ClassDecl { name, members, .. }
             | StmtKind::StructDecl { name, members, .. } => (name, members),
-            _ => continue,
-        };
+            _ => continue };
         for member in members {
             if let ClassMember::Field {
                 name,
@@ -18339,8 +17921,7 @@ fn collect_pascal_subrange_properties(
         let (class_name, members) = match &stmt.kind {
             StmtKind::ClassDecl { name, members, .. }
             | StmtKind::StructDecl { name, members, .. } => (name, members),
-            _ => continue,
-        };
+            _ => continue };
         for member in members {
             if let ClassMember::Property {
                 name,
@@ -18388,13 +17969,11 @@ fn pascal_array_copy_expr(source: Expression, start: Expression, count: Expressi
     let start0 = Expression::new(ExprKind::Binary {
         op: BinOp::Sub,
         left: Box::new(start),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
-    });
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))) });
     let end = Expression::new(ExprKind::Binary {
         op: BinOp::Add,
         left: Box::new(start0.clone()),
-        right: Box::new(count),
-    });
+        right: Box::new(count) });
     pascal_call("__pascal_array_slice", vec![source, start0, end])
 }
 
@@ -18426,8 +18005,7 @@ struct PascalFixedArrayEnv {
     vars: std::collections::HashMap<String, Vec<(i64, i64)>>,
     var_types: std::collections::HashMap<String, String>,
     fields: std::collections::HashMap<(String, String), Vec<(i64, i64)>>,
-    function_params: std::collections::HashMap<String, Vec<Option<String>>>,
-}
+    function_params: std::collections::HashMap<String, Vec<Option<String>>> }
 
 fn rewrite_pascal_fixed_array_bounds(body: &mut [Statement]) {
     let mut env = PascalFixedArrayEnv {
@@ -18465,7 +18043,7 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_fixed_array_bounds_expr(target, env);
             }
@@ -18503,8 +18081,7 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_fixed_array_bounds_expr(cond, env);
             let mut then_scope = env.clone();
             rewrite_pascal_fixed_array_bounds_block(then_body, &mut then_scope);
@@ -18522,8 +18099,7 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 rewrite_pascal_fixed_array_bounds_stmt(init, &mut scoped);
@@ -18544,8 +18120,7 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_fixed_array_bounds_expr(cond, env);
             let mut scoped = env.clone();
             rewrite_pascal_fixed_array_bounds_block(body, &mut scoped);
@@ -18563,8 +18138,7 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut try_scope = env.clone();
             rewrite_pascal_fixed_array_bounds_block(body, &mut try_scope);
             for catch in catches {
@@ -18812,10 +18386,8 @@ fn pascal_linear_fixed_array_index(
                 left: Box::new(Expression::new(ExprKind::Binary {
                     op: BinOp::Mul,
                     left: Box::new(prev),
-                    right: Box::new(Expression::int(width)),
-                })),
-                right: Box::new(adjusted),
-            })
+                    right: Box::new(Expression::int(width)) })),
+                right: Box::new(adjusted) })
         } else {
             adjusted
         });
@@ -18833,8 +18405,7 @@ fn pascal_adjust_fixed_array_index(index: Expression, lower_bound: i64) -> Expre
     Expression::new(ExprKind::Binary {
         op: BinOp::Sub,
         left: Box::new(index),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(lower_bound)))),
-    })
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(lower_bound)))) })
 }
 
 fn pascal_bounds_for_expr(expr: &Expression, env: &PascalFixedArrayEnv) -> Option<Vec<(i64, i64)>> {
@@ -18846,14 +18417,12 @@ fn pascal_bounds_for_expr(expr: &Expression, env: &PascalFixedArrayEnv) -> Optio
                     env.var_types.get("self").cloned()
                 }
                 ExprKind::Ident(name) => env.var_types.get(&name.to_lowercase()).cloned(),
-                _ => None,
-            }?;
+                _ => None }?;
             env.fields
                 .get(&(class_name.to_lowercase(), field.to_lowercase()))
                 .cloned()
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_fixed_array_nested_value_expr(base: Expression, bounds: &[(i64, i64)]) -> Expression {
@@ -18885,8 +18454,7 @@ fn pascal_fixed_array_nested_value_expr_at(
                     offset + adjusted * stride,
                 ),
                 spread: false,
-                by_ref: false,
-            }
+                by_ref: false }
         })
         .collect();
     Expression::new(ExprKind::Array(elements))
@@ -18921,8 +18489,7 @@ fn collect_pascal_fixed_array_class_fields(
         let (class_name, members) = match &stmt.kind {
             StmtKind::ClassDecl { name, members, .. }
             | StmtKind::StructDecl { name, members, .. } => (name, members),
-            _ => continue,
-        };
+            _ => continue };
         for member in members {
             let ClassMember::Field {
                 name, type_hint, ..
@@ -19369,7 +18936,7 @@ fn apply_pascal_ident_renames_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             apply_pascal_ident_renames_expr(expr, renames)
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 apply_pascal_ident_renames_expr(target, renames);
             }
@@ -19383,8 +18950,7 @@ fn apply_pascal_ident_renames_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             apply_pascal_ident_renames_expr(cond, renames);
             for stmt in then_body {
                 apply_pascal_ident_renames_stmt(stmt, renames);
@@ -19411,8 +18977,7 @@ fn apply_pascal_ident_renames_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 apply_pascal_ident_renames_stmt(init, renames);
             }
@@ -19542,8 +19107,7 @@ fn default_init_enum_indexed_arrays(
 #[derive(Clone, Debug)]
 struct PascalVarArrayMeta {
     bounds: Vec<(i64, i64)>,
-    element_type: Option<String>,
-}
+    element_type: Option<String> }
 
 fn lower_pascal_vararray(body: &mut Vec<Statement>) {
     let mut env = std::collections::HashMap::new();
@@ -19570,7 +19134,7 @@ fn lower_pascal_vararray_stmt(
     env: &mut std::collections::HashMap<String, PascalVarArrayMeta>,
 ) -> Option<Statement> {
     match &mut stmt.kind {
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             let assigned_vararray_meta = pascal_vararray_meta_from_expr(value);
             lower_pascal_vararray_expr(value, env);
             for target in targets.iter_mut() {
@@ -19626,8 +19190,7 @@ fn lower_pascal_vararray_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_vararray_expr(cond, env);
             let mut then_scope = env.clone();
             lower_pascal_vararray_body(then_body, &mut then_scope);
@@ -19644,8 +19207,7 @@ fn lower_pascal_vararray_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_vararray_expr(cond, env);
             let mut scoped = env.clone();
             lower_pascal_vararray_body(body, &mut scoped);
@@ -19663,8 +19225,7 @@ fn lower_pascal_vararray_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 lower_pascal_vararray_stmt(init, &mut scoped);
@@ -19695,8 +19256,7 @@ fn lower_pascal_vararray_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut scoped = env.clone();
             lower_pascal_vararray_body(body, &mut scoped);
             for catch in catches {
@@ -19764,8 +19324,7 @@ fn pascal_vararray_statement_replacement(
         let target = args.first()?.value.clone();
         return Some(Statement::new(StmtKind::Assign {
             targets: vec![target],
-            value: Expression::null(),
-        }));
+            value: Expression::null(), by_ref: false }));
     }
     if name.eq_ignore_ascii_case("VarArrayRedim") {
         let target = args.first()?.value.clone();
@@ -19989,8 +19548,7 @@ fn pascal_vararray_expr_mentions_env(
         ExprKind::Unary { expr, .. } | ExprKind::Cast { expr, .. } => {
             pascal_vararray_expr_mentions_env(expr, env)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_vararray_expr_is_boolean_index(
@@ -20011,8 +19569,7 @@ fn pascal_vararray_expr_is_boolean_index(
 fn pascal_vararray_ident_name(expr: &Expression) -> Option<&str> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_vararray_meta_from_expr(expr: &Expression) -> Option<PascalVarArrayMeta> {
@@ -20023,8 +19580,7 @@ fn pascal_vararray_meta_from_expr(expr: &Expression) -> Option<PascalVarArrayMet
                 element_type: args
                     .get(1)
                     .and_then(|arg| pascal_expr_ident_name(&arg.value))
-                    .map(|name| name.to_ascii_lowercase()),
-            })
+                    .map(|name| name.to_ascii_lowercase()) })
         }
         ExprKind::Call { callee, args, .. } if matches!(&callee.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("VarArrayOf")) =>
         {
@@ -20033,15 +19589,12 @@ fn pascal_vararray_meta_from_expr(expr: &Expression) -> Option<PascalVarArrayMet
             };
             Some(PascalVarArrayMeta {
                 bounds: vec![(0, elements.len() as i64 - 1)],
-                element_type: None,
-            })
+                element_type: None })
         }
         ExprKind::Array(elements) => Some(PascalVarArrayMeta {
             bounds: vec![(0, elements.len() as i64 - 1)],
-            element_type: None,
-        }),
-        _ => None,
-    }
+            element_type: None }),
+        _ => None }
 }
 
 fn pascal_vararray_bounds(expr: &Expression) -> Option<Vec<(i64, i64)>> {
@@ -20065,10 +19618,8 @@ fn pascal_vararray_const_int(expr: &Expression) -> Option<i64> {
         ExprKind::Lit(Literal::Int(value)) => Some(*value),
         ExprKind::Unary {
             op: UnaryOp::Neg,
-            expr,
-        } => pascal_vararray_const_int(expr).map(|v| -v),
-        _ => const_int_expr(expr),
-    }
+            expr } => pascal_vararray_const_int(expr).map(|v| -v),
+        _ => const_int_expr(expr) }
 }
 
 fn pascal_vararray_array_expr(bounds: &[(i64, i64)], init: Expression) -> Expression {
@@ -20091,15 +19642,13 @@ fn pascal_vararray_array_expr(bounds: &[(i64, i64)], init: Expression) -> Expres
 fn pascal_vararray_default_expr(type_expr: &Expression) -> Expression {
     let type_name = match &type_expr.kind {
         ExprKind::Ident(name) => name.to_ascii_lowercase(),
-        _ => String::new(),
-    };
+        _ => String::new() };
     match type_name.as_str() {
         "varboolean" => Expression::bool(false),
         "varolestr" | "varstring" | "varustring" => Expression::string(""),
         "varinteger" | "varsmallint" | "varshortint" | "varbyte" | "varword" | "varlongword"
         | "varint64" | "varsingle" | "vardouble" | "varcurrency" => int_expr(0),
-        _ => Expression::null(),
-    }
+        _ => Expression::null() }
 }
 
 fn normalize_pascal_enum_indexed_array_decls(
@@ -20531,7 +20080,7 @@ fn rewrite_pascal_enum_bounds_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_enum_bounds_expr(target, enum_type_counts);
             }
@@ -20545,8 +20094,7 @@ fn rewrite_pascal_enum_bounds_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_enum_bounds_expr(cond, enum_type_counts);
             for stmt in then_body {
                 rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
@@ -20566,8 +20114,7 @@ fn rewrite_pascal_enum_bounds_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_enum_bounds_expr(cond, enum_type_counts);
             for stmt in body {
                 rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
@@ -20588,8 +20135,7 @@ fn rewrite_pascal_enum_bounds_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_enum_bounds_stmt(init, enum_type_counts);
             }
@@ -20635,8 +20181,7 @@ fn rewrite_pascal_enum_bounds_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_pascal_enum_bounds_stmt(stmt, enum_type_counts);
             }
@@ -20805,7 +20350,7 @@ fn rewrite_pascal_enum_ordinals_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_enum_ordinals_expr(target, enum_member_ordinals);
             }
@@ -20819,8 +20364,7 @@ fn rewrite_pascal_enum_ordinals_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_enum_ordinals_expr(cond, enum_member_ordinals);
             for stmt in then_body {
                 rewrite_pascal_enum_ordinals_stmt(stmt, enum_member_ordinals);
@@ -20847,8 +20391,7 @@ fn rewrite_pascal_enum_ordinals_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_enum_ordinals_stmt(init, enum_member_ordinals);
             }
@@ -20881,8 +20424,7 @@ fn rewrite_pascal_enum_ordinals_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_pascal_enum_ordinals_expr(expr, enum_member_ordinals);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -21065,7 +20607,7 @@ fn rewrite_pascal_typed_enum_ord_calls_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_typed_enum_ord_calls_expr(target, scope);
             }
@@ -21106,8 +20648,7 @@ fn rewrite_pascal_typed_enum_ord_calls_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_typed_enum_ord_calls_expr(cond, scope);
             let mut then_scope = scope.clone();
             for stmt in then_body {
@@ -21138,8 +20679,7 @@ fn rewrite_pascal_typed_enum_ord_calls_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_typed_enum_ord_calls_expr(cond, scope);
             let mut scoped = scope.clone();
             for stmt in body {
@@ -21163,8 +20703,7 @@ fn rewrite_pascal_typed_enum_ord_calls_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = scope.clone();
             if let Some(init) = init {
                 rewrite_pascal_typed_enum_ord_calls_stmt(init, enum_type_names, &mut scoped);
@@ -21201,8 +20740,7 @@ fn rewrite_pascal_typed_enum_ord_calls_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut scoped = scope.clone();
             for stmt in body {
                 rewrite_pascal_typed_enum_ord_calls_stmt(stmt, enum_type_names, &mut scoped);
@@ -21479,7 +21017,7 @@ fn rewrite_pascal_set_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             let target_is_set = targets
                 .iter()
                 .any(|target| is_pascal_set_expr(target, set_vars, set_fields));
@@ -21535,8 +21073,7 @@ fn rewrite_pascal_set_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_set_expr(
                 cond,
                 set_vars,
@@ -21612,8 +21149,7 @@ fn rewrite_pascal_set_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_set_stmt(
                     init,
@@ -21804,8 +21340,7 @@ fn rewrite_pascal_set_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_pascal_set_expr(
                 expr,
                 set_vars,
@@ -21903,30 +21438,25 @@ fn pascal_include_exclude_stmt(expr: &Expression) -> Option<Statement> {
                     type_hint: None,
                     init: Some(target.clone()),
                     array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Dim,
-            }),
+                    with_events: false }],
+                kind: VarDeclKind::Dim }),
             Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident(helper)),
                 args: vec![
                     Argument::positional(Expression::ident(&tmp_name)),
                     Argument::positional(value),
                 ],
-                optional: false,
-            }))),
+                optional: false }))),
             Statement::new(StmtKind::Assign {
                 targets: vec![target],
-                value: Expression::ident(&tmp_name),
-            }),
+                value: Expression::ident(&tmp_name), by_ref: false }),
         ])));
     }
     Some(Statement::new(StmtKind::Expr(Expression::new(
         ExprKind::Call {
             callee: Box::new(Expression::ident(helper)),
             args: vec![Argument::positional(target), Argument::positional(value)],
-            optional: false,
-        },
+            optional: false },
     ))))
 }
 
@@ -22040,8 +21570,7 @@ fn rewrite_pascal_set_expr(
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident("__pascal_set_length")),
                     args: vec![Argument::positional(args[0].value.clone())],
-                    optional: false,
-                });
+                    optional: false });
                 return;
             }
             if args.len() == 1
@@ -22121,8 +21650,7 @@ fn rewrite_pascal_set_expr(
                         Argument::positional((**right).clone()),
                         Argument::positional((**left).clone()),
                     ],
-                    optional: false,
-                });
+                    optional: false });
                 return;
             }
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::BitXor) {
@@ -22307,26 +21835,22 @@ fn pascal_set_comparison_expr(
             expr: Box::new(and_expr(
                 pascal_set_subset_expr(left.clone(), right.clone()),
                 pascal_set_subset_expr(right, left),
-            )),
-        })),
+            )) })),
         BinOp::LtEq => Some(pascal_set_subset_expr(left, right)),
         BinOp::GtEq => Some(pascal_set_superset_expr(left, right)),
         BinOp::Lt => Some(and_expr(
             pascal_set_subset_expr(left.clone(), right.clone()),
             Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(pascal_set_subset_expr(right, left)),
-            }),
+                expr: Box::new(pascal_set_subset_expr(right, left)) }),
         )),
         BinOp::Gt => Some(and_expr(
             pascal_set_superset_expr(left.clone(), right.clone()),
             Expression::new(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(pascal_set_subset_expr(left, right)),
-            }),
+                expr: Box::new(pascal_set_subset_expr(left, right)) }),
         )),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_set_binary_helper(op: BinOp) -> Option<&'static str> {
@@ -22335,8 +21859,7 @@ fn pascal_set_binary_helper(op: BinOp) -> Option<&'static str> {
         BinOp::Mul => Some("__vybe_pascal_set_intersection"),
         BinOp::Sub => Some("__vybe_pascal_set_difference"),
         BinOp::BitXor => Some("__vybe_pascal_set_symmetric_difference"),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_expr_is_set_value_call(callee: &Expression) -> bool {
@@ -22354,24 +21877,21 @@ fn pascal_set_subset_expr(left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(call_expr("__vybe_pascal_set_subset", vec![left, right])),
-        right: Box::new(pascal_int(1)),
-    })
+        right: Box::new(pascal_int(1)) })
 }
 
 fn pascal_set_superset_expr(left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(call_expr("__vybe_pascal_set_superset", vec![left, right])),
-        right: Box::new(pascal_int(1)),
-    })
+        right: Box::new(pascal_int(1)) })
 }
 
 fn and_expr(left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(left),
-        right: Box::new(right),
-    })
+        right: Box::new(right) })
 }
 
 fn is_pascal_set_expr(
@@ -22397,8 +21917,7 @@ fn is_pascal_set_expr(
                 && is_pascal_set_expr(left, set_vars, set_fields)
                 && is_pascal_set_expr(right, set_vars, set_fields)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn collect_pascal_set_type_names(body: &[Statement]) -> std::collections::HashSet<String> {
@@ -22650,7 +22169,7 @@ fn rewrite_shadowed_builtin_casts_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_shadowed_builtin_casts_expr(target, free_function_names);
             }
@@ -22664,8 +22183,7 @@ fn rewrite_shadowed_builtin_casts_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_shadowed_builtin_casts_expr(cond, free_function_names);
             for stmt in then_body {
                 rewrite_shadowed_builtin_casts_stmt(stmt, free_function_names);
@@ -22764,16 +22282,14 @@ fn rewrite_shadowed_builtin_casts_expr(
     match &mut expr.kind {
         ExprKind::Cast {
             expr: inner,
-            type_name,
-        } => {
+            type_name } => {
             rewrite_shadowed_builtin_casts_expr(inner, free_function_names);
             if free_function_names.contains(&type_name.to_lowercase()) {
                 let arg = (**inner).clone();
                 expr.kind = ExprKind::Call {
                     callee: Box::new(Expression::ident(type_name)),
                     args: vec![Argument::positional(arg)],
-                    optional: false,
-                };
+                    optional: false };
             } else if matches!(
                 type_name.to_lowercase().as_str(),
                 "integer" | "int" | "longint"
@@ -22782,8 +22298,7 @@ fn rewrite_shadowed_builtin_casts_expr(
                 expr.kind = ExprKind::Call {
                     callee: Box::new(Expression::ident("Trunc")),
                     args: vec![Argument::positional(arg)],
-                    optional: false,
-                };
+                    optional: false };
             }
         }
         ExprKind::Binary { left, right, .. } => {
@@ -22924,14 +22439,12 @@ fn pascal_prelude_needs(
         ImportKind::Simple { path, .. }
         | ImportKind::Named { path, .. }
         | ImportKind::Wildcard { path, .. }
-        | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case("SysUtils"),
-    });
+        | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case("SysUtils") });
     let uses_generics_collections = imports.iter().any(|import| match &import.kind {
         ImportKind::Simple { path, .. }
         | ImportKind::Named { path, .. }
         | ImportKind::Wildcard { path, .. }
-        | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case("Generics.Collections"),
-    });
+        | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case("Generics.Collections") });
 
     let exceptions = uses_sysutils
         || pascal_source_mentions_any_ident(
@@ -22982,8 +22495,7 @@ fn pascal_prelude_needs(
         tinterfacedobject,
         collections,
         tbits,
-        assert_error_proc,
-    }
+        assert_error_proc }
 }
 
 fn pascal_source_has_assertions_off(source: &str) -> bool {
@@ -23005,10 +22517,8 @@ fn synthesize_pascal_assert_error_proc_var() -> Statement {
             type_hint: Some("TAssertErrorProc".to_string()),
             init: Some(Expression::null()),
             array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Var,
-    })
+            with_events: false }],
+        kind: VarDeclKind::Var })
 }
 
 fn rewrite_pascal_assert_calls_body(body: &mut [Statement], assertions_enabled: bool) {
@@ -23034,7 +22544,7 @@ fn rewrite_pascal_assert_calls_stmt(stmt: &mut Statement, assertions_enabled: bo
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_assert_calls_expr(target, assertions_enabled);
             }
@@ -23061,8 +22571,7 @@ fn rewrite_pascal_assert_calls_stmt(stmt: &mut Statement, assertions_enabled: bo
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_assert_calls_expr(cond, assertions_enabled);
             rewrite_pascal_assert_calls_body(then_body, assertions_enabled);
             for (cond, body) in elifs {
@@ -23076,8 +22585,7 @@ fn rewrite_pascal_assert_calls_stmt(stmt: &mut Statement, assertions_enabled: bo
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_assert_calls_expr(cond, assertions_enabled);
             rewrite_pascal_assert_calls_body(body, assertions_enabled);
             if let Some(body) = else_body {
@@ -23092,8 +22600,7 @@ fn rewrite_pascal_assert_calls_stmt(stmt: &mut Statement, assertions_enabled: bo
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_assert_calls_stmt(init, assertions_enabled);
             }
@@ -23121,8 +22628,7 @@ fn rewrite_pascal_assert_calls_stmt(stmt: &mut Statement, assertions_enabled: bo
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_assert_calls_body(body, assertions_enabled);
             for catch in catches {
                 rewrite_pascal_assert_calls_body(&mut catch.body, assertions_enabled);
@@ -23189,8 +22695,7 @@ fn rewrite_pascal_assert_calls_expr(expr: &mut Expression, assertions_enabled: b
             expr.kind = ExprKind::Call {
                 callee: Box::new(Expression::ident("Random")),
                 args: Vec::new(),
-                optional: false,
-            };
+                optional: false };
         }
         ExprKind::Call { callee, args, .. } => {
             let _ = callee;
@@ -23306,28 +22811,23 @@ fn pascal_assert_stmt_for_expr(expr: &Expression, assertions_enabled: bool) -> O
     )));
     let raise_expr = Expression::new(ExprKind::New {
         class: Box::new(Expression::ident("EAssertionFailed")),
-        args: vec![Argument::positional(message), Argument::positional(Expression::int(0))],
-    });
+        args: vec![Argument::positional(message), Argument::positional(Expression::int(0))] });
     let throw_assertion = Statement::new(StmtKind::Throw {
         expr: Some(raise_expr),
-        cause: None,
-    });
+        cause: None });
     let handler_cond = pascal_call("Assigned", vec![Expression::ident("AssertErrorProc")]);
     let failure_body = vec![Statement::new(StmtKind::If {
         cond: handler_cond,
         then_body: vec![handler_call],
         elifs: Vec::new(),
-        else_body: Some(vec![throw_assertion]),
-    })];
+        else_body: Some(vec![throw_assertion]) })];
     Some(StmtKind::If {
         cond: Expression::new(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(test),
-        }),
+            expr: Box::new(test) }),
         then_body: failure_body,
         elifs: Vec::new(),
-        else_body: None,
-    })
+        else_body: None })
 }
 
 fn rewrite_pascal_currency_round_body(
@@ -23359,7 +22859,7 @@ fn rewrite_pascal_currency_round_stmt(
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             rewrite_pascal_currency_round_expr(expr, env);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_currency_round_expr(target, env);
             }
@@ -23395,8 +22895,7 @@ fn rewrite_pascal_currency_round_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_currency_round_expr(cond, env);
             rewrite_pascal_currency_round_body(then_body, &mut env.clone());
             for (cond, body) in elifs {
@@ -23410,8 +22909,7 @@ fn rewrite_pascal_currency_round_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_currency_round_expr(cond, env);
             rewrite_pascal_currency_round_body(body, &mut env.clone());
             if let Some(body) = else_body {
@@ -23426,8 +22924,7 @@ fn rewrite_pascal_currency_round_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 rewrite_pascal_currency_round_stmt(init, &mut scoped);
@@ -23444,8 +22941,7 @@ fn rewrite_pascal_currency_round_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_currency_round_body(body, &mut env.clone());
             for catch in catches {
                 rewrite_pascal_currency_round_body(&mut catch.body, &mut env.clone());
@@ -23588,8 +23084,7 @@ fn pascal_expr_contains_currency_value(
         ExprKind::Member { object, field, .. } => {
             let key = match &object.kind {
                 ExprKind::Ident(name) => format!("{}.{}", name.to_lowercase(), field.to_lowercase()),
-                _ => return pascal_expr_contains_currency_value(object, env),
-            };
+                _ => return pascal_expr_contains_currency_value(object, env) };
             env.get(&key)
                 .is_some_and(|ty| bare_type_name(ty).eq_ignore_ascii_case("Currency"))
         }
@@ -23598,8 +23093,7 @@ fn pascal_expr_contains_currency_value(
                 || pascal_expr_contains_currency_value(then, env)
                 || pascal_expr_contains_currency_value(else_, env)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn synthesize_exception_class() -> Statement {
@@ -23615,8 +23109,7 @@ fn synthesize_exception_class() -> Statement {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    };
+        is_nullable: false };
     let help_ctx_param = Param {
         name: "helpCtx".into(),
         type_hint: Some("Integer".into()),
@@ -23628,8 +23121,7 @@ fn synthesize_exception_class() -> Statement {
         is_rest: false,
         is_kwargs: false,
         is_optional: true,
-        is_nullable: false,
-    };
+        is_nullable: false };
     // Self.Message := msg
     let assign_msg = Statement::with_span(
         StmtKind::Assign {
@@ -23637,12 +23129,10 @@ fn synthesize_exception_class() -> Statement {
                 ExprKind::Member {
                     object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
                     field: "Message".into(),
-                    null_safe: false,
-                },
+                    null_safe: false },
                 span.clone(),
             )],
-            value: Expression::with_span(ExprKind::Ident("msg".into()), span.clone()),
-        },
+            value: Expression::with_span(ExprKind::Ident("msg".into()), span.clone()), by_ref: false },
         span.clone(),
     );
     let assign_help_ctx = Statement::with_span(
@@ -23651,12 +23141,10 @@ fn synthesize_exception_class() -> Statement {
                 ExprKind::Member {
                     object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
                     field: "HelpContext".into(),
-                    null_safe: false,
-                },
+                    null_safe: false },
                 span.clone(),
             )],
-            value: Expression::with_span(ExprKind::Ident("helpCtx".into()), span.clone()),
-        },
+            value: Expression::with_span(ExprKind::Ident("helpCtx".into()), span.clone()), by_ref: false },
         span.clone(),
     );
     Statement::with_span(
@@ -23671,8 +23159,7 @@ fn synthesize_exception_class() -> Statement {
                     init: None,
                     modifiers: Modifiers::default(),
                     with_events: false,
-                    array_bounds: None,
-                },
+                    array_bounds: None },
                 ClassMember::Field {
                     name: "HelpContext".into(),
                     type_hint: Some("Integer".into()),
@@ -23682,20 +23169,17 @@ fn synthesize_exception_class() -> Statement {
                     )),
                     modifiers: Modifiers::default(),
                     with_events: false,
-                    array_bounds: None,
-                },
+                    array_bounds: None },
                 ClassMember::Constructor {
                     name: None,
                     params: vec![msg_param, help_ctx_param],
                     body: vec![assign_msg, assign_help_ctx],
                     base_args: None,
                     initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-                    visibility: Visibility::Public,
-                },
+                    visibility: Visibility::Public },
             ],
             modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     )
 }
@@ -23708,8 +23192,7 @@ fn synthesize_exception_subclass(name: &str, parent: &str) -> Statement {
             interfaces: Vec::new(),
             members: Vec::new(),
             modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
+            decorators: vec![] },
         Span::default(),
     )
 }
@@ -23722,25 +23205,21 @@ fn synthesize_pascal_except_state_vars() -> Statement {
                 type_hint: Some("TObject".to_string()),
                 init: Some(Expression::null()),
                 array_bounds: None,
-                with_events: false,
-            },
+                with_events: false },
             VarDeclarator {
                 pattern: BindingPattern::Ident("ExceptAddr".to_string()),
                 type_hint: Some("Pointer".to_string()),
                 init: Some(Expression::null()),
                 array_bounds: None,
-                with_events: false,
-            },
+                with_events: false },
         ],
-        kind: VarDeclKind::Dim,
-    })
+        kind: VarDeclKind::Dim })
 }
 
 fn pascal_assign_ident(name: &str, value: Expression) -> Statement {
     Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(name)],
-        value,
-    })
+        value, by_ref: false })
 }
 
 fn rewrite_pascal_except_state_body(body: &mut [Statement]) {
@@ -23755,8 +23234,7 @@ fn rewrite_pascal_except_state_stmt(stmt: &mut Statement) {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_except_state_body(body);
             for catch in catches {
                 let catch_var = catch
@@ -23857,7 +23335,7 @@ fn rewrite_pascal_except_addr_hex_stmt(
     pointer_vars: &mut std::collections::HashSet<String>,
 ) {
     match &mut stmt.kind {
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             if let Some(hex) = pascal_except_addr_hex_expr(value) {
                 *value = hex;
                 if let [target] = targets.as_slice() {
@@ -23903,8 +23381,7 @@ fn rewrite_pascal_except_addr_hex_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             rewrite_pascal_except_addr_hex_body(body, &mut hex_vars.clone(), pointer_vars);
             for catch in catches {
                 rewrite_pascal_except_addr_hex_body(
@@ -24066,8 +23543,7 @@ fn synthesize_pascal_safe_idiv_function() -> Statement {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    };
+        is_nullable: false };
     let b_param = Param {
         name: "__b".into(),
         type_hint: Some("Integer".into()),
@@ -24076,25 +23552,20 @@ fn synthesize_pascal_safe_idiv_function() -> Statement {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    };
+        is_nullable: false };
     let zero_check = Expression::new(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(Expression::ident("__b")),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
-    });
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))) });
     let throw_div_zero = Statement::new(StmtKind::Throw {
         expr: Some(Expression::new(ExprKind::New {
             class: Box::new(Expression::ident("EDivByZero")),
-            args: vec![Argument::positional(Expression::string("DivideByZero"))],
-        })),
-        cause: None,
-    });
+            args: vec![Argument::positional(Expression::string("DivideByZero"))] })),
+        cause: None });
     let result = Expression::new(ExprKind::Binary {
         op: BinOp::IDiv,
         left: Box::new(Expression::ident("__a")),
-        right: Box::new(Expression::ident("__b")),
-    });
+        right: Box::new(Expression::ident("__b")) });
     Statement::with_span(
         StmtKind::FunctionDecl {
             name: "__pascal_safe_idiv".into(),
@@ -24105,16 +23576,14 @@ fn synthesize_pascal_safe_idiv_function() -> Statement {
                     cond: zero_check,
                     then_body: vec![throw_div_zero],
                     elifs: Vec::new(),
-                    else_body: None,
-                }),
+                    else_body: None }),
                 Statement::new(StmtKind::Return(Some(result))),
             ],
             modifiers: Modifiers::default(),
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        },
+            is_sub: false },
         span,
     )
 }
@@ -24127,8 +23596,7 @@ fn synthesize_tobject_class() -> Statement {
             interfaces: Vec::new(),
             members: Vec::new(),
             modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
+            decorators: vec![] },
         Span::default(),
     )
 }
@@ -24141,8 +23609,7 @@ fn synthesize_tinterfacedobject_class() -> Statement {
             interfaces: Vec::new(),
             members: Vec::new(),
             modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
+            decorators: vec![] },
         Span::default(),
     )
 }
@@ -24610,7 +24077,7 @@ fn rewrite_pascal_safe_idiv_stmt(stmt: &mut Statement) -> bool {
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 changed |= rewrite_pascal_safe_idiv_expr(target);
             }
@@ -24634,8 +24101,7 @@ fn rewrite_pascal_safe_idiv_stmt(stmt: &mut Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             changed |= rewrite_pascal_safe_idiv_expr(cond);
             for stmt in then_body {
                 changed |= rewrite_pascal_safe_idiv_stmt(stmt);
@@ -24656,8 +24122,7 @@ fn rewrite_pascal_safe_idiv_stmt(stmt: &mut Statement) -> bool {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 changed |= rewrite_pascal_safe_idiv_stmt(init);
             }
@@ -24674,8 +24139,7 @@ fn rewrite_pascal_safe_idiv_stmt(stmt: &mut Statement) -> bool {
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             changed |= rewrite_pascal_safe_idiv_expr(cond);
             for stmt in body {
                 changed |= rewrite_pascal_safe_idiv_stmt(stmt);
@@ -24712,8 +24176,7 @@ fn rewrite_pascal_safe_idiv_stmt(stmt: &mut Statement) -> bool {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 changed |= rewrite_pascal_safe_idiv_stmt(stmt);
             }
@@ -24790,8 +24253,7 @@ fn rewrite_pascal_safe_idiv_expr(expr: &mut Expression) -> bool {
                         Argument::positional(left_expr),
                         Argument::positional(right_expr),
                     ],
-                    optional: false,
-                };
+                    optional: false };
                 changed = true;
             }
         }
@@ -24906,15 +24368,13 @@ fn rewrite_pascal_known_null_deref_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             if pascal_known_null_deref_target(&targets[0], known_nulls) {
                 stmt.kind = StmtKind::Throw {
                     expr: Some(Expression::new(ExprKind::New {
                         class: Box::new(Expression::ident("EAccessViolation")),
-                        args: vec![Argument::positional(Expression::string("Access violation"))],
-                    })),
-                    cause: None,
-                };
+                        args: vec![Argument::positional(Expression::string("Access violation"))] })),
+                    cause: None };
                 return;
             }
             if let ExprKind::Ident(name) = &targets[0].kind {
@@ -24974,8 +24434,7 @@ fn rewrite_pascal_known_null_deref_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut try_scope = known_nulls.clone();
             rewrite_pascal_known_null_deref_body(body, &mut try_scope);
             for catch in catches {
@@ -25085,7 +24544,7 @@ fn rewrite_pascal_heap_allocation_stmt(
                 rewrite_pascal_heap_allocation_expr(expr, struct_names, var_types);
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_heap_allocation_expr(target, struct_names, var_types);
             }
@@ -25118,8 +24577,7 @@ fn rewrite_pascal_heap_allocation_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_heap_allocation_expr(cond, struct_names, var_types);
             let mut scoped = var_types.clone();
             rewrite_pascal_heap_allocation_body(then_body, struct_names, &mut scoped);
@@ -25136,8 +24594,7 @@ fn rewrite_pascal_heap_allocation_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_heap_allocation_expr(cond, struct_names, var_types);
             let mut scoped = var_types.clone();
             rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
@@ -25150,8 +24607,7 @@ fn rewrite_pascal_heap_allocation_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
                 rewrite_pascal_heap_allocation_stmt(init, struct_names, &mut scoped);
@@ -25177,8 +24633,7 @@ fn rewrite_pascal_heap_allocation_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_pascal_heap_allocation_expr(expr, struct_names, var_types);
             for case in cases {
                 for condition in &mut case.conditions {
@@ -25204,8 +24659,7 @@ fn rewrite_pascal_heap_allocation_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut scoped = var_types.clone();
             rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
             for catch in catches {
@@ -25327,14 +24781,12 @@ fn pascal_heap_allocation_call_stmt(
         let default_value = pascal_heap_default_for_target(&target, struct_names, var_types);
         return Some(Statement::new(StmtKind::Assign {
             targets: vec![target],
-            value: common_memory::heap_cell(default_value),
-        }));
+            value: common_memory::heap_cell(default_value), by_ref: false }));
     }
     if name.eq_ignore_ascii_case("dispose") || name.eq_ignore_ascii_case("freemem") {
         return Some(Statement::new(StmtKind::Assign {
             targets: vec![target],
-            value: common_memory::free_value(),
-        }));
+            value: common_memory::free_value(), by_ref: false }));
     }
     None
 }
@@ -25342,8 +24794,7 @@ fn pascal_heap_allocation_call_stmt(
 fn pascal_heap_target_expr(expr: &Expression) -> Expression {
     match &expr.kind {
         ExprKind::Cast { expr, .. } => pascal_heap_target_expr(expr),
-        _ => expr.clone(),
-    }
+        _ => expr.clone() }
 }
 
 fn pascal_heap_default_for_target(
@@ -25353,8 +24804,7 @@ fn pascal_heap_default_for_target(
 ) -> Expression {
     let type_hint = match &target.kind {
         ExprKind::Ident(name) => var_types.get(&name.to_lowercase()),
-        _ => None,
-    };
+        _ => None };
     type_hint
         .and_then(|hint| pascal_pointer_pointee_type(hint))
         .and_then(|hint| pascal_default_expr_for_type(&hint, struct_names))
@@ -25378,8 +24828,7 @@ fn pascal_pointer_pointee_type(type_hint: &str) -> Option<String> {
         "pcardinal" => Some("Cardinal".to_string()),
         "pint64" => Some("Int64".to_string()),
         "pdouble" | "preal" | "psingle" | "pextended" => Some("Double".to_string()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn rewrite_pascal_heap_allocation_expr(
@@ -25528,14 +24977,13 @@ fn lower_pascal_array_pointer_math_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } if targets.len() == 1 => {
+        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
             let plain_pointer_target = match &targets[0].kind {
                 ExprKind::Ident(name) => {
                     let key = name.to_lowercase();
                     pointer_vars.contains(&key).then_some(key)
                 }
-                _ => None,
-            };
+                _ => None };
             lower_pascal_array_pointer_math_expr(value, array_pointer_vars);
             if plain_pointer_target.is_none() {
                 lower_pascal_array_pointer_math_expr(&mut targets[0], array_pointer_vars);
@@ -25554,7 +25002,7 @@ fn lower_pascal_array_pointer_math_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 lower_pascal_array_pointer_math_expr(target, array_pointer_vars);
             }
@@ -25602,8 +25050,7 @@ fn lower_pascal_array_pointer_math_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_array_pointer_math_expr(cond, array_pointer_vars);
             let mut scoped = array_pointer_vars.clone();
             lower_pascal_array_pointer_math_body(then_body, &mut pointer_vars.clone(), &mut scoped);
@@ -25620,8 +25067,7 @@ fn lower_pascal_array_pointer_math_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_array_pointer_math_expr(cond, array_pointer_vars);
             let mut scoped = array_pointer_vars.clone();
             lower_pascal_array_pointer_math_body(body, &mut pointer_vars.clone(), &mut scoped);
@@ -25634,8 +25080,7 @@ fn lower_pascal_array_pointer_math_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = array_pointer_vars.clone();
             if let Some(init) = init {
                 lower_pascal_array_pointer_math_stmt(init, &mut pointer_vars.clone(), &mut scoped);
@@ -25669,8 +25114,7 @@ fn lower_pascal_array_pointer_math_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut scoped = array_pointer_vars.clone();
             lower_pascal_array_pointer_math_body(body, &mut pointer_vars.clone(), &mut scoped);
             for catch in catches {
@@ -25844,8 +25288,7 @@ fn lower_pascal_array_pointer_math_expr(
 fn pascal_array_pointer_from_addr(expr: &Expression) -> Option<Expression> {
     let ExprKind::Unary {
         op: UnaryOp::AddrOf,
-        expr,
-    } = &expr.kind
+        expr } = &expr.kind
     else {
         return None;
     };
@@ -25872,8 +25315,7 @@ fn is_pascal_common_array_pointer_expr(
                         && matches!(&value.kind, ExprKind::Lit(Literal::Str(v)) if v == common_pointers::CARRAY_KIND)
             )
         }),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_scalar_pointer_self_step(target_key: &str, expr: &Expression) -> Option<Expression> {
@@ -26013,8 +25455,7 @@ fn collect_declared_class_methods(
 struct PascalGenericSpecialization {
     class_name: String,
     method_name: String,
-    type_args: Vec<String>,
-}
+    type_args: Vec<String> }
 
 fn collect_pascal_generic_type_names(source: &str) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
@@ -26154,8 +25595,7 @@ fn collect_pascal_generic_specializations(source: &str) -> Vec<PascalGenericSpec
                             out.push(PascalGenericSpecialization {
                                 class_name: first.clone(),
                                 method_name: chars[method_start..n].iter().collect(),
-                                type_args,
-                            });
+                                type_args });
                         }
                         i = n;
                         continue;
@@ -26183,8 +25623,7 @@ fn collect_pascal_generic_specializations(source: &str) -> Vec<PascalGenericSpec
                             out.push(PascalGenericSpecialization {
                                 class_name: first,
                                 method_name: chars[method_start..method_end].iter().collect(),
-                                type_args,
-                            });
+                                type_args });
                         }
                         i = after_generic;
                         continue;
@@ -26532,7 +25971,7 @@ fn collect_pascal_generic_names_stmt(stmt: &Statement, out: &mut Vec<String>) {
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 collect_pascal_generic_names_expr(target, out);
             }
@@ -26550,8 +25989,7 @@ fn collect_pascal_generic_names_stmt(stmt: &Statement, out: &mut Vec<String>) {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             collect_pascal_generic_names_expr(cond, out);
             for stmt in then_body {
                 collect_pascal_generic_names_stmt(stmt, out);
@@ -26675,7 +26113,7 @@ fn rewrite_pascal_generic_types_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_generic_types_expr(target, type_map);
             }
@@ -26693,8 +26131,7 @@ fn rewrite_pascal_generic_types_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_generic_types_expr(cond, type_map);
             for stmt in then_body {
                 rewrite_pascal_generic_types_stmt(stmt, type_map);
@@ -26884,8 +26321,7 @@ fn rewrite_pascal_generic_types_expr(
 struct PascalRecordLayoutMode {
     packed: bool,
     pack: Option<i64>,
-    align: Option<i64>,
-}
+    align: Option<i64> }
 
 fn collect_pascal_record_layout_modes(
     source: &str,
@@ -26917,8 +26353,7 @@ fn collect_pascal_record_layout_modes(
                 PascalRecordLayoutMode {
                     packed,
                     pack: pack_records,
-                    align: align_records,
-                },
+                    align: align_records },
             );
         }
     }
@@ -26994,8 +26429,7 @@ fn pascal_type_size(type_hint: &str) -> i64 {
         "byte" | "shortint" | "boolean" | "bool" | "char" | "ansichar" => 1,
         "word" | "smallint" | "widechar" => 2,
         "int64" | "uint64" | "double" | "real" | "extended" | "currency" => 8,
-        _ => 4,
-    }
+        _ => 4 }
 }
 
 fn rewrite_pascal_sizeof_types_stmt(
@@ -27013,7 +26447,7 @@ fn rewrite_pascal_sizeof_types_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_sizeof_types_expr(target, type_sizes);
             }
@@ -27039,8 +26473,7 @@ fn rewrite_pascal_sizeof_types_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_sizeof_types_expr(cond, type_sizes);
             for stmt in then_body {
                 rewrite_pascal_sizeof_types_stmt(stmt, type_sizes);
@@ -27157,7 +26590,7 @@ fn rewrite_pascal_supports_stmt(stmt: &mut Statement) {
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_supports_expr(target);
             }
@@ -27183,8 +26616,7 @@ fn rewrite_pascal_supports_stmt(stmt: &mut Statement) {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_supports_expr(cond);
             for stmt in then_body {
                 rewrite_pascal_supports_stmt(stmt);
@@ -27253,13 +26685,11 @@ fn rewrite_pascal_supports_expr(expr: &mut Expression) {
                 };
                 let check = Expression::new(ExprKind::IsType {
                     expr: Box::new(source.clone()),
-                    type_name,
-                });
+                    type_name });
                 if args.len() == 3 {
                     let assign = Expression::new(ExprKind::Assign {
                         target: Box::new(args[2].value.clone()),
-                        value: Box::new(source),
-                    });
+                        value: Box::new(source) });
                     *expr = Expression::new(ExprKind::Sequence(vec![assign, check]));
                 } else {
                     *expr = check;
@@ -27375,8 +26805,7 @@ fn collect_pascal_bool_class_methods(
                 (name, members)
             }
             StmtKind::StructDecl { name, members, .. } => (name, members),
-            _ => continue,
-        };
+            _ => continue };
         let is_generic_type = generic_type_names.contains(&name.to_lowercase());
         for member in members {
             match member {
@@ -27452,8 +26881,7 @@ fn collect_pascal_float_class_members(
                 (name, members)
             }
             StmtKind::StructDecl { name, members, .. } => (name, members),
-            _ => continue,
-        };
+            _ => continue };
         for member in members {
             match member {
                 ClassMember::Method(method) => {
@@ -27516,7 +26944,7 @@ fn rewrite_pascal_writeln_bool_class_calls_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_writeln_bool_class_calls_expr(target, bool_methods);
             }
@@ -27547,8 +26975,7 @@ fn rewrite_pascal_writeln_bool_class_calls_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_writeln_bool_class_calls_expr(cond, bool_methods);
             for stmt in then_body {
                 rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
@@ -27568,8 +26995,7 @@ fn rewrite_pascal_writeln_bool_class_calls_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_writeln_bool_class_calls_expr(cond, bool_methods);
             for stmt in body {
                 rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
@@ -27590,8 +27016,7 @@ fn rewrite_pascal_writeln_bool_class_calls_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_writeln_bool_class_calls_stmt(init, bool_methods);
             }
@@ -27625,8 +27050,7 @@ fn rewrite_pascal_writeln_bool_class_calls_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_pascal_writeln_bool_class_calls_stmt(stmt, bool_methods);
             }
@@ -27786,8 +27210,7 @@ fn pascal_expr_is_bool_class_call(
     let member = match &expr.kind {
         ExprKind::Call { callee, .. } => callee.as_ref(),
         ExprKind::Member { .. } => expr,
-        _ => return false,
-    };
+        _ => return false };
     let ExprKind::Member { object, field, .. } = &member.kind else {
         return false;
     };
@@ -27833,8 +27256,7 @@ fn pascal_expr_is_typekind_comparison(expr: &Expression) -> bool {
         {
             pascal_expr_is_typekind_value(left) || pascal_expr_is_typekind_value(right)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_is_typekind_value(expr: &Expression) -> bool {
@@ -27868,16 +27290,14 @@ fn pascal_bool_display_expr(expr: Expression) -> Expression {
     Expression::new(ExprKind::Ternary {
         cond: Box::new(expr),
         then: Box::new(Expression::string("True")),
-        else_: Box::new(Expression::string("False")),
-    })
+        else_: Box::new(Expression::string("False")) })
 }
 
 fn pascal_bool_pascal_display_expr(expr: Expression) -> Expression {
     Expression::new(ExprKind::Ternary {
         cond: Box::new(expr),
         then: Box::new(Expression::string("True")),
-        else_: Box::new(Expression::string("False")),
-    })
+        else_: Box::new(Expression::string("False")) })
 }
 
 fn rewrite_pascal_writeln_bool_instance_members_body(
@@ -27923,7 +27343,7 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_writeln_bool_instance_members_expr(
                     target,
@@ -28003,8 +27423,7 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_writeln_bool_instance_members_expr(
                 cond,
                 bool_members,
@@ -28043,8 +27462,7 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_writeln_bool_instance_members_expr(
                 cond,
                 bool_members,
@@ -28070,8 +27488,7 @@ fn rewrite_pascal_writeln_bool_instance_members_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 rewrite_pascal_writeln_bool_instance_members_stmt(
@@ -28354,8 +27771,7 @@ fn pascal_expr_is_datetime_value(
                     | "timestamptodatetime"
             )
         }),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_expr_uses_generic_instance_receiver(
@@ -28378,8 +27794,7 @@ fn pascal_expr_uses_generic_instance_receiver(
                 ExprKind::This => env.get("self"),
                 ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
                 ExprKind::Ident(name) => env.get(&name.to_lowercase()),
-                _ => None,
-            }
+                _ => None }
             .is_some_and(|type_name| generic_type_names.contains(&type_name.to_lowercase()));
             is_generic_receiver
                 || pascal_expr_uses_generic_instance_receiver(object, env, generic_type_names)
@@ -28434,8 +27849,7 @@ fn pascal_expr_uses_generic_instance_receiver(
                     pascal_expr_uses_generic_instance_receiver(&arg.value, env, generic_type_names)
                 })
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn is_pascal_bool_procedural_type(type_hint: &str) -> bool {
@@ -28455,8 +27869,7 @@ fn pascal_expr_is_bool_instance_member(
     let member = match &expr.kind {
         ExprKind::Call { callee, .. } => callee.as_ref(),
         ExprKind::Member { .. } => expr,
-        _ => return false,
-    };
+        _ => return false };
     let ExprKind::Member { object, field, .. } = &member.kind else {
         return false;
     };
@@ -28464,8 +27877,7 @@ fn pascal_expr_is_bool_instance_member(
         ExprKind::This => env.get("self"),
         ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
         ExprKind::Ident(name) => env.get(&name.to_lowercase()),
-        _ => None,
-    };
+        _ => None };
     class_name.is_some_and(|class_name| {
         bool_members.contains(&(class_name.to_lowercase(), field.to_lowercase()))
     })
@@ -28543,7 +27955,7 @@ fn rewrite_pascal_writeln_float_instance_members_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_writeln_float_instance_members_expr(target, float_members, env);
             }
@@ -28583,8 +27995,7 @@ fn rewrite_pascal_writeln_float_instance_members_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_writeln_float_instance_members_expr(cond, float_members, env);
             rewrite_pascal_writeln_float_instance_members_body(
                 then_body,
@@ -28611,8 +28022,7 @@ fn rewrite_pascal_writeln_float_instance_members_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 rewrite_pascal_writeln_float_instance_members_stmt(
@@ -28762,8 +28172,7 @@ fn pascal_expr_is_float_instance_expr(
                 ExprKind::This => env.get("self"),
                 ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
                 ExprKind::Ident(name) => env.get(&name.to_lowercase()),
-                _ => None,
-            };
+                _ => None };
             class_name.is_some_and(|class_name| {
                 float_members.contains(&(class_name.to_lowercase(), field.to_lowercase()))
             })
@@ -28773,14 +28182,12 @@ fn pascal_expr_is_float_instance_expr(
                 ExprKind::This => env.get("self"),
                 ExprKind::Ident(name) if name.eq_ignore_ascii_case("Self") => env.get("self"),
                 ExprKind::Ident(name) => env.get(&name.to_lowercase()),
-                _ => None,
-            };
+                _ => None };
             class_name.is_some_and(|class_name| {
                 float_members.contains(&(class_name.to_lowercase(), field.to_lowercase()))
             })
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn propagate_inherited_static_members(
@@ -28912,8 +28319,7 @@ fn mark_static_var_args_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             mark_static_var_args_expr(cond, static_var_params);
             for stmt in then_body {
                 mark_static_var_args_stmt(stmt, static_var_params);
@@ -28933,8 +28339,7 @@ fn mark_static_var_args_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             mark_static_var_args_expr(cond, static_var_params);
             for stmt in body {
                 mark_static_var_args_stmt(stmt, static_var_params);
@@ -28955,8 +28360,7 @@ fn mark_static_var_args_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 mark_static_var_args_stmt(init, static_var_params);
             }
@@ -28990,8 +28394,7 @@ fn mark_static_var_args_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 mark_static_var_args_stmt(stmt, static_var_params);
             }
@@ -29025,7 +28428,7 @@ fn mark_static_var_args_stmt(
         } => {
             mark_static_var_args_expr(expr, static_var_params);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 mark_static_var_args_expr(target, static_var_params);
             }
@@ -29174,8 +28577,7 @@ fn pascal_type_stamp_expr(object: Expression) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(object),
         field: "__type".to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn collect_pascal_class_parent_display_names(body: &[Statement]) -> Vec<(String, String)> {
@@ -29184,8 +28586,7 @@ fn collect_pascal_class_parent_display_names(body: &[Statement]) -> Vec<(String,
             StmtKind::ClassDecl { name, parents, .. } => parents
                 .first()
                 .map(|parent| (name.to_lowercase(), parent.clone())),
-            _ => None,
-        })
+            _ => None })
         .collect()
 }
 
@@ -29202,8 +28603,7 @@ fn pascal_class_name_expr(object: Expression, class_names: &[(String, String)]) 
         return Expression::new(ExprKind::Ternary {
             cond: cond.clone(),
             then: Box::new(pascal_class_name_expr((**then).clone(), class_names)),
-            else_: Box::new(pascal_class_name_expr((**else_).clone(), class_names)),
-        });
+            else_: Box::new(pascal_class_name_expr((**else_).clone(), class_names)) });
     }
     let type_expr = pascal_type_stamp_expr(object);
     class_names
@@ -29214,11 +28614,9 @@ fn pascal_class_name_expr(object: Expression, class_names: &[(String, String)]) 
                 cond: Box::new(Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
                     left: Box::new(type_expr.clone()),
-                    right: Box::new(Expression::string(canonical)),
-                })),
+                    right: Box::new(Expression::string(canonical)) })),
                 then: Box::new(Expression::string(display)),
-                else_: Box::new(fallback),
-            })
+                else_: Box::new(fallback) })
         })
 }
 
@@ -29232,11 +28630,9 @@ fn pascal_class_ref_expr(object: Expression, class_names: &[(String, String)]) -
                 cond: Box::new(Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
                     left: Box::new(type_expr.clone()),
-                    right: Box::new(Expression::string(canonical)),
-                })),
+                    right: Box::new(Expression::string(canonical)) })),
                 then: Box::new(Expression::ident(display)),
-                else_: Box::new(fallback),
-            })
+                else_: Box::new(fallback) })
         })
 }
 
@@ -29261,11 +28657,9 @@ fn pascal_class_parent_ref_expr(
                 cond: Box::new(Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
                     left: Box::new(type_expr.clone()),
-                    right: Box::new(Expression::string(canonical)),
-                })),
+                    right: Box::new(Expression::string(canonical)) })),
                 then: Box::new(Expression::ident(parent)),
-                else_: Box::new(fallback),
-            })
+                else_: Box::new(fallback) })
         })
 }
 
@@ -29299,8 +28693,7 @@ fn rewrite_pascal_rtti_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_rtti_expr(cond, class_names, class_parents);
             for stmt in then_body {
                 rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
@@ -29320,8 +28713,7 @@ fn rewrite_pascal_rtti_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_rtti_expr(cond, class_names, class_parents);
             for stmt in body {
                 rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
@@ -29342,8 +28734,7 @@ fn rewrite_pascal_rtti_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_pascal_rtti_stmt(init, class_names, class_parents);
             }
@@ -29377,8 +28768,7 @@ fn rewrite_pascal_rtti_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_pascal_rtti_stmt(stmt, class_names, class_parents);
             }
@@ -29412,7 +28802,7 @@ fn rewrite_pascal_rtti_stmt(
         } => {
             rewrite_pascal_rtti_expr(expr, class_names, class_parents);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_rtti_expr(target, class_names, class_parents);
             }
@@ -29560,8 +28950,7 @@ fn rewrite_pascal_rtti_expr(
 fn pascal_obj_prop(key: &str, value: Expression) -> ObjectProperty {
     ObjectProperty::KeyValue {
         key: Expression::string(key),
-        value,
-    }
+        value }
 }
 
 fn pascal_param(name: &str) -> Param {
@@ -29573,8 +28962,7 @@ fn pascal_param(name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false,
-    }
+        is_nullable: false }
 }
 
 #[derive(Default)]
@@ -29583,8 +28971,7 @@ struct PascalRttiMetadata {
     field_tokens: std::collections::HashMap<String, Vec<Expression>>,
     method_tokens: std::collections::HashMap<String, Vec<Expression>>,
     property_fields: std::collections::HashMap<String, String>,
-    method_param_counts: std::collections::HashMap<String, usize>,
-}
+    method_param_counts: std::collections::HashMap<String, usize> }
 
 fn collect_pascal_rtti_metadata(body: &[Statement]) -> PascalRttiMetadata {
     let mut metadata = PascalRttiMetadata::default();
@@ -29716,8 +29103,7 @@ fn pascal_rtti_property_field_from_getter(body: &[Statement]) -> Option<String> 
     };
     match &stmt.kind {
         StmtKind::Return(Some(expr)) => pascal_rtti_property_field_expr(expr),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_rtti_property_field_from_setter(body: &[Statement]) -> Option<String> {
@@ -29730,17 +29116,14 @@ fn pascal_rtti_property_field_from_setter(body: &[Statement]) -> Option<String> 
         }
         StmtKind::Expr(expr) => match &expr.kind {
             ExprKind::Assign { target, .. } => pascal_rtti_property_field_expr(target),
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn pascal_rtti_property_field_expr(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Member { field, .. } | ExprKind::Ident(field) => Some(field.clone()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_array_expr(values: Vec<Expression>) -> Expression {
@@ -29751,8 +29134,7 @@ fn pascal_array_expr(values: Vec<Expression>) -> Expression {
                 key: None,
                 value,
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     ))
 }
@@ -29773,8 +29155,7 @@ fn pascal_typeinfo_kind(
         _ if record_names.contains(&canonical) => "tkRecord",
         _ if enum_members.contains_key(&canonical) => "tkEnumeration",
         _ if class_names.iter().any(|(name, _)| name == &canonical) => "tkClass",
-        _ => "tkUnknown",
-    }
+        _ => "tkUnknown" }
 }
 
 fn pascal_typeinfo_expr(
@@ -29821,8 +29202,7 @@ fn pascal_typeinfo_expr(
         "tkUString" | "tkString" => common_reflection::ReflectKind::String.as_str(),
         "tkInteger" | "tkFloat" => common_reflection::ReflectKind::Number.as_str(),
         "tkBool" => common_reflection::ReflectKind::Bool.as_str(),
-        _ => common_reflection::ReflectKind::Object.as_str(),
-    };
+        _ => common_reflection::ReflectKind::Object.as_str() };
     Expression::new(ExprKind::Object(vec![
         pascal_obj_prop(
             common_reflection::FIELD_TYPE,
@@ -29876,8 +29256,7 @@ fn pascal_typeinfo_name_from_expr(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.clone()),
         ExprKind::Lit(Literal::Str(name)) => Some(name.clone()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_is_typeinfo_object(expr: &Expression) -> bool {
@@ -29897,16 +29276,14 @@ fn pascal_member_expr(object: Expression, field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(object),
         field: field.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn pascal_index_expr(object: Expression, index: Expression) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(object),
         index: Box::new(index),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn pascal_tvalue_expr(value: Expression) -> Expression {
@@ -29936,8 +29313,7 @@ fn pascal_is_rtti_env_value(expr: &Expression) -> bool {
                     .iter()
                     .all(|item| pascal_is_rtti_env_value(&item.value))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_rtti_context_expr() -> Expression {
@@ -29970,11 +29346,9 @@ fn pascal_object_string_prop(expr: &Expression, prop_name: &str) -> Option<Strin
         {
             match &value.kind {
                 ExprKind::Lit(Literal::Str(value)) => Some(value.clone()),
-                _ => None,
-            }
+                _ => None }
         }
-        _ => None,
-    })
+        _ => None })
 }
 
 fn pascal_object_prop(expr: &Expression, prop_name: &str) -> Option<Expression> {
@@ -29987,8 +29361,7 @@ fn pascal_object_prop(expr: &Expression, prop_name: &str) -> Option<Expression> 
         {
             Some(value.clone())
         }
-        _ => None,
-    })
+        _ => None })
 }
 
 fn pascal_rtti_property_expr(
@@ -30009,17 +29382,14 @@ fn pascal_rtti_property_expr(
             &backing,
         )))),
         is_async: false,
-        captures: Vec::new(),
-    });
+        captures: Vec::new() });
     let set_value = Expression::new(ExprKind::Lambda {
         params: vec![pascal_param("obj"), pascal_param("value")],
         body: LambdaBody::Expr(Box::new(Expression::new(ExprKind::Assign {
             target: Box::new(pascal_member_expr(receiver, &backing)),
-            value: Box::new(value),
-        }))),
+            value: Box::new(value) }))),
         is_async: false,
-        captures: Vec::new(),
-    });
+        captures: Vec::new() });
     Expression::new(ExprKind::Object(vec![
         pascal_obj_prop(
             "__pascal_rtti_property_name",
@@ -30053,12 +29423,10 @@ fn pascal_rtti_method_expr(method_name: &str, rtti_metadata: &PascalRttiMetadata
             ExprKind::Call {
                 callee: Box::new(pascal_member_expr(Expression::ident("obj"), method_name)),
                 args: call_args,
-                optional: false,
-            },
+                optional: false },
         )))),
         is_async: false,
-        captures: Vec::new(),
-    });
+        captures: Vec::new() });
     Expression::new(ExprKind::Object(vec![
         pascal_obj_prop("__pascal_rtti_method_name", Expression::string(method_name)),
         pascal_obj_prop("Name", Expression::string(method_name)),
@@ -30130,7 +29498,7 @@ fn rewrite_pascal_typeinfo_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets.iter_mut() {
                 rewrite_pascal_typeinfo_expr(
                     target,
@@ -30188,8 +29556,7 @@ fn rewrite_pascal_typeinfo_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_typeinfo_expr(
                 cond,
                 class_names,
@@ -30472,8 +29839,7 @@ fn rewrite_pascal_typeinfo_expr(
                                 args[0].value.clone(),
                                 &property_name,
                             )),
-                            value: Box::new(args[1].value.clone()),
-                        });
+                            value: Box::new(args[1].value.clone()) });
                         return;
                     }
                 }
@@ -30500,8 +29866,7 @@ fn rewrite_pascal_typeinfo_expr(
                                 &method_name,
                             )),
                             args: call_args,
-                            optional: false,
-                        }));
+                            optional: false }));
                         return;
                     }
                     if field.eq_ignore_ascii_case("GetParameters") && args.is_empty() {
@@ -30602,8 +29967,7 @@ fn rewrite_pascal_typeinfo_expr(
                         BinOp::LtEq => Some(left <= right),
                         BinOp::Gt => Some(left > right),
                         BinOp::GtEq => Some(left >= right),
-                        _ => None,
-                    };
+                        _ => None };
                     if let Some(value) = value {
                         *expr = Expression::bool(value);
                     }
@@ -30833,8 +30197,7 @@ fn rewrite_zero_arg_instance_method_refs_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_zero_arg_instance_method_refs_expr(cond, methods);
             for stmt in then_body {
                 rewrite_zero_arg_instance_method_refs_stmt(stmt, methods);
@@ -30854,8 +30217,7 @@ fn rewrite_zero_arg_instance_method_refs_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_zero_arg_instance_method_refs_expr(cond, methods);
             for stmt in body {
                 rewrite_zero_arg_instance_method_refs_stmt(stmt, methods);
@@ -30876,8 +30238,7 @@ fn rewrite_zero_arg_instance_method_refs_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_zero_arg_instance_method_refs_stmt(init, methods);
             }
@@ -30911,8 +30272,7 @@ fn rewrite_zero_arg_instance_method_refs_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_zero_arg_instance_method_refs_stmt(stmt, methods);
             }
@@ -30946,7 +30306,7 @@ fn rewrite_zero_arg_instance_method_refs_stmt(
         } => {
             rewrite_zero_arg_instance_method_refs_expr(expr, methods);
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_zero_arg_instance_method_refs_expr(target, methods);
             }
@@ -31012,8 +30372,7 @@ fn rewrite_zero_arg_instance_method_refs_expr(
                 expr.kind = ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))),
-                    right: Box::new((**object).clone()),
-                };
+                    right: Box::new((**object).clone()) };
                 return;
             }
             if methods.contains(&field.to_lowercase()) {
@@ -31021,11 +30380,9 @@ fn rewrite_zero_arg_instance_method_refs_expr(
                     callee: Box::new(Expression::new(ExprKind::Member {
                         object: Box::new((**object).clone()),
                         field: field.clone(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: Vec::new(),
-                    optional: false,
-                };
+                    optional: false };
             }
         }
         ExprKind::Binary { left, right, .. } => {
@@ -31110,8 +30467,7 @@ fn collect_zero_arg_static_methods(
                 ..
             } => (name, parents.as_slice(), members),
             StmtKind::StructDecl { name, members, .. } => (name, &[][..], members),
-            _ => continue,
-        };
+            _ => continue };
         let class_key = name.to_lowercase();
         parents.insert(
             class_key.clone(),
@@ -31215,8 +30571,7 @@ fn rewrite_zero_arg_static_method_refs_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_zero_arg_static_method_refs_expr(cond, methods, var_types);
             let mut scoped = var_types.clone();
             for stmt in then_body {
@@ -31239,8 +30594,7 @@ fn rewrite_zero_arg_static_method_refs_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_zero_arg_static_method_refs_expr(cond, methods, var_types);
             let mut scoped = var_types.clone();
             for stmt in body {
@@ -31257,8 +30611,7 @@ fn rewrite_zero_arg_static_method_refs_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = var_types.clone();
             if let Some(init) = init {
                 rewrite_zero_arg_static_method_refs_stmt(init, methods, &mut scoped);
@@ -31302,8 +30655,7 @@ fn rewrite_zero_arg_static_method_refs_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             let mut scoped = var_types.clone();
             for stmt in body {
                 rewrite_zero_arg_static_method_refs_stmt(stmt, methods, &mut scoped);
@@ -31340,7 +30692,7 @@ fn rewrite_zero_arg_static_method_refs_stmt(
         | StmtKind::Throw {
             expr: Some(expr), ..
         } => rewrite_zero_arg_static_method_refs_expr(expr, methods, var_types),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_zero_arg_static_method_refs_expr(target, methods, var_types);
             }
@@ -31424,8 +30776,7 @@ fn rewrite_zero_arg_static_method_refs_expr(
             rewrite_zero_arg_static_method_refs_expr(object, methods, var_types);
             let receiver_type = match &object.kind {
                 ExprKind::Ident(name) => var_types.get(&name.to_lowercase()),
-                _ => None,
-            };
+                _ => None };
             if let Some(class_key) = receiver_type {
                 if methods
                     .get(class_key)
@@ -31435,11 +30786,9 @@ fn rewrite_zero_arg_static_method_refs_expr(
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new((**object).clone()),
                             field: field.clone(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: Vec::new(),
-                        optional: false,
-                    };
+                        optional: false };
                 }
             }
         }
@@ -31549,8 +30898,7 @@ fn rewrite_static_method_calls_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_static_method_calls_expr(cond, methods, values, value_owners);
             for stmt in then_body {
                 rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
@@ -31570,8 +30918,7 @@ fn rewrite_static_method_calls_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_static_method_calls_expr(cond, methods, values, value_owners);
             for stmt in body {
                 rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
@@ -31592,8 +30939,7 @@ fn rewrite_static_method_calls_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 rewrite_static_method_calls_stmt(init, methods, values, value_owners);
             }
@@ -31626,8 +30972,7 @@ fn rewrite_static_method_calls_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_static_method_calls_expr(expr, methods, values, value_owners);
             for case in cases {
                 for stmt in &mut case.body {
@@ -31644,8 +30989,7 @@ fn rewrite_static_method_calls_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for stmt in body {
                 rewrite_static_method_calls_stmt(stmt, methods, values, value_owners);
             }
@@ -31682,7 +31026,7 @@ fn rewrite_static_method_calls_stmt(
         StmtKind::Throw {
             cause: Some(cause), ..
         } => rewrite_static_method_calls_expr(cause, methods, values, value_owners),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_static_method_calls_expr(target, methods, values, value_owners);
             }
@@ -31776,11 +31120,9 @@ fn rewrite_static_method_calls_expr(
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(class_name)),
                             field: field.clone(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: Vec::new(),
-                        optional: false,
-                    };
+                        optional: false };
                 } else if values.contains(&(class_name.to_lowercase(), field.to_lowercase())) {
                     let owner = value_owners
                         .get(&(class_name.to_lowercase(), field.to_lowercase()))
@@ -31788,8 +31130,7 @@ fn rewrite_static_method_calls_expr(
                         .unwrap_or(class_name);
                     expr.kind = ExprKind::StaticAccess {
                         class: Box::new(Expression::ident(owner)),
-                        member: Box::new(Expression::ident(field)),
-                    };
+                        member: Box::new(Expression::ident(field)) };
                 }
             }
         }
@@ -31946,8 +31287,7 @@ fn rewrite_constructor_calls_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_constructor_calls_expr(
                 cond,
                 classes,
@@ -31998,8 +31338,7 @@ fn rewrite_constructor_calls_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(i) = init {
                 rewrite_constructor_calls_stmt(
                     i,
@@ -32074,8 +31413,7 @@ fn rewrite_constructor_calls_stmt(
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_constructor_calls_expr(
                 cond,
                 classes,
@@ -32125,8 +31463,7 @@ fn rewrite_constructor_calls_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             rewrite_constructor_calls_expr(
                 expr,
                 classes,
@@ -32161,8 +31498,7 @@ fn rewrite_constructor_calls_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             for s in body {
                 rewrite_constructor_calls_stmt(
                     s,
@@ -32240,7 +31576,7 @@ fn rewrite_constructor_calls_stmt(
             declared_methods,
             constructor_params,
         ),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for t in targets {
                 rewrite_constructor_calls_expr(
                     t,
@@ -32397,8 +31733,7 @@ fn rewrite_constructor_calls_expr(
                         }
                         expr.kind = ExprKind::New {
                             class: Box::new((**object).clone()),
-                            args: new_args,
-                        };
+                            args: new_args };
                         return;
                     }
                 }
@@ -32435,8 +31770,7 @@ fn rewrite_constructor_calls_expr(
                     }
                     expr.kind = ExprKind::New {
                         class: new_class,
-                        args: new_args,
-                    };
+                        args: new_args };
                     return;
                 }
             }
@@ -32712,8 +32046,7 @@ fn rewrite_constructor_calls_expr(
                 );
                 expr.kind = ExprKind::New {
                     class: Box::new(Expression::ident(class_name)),
-                    args: new_args,
-                };
+                    args: new_args };
             } else if !classes.contains(&class_name.to_lowercase())
                 && field
                     .get(..6)
@@ -32721,16 +32054,14 @@ fn rewrite_constructor_calls_expr(
             {
                 expr.kind = ExprKind::New {
                     class: Box::new((**object).clone()),
-                    args: Vec::new(),
-                };
+                    args: Vec::new() };
             }
         }
     }
 
     if let ExprKind::Cast {
         expr: inner,
-        type_name,
-    } = &expr.kind
+        type_name } = &expr.kind
     {
         if classes.contains(&type_name.to_lowercase()) {
             *expr = (**inner).clone();
@@ -32750,8 +32081,7 @@ fn pascal_constructor_args(field: &str, args: &[Argument]) -> Vec<Argument> {
             return vec![Argument::positional(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("Format")),
                 args: expanded,
-                optional: false,
-            }))];
+                optional: false }))];
         }
     }
     args.to_vec()
@@ -32839,8 +32169,7 @@ fn merge_class_var_impl_decls(body: &mut Vec<Statement>) {
                 class_idx.entry(name.to_lowercase()).or_insert(i);
                 None
             }
-            _ => None,
-        }) else {
+            _ => None }) else {
             continue;
         };
 
@@ -32850,13 +32179,11 @@ fn merge_class_var_impl_decls(body: &mut Vec<Statement>) {
         };
         let target_members = match &mut body[target_idx].kind {
             StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members,
-            _ => continue,
-        };
+            _ => continue };
         for field in fields {
             let field_name = match &field {
                 ClassMember::Field { name, .. } => name.to_lowercase(),
-                _ => continue,
-            };
+                _ => continue };
             let already_declared = target_members.iter().any(|member| {
                 matches!(member, ClassMember::Field { name, modifiers, .. }
                     if modifiers.is_static && name.eq_ignore_ascii_case(&field_name))
@@ -32944,8 +32271,7 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
         };
         let members = match &mut body[ci].kind {
             StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => members,
-            _ => continue,
-        };
+            _ => continue };
 
         // Try constructor first: Pascal constructors are commonly named Create,
         // but named constructors such as CreateWithCode are valid too.
@@ -32997,10 +32323,8 @@ fn merge_separated_methods(body: &mut Vec<Statement>) {
                                             None
                                         }
                                     }
-                                    _ => None,
-                                },
-                                _ => None,
-                            };
+                                    _ => None },
+                                _ => None };
                             if let Some(extracted_args) = extracted {
                                 *ba = Some(extracted_args);
                                 new_body.remove(0);
@@ -33129,8 +32453,7 @@ fn normalize_pascal_gcl_form_classes(body: &mut [Statement]) {
                 body: vec![name_stmt],
                 base_args: Some(vec![Expression::ident("AOwner")]),
                 initializer_target: ConstructorInitializerTarget::Base,
-                visibility: Visibility::Public,
-            });
+                visibility: Visibility::Public });
         }
     }
 }
@@ -33181,7 +32504,7 @@ fn normalize_gcl_form_property_stmt(stmt: &mut Statement) {
     }
     match &mut stmt.kind {
         StmtKind::Expr(expr) => normalize_gcl_form_property_expr(expr),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 normalize_gcl_form_property_target(target);
             }
@@ -33257,9 +32580,7 @@ fn normalize_gcl_create_form_stmt(stmt: &Statement) -> Option<Statement> {
                 class: Box::new(args[0].value.clone()),
                 args: vec![Argument::positional(Expression::new(ExprKind::Lit(
                     Literal::Null,
-                )))],
-            }),
-        },
+                )))] }), by_ref: false },
         stmt.span.clone(),
     );
     let remember_main_form = Statement::with_span(
@@ -33267,10 +32588,8 @@ fn normalize_gcl_create_form_stmt(stmt: &Statement) -> Option<Statement> {
             targets: vec![Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident("Application")),
                 field: "__main_form".to_string(),
-                null_safe: false,
-            })],
-            value: Expression::ident(target_name),
-        },
+                null_safe: false })],
+            value: Expression::ident(target_name), by_ref: false },
         stmt.span.clone(),
     );
     Some(Statement::with_span(
@@ -33285,8 +32604,7 @@ fn normalize_gcl_form_property_target(target: &mut Expression) {
             *target = Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: name.clone(),
-                null_safe: false,
-            });
+                null_safe: false });
         }
     }
 }
@@ -33315,8 +32633,7 @@ fn normalize_gcl_form_property_expr(expr: &mut Expression) {
                     *target = Box::new(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: name.clone(),
-                        null_safe: false,
-                    }));
+                        null_safe: false }));
                 }
             }
             normalize_gcl_form_property_expr(value);
@@ -33357,15 +32674,13 @@ fn normalize_gcl_menu_add_call(callee: &mut Box<Expression>) {
     let is_menu_like = match &object.kind {
         ExprKind::Ident(name) => is_menu_like_name(name),
         ExprKind::Member { field, .. } => is_menu_like_name(field),
-        _ => false,
-    };
+        _ => false };
     if is_menu_like {
         let original = (**object).clone();
         *object = Box::new(Expression::new(ExprKind::Member {
             object: Box::new(original),
             field: "Items".to_string(),
-            null_safe: false,
-        }));
+            null_safe: false }));
     }
 }
 
@@ -33383,11 +32698,9 @@ fn normalize_gcl_dotted_menu_add_call(callee: &mut Box<Expression>) {
         object: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(receiver)),
             field: "Items".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         field: "Add".to_string(),
-        null_safe: false,
-    }));
+        null_safe: false }));
 }
 
 fn is_menu_like_name(name: &str) -> bool {
@@ -33419,8 +32732,7 @@ fn gcl_owner_param() -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: true,
-    }
+        is_nullable: true }
 }
 
 fn gcl_form_name_assignment(default_name: &str) -> Statement {
@@ -33428,12 +32740,10 @@ fn gcl_form_name_assignment(default_name: &str) -> Statement {
         target: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: "Name".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         value: Box::new(Expression::new(ExprKind::Lit(Literal::Str(
             default_name.to_string(),
-        )))),
-    })))
+        )))) })))
 }
 
 fn is_gcl_form_name_assignment(stmt: &Statement) -> bool {
@@ -33492,8 +32802,7 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
                 .iter()
                 .find_map(|p| p.strip_prefix(PASCAL_HELPER_TARGET_PREFIX))
                 .map(str::to_string),
-            _ => None,
-        };
+            _ => None };
         let Some(target_name) = helper_target else {
             continue;
         };
@@ -33504,8 +32813,7 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
                 StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
                     members
                 }
-                _ => continue,
-            };
+                _ => continue };
             collect_pascal_builtin_helper_members(
                 &target_name,
                 helper_members,
@@ -33521,8 +32829,7 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
             StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
                 members.clone()
             }
-            _ => Vec::new(),
-        };
+            _ => Vec::new() };
         merges.push((target_stmt_idx, helper_members));
     }
 
@@ -33565,8 +32872,7 @@ fn lower_pascal_helpers(body: &mut Vec<Statement>) {
 #[derive(Clone)]
 struct PascalBuiltinHelperInfo {
     function_name: String,
-    return_type: Option<String>,
-}
+    return_type: Option<String> }
 
 type PascalBuiltinHelperMap =
     std::collections::HashMap<String, std::collections::HashMap<String, PascalBuiltinHelperInfo>>;
@@ -33592,8 +32898,7 @@ fn collect_pascal_builtin_helper_members(
                     helper_method.to_lowercase(),
                     PascalBuiltinHelperInfo {
                         function_name: pascal_helper_function_name(target_name, helper_method),
-                        return_type: return_type.clone(),
-                    },
+                        return_type: return_type.clone() },
                 );
             }
             ClassMember::Property {
@@ -33612,8 +32917,7 @@ fn collect_pascal_builtin_helper_members(
                     name.to_lowercase(),
                     PascalBuiltinHelperInfo {
                         function_name: pascal_helper_function_name(target_name, &getter_name),
-                        return_type: type_hint.clone(),
-                    },
+                        return_type: type_hint.clone() },
                 );
             }
             _ => {}
@@ -33656,8 +32960,7 @@ fn lower_pascal_builtin_helper_members(
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false,
-        });
+            is_nullable: false });
         lifted_params.extend(params.clone());
         lifted.push(Statement::with_span(
             StmtKind::FunctionDecl {
@@ -33669,8 +32972,7 @@ fn lower_pascal_builtin_helper_members(
                 handles: Vec::new(),
                 is_async: false,
                 is_generator: body_has_yield(body),
-                is_sub: *is_sub,
-            },
+                is_sub: *is_sub },
             stmt.span.clone(),
         ));
     }
@@ -33688,8 +32990,7 @@ fn pascal_helper_stmt_assigns_self(stmt: &Statement) -> bool {
             ExprKind::Assign { target, .. } | ExprKind::Walrus { target, .. } => {
                 pascal_helper_expr_is_self(target)
             }
-            _ => false,
-        },
+            _ => false },
         StmtKind::Block(body) => pascal_helper_assigns_self(body),
         StmtKind::If {
             then_body,
@@ -33713,8 +33014,7 @@ fn pascal_helper_stmt_assigns_self(stmt: &Statement) -> bool {
             init.as_deref().is_some_and(pascal_helper_stmt_assigns_self)
                 || pascal_helper_assigns_self(body)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pascal_helper_expr_is_self(expr: &Expression) -> bool {
@@ -33773,7 +33073,7 @@ fn rewrite_pascal_builtin_helper_calls_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 rewrite_pascal_builtin_helper_calls_expr(target, helpers, helper_returns, env);
             }
@@ -33805,8 +33105,7 @@ fn rewrite_pascal_builtin_helper_calls_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             rewrite_pascal_builtin_helper_calls_expr(cond, helpers, helper_returns, env);
             for stmt in then_body {
                 rewrite_pascal_builtin_helper_calls_stmt(
@@ -33882,8 +33181,7 @@ fn rewrite_pascal_builtin_helper_calls_expr(
                     *expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident(&info.function_name)),
                         args: helper_args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
                 return;
             }
@@ -33905,8 +33203,7 @@ fn rewrite_pascal_builtin_helper_calls_expr(
                 *expr = Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(&info.function_name)),
                     args: vec![Argument::positional(receiver)],
-                    optional: false,
-                });
+                    optional: false });
             }
         }
         ExprKind::Binary { left, right, .. } => {
@@ -33971,10 +33268,8 @@ fn pascal_helper_expr_type(
         ExprKind::Lit(Literal::Str(_)) => Some("string".to_string()),
         ExprKind::Call { callee, .. } => match &callee.kind {
             ExprKind::Ident(name) => helper_returns.get(&name.to_lowercase()).cloned(),
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn pascal_helper_function_name(target_name: &str, method_name: &str) -> String {
@@ -34058,8 +33353,7 @@ fn lower_pascal_gotos_in_stmt(stmt: &mut Statement) {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             lower_pascal_gotos_in_body(body);
             for catch in catches {
                 lower_pascal_gotos_in_body(&mut catch.body);
@@ -34144,26 +33438,22 @@ fn lower_pascal_goto_block(body: Vec<Statement>) -> Vec<Statement> {
         case_body.push(Statement::new(StmtKind::Break(BreakTarget::Implicit)));
         cases.push(SwitchCase {
             conditions: vec![CaseCondition::Value(pascal_int(idx as i64))],
-            body: case_body,
-        });
+            body: case_body });
     }
 
     let while_body = vec![
         Statement::new(StmtKind::Switch {
             expr: Expression::ident(&pc_name),
             cases,
-            default: Some(vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))]),
-        }),
+            default: Some(vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))]) }),
         Statement::new(StmtKind::If {
             cond: Expression::new(ExprKind::Binary {
                 op: BinOp::Lt,
                 left: Box::new(Expression::ident(&pc_name)),
-                right: Box::new(pascal_int(0)),
-            }),
+                right: Box::new(pascal_int(0)) }),
             then_body: vec![Statement::new(StmtKind::Break(BreakTarget::Implicit))],
             elifs: Vec::new(),
-            else_body: None,
-        }),
+            else_body: None }),
     ];
 
     prelude.push(Statement::new(StmtKind::VarDecl {
@@ -34172,18 +33462,14 @@ fn lower_pascal_goto_block(body: Vec<Statement>) -> Vec<Statement> {
             type_hint: Some("Integer".to_string()),
             init: Some(pascal_int(0)),
             array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Dim,
-    }));
+            with_events: false }],
+        kind: VarDeclKind::Dim }));
     prelude.push(Statement::new(StmtKind::Labeled {
         label: dispatch_label,
         body: Box::new(Statement::new(StmtKind::While {
             cond: Expression::new(ExprKind::Lit(Literal::Bool(true))),
             body: while_body,
-            else_body: None,
-        })),
-    }));
+            else_body: None })) }));
     prelude
 }
 
@@ -34237,8 +33523,7 @@ fn rewrite_pascal_gotos_in_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => vec![Statement::new(StmtKind::If {
+            else_body } => vec![Statement::new(StmtKind::If {
             cond,
             then_body: rewrite_pascal_gotos_in_stmts(
                 then_body,
@@ -34262,32 +33547,26 @@ fn rewrite_pascal_gotos_in_stmt(
                 .collect(),
             else_body: else_body.map(|body| {
                 rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label)
-            }),
-        })],
+            }) })],
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => vec![Statement::new(StmtKind::While {
+            else_body } => vec![Statement::new(StmtKind::While {
             cond,
             body: rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
             else_body: else_body.map(|body| {
                 rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label)
-            }),
-        })],
+            }) })],
         StmtKind::For {
             init,
             cond,
             update,
-            body,
-        } => vec![Statement::new(StmtKind::For {
+            body } => vec![Statement::new(StmtKind::For {
             init,
             cond,
             update,
-            body: rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
-        })],
-        other => vec![Statement::new(other)],
-    }
+            body: rewrite_pascal_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label) })],
+        other => vec![Statement::new(other)] }
 }
 
 fn pascal_int(value: i64) -> Expression {
@@ -34297,8 +33576,7 @@ fn pascal_int(value: i64) -> Expression {
 fn pascal_assign_stmt(name: &str, value: Expression) -> Statement {
     Statement::new(StmtKind::Assign {
         targets: vec![Expression::ident(name)],
-        value,
-    })
+        value, by_ref: false })
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -34359,8 +33637,7 @@ fn walk_var_section(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             stmts.push(Statement::with_span(
                 StmtKind::VarDecl {
                     declarations: decls,
-                    kind: VarDeclKind::Dim,
-                },
+                    kind: VarDeclKind::Dim },
                 span,
             ));
         }
@@ -34413,8 +33690,7 @@ fn build_var_declarators(
             type_hint: type_hint.clone(),
             init: init.clone(),
             array_bounds: array_bounds.clone(),
-            with_events: false,
-        })
+            with_events: false })
         .collect()
 }
 
@@ -34429,8 +33705,7 @@ fn walk_const_section(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             stmts.push(Statement::with_span(
                 StmtKind::VarDecl {
                     declarations: vec![decl],
-                    kind: VarDeclKind::Const,
-                },
+                    kind: VarDeclKind::Const },
                 span,
             ));
         }
@@ -34457,8 +33732,7 @@ fn walk_const_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
         type_hint,
         init,
         array_bounds: None,
-        with_events: false,
-    })
+        with_events: false })
 }
 
 // ── Type section ───────────────────────────────────────────────────────────
@@ -34499,10 +33773,8 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     type_hint: Some(type_ref_to_string(&inner)),
                     init: None,
                     array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Const,
-            },
+                    with_events: false }],
+                kind: VarDeclKind::Const },
             span,
         )),
         Rule::record_type => walk_record_type(inner, &name, span),
@@ -34519,10 +33791,8 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         type_hint: Some(type_ref_to_string(&inner)),
                         init: None,
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Const,
-                },
+                        with_events: false }],
+                    kind: VarDeclKind::Const },
                 span,
             ))
         }
@@ -34540,10 +33810,8 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         type_hint: Some(format!("^{}", target)),
                         init: None,
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Const,
-                },
+                        with_events: false }],
+                    kind: VarDeclKind::Const },
                 span,
             ))
         }
@@ -34554,10 +33822,8 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     type_hint: Some(type_ref_to_string(&inner)),
                     init: None,
                     array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Const,
-            },
+                    with_events: false }],
+                kind: VarDeclKind::Const },
             span,
         )),
         Rule::type_alias => {
@@ -34574,15 +33840,12 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         type_hint: Some(aliased),
                         init: None,
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Const,
-                },
+                        with_events: false }],
+                    kind: VarDeclKind::Const },
                 span,
             ))
         }
-        other => Err(format!("Unexpected type_def inner: {:?}", other)),
-    }
+        other => Err(format!("Unexpected type_def inner: {:?}", other)) }
 }
 
 // ── Class type ─────────────────────────────────────────────────────────────
@@ -34619,8 +33882,7 @@ fn walk_class_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement
             interfaces: Vec::new(),
             members,
             modifiers,
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     ))
 }
@@ -34644,8 +33906,7 @@ fn walk_class_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<St
             interfaces: Vec::new(),
             members,
             modifiers: ClassModifiers::default(),
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     ))
 }
@@ -34768,8 +34029,7 @@ fn walk_class_const_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
         name,
         type_hint,
         value: value.unwrap_or_else(|| Expression::new(ExprKind::Lit(Literal::Undefined))),
-        visibility: Visibility::Public,
-    })
+        visibility: Visibility::Public })
 }
 
 // ── Record type ────────────────────────────────────────────────────────────
@@ -34788,8 +34048,7 @@ fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statemen
             interfaces: Vec::new(),
             members,
             visibility: Visibility::Public,
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     ))
 }
@@ -34812,8 +34071,7 @@ fn walk_record_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<S
             interfaces: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
             members,
             visibility: Visibility::Public,
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     ))
 }
@@ -34874,8 +34132,7 @@ fn walk_interface_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<State
             name: name.to_string(),
             parents,
             members,
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     ))
 }
@@ -34909,8 +34166,7 @@ fn walk_interface_method(pair: Pair<Rule>, is_sub: bool) -> Result<InterfaceMemb
         params,
         return_type,
         is_sub,
-        signature_source: None,
-    })
+        signature_source: None })
 }
 
 fn walk_interface_property(pair: Pair<Rule>) -> Result<InterfaceMember, String> {
@@ -34944,8 +34200,7 @@ fn walk_interface_property(pair: Pair<Rule>) -> Result<InterfaceMember, String> 
         name,
         type_hint,
         is_readonly: has_read && !has_write,
-        is_writeonly: !has_read && has_write,
-    })
+        is_writeonly: !has_read && has_write })
 }
 
 // ── Enum type ──────────────────────────────────────────────────────────────
@@ -34966,8 +34221,7 @@ fn walk_enum_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement,
             members.push(EnumMember {
                 name: ename,
                 value,
-                constructor_args: Vec::new(),
-            });
+                constructor_args: Vec::new() });
         }
     }
 
@@ -34980,8 +34234,7 @@ fn walk_enum_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement,
             backing_type: None,
             interfaces: Vec::new(),
             body_members: Vec::new(),
-            decorators: vec![],
-        },
+            decorators: vec![] },
         span,
     ))
 }
@@ -35019,8 +34272,7 @@ fn walk_field_decl_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String>
             init: init.clone(),
             modifiers: Modifiers::default(),
             with_events: false,
-            array_bounds: array_bounds.clone(),
-        })
+            array_bounds: array_bounds.clone() })
         .collect())
 }
 
@@ -35035,8 +34287,7 @@ fn variant_field_member(name: String, type_hint: Option<String>) -> ClassMember 
         init: None,
         modifiers,
         with_events: false,
-        array_bounds: None,
-    }
+        array_bounds: None }
 }
 
 fn walk_variant_part_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
@@ -35150,8 +34401,7 @@ fn walk_class_constructor_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
         body,
         base_args: None,
         initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-        visibility: Visibility::Public,
-    })
+        visibility: Visibility::Public })
 }
 
 fn walk_class_method_sig(pair: Pair<Rule>, is_destructor: bool) -> Result<ClassMember, String> {
@@ -35202,8 +34452,7 @@ fn walk_class_method_sig(pair: Pair<Rule>, is_destructor: bool) -> Result<ClassM
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub,
-        },
+            is_sub },
     ))))
 }
 
@@ -35273,8 +34522,7 @@ fn walk_class_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String>
                 handles: Vec::new(),
                 is_async: false,
                 is_generator: false,
-                is_sub,
-            },
+                is_sub },
         )))])
     }
 }
@@ -35346,16 +34594,14 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false,
-                                    };
+                                        is_nullable: false };
                                     setter = Some(PropertySetter {
                                         param,
                                         body: vec![property_write_accessor(
                                             setter_name,
                                             is_static,
                                             Expression::ident("value"),
-                                        )],
-                                    });
+                                        )] });
                                 }
                                 Rule::property_implements => {
                                     for child in spec.into_inner() {
@@ -35370,8 +34616,7 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                                                             &child,
                                                         )),
                                                     )],
-                                                    optional: false,
-                                                },
+                                                    optional: false },
                                             ));
                                         }
                                     }
@@ -35387,8 +34632,7 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                                                     args: vec![Argument::positional(
                                                         walk_expression(child)?,
                                                     )],
-                                                    optional: false,
-                                                },
+                                                    optional: false },
                                             ));
                                             modifiers.decorators.push(Expression::string(
                                                 "__pascal_indexed_property",
@@ -35418,8 +34662,7 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
         getter,
         setter,
         is_auto,
-        modifiers,
-    })
+        modifiers })
 }
 
 fn lower_pascal_interface_delegation(body: &mut Vec<Statement>) {
@@ -35470,10 +34713,8 @@ fn lower_pascal_interface_delegation(body: &mut Vec<Statement>) {
             .filter_map(|member| match member {
                 ClassMember::Method(method) => match &method.kind {
                     StmtKind::FunctionDecl { name, .. } => Some(name.to_lowercase()),
-                    _ => None,
-                },
-                _ => None,
-            })
+                    _ => None },
+                _ => None })
             .collect();
 
         let mut generated = Vec::new();
@@ -35524,8 +34765,7 @@ fn lower_pascal_interface_delegation(body: &mut Vec<Statement>) {
                                     }
                                 })
                                 .unwrap_or(3),
-                            _ => 3,
-                        });
+                            _ => 3 });
                         generated.push(pascal_delegating_overload_dispatch_method(
                             &indexed_group,
                             delegate_expr.clone(),
@@ -35587,8 +34827,7 @@ fn pascal_property_delegate_expr(name: &str, getter: &Option<Vec<Statement>>) ->
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::This)),
         field: name.to_string(),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn pascal_delegating_interface_method(
@@ -35610,11 +34849,9 @@ fn pascal_delegating_interface_method(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(delegate_expr),
             field: name.to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args,
-        optional: false,
-    });
+        optional: false });
     let body = if is_sub {
         vec![Statement::new(StmtKind::Expr(call))]
     } else {
@@ -35629,8 +34866,7 @@ fn pascal_delegating_interface_method(
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub,
-    })))
+        is_sub })))
 }
 
 fn pascal_delegating_overload_dispatch_method(
@@ -35662,8 +34898,7 @@ fn pascal_delegating_overload_dispatch_method(
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub: *is_sub,
-    })))
+        is_sub: *is_sub })))
 }
 
 fn pascal_delegating_overload_dispatch_body(
@@ -35717,8 +34952,7 @@ fn pascal_delegating_overload_dispatch_body(
                 left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(
                     Expression::ident(&dispatch_params[0].name),
                 )))),
-                right: Box::new(Expression::string(js_type)),
-            })
+                right: Box::new(Expression::string(js_type)) })
         });
     let Some(cond) = cond else {
         return vec![statement];
@@ -35732,8 +34966,7 @@ fn pascal_delegating_overload_dispatch_body(
             dispatch_params,
             delegate_expr,
             idx + 1,
-        )),
-    })]
+        )) })]
 }
 
 fn pascal_delegating_hidden_overload_call(
@@ -35760,11 +34993,9 @@ fn pascal_delegating_hidden_overload_call(
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(delegate_expr),
             field: format!("{}__pascal_overload_{}", name.to_lowercase(), idx),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args,
-        optional: false,
-    })
+        optional: false })
 }
 
 fn lower_pascal_interface_default_args(body: &mut [Statement]) {
@@ -35826,7 +35057,7 @@ fn lower_pascal_interface_default_args_stmt(
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for target in targets {
                 lower_pascal_interface_default_args_expr(target, methods, env);
             }
@@ -35898,8 +35129,7 @@ fn lower_pascal_interface_default_args_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_interface_default_args_expr(cond, methods, env);
             lower_pascal_interface_default_args_body(then_body, methods, &mut env.clone());
             for (cond, body) in elifs {
@@ -35918,8 +35148,7 @@ fn lower_pascal_interface_default_args_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             let mut scoped = env.clone();
             if let Some(init) = init {
                 lower_pascal_interface_default_args_stmt(init, methods, &mut scoped);
@@ -35940,8 +35169,7 @@ fn lower_pascal_interface_default_args_stmt(
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             lower_pascal_interface_default_args_body(body, methods, &mut env.clone());
             for catch in catches {
                 lower_pascal_interface_default_args_body(
@@ -36083,8 +35311,7 @@ fn property_write_accessor(name: String, is_static: bool, value: Expression) -> 
     }
     Statement::new(StmtKind::Assign {
         targets: vec![property_accessor_member(name, is_static)],
-        value,
-    })
+        value, by_ref: false })
 }
 
 fn property_accessor_member(name: String, is_static: bool) -> Expression {
@@ -36096,8 +35323,7 @@ fn property_accessor_member(name: String, is_static: bool) -> Expression {
         expr = Expression::new(ExprKind::Member {
             object: Box::new(expr),
             field: part.to_string(),
-            null_safe: false,
-        });
+            null_safe: false });
     }
     expr
 }
@@ -36109,14 +35335,12 @@ fn property_accessor_call(name: String, is_static: bool, args: Vec<Argument>) ->
         Expression::new(ExprKind::Member {
             object: Box::new(Expression::new(ExprKind::This)),
             field: name,
-            null_safe: false,
-        })
+            null_safe: false })
     };
     Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
-        optional: false,
-    })
+        optional: false })
 }
 
 fn walk_record_method_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
@@ -36160,8 +35384,7 @@ fn walk_record_method_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
             body: Vec::new(),
             base_args: None,
             initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
-            visibility: Visibility::Public,
-        })
+            visibility: Visibility::Public })
     } else {
         let is_sub =
             return_type.is_none() || kind_lower == "destructor" || kind_lower == "procedure";
@@ -36175,8 +35398,7 @@ fn walk_record_method_sig(pair: Pair<Rule>) -> Result<ClassMember, String> {
                 handles: Vec::new(),
                 is_async: false,
                 is_generator: false,
-                is_sub,
-            },
+                is_sub },
         ))))
     }
 }
@@ -36233,8 +35455,7 @@ fn walk_record_class_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub,
-        },
+            is_sub },
     ))))
 }
 
@@ -36276,8 +35497,7 @@ fn walk_record_operator_method(pair: Pair<Rule>) -> Result<ClassMember, String> 
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        },
+            is_sub: false },
     ))))
 }
 
@@ -36412,11 +35632,9 @@ fn walk_class_var_decl_impl(pair: Pair<Rule>) -> Result<Statement, String> {
                     ..Default::default()
                 },
                 with_events: false,
-                array_bounds: None,
-            }],
+                array_bounds: None }],
             modifiers: ClassModifiers::default(),
-            decorators: Vec::new(),
-        },
+            decorators: Vec::new() },
         span,
     ))
 }
@@ -36454,8 +35672,7 @@ fn walk_method_impl_proc(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub: true,
-        },
+            is_sub: true },
         span,
     ))
 }
@@ -36495,8 +35712,7 @@ fn walk_method_impl_func(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub: false,
-        },
+            is_sub: false },
         span,
     ))
 }
@@ -36595,8 +35811,7 @@ fn walk_method_impl_body_proc(
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub: true,
-        },
+            is_sub: true },
         span,
     ))
 }
@@ -36644,8 +35859,7 @@ fn walk_standalone_procedure(pair: Pair<Rule>, span: Span) -> Result<Statement, 
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub: true,
-        },
+            is_sub: true },
         span,
     ))
 }
@@ -36694,8 +35908,7 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub: false,
-        },
+            is_sub: false },
         span,
     ))
 }
@@ -36749,8 +35962,7 @@ fn walk_standalone_operator(pair: Pair<Rule>, span: Span) -> Result<Statement, S
             handles: Vec::new(),
             is_async: false,
             is_generator,
-            is_sub: false,
-        },
+            is_sub: false },
         span,
     ))
 }
@@ -36792,8 +36004,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                     "var" => PassBy::Ref,
                     "const" | "constref" => PassBy::Const,
                     "out" => PassBy::Out,
-                    _ => PassBy::Value,
-                };
+                    _ => PassBy::Value };
             }
             Rule::identifier_list => {
                 for id in p.into_inner() {
@@ -36824,8 +36035,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
             is_rest: false,
             is_kwargs: false,
             is_optional: default.is_some(),
-            is_nullable: false,
-        })
+            is_nullable: false })
         .collect())
 }
 
@@ -36860,8 +36070,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let inner = pair.into_inner().next();
     let inner = match inner {
         Some(p) => p,
-        None => return Ok(Statement::with_span(StmtKind::Empty, span)),
-    };
+        None => return Ok(Statement::with_span(StmtKind::Empty, span)) };
 
     let kind = match inner.as_rule() {
         Rule::compound_statement => StmtKind::Block(walk_compound_statement(inner)?),
@@ -36893,8 +36102,7 @@ fn walk_statement(pair: Pair<Rule>) -> Result<Statement, String> {
         Rule::inherited_statement => walk_inherited_statement(inner)?,
         Rule::assign_or_call_statement => walk_assign_or_call(inner)?,
         Rule::empty_statement => StmtKind::Empty,
-        other => return Err(format!("Unexpected statement rule: {:?}", other)),
-    };
+        other => return Err(format!("Unexpected statement rule: {:?}", other)) };
 
     Ok(Statement::with_span(kind, span))
 }
@@ -36948,8 +36156,7 @@ fn walk_inline_var_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     Ok(StmtKind::VarDecl {
         declarations: build_var_declarators(names, type_hint, init, None),
-        kind: VarDeclKind::Dim,
-    })
+        kind: VarDeclKind::Dim })
 }
 
 // ── If ─────────────────────────────────────────────────────────────────────
@@ -36988,8 +36195,7 @@ fn walk_if_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         cond,
         then_body,
         elifs: Vec::new(),
-        else_body,
-    })
+        else_body })
 }
 
 // ── For ────────────────────────────────────────────────────────────────────
@@ -37020,15 +36226,12 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 type_hint: Some(type_hint),
                 init: Some(start_expr),
                 array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Dim,
-        })
+                with_events: false }],
+            kind: VarDeclKind::Dim })
     } else {
         Statement::new(StmtKind::Assign {
             targets: vec![Expression::ident(&var_name)],
-            value: start_expr,
-        })
+            value: start_expr, by_ref: false })
     };
 
     let cond = Expression::new(ExprKind::Binary {
@@ -37042,8 +36245,7 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
             pascal_ord_call(end_expr.clone())
         } else {
             end_expr.clone()
-        }),
-    });
+        }) });
 
     let update_assign = Expression::new(ExprKind::Assign {
         target: Box::new(Expression::ident(&var_name)),
@@ -37051,46 +36253,39 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
             pascal_chr_call(Expression::new(ExprKind::Binary {
                 op: if is_downto { BinOp::Sub } else { BinOp::Add },
                 left: Box::new(pascal_ord_call(Expression::ident(&var_name))),
-                right: Box::new(Expression::int(1)),
-            }))
+                right: Box::new(Expression::int(1)) }))
         } else {
             Expression::new(ExprKind::Binary {
                 op: if is_downto { BinOp::Sub } else { BinOp::Add },
                 left: Box::new(Expression::ident(&var_name)),
-                right: Box::new(Expression::int(1)),
-            })
-        }),
-    });
+                right: Box::new(Expression::int(1)) })
+        }) });
 
     fn pascal_expr_is_char_like(expr: &Expression) -> bool {
         match &expr.kind {
             ExprKind::Lit(Literal::Char(_)) => true,
             ExprKind::Lit(Literal::Str(value)) => value.chars().count() == 1,
-            _ => false,
-        }
+            _ => false }
     }
 
     fn pascal_ord_call(expr: Expression) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("Ord")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        })
+            optional: false })
     }
 
     fn pascal_chr_call(expr: Expression) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("Chr")),
             args: vec![Argument::positional(expr)],
-            optional: false,
-        })
+            optional: false })
     }
     Ok(StmtKind::For {
         init: Some(Box::new(init)),
         cond: Some(cond),
         update: Some(update_assign),
-        body: flatten_stmt(body_stmt),
-    })
+        body: flatten_stmt(body_stmt) })
 }
 
 fn walk_for_binding(pair: Pair<Rule>) -> Result<(String, Option<String>, Expression), String> {
@@ -37130,8 +36325,7 @@ fn walk_for_in_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body: flatten_stmt(body_stmt),
         of: true, // Pascal for-in iterates values, like JS for...of
         else_body: None,
-        is_async: false,
-    })
+        is_async: false })
 }
 
 fn pascal_for_in_iter(expr: Expression) -> Expression {
@@ -37143,8 +36337,7 @@ fn pascal_for_in_iter(expr: Expression) -> Expression {
                     key: None,
                     value: Expression::new(ExprKind::Lit(Literal::Str(ch.to_string()))),
                     spread: false,
-                    by_ref: false,
-                })
+                    by_ref: false })
                 .collect(),
         ));
     }
@@ -37165,8 +36358,7 @@ fn walk_while_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::While {
         cond,
         body: flatten_stmt(body_stmt),
-        else_body: None,
-    })
+        else_body: None })
 }
 
 // ── Repeat/Until ───────────────────────────────────────────────────────────
@@ -37186,8 +36378,7 @@ fn walk_repeat_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::DoWhile {
         body,
         cond: cond.unwrap_or_else(|| Expression::bool(true)),
-        until: true,
-    })
+        until: true })
 }
 
 // ── Case ───────────────────────────────────────────────────────────────────
@@ -37221,8 +36412,7 @@ fn walk_case_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::Switch {
         expr: expr.unwrap_or_else(|| Expression::null()),
         cases,
-        default,
-    })
+        default })
 }
 
 fn walk_case_arm(pair: Pair<Rule>) -> Result<SwitchCase, String> {
@@ -37279,8 +36469,7 @@ fn walk_with_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::expression => {
                 items.push(WithItem {
                     expr: walk_expression(p)?,
-                    var: None,
-                });
+                    var: None });
             }
             Rule::statement => {
                 body = flatten_stmt(walk_statement(p)?);
@@ -37292,8 +36481,7 @@ fn walk_with_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
     Ok(StmtKind::With {
         items,
         body,
-        is_async: false,
-    })
+        is_async: false })
 }
 
 // ── Try ────────────────────────────────────────────────────────────────────
@@ -37341,8 +36529,7 @@ fn walk_try_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         body,
         catches,
         else_body: None,
-        finally,
-    })
+        finally })
 }
 
 fn rewrite_str_to_int_try_probe(
@@ -37374,8 +36561,7 @@ fn rewrite_str_to_int_try_probe(
         StmtKind::Throw {
             expr: Some(expr), ..
         } => expr.clone(),
-        _ => Expression::null(),
-    };
+        _ => Expression::null() };
 
     let mut success_body = else_body.clone()?;
     success_body.extend(body.iter().skip(1).cloned());
@@ -37388,8 +36574,7 @@ fn rewrite_str_to_int_try_probe(
         cond: cond.clone(),
         then_body: catch_body,
         elifs: Vec::new(),
-        else_body: Some(success_body),
-    })
+        else_body: Some(success_body) })
 }
 
 fn walk_except_body(pair: Pair<Rule>) -> Result<Vec<CatchClause>, String> {
@@ -37411,8 +36596,7 @@ fn walk_except_body(pair: Pair<Rule>) -> Result<Vec<CatchClause>, String> {
                             var_name: None,
                             stack_var: None,
                             body: walk_statement_list(ep)?,
-                            when_clause: None,
-                        });
+                            when_clause: None });
                     }
                 }
             }
@@ -37424,8 +36608,7 @@ fn walk_except_body(pair: Pair<Rule>) -> Result<Vec<CatchClause>, String> {
                         var_name: None,
                         stack_var: None,
                         body: walk_statement_list(p)?,
-                        when_clause: None,
-                    });
+                        when_clause: None });
                 }
             }
             _ => {}
@@ -37464,8 +36647,7 @@ fn walk_on_clause(pair: Pair<Rule>) -> Result<CatchClause, String> {
         var_name,
         stack_var: None,
         body,
-        when_clause: None,
-    })
+        when_clause: None })
 }
 
 fn rewrite_bare_raise_in_catch(body: &mut [Statement], var_name: &str) {
@@ -37540,8 +36722,25 @@ fn walk_exit_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
 // ── Halt ───────────────────────────────────────────────────────────────────
 
-fn walk_halt_statement(_pair: Pair<Rule>) -> Result<StmtKind, String> {
-    Ok(StmtKind::Return(None))
+/// `Halt` / `Halt(code)` ends the whole program, not the current routine.
+///
+/// This used to be `Return(None)`, which is a different statement: it only left
+/// the enclosing procedure (so a `Halt` nested in a routine kept running), and
+/// it threw the status away — measured 2026-08-02, `halt(2)` exited 0 where
+/// `fpc` exits 2. Lowering to the profile's `halt` builtin routes it to
+/// `wasi:cli/exit.exit-with-code`, which ends the run from any depth and
+/// carries the code. No argument means status 0, as in Free Pascal.
+fn walk_halt_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
+    let mut args = Vec::new();
+    for p in pair.into_inner() {
+        if p.as_rule() == Rule::expression {
+            args.push(Argument::positional(walk_expression(p)?));
+        }
+    }
+    Ok(StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("halt")),
+        args,
+        optional: false })))
 }
 
 // ── Inherited statement ────────────────────────────────────────────────────
@@ -37560,8 +36759,7 @@ fn walk_inherited_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     Ok(StmtKind::Expr(Expression::new(ExprKind::SuperCall {
         method,
-        args,
-    })))
+        args })))
 }
 
 // ── Assign or call ─────────────────────────────────────────────────────────
@@ -37582,8 +36780,7 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 if name.eq_ignore_ascii_case("FreeAndNil") && args.len() == 1 {
                     return Ok(StmtKind::Assign {
                         targets: vec![args[0].value.clone()],
-                        value: Expression::null(),
-                    });
+                        value: Expression::null(), by_ref: false });
                 }
                 if name.eq_ignore_ascii_case("Inc") && (args.len() == 1 || args.len() == 2) {
                     let target = args[0].value.clone();
@@ -37596,9 +36793,7 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 args.get(1)
                                     .map(|arg| arg.value.clone())
                                     .unwrap_or_else(|| Expression::int(1)),
-                            ),
-                        }),
-                    });
+                            ) }), by_ref: false });
                 }
                 if name.eq_ignore_ascii_case("Dec") && (args.len() == 1 || args.len() == 2) {
                     let target = args[0].value.clone();
@@ -37611,15 +36806,12 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 args.get(1)
                                     .map(|arg| arg.value.clone())
                                     .unwrap_or_else(|| Expression::int(1)),
-                            ),
-                        }),
-                    });
+                            ) }), by_ref: false });
                 }
                 if name.eq_ignore_ascii_case("Str") && args.len() == 2 {
                     return Ok(StmtKind::Assign {
                         targets: vec![args[1].value.clone()],
-                        value: pascal_str_value(args[0].value.clone()),
-                    });
+                        value: pascal_str_value(args[0].value.clone()), by_ref: false });
                 }
                 if name.eq_ignore_ascii_case("Val") && args.len() == 3 {
                     let target = args[1].value.clone();
@@ -37633,17 +36825,13 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 else_: Box::new(pascal_intrinsic_call(
                                     "StrToInt",
                                     vec![Argument::positional(args[0].value.clone())],
-                                )),
-                            }),
-                        }),
+                                )) }), by_ref: false }),
                         Statement::new(StmtKind::Assign {
                             targets: vec![args[2].value.clone()],
                             value: Expression::new(ExprKind::Ternary {
                                 cond: Box::new(invalid),
                                 then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(1)))),
-                                else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
-                            }),
-                        }),
+                                else_: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))) }), by_ref: false }),
                     ]));
                 }
                 if name.eq_ignore_ascii_case("StrToInt") && args.len() == 1 {
@@ -37655,15 +36843,12 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                                 class: Box::new(Expression::ident("EConvertError")),
                                 args: vec![Argument::positional(Expression::string(
                                     "Invalid integer",
-                                ))],
-                            })),
-                            cause: None,
-                        })],
+                                ))] })),
+                            cause: None })],
                         elifs: Vec::new(),
                         else_body: Some(vec![Statement::new(StmtKind::Expr(
                             pascal_intrinsic_call("StrToInt", vec![Argument::positional(source)]),
-                        ))]),
-                    });
+                        ))]) });
                 }
             }
         }
@@ -37681,13 +36866,11 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     ExprKind::Call {
                         callee: Box::new(expr.clone()),
                         args: Vec::new(),
-                        optional: false,
-                    },
+                        optional: false },
                     expr.span,
                 )
             }
-            _ => expr,
-        };
+            _ => expr };
         return Ok(StmtKind::Expr(expr));
     }
 
@@ -37711,55 +36894,45 @@ fn walk_assign_or_call(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     then_body: vec![Statement::new(StmtKind::Throw {
                         expr: Some(Expression::new(ExprKind::New {
                             class: Box::new(Expression::ident("EConvertError")),
-                            args: vec![Argument::positional(Expression::string("Invalid integer"))],
-                        })),
-                        cause: None,
-                    })],
+                            args: vec![Argument::positional(Expression::string("Invalid integer"))] })),
+                        cause: None })],
                     elifs: Vec::new(),
                     else_body: Some(vec![Statement::new(StmtKind::Assign {
                         targets: vec![target],
                         value: pascal_intrinsic_call(
                             "StrToInt",
                             vec![Argument::positional(source)],
-                        ),
-                    })]),
-                });
+                        ), by_ref: false })]) });
             }
             return Ok(StmtKind::Assign {
                 targets: vec![target],
-                value,
-            });
+                value, by_ref: false });
         } else if src.contains("+=") {
             return Ok(StmtKind::CompoundAssign {
                 target,
                 op: CompoundOp::Add,
-                value,
-            });
+                value });
         } else if src.contains("-=") {
             return Ok(StmtKind::CompoundAssign {
                 target,
                 op: CompoundOp::Sub,
-                value,
-            });
+                value });
         } else if src.contains("*=") {
             return Ok(StmtKind::CompoundAssign {
                 target,
                 op: CompoundOp::Mul,
-                value,
-            });
+                value });
         } else if src.contains("/=") {
             return Ok(StmtKind::CompoundAssign {
                 target,
                 op: CompoundOp::Div,
-                value,
-            });
+                value });
         }
 
         // Fallback: assignment
         return Ok(StmtKind::Assign {
             targets: vec![target],
-            value,
-        });
+            value, by_ref: false });
     }
 
     Ok(StmtKind::Empty)
@@ -37800,14 +36973,12 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 if op_str == "is" {
                     left = Expression::new(ExprKind::IsType {
                         expr: Box::new(left),
-                        type_name,
-                    });
+                        type_name });
                 } else {
                     // as
                     left = Expression::new(ExprKind::Cast {
                         expr: Box::new(left),
-                        type_name,
-                    });
+                        type_name });
                 }
                 i += 2;
             }
@@ -37822,8 +36993,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             ">" => BinOp::Gt,
             "=" => BinOp::Eq,
             s if s.starts_with("in") => BinOp::In,
-            _ => BinOp::Eq,
-        }),
+            _ => BinOp::Eq }),
 
         Rule::additive => walk_binary_chain(pair, |op_str| match op_str {
             "><" => BinOp::BitXor,
@@ -37831,8 +37001,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             "-" => BinOp::Sub,
             s if s.starts_with("or") => BinOp::Or,
             s if s.starts_with("xor") => BinOp::BitXor,
-            _ => BinOp::Add,
-        }),
+            _ => BinOp::Add }),
 
         Rule::multiplicative => walk_binary_chain(pair, |op_str| match op_str {
             "*" => BinOp::Mul,
@@ -37842,8 +37011,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             s if s.starts_with("and") => BinOp::And,
             s if s.starts_with("shl") => BinOp::Shl,
             s if s.starts_with("shr") => BinOp::Shr,
-            _ => BinOp::Mul,
-        }),
+            _ => BinOp::Mul }),
 
         Rule::unary => {
             // Pest does not include literal token matches (like "-", "@") as inner
@@ -37859,13 +37027,11 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             if src.starts_with('-') {
                 Ok(ExprKind::Unary {
                     op: UnaryOp::Neg,
-                    expr: Box::new(operand),
-                })
+                    expr: Box::new(operand) })
             } else if src.starts_with('+') {
                 Ok(ExprKind::Unary {
                     op: UnaryOp::Pos,
-                    expr: Box::new(operand),
-                })
+                    expr: Box::new(operand) })
             } else if src
                 .get(..3)
                 .is_some_and(|kw| kw.eq_ignore_ascii_case("not"))
@@ -37876,13 +37042,11 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
             {
                 Ok(ExprKind::Unary {
                     op: UnaryOp::Not,
-                    expr: Box::new(operand),
-                })
+                    expr: Box::new(operand) })
             } else if src.starts_with('@') {
                 Ok(ExprKind::Unary {
                     op: UnaryOp::AddrOf,
-                    expr: Box::new(operand),
-                })
+                    expr: Box::new(operand) })
             } else {
                 Ok(operand.kind)
             }
@@ -37970,8 +37134,7 @@ fn walk_expr_kind(pair: Pair<Rule>) -> Result<ExprKind, String> {
         }
         Rule::identifier => Ok(pascal_bare_identifier_expr(pair.as_str()).kind),
 
-        other => Err(format!("Unexpected expression rule: {:?}", other)),
-    }
+        other => Err(format!("Unexpected expression rule: {:?}", other)) }
 }
 
 fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -38020,8 +37183,7 @@ fn walk_primary(pair: Pair<Rule>) -> Result<ExprKind, String> {
             // Parenthesized expression: "(" ~ expression ~ ")"
             walk_expr_kind(inner)
         }
-        other => Err(format!("Unexpected primary inner: {:?}", other)),
-    }
+        other => Err(format!("Unexpected primary inner: {:?}", other)) }
 }
 
 // ── Postfix operations ─────────────────────────────────────────────────────
@@ -38059,8 +37221,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                     } else {
                         "__pascal_class_type".to_string()
                     },
-                    null_safe: false,
-                }));
+                    null_safe: false }));
             }
         }
 
@@ -38068,8 +37229,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             return Ok(Expression::new(ExprKind::Member {
                 object: Box::new(expr),
                 field: "__pascal_class_parent".to_string(),
-                null_safe: false,
-            }));
+                null_safe: false }));
         }
 
         if ident.eq_ignore_ascii_case("InheritsFrom") {
@@ -38081,9 +37241,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                         type_name: match &args[0].value.kind {
                             ExprKind::Ident(name) => name.clone(),
                             ExprKind::Lit(Literal::Str(name)) => name.clone(),
-                            _ => return Ok(Expression::new(ExprKind::Lit(Literal::Bool(false)))),
-                        },
-                    }));
+                            _ => return Ok(Expression::new(ExprKind::Lit(Literal::Bool(false)))) } }));
                 }
             }
         }
@@ -38096,31 +37254,27 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(canonical)),
                     args: vec![Argument::positional(expr)],
-                    optional: false,
-                }));
+                    optional: false }));
             }
         }
 
         let member = Expression::new(ExprKind::Member {
             object: Box::new(expr),
             field: ident,
-            null_safe: false,
-        });
+            null_safe: false });
 
         if let Some(al) = arg_list {
             let args = walk_arg_list(al)?;
             return Ok(Expression::new(ExprKind::Call {
                 callee: Box::new(member),
                 args,
-                optional: false,
-            }));
+                optional: false }));
         } else if matches!(&member.kind, ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Length"))
         {
             return Ok(Expression::new(ExprKind::Call {
                 callee: Box::new(member),
                 args: Vec::new(),
-                optional: false,
-            }));
+                optional: false }));
         } else {
             return Ok(member);
         }
@@ -38146,8 +37300,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
             indexed = Expression::new(ExprKind::Index {
                 object: Box::new(indexed),
                 index: Box::new(index_expr),
-                null_safe: false,
-            });
+                null_safe: false });
         }
         return Ok(indexed);
     }
@@ -38212,8 +37365,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                     return Ok(Expression::new(ExprKind::Call {
                         callee: Box::new(expr),
                         args: expanded_args,
-                        optional: false,
-                    }));
+                        optional: false }));
                 }
             }
             if name.eq_ignore_ascii_case("Odd") && args.len() == 1 {
@@ -38247,8 +37399,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                 return Ok(Expression::new(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))),
-                    right: Box::new(value),
-                }));
+                    right: Box::new(value) }));
             }
         }
 
@@ -38260,8 +37411,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
                 return Ok(Expression::new(ExprKind::Call {
                     callee: Box::new(Expression::ident(canonical)),
                     args,
-                    optional: false,
-                }));
+                    optional: false }));
             }
         }
 
@@ -38272,8 +37422,7 @@ fn walk_postfix_op(expr: Expression, op: Pair<Rule>) -> Result<Expression, Strin
         return Ok(Expression::new(ExprKind::Call {
             callee: Box::new(expr),
             args,
-            optional: false,
-        }));
+            optional: false }));
     }
 
     // Fallback
@@ -38287,8 +37436,7 @@ fn pascal_bare_identifier_expr(name: &str) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("Now")),
             args: Vec::new(),
-            optional: false,
-        })
+            optional: false })
     } else if name.eq_ignore_ascii_case("MinInt") {
         Expression::new(ExprKind::Lit(Literal::Int(i32::MIN as i64)))
     } else {
@@ -38300,16 +37448,14 @@ fn pascal_date_component_call(helper: &str, date: Expression) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(helper)),
         args: vec![Argument::positional(date)],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn call_expr(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(name)),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
 }
 
 fn int_expr(value: i64) -> Expression {
@@ -38328,16 +37474,14 @@ fn bin_expr(op: BinOp, left: Expression, right: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right),
-    })
+        right: Box::new(right) })
 }
 
 fn ternary_expr(cond: Expression, then: Expression, else_: Expression) -> Expression {
     Expression::new(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(then),
-        else_: Box::new(else_),
-    })
+        else_: Box::new(else_) })
 }
 
 fn pascal_date_month_expr(date: Expression) -> Expression {
@@ -38351,8 +37495,7 @@ fn pascal_date_month_expr(date: Expression) -> Expression {
 fn assign_expr(target: Expression, value: Expression) -> Expression {
     Expression::new(ExprKind::Assign {
         target: Box::new(target),
-        value: Box::new(value),
-    })
+        value: Box::new(value) })
 }
 
 fn pascal_days_between_expr(left: Expression, right: Expression) -> Expression {
@@ -38722,8 +37865,7 @@ fn lower_pascal_datetime_builtin(name: &str, args: &[Argument]) -> Option<Expres
                 ],
             ))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn lower_pascal_bit_builtin(name: &str, args: &[Argument]) -> Option<Expression> {
@@ -38754,8 +37896,7 @@ fn lower_pascal_bit_builtin(name: &str, args: &[Argument]) -> Option<Expression>
                 int_expr(0xFF),
             ),
         )),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_format_datetime_expr(format: &Expression, date: Expression) -> Option<Expression> {
@@ -38797,8 +37938,7 @@ fn pascal_format_datetime_expr(format: &Expression, date: Expression) -> Option<
                             "__pascal_date_year",
                             date.clone(),
                         )),
-                        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(100)))),
-                    }))
+                        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(100)))) }))
                 }
                 "m" | "mm" => {
                     sprintf.push_str(spec);
@@ -38852,8 +37992,7 @@ fn pascal_format_datetime_expr(format: &Expression, date: Expression) -> Option<
     Some(Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident("Format")),
         args,
-        optional: false,
-    }))
+        optional: false }))
 }
 
 /// Normalize Pascal's function-style builtins to canonical names so the compiler
@@ -38862,15 +38001,13 @@ fn pascal_format_datetime_expr(format: &Expression, date: Expression) -> Option<
 fn canonicalize_pascal_builtin(name: &str, argc: usize) -> Option<&'static str> {
     match (name.to_lowercase().as_str(), argc) {
         ("length", 1) => Some("__len__"),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Pascal property-style member access canonicalization (case-insensitive).
 fn canonicalize_pascal_member(name: &str) -> Option<&'static str> {
     match name.to_lowercase().as_str() {
-        _ => None,
-    }
+        _ => None }
 }
 
 // ── Argument list ──────────────────────────────────────────────────────────
@@ -38926,8 +38063,7 @@ fn format_value_expr(
             Argument::positional(Expression::new(ExprKind::Lit(Literal::Str(fmt)))),
             Argument::positional(value),
         ],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn pascal_str_value(value: Expression) -> Expression {
@@ -38938,8 +38074,7 @@ fn pascal_str_value(value: Expression) -> Expression {
         Expression::new(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(value),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))),
-        })
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))) })
     }
 }
 
@@ -38949,10 +38084,8 @@ fn pascal_odd_expr(value: Expression) -> Expression {
         left: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::Mod,
             left: Box::new(value),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(2)))),
-        })),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))),
-    })
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(2)))) })),
+        right: Box::new(Expression::new(ExprKind::Lit(Literal::Int(0)))) })
 }
 
 fn pascal_frac_expr(value: Expression) -> Expression {
@@ -38962,17 +38095,14 @@ fn pascal_frac_expr(value: Expression) -> Expression {
         right: Box::new(Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("Trunc")),
             args: vec![Argument::positional(value)],
-            optional: false,
-        })),
-    })
+            optional: false })) })
 }
 
 fn pascal_intrinsic_call(name: &str, args: Vec<Argument>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(name)),
         args,
-        optional: false,
-    })
+        optional: false })
 }
 
 fn pascal_val_invalid_expr(value: Expression) -> Expression {
@@ -38980,8 +38110,7 @@ fn pascal_val_invalid_expr(value: Expression) -> Expression {
     Expression::new(ExprKind::Binary {
         op: BinOp::NotEq,
         left: Box::new(parsed.clone()),
-        right: Box::new(parsed),
-    })
+        right: Box::new(parsed) })
 }
 
 fn pascal_str_to_int_arg(expr: &Expression) -> Option<Expression> {
@@ -39000,16 +38129,14 @@ fn const_int_expr(expr: &Expression) -> Option<i64> {
     match expr.kind {
         ExprKind::Lit(Literal::Int(value)) => Some(value),
         ExprKind::Lit(Literal::Float(value)) => Some(value as i64),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_expr_ident_name(expr: &Expression) -> Option<&str> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.as_str()),
         ExprKind::Call { callee, args, .. } if args.is_empty() => pascal_expr_ident_name(callee),
-        _ => None,
-    }
+        _ => None }
 }
 
 // ── Set literal ────────────────────────────────────────────────────────────
@@ -39027,8 +38154,7 @@ fn walk_set_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
                     Expression::new(ExprKind::Range {
                         start: Box::new(start),
                         end: Box::new(walk_expression(end_pair)?),
-                        inclusive: true,
-                    }),
+                        inclusive: true }),
                     true,
                 )
             } else {
@@ -39038,8 +38164,7 @@ fn walk_set_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 key: None,
                 value,
                 spread,
-                by_ref: false,
-            })
+                by_ref: false })
         })
         .collect::<Result<_, String>>()?;
     Ok(ExprKind::Array(elements))
@@ -39055,8 +38180,7 @@ fn walk_tuple_array_literal(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 key: None,
                 value,
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
         })
         .collect::<Result<_, String>>()?;
     Ok(ExprKind::Array(elements))
@@ -39078,8 +38202,7 @@ fn walk_new_expression(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
     Ok(ExprKind::New {
         class: Box::new(Expression::ident(&class_name)),
-        args,
-    })
+        args })
 }
 
 // ── Lambda expressions ─────────────────────────────────────────────────────
@@ -39106,8 +38229,7 @@ fn walk_lambda_procedure(pair: Pair<Rule>) -> Result<ExprKind, String> {
         params,
         body,
         is_async: false,
-        captures: Vec::new(),
-    })
+        captures: Vec::new() })
 }
 
 fn walk_lambda_function(pair: Pair<Rule>) -> Result<ExprKind, String> {
@@ -39133,8 +38255,7 @@ fn walk_lambda_function(pair: Pair<Rule>) -> Result<ExprKind, String> {
         params,
         body,
         is_async: false,
-        captures: Vec::new(),
-    })
+        captures: Vec::new() })
 }
 
 // ── Inherited expression ───────────────────────────────────────────────────
@@ -39175,8 +38296,7 @@ fn walk_type_cast_builtin(pair: Pair<Rule>) -> Result<ExprKind, String> {
 
     Ok(ExprKind::Cast {
         expr: Box::new(expr.unwrap_or_else(|| Expression::null())),
-        type_name,
-    })
+        type_name })
 }
 
 // ── Binary chain helper ────────────────────────────────────────────────────
@@ -39204,24 +38324,20 @@ where
             let left_minus_right = Expression::new(ExprKind::Binary {
                 op: BinOp::Sub,
                 left: Box::new(left.clone()),
-                right: Box::new(right.clone()),
-            });
+                right: Box::new(right.clone()) });
             let right_minus_left = Expression::new(ExprKind::Binary {
                 op: BinOp::Sub,
                 left: Box::new(right),
-                right: Box::new(left),
-            });
+                right: Box::new(left) });
             Expression::new(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(left_minus_right),
-                right: Box::new(right_minus_left),
-            })
+                right: Box::new(right_minus_left) })
         } else {
             Expression::new(ExprKind::Binary {
                 op: bin_op,
                 left: Box::new(left),
-                right: Box::new(right),
-            })
+                right: Box::new(right) })
         };
         i += 2;
     }
@@ -39240,8 +38356,7 @@ fn to_span(pair: &Pair<Rule>) -> Span {
         start_line: start.0 as u32 - 1,
         start_col: start.1 as u32 - 1,
         end_line: end.0 as u32 - 1,
-        end_col: end.1 as u32 - 1,
-    }
+        end_col: end.1 as u32 - 1 }
 }
 
 fn type_ref_to_string(pair: &Pair<Rule>) -> String {
@@ -39283,15 +38398,13 @@ fn extract_array_bounds(pair: &Pair<Rule>) -> Result<Option<Vec<Expression>>, St
 fn flatten_stmt(stmt: Statement) -> Vec<Statement> {
     match stmt.kind {
         StmtKind::Block(stmts) => stmts,
-        _ => vec![stmt],
-    }
+        _ => vec![stmt] }
 }
 
 #[derive(Debug, Clone)]
 struct PascalFileInfo {
     path_var: Option<String>,
-    is_text: bool,
-}
+    is_text: bool }
 
 fn lower_pascal_file_io(body: &mut Vec<Statement>) {
     static NEXT_PASCAL_FILE_HANDLE: std::sync::atomic::AtomicI64 =
@@ -39339,16 +38452,14 @@ fn lower_pascal_file_io_body(
                     name.to_lowercase(),
                     PascalFileInfo {
                         path_var: Some(path_var.clone()),
-                        is_text,
-                    },
+                        is_text },
                 );
                 companions.push(VarDeclarator {
                     pattern: BindingPattern::Ident(path_var),
                     type_hint: Some("String".to_string()),
                     init: Some(Expression::string("")),
                     array_bounds: None,
-                    with_events: false,
-                });
+                    with_events: false });
             }
             declarations.extend(companions);
         }
@@ -39424,8 +38535,7 @@ fn lower_pascal_file_io_stmt(
                         param.name.to_lowercase(),
                         PascalFileInfo {
                             path_var: None,
-                            is_text,
-                        },
+                            is_text },
                     );
                 }
             }
@@ -39437,8 +38547,7 @@ fn lower_pascal_file_io_stmt(
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             lower_pascal_file_io_expr(cond, scope);
             let mut scoped = scope.clone();
             let mut scoped_aliases = aliases.clone();
@@ -39467,8 +38576,7 @@ fn lower_pascal_file_io_stmt(
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 lower_pascal_file_io_stmt(init, next_handle, scope, aliases);
             }
@@ -39500,8 +38608,7 @@ fn lower_pascal_file_io_stmt(
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             lower_pascal_file_io_expr(expr, scope);
             for case in cases {
                 for cond in &mut case.conditions {
@@ -39529,8 +38636,7 @@ fn lower_pascal_file_io_stmt(
             }
             None
         }
-        _ => None,
-    };
+        _ => None };
     if let Some(kind) = replacement {
         stmt.kind = kind;
     }
@@ -39564,8 +38670,7 @@ fn lower_pascal_file_io_member(
                         param.name.to_lowercase(),
                         PascalFileInfo {
                             path_var: None,
-                            is_text,
-                        },
+                            is_text },
                     );
                 }
             }
@@ -39595,8 +38700,7 @@ fn lower_pascal_file_io_member(
                         setter.param.name.to_lowercase(),
                         PascalFileInfo {
                             path_var: None,
-                            is_text,
-                        },
+                            is_text },
                     );
                 }
                 let mut scoped_aliases = aliases.clone();
@@ -39648,24 +38752,20 @@ fn lower_pascal_file_io_call_stmt(
             let path_var = info.path_var.as_ref()?;
             Some(StmtKind::Assign {
                 targets: vec![Expression::ident(path_var)],
-                value: args[1].value.clone(),
-            })
+                value: args[1].value.clone(), by_ref: false })
         }
         "rewrite" => Some(StmtKind::OpenFile {
             path: pascal_file_path_expr(&info)?,
             mode: FileMode::Output,
-            file_number: file_expr,
-        }),
+            file_number: file_expr }),
         "reset" => Some(StmtKind::OpenFile {
             path: pascal_file_path_expr(&info)?,
             mode: FileMode::Input,
-            file_number: file_expr,
-        }),
+            file_number: file_expr }),
         "append" => Some(StmtKind::OpenFile {
             path: pascal_file_path_expr(&info)?,
             mode: FileMode::Append,
-            file_number: file_expr,
-        }),
+            file_number: file_expr }),
         "close" | "closefile" => Some(StmtKind::CloseFile(Some(file_expr))),
         "erase" => Some(StmtKind::Expr(pascal_call(
             "__pascal_file_remove",
@@ -39681,8 +38781,7 @@ fn lower_pascal_file_io_call_stmt(
                 ))),
                 Statement::new(StmtKind::Assign {
                     targets: vec![Expression::ident(path_var)],
-                    value: new_path,
-                }),
+                    value: new_path, by_ref: false }),
             ]))
         }
         "writeln" => {
@@ -39693,8 +38792,7 @@ fn lower_pascal_file_io_call_stmt(
                         .map(|arg| {
                             Statement::new(StmtKind::PrintFile {
                                 file_number: file_expr.clone(),
-                                items: vec![arg.value.clone()],
-                            })
+                                items: vec![arg.value.clone()] })
                         })
                         .collect(),
                 ));
@@ -39702,8 +38800,7 @@ fn lower_pascal_file_io_call_stmt(
             let items = args.iter().skip(1).map(|arg| arg.value.clone()).collect();
             Some(StmtKind::PrintFile {
                 file_number: file_expr,
-                items,
-            })
+                items })
         }
         "write" => {
             if !info.is_text && args.len() > 2 {
@@ -39713,8 +38810,7 @@ fn lower_pascal_file_io_call_stmt(
                         .map(|arg| {
                             Statement::new(StmtKind::PrintFile {
                                 file_number: file_expr.clone(),
-                                items: vec![arg.value.clone()],
-                            })
+                                items: vec![arg.value.clone()] })
                         })
                         .collect(),
                 ));
@@ -39722,8 +38818,7 @@ fn lower_pascal_file_io_call_stmt(
             let items = args.iter().skip(1).map(|arg| arg.value.clone()).collect();
             Some(StmtKind::PrintFile {
                 file_number: file_expr,
-                items,
-            })
+                items })
         }
         "readln" if args.len() == 1 => Some(StmtKind::Expr(pascal_call(
             "__pascal_file_readline",
@@ -39734,13 +38829,11 @@ fn lower_pascal_file_io_call_stmt(
             if let ExprKind::Ident(var) = &target.kind {
                 Some(StmtKind::LineInput {
                     file_number: file_expr,
-                    variable: var.clone(),
-                })
+                    variable: var.clone() })
             } else {
                 Some(StmtKind::Assign {
                     targets: vec![target],
-                    value: pascal_call("__pascal_file_readline", vec![file_expr]),
-                })
+                    value: pascal_call("__pascal_file_readline", vec![file_expr]), by_ref: false })
             }
         }
         "read" if args.len() == 2 => {
@@ -39749,24 +38842,20 @@ fn lower_pascal_file_io_call_stmt(
                 if let ExprKind::Ident(var) = &target.kind {
                     Some(StmtKind::InputFile {
                         file_number: file_expr,
-                        variables: vec![Expression::ident(var)],
-                    })
+                        variables: vec![Expression::ident(var)] })
                 } else {
                     Some(StmtKind::Assign {
                         targets: vec![target],
-                        value: pascal_call("__pascal_file_readline", vec![file_expr]),
-                    })
+                        value: pascal_call("__pascal_file_readline", vec![file_expr]), by_ref: false })
                 }
             } else if let ExprKind::Ident(var) = &target.kind {
                 Some(StmtKind::LineInput {
                     file_number: file_expr,
-                    variable: var.clone(),
-                })
+                    variable: var.clone() })
             } else {
                 Some(StmtKind::Assign {
                     targets: vec![target],
-                    value: pascal_call("__pascal_file_readline", vec![file_expr]),
-                })
+                    value: pascal_call("__pascal_file_readline", vec![file_expr]), by_ref: false })
             }
         }
         "read" if args.len() > 2 && !info.is_text => Some(StmtKind::Block(
@@ -39777,13 +38866,11 @@ fn lower_pascal_file_io_call_stmt(
                     if let ExprKind::Ident(var) = &target.kind {
                         Statement::new(StmtKind::InputFile {
                             file_number: file_expr.clone(),
-                            variables: vec![Expression::ident(var)],
-                        })
+                            variables: vec![Expression::ident(var)] })
                     } else {
                         Statement::new(StmtKind::Assign {
                             targets: vec![target],
-                            value: pascal_call("__pascal_file_readline", vec![file_expr.clone()]),
-                        })
+                            value: pascal_call("__pascal_file_readline", vec![file_expr.clone()]), by_ref: false })
                     }
                 })
                 .collect(),
@@ -39807,16 +38894,14 @@ fn pascal_file_info_for_expr(
 ) -> Option<PascalFileInfo> {
     match &expr.kind {
         ExprKind::Ident(name) => scope.get(&name.to_lowercase()).cloned(),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn pascal_call(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(name)),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false,
-    })
+        optional: false })
 }
 
 fn lower_pascal_file_io_expr(

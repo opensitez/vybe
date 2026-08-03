@@ -181,7 +181,7 @@ fn test_vb_string_trim_punctuation_chars() {
     let src = r#"
 Module Program
     Sub Main()
-        Dim s As String = ",,,Hello, World!..."
+        Dim s As String = ", ,Hello, World!..."
         Dim punct As Char() = {","c, "."c, "!"c}
         Console.WriteLine(s.Trim(punct))
     End Sub

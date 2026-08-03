@@ -39,8 +39,7 @@ go_run_cases! {
     comma_ok_map_lookup => ("package main; import \"fmt\"; func main() { m := map[string]int{\"a\":1}; _, ok := m[\"b\"]; fmt.Println(ok) }", vec!["false"]),
     comma_ok_channel_receive => ("package main; import \"fmt\"; func main() { ch := make(chan int, 1); close(ch); _, ok := <-ch; fmt.Println(ok) }", vec!["false"]),
     defer_lifo_order => ("package main; import \"fmt\"; func main() { defer fmt.Println(1); defer fmt.Println(2); fmt.Println(0) }", vec!["0", "2", "1"]),
-    panic_recover_value => ("package main; import \"fmt\"; func main() { defer func() { if r := recover(); r != nil { fmt.Println(r) } }(); panic(\"boom\") }", vec!["boom"]),
-}
+    panic_recover_value => ("package main; import \"fmt\"; func main() { defer func() { if r := recover(); r != nil { fmt.Println(r) } }(); panic(\"boom\") }", vec!["boom"]) }
 
 go_compile_cases! {
     goto_forward_compile => "package main; func main() { goto L; L: return }",
@@ -53,5 +52,4 @@ go_compile_cases! {
     unsafe_slice_compile => "package main; import \"unsafe\"; func main() { _ = unsafe.Slice((*int)(nil), 0) }",
     unsafe_string_compile => "package main; import \"unsafe\"; func main() { _ = unsafe.String((*byte)(nil), 0) }",
     unsafe_add_compile => "package main; import \"unsafe\"; func main() { var p *int; _ = unsafe.Add(p, 1) }",
-    slice_to_array_ptr => "package main; func main() { s := []int{1,2}; _ = (*[2]int)(s) }",
-}
+    slice_to_array_ptr => "package main; func main() { s := []int{1,2}; _ = (*[2]int)(s) }" }

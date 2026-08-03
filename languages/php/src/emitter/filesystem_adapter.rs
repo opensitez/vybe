@@ -20,7 +20,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
@@ -303,7 +303,7 @@ pub fn emit_filesize(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
         lset(chunk, reg_slot, line);
         // if registry != null && registry.has(path)
         lget(chunk, reg_slot, line);
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         vybe_compiler::primitives::ops::emit_dyn_ne(chunk, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
@@ -347,7 +347,7 @@ pub fn emit_filemtime(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     emit_stat_at(chunks, current, line);
     let chunk = &mut chunks[current];
     let key = chunk.add_constant(Value::String(Arc::from("modified")));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_DIV, line);
 }
@@ -547,29 +547,29 @@ pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let chunk = &mut chunks[current];
     lset(chunk, filename_slot, line);
 
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     lget(chunk, dirname_slot, line);
     let dirname_key = chunk.add_constant(Value::String(Arc::from("dirname")));
-    chunk.emit_op_u16(Op::STRUCT_SET, dirname_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dirname_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     lget(chunk, basename_slot, line);
     let basename_key = chunk.add_constant(Value::String(Arc::from("basename")));
-    chunk.emit_op_u16(Op::STRUCT_SET, basename_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, basename_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     lget(chunk, extension_slot, line);
     let extension_key = chunk.add_constant(Value::String(Arc::from("extension")));
-    chunk.emit_op_u16(Op::STRUCT_SET, extension_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, extension_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     lget(chunk, filename_slot, line);
     let filename_key = chunk.add_constant(Value::String(Arc::from("filename")));
-    chunk.emit_op_u16(Op::STRUCT_SET, filename_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, filename_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -836,23 +836,23 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
 
     // wrapper = STRUCT_NEW; wrapper.__type = "Directory";
     // wrapper.__entries = entries; wrapper.__index = 0
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, "Directory", line);
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     lget(chunk, entries_slot, line);
     let entries_key = chunk.add_constant(Value::String(Arc::from("__entries")));
-    chunk.emit_op_u16(Op::STRUCT_SET, entries_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, entries_key, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     let index_key = chunk.add_constant(Value::String(Arc::from("__index")));
-    chunk.emit_op_u16(Op::STRUCT_SET, index_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, index_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -871,11 +871,11 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     lset(chunk, dir_slot, line);
 
     lget(chunk, dir_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, entries_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, entries_key, line);
     lset(chunk, entries_slot, line);
 
     lget(chunk, dir_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, index_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, index_key, line);
     lset(chunk, index_slot, line);
 
     lget(chunk, entries_slot, line);
@@ -897,7 +897,7 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     lget(chunk, index_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, index_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, index_key, line);
     chunk.emit_op(Op::DROP, line);
     lget(chunk, entry_slot, line);
 
@@ -911,18 +911,18 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
 pub fn emit_dir_close(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line); // drop receiver
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 // ── small local helpers ─────────────────────────────────────────────
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_SET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
     chunk.emit_op(Op::DROP, line);
 }
 fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::STRUCT_GET, idx, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, idx, line);
 }
 fn str_len(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("wasm:js-string", "length");
@@ -1217,7 +1217,7 @@ fn emit_stream_registry(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::GLOBAL_GET, key, line);
     let chunk = &mut chunks[current];
     chunk.emit_dup(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
@@ -1289,7 +1289,7 @@ pub fn emit_fopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         lset(chunk, uri_slot, line);
 
         // build the stream object
-        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunk.emit_struct_new(0, 0, line);
         lset(chunk, stream_slot, line);
         lget(chunk, stream_slot, line);
         push_str(chunk, "stream", line);
@@ -1396,7 +1396,12 @@ pub fn emit_fputcsv(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     lget(chunk, rows_slot, line);
     lget(chunk, sep_slot, line);
     lget(chunk, enc_slot, line);
-    vybe_compiler::primitives::csv::emit_format_row(chunks, current, line);
+    vybe_compiler::primitives::csv::emit_format_row(
+        chunks,
+        current,
+        vybe_compiler::primitives::csv::FormatOptions::minimal(),
+        line,
+    );
     let chunk = &mut chunks[current];
     push_str(chunk, "\n", line);
     {

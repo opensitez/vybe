@@ -7,8 +7,7 @@
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use vybe_ast::class_normalize::{
     NormalMembers,
-    Access, BaseCall, NormalClass, NormalConstructor, NormalField, from_method_stmt,
-};
+    Access, BaseCall, NormalClass, NormalConstructor, NormalField, from_method_stmt };
 
 pub fn normalize_class(
     span: Span,
@@ -37,8 +36,7 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::Public,
-                    readonly: field_modifiers.is_readonly,
-                };
+                    readonly: field_modifiers.is_readonly };
                 m.push_field(field_modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -64,8 +62,7 @@ pub fn normalize_class(
                         } else {
                             BaseCall::Auto
                         },
-                        named_name: None,
-                    });
+                        named_name: None });
                     continue;
                 }
 

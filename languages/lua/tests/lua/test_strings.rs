@@ -290,5 +290,4 @@ lua_print! {
     string_gsub_with_capture_references => {
         "print(string.gsub(\"10-20\", \"(%d+)-(%d+)\", \"%2/%1\"))\n",
         "20/10\t1"
-    },
-}
+    } }

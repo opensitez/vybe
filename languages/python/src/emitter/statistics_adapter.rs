@@ -272,7 +272,7 @@ pub fn emit_mode(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_SET, best_count, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, best, line);
 
     let state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);

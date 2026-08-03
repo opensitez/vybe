@@ -80,5 +80,4 @@ lua_print! {
     math_mininteger_value => { "print(math.mininteger < 0)\n", "true" },
     math_maxinteger_value => { "print(math.maxinteger > 0)\n", "true" },
     math_integer_overflow => { "print(math.maxinteger + 1 == math.mininteger)\n", "true" },
-    math_integer_underflow => { "print(math.mininteger - 1 == math.maxinteger)\n", "true" },
-}
+    math_integer_underflow => { "print(math.mininteger - 1 == math.maxinteger)\n", "true" } }

@@ -7,6 +7,8 @@ name = "cobol"
 extensions = ["cob", "cbl", "cobol"]
 
 [compiler]
+# `DISPLAY A B C` emits ONE record with the operands concatenated, no separator.
+echo_concatenates_operands = true
 function_return = "explicit"
 self_keyword = "SELF"
 constructor_name = "NEW"

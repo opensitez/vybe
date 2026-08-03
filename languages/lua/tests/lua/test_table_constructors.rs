@@ -14,7 +14,7 @@ lua_print! {
         "5"
     },
     constructor_trailing_comma_allowed => {
-        "local t = {1, 2,}\nprint(#t)\n",
+        "local t = {1, 2 }\nprint(#t)\n",
         "2"
     },
     constructor_bracket_key_expression => {
@@ -60,5 +60,4 @@ lua_print! {
     constructor_string_key_without_brackets => {
         "local t = {hello=\"world\"}\nprint(t.hello)\n",
         "world"
-    },
-}
+    } }

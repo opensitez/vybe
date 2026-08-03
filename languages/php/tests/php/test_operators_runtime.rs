@@ -314,7 +314,7 @@ echo ($a && 1) . ',';
 echo (1 or 0) . ',';
 echo (1 || 0);
 "#,
-        [",,1,1"]
+        [", 1,1"]
     };
 
     string_concatenation_precedence_with_plus_not_supported => {

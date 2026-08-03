@@ -44,5 +44,4 @@ lua_print! {
     meta_setmetatable_nil => {
         "local t = setmetatable({}, {__index={x=1}})\nsetmetatable(t, nil)\nprint(tostring(t.x))\n",
         "nil"
-    },
-}
+    } }

@@ -40,7 +40,7 @@ macro_rules! kotlin_compile_cases {
 
 fn compile_chunks(src: &str) -> Result<Vec<vybe_runtime::Chunk>, String> {
     static REG: std::sync::Once = std::sync::Once::new();
-    REG.call_once(vybe_language_kotlin::register);
+    REG.call_once(vybe_runtime::init_registered);
     let module = vybe_language_kotlin::parse(src)?;
     let profile = vybe_compiler::profile::parse_profile(vybe_language_kotlin::profile_source())
         .map_err(|e| format!("profile parse failed: {}", e))?;

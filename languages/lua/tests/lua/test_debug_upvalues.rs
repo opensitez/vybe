@@ -35,5 +35,4 @@ lua_print! {
     debug_upvaluejoin_same_function_different_upvalues => {
         "local a = 1; local b = 2\nlocal function f() return a, b end\ndebug.upvaluejoin(f, 2, f, 1)\na = 99\nprint(f())\n",
         "99,2"
-    },
-}
+    } }

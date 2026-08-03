@@ -88,5 +88,4 @@ lua_print! {
     closure_chain_three_levels_deep => {
         "local function a(x)\n  return function(y)\n    return function(z) return x + y + z end\n  end\nend\nprint(a(1)(2)(3))\n",
         "6"
-    },
-}
+    } }

@@ -20,8 +20,7 @@ c_compile_cases! {
     static_assert_msg => { includes: ["<assert.h>"], decls: "_Static_assert(sizeof(int)>=4, \"int\");", body: "return 0;" },
     alignas_macro => { includes: ["<stdalign.h>"], decls: "alignas(8) int x;", body: "return x;" },
     noreturn_stddef => { includes: ["<stdnoreturn.h>"], decls: "_Noreturn void halt(void); void halt(void){for(;;){}}", body: "return 0;" },
-    thread_local_macro => { includes: ["<stdio.h>"], decls: "_Thread_local int tls;", body: "tls=1; return tls;" },
-}
+    thread_local_macro => { includes: ["<stdio.h>"], decls: "_Thread_local int tls;", body: "tls=1; return tls;" } }
 
 c_run_cases! {
     macro_expands_in_printf => {
@@ -35,5 +34,4 @@ c_run_cases! {
         decls: "#define USE_A 1\n#if USE_A\n#define VAL 7\n#else\n#define VAL 0\n#endif",
         body: "printf(\"%d\\n\", VAL); return 0;",
         expect: ["7"]
-    },
-}
+    } }

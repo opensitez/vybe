@@ -32,5 +32,4 @@ lua_print! {
     utf8_codes_iteration_positions_and_codes => {
         "local s = \"\u{03B1}\u{03B2}\"\nlocal r = \"\"\nfor p, c in utf8.codes(s) do r = r .. p .. \":\" .. c .. \" \" end\nprint(r)\n",
         "1:945 3:946 "
-    },
-}
+    } }

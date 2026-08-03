@@ -46,7 +46,7 @@ fn take_receiver_path(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     let path_slot = slot(&mut chunks[current]);
     let path_key = string_key(&mut chunks[current], "path");
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, path_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
     (path_slot, arg_slots)
@@ -176,15 +176,14 @@ fn emit_write_via(chunks: &mut [Chunk], current: usize, argc: u8, host_fn: &str,
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     match args.first() {
         Some(data) => chunks[current].emit_op_u16(Op::LOCAL_GET, *data, line),
-        None => chunks[current].emit_string_const("", line),
-    }
+        None => chunks[current].emit_string_const("", line) }
     call_fs(chunks, current, host_fn, 2, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
     emit_filesystem_throw(chunks, current, path_slot, "Cannot open file, path = ", line);
     chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// `file.writeAsStringSync(contents)` — truncating write.
@@ -214,11 +213,11 @@ pub fn emit_exists_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let kind_key = string_key(&mut chunks[current], DART_IO_KIND_KEY);
     let path_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, path_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, kind_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, kind_key, line);
     chunks[current].emit_string_const("directory", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
     chunks[current].emit_if_value(line);
@@ -263,11 +262,11 @@ pub fn emit_create_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     let kind_key = string_key(&mut chunks[current], DART_IO_KIND_KEY);
     let path_slot = slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, path_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, path_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, kind_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, kind_key, line);
     chunks[current].emit_string_const("directory", line);
     chunks[current].emit_op(Op::STRING_EQ, line);
     chunks[current].emit_if(line);
@@ -305,28 +304,30 @@ fn emit_relocate(chunks: &mut [Chunk], current: usize, argc: u8, host_fn: &str, 
     let kind_key = string_key(&mut chunks[current], DART_IO_KIND_KEY);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, path_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     match arg_slots.first() {
         Some(dest) => chunks[current].emit_op_u16(Op::LOCAL_GET, *dest, line),
-        None => chunks[current].emit_string_const("", line),
-    }
+        None => chunks[current].emit_string_const("", line) }
     call_fs(chunks, current, host_fn, 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
     // The result handle: same kind, destination path.
     let out_slot = slot(&mut chunks[current]);
-    chunks[current].emit_op(Op::STRUCT_NEW_DEFAULT, line);
+    // typeidx 0 = the dynamic empty-object form. This used to emit the
+    // opcode with NO operand bytes while `struct.new_default` is declared
+    // `U16` and the dispatch reads two — the same operand-width mismatch
+    // that silently desynchronises any walk over this chunk.
+    chunks[current].emit_op_u16(Op::STRUCT_NEW_DEFAULT, 0, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     match arg_slots.first() {
         Some(dest) => chunks[current].emit_op_u16(Op::LOCAL_GET, *dest, line),
-        None => chunks[current].emit_string_const("", line),
-    }
-    chunks[current].emit_op_u16(Op::STRUCT_SET, path_key, line);
+        None => chunks[current].emit_string_const("", line) }
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, path_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, kind_key, line);
-    chunks[current].emit_op_u16(Op::STRUCT_SET, kind_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, kind_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, kind_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
 }
 

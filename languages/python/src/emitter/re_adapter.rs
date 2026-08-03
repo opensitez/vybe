@@ -38,8 +38,7 @@ fn build_regexp(chunks: &mut [Chunk], current: usize, pat: u16, flags: Option<&s
             chunks[current].emit_string_const(f, line);
             call(chunks, current, "ecma:regexp", "new", 2, line);
         }
-        None => call(chunks, current, "ecma:regexp", "new", 1, line),
-    }
+        None => call(chunks, current, "ecma:regexp", "new", 1, line) }
 }
 
 /// `re.search(pat, s)` → `exec(new(pat), s)` → match array or null.

@@ -51,5 +51,4 @@ lua_print! {
     math_maxinteger_bounds => { "print(math.maxinteger > 0)\n", "true" },
     math_mininteger_bounds => { "print(math.mininteger < 0)\n", "true" },
     math_mininteger_minus_one => { "print(math.mininteger - 1 == math.maxinteger)\n", "true" },
-    math_maxinteger_plus_one => { "print(math.maxinteger + 1 == math.mininteger)\n", "true" },
-}
+    math_maxinteger_plus_one => { "print(math.maxinteger + 1 == math.mininteger)\n", "true" } }

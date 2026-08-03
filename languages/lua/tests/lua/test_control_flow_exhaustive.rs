@@ -46,5 +46,4 @@ lua_print! {
     ctrl_return_multi => {
         "local function f() return 1, 2 end\nlocal a, b = f()\nprint(a .. \",\" .. b)\n",
         "1,2"
-    },
-}
+    } }

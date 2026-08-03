@@ -20,5 +20,4 @@ lua_print! {
     vararg_sum_recursive => {
         "local function sum(head, ...)\n  if not head then return 0 end\n  return head + sum(...)\nend\nprint(sum(1, 2, 3, 4, 5))\n",
         "15"
-    },
-}
+    } }

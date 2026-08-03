@@ -1033,15 +1033,13 @@ echo match ($score) {
     100 => 'A',
     90 => 'B',
     80, 70 => 'C',
-    default => 'F',
-};
+    default => 'F' };
 echo '|';
 $code = 'x';
 echo match ($code) {
     'x' => 'ex',
     'y' => 'why',
-    default => 'other',
-};
+    default => 'other' };
 "#,
         &["F|ex"],
     );
@@ -1056,8 +1054,7 @@ echo match (true) {
     $x < 0 => 'neg',
     $x < 5 => 'small',
     $x >= 5 && $x <= 10 => 'mid',
-    default => 'big',
-};
+    default => 'big' };
 "#,
         &["mid"],
     );
@@ -1071,8 +1068,7 @@ $mode = 'json';
 $value = match ($mode) {
     'json' => ['kind' => 'json'],
     'text' => 'plain',
-    default => null,
-};
+    default => null };
 echo is_array($value) ? $value['kind'] : 'none';
 "#,
         &["json"],
@@ -1392,19 +1388,16 @@ $value = 3;
 echo match ($value) {
     1 => 'one',
     2, 3 => 'two-or-three',
-    default => 'other',
-};
+    default => 'other' };
 echo '|';
 echo match ($value > 1) {
     false => 'small',
-    true => 'big',
-};
+    true => 'big' };
 echo '|';
 $list = [1, 2, 3];
 echo match (true) {
     in_array($value, $list) => 'present',
-    default => 'absent',
-};
+    default => 'absent' };
 "#,
         &["two-or-three|big|present"],
     );

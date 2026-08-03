@@ -78,8 +78,7 @@ c_run_cases! {
         decls: "",
         body: "FILE *f=fopen(\"/tmp/vybe_c_old.txt\",\"w\"); fclose(f); rename(\"/tmp/vybe_c_old.txt\",\"/tmp/vybe_c_new.txt\"); printf(\"1\\n\"); return 0;",
         expect: ["1"]
-    },
-}
+    } }
 
 c_compile_cases! {
     setvbuf_compile => { includes: ["<stdio.h>"], decls: "", body: "char b[BUFSIZ]; setvbuf(stdout,b,_IOFBF,BUFSIZ); return 0;" },
@@ -90,5 +89,4 @@ c_compile_cases! {
     vfprintf_compile => { includes: ["<stdio.h>", "<stdarg.h>"], decls: "void logit(const char *fmt, ...) { va_list ap; va_start(ap,fmt); vfprintf(stdout,fmt,ap); va_end(ap); }", body: "logit(\"%d\\n\",1); return 0;" },
     vprintf_compile => { includes: ["<stdio.h>", "<stdarg.h>"], decls: "", body: "return 0;" },
     vsprintf_compile => { includes: ["<stdio.h>", "<stdarg.h>"], decls: "", body: "char b[8]; return 0;" },
-    vsnprintf_compile => { includes: ["<stdio.h>", "<stdarg.h>"], decls: "", body: "char b[8]; return 0;" },
-}
+    vsnprintf_compile => { includes: ["<stdio.h>", "<stdarg.h>"], decls: "", body: "char b[8]; return 0;" } }

@@ -13,5 +13,5 @@ pub(super) fn emit_null_result(chunks: &mut [Chunk], current: usize, argc: u8, l
     for _ in 0..argc {
         chunks[current].emit_op(Op::DROP, line);
     }
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

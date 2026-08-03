@@ -723,8 +723,7 @@ fn emit_pair_chars(
     chunks[current].emit_op_u16(Op::LOCAL_GET, table, line);
     emit_char_at(chunks, current, src, i, line);
     if delete {
-        let k = chunks[current].add_constant(vybe_runtime::Value::Null);
-        chunks[current].emit_op_u16(Op::CONST, k, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     } else {
         emit_char_at(chunks, current, dst, i, line);
     }
@@ -1003,7 +1002,7 @@ pub fn emit_str_search(
     if raises {
         chunk.emit_if(line);
         // `emit_exception_new_finalize` wants `[obj, obj, msg]`.
-        chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+        chunk.emit_struct_new(0, 0, line);
         chunk.emit_dup(line);
         chunk.emit_string_const("substring not found", line);
         vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, "ValueError", line);

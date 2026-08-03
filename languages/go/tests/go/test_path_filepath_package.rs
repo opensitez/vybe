@@ -68,8 +68,7 @@ go_run_cases! {
     filepath_split_parent_and_leaf => (
         "package main; import \"fmt\"; import \"path/filepath\"; func main() { dir, file := filepath.Split(\"/opt/bin/go\"); fmt.Println(dir); fmt.Println(file) }",
         vec!["/opt/bin/", "go"]
-    ),
-}
+    ) }
 
 go_compile_cases! {
     path_join_double_dot_parent_segment => "package main; import \"path\"; func main() { _ = path.Join(\"/a\", \"..\", \"b\") }",
@@ -84,5 +83,4 @@ go_compile_cases! {
     filepath_is_abs_windows_drive_letter => "package main; import \"path/filepath\"; func main() { _ = filepath.IsAbs(`C:\\Windows`) }",
     filepath_split_empty_path_tuple => "package main; import \"path/filepath\"; func main() { _, _ = filepath.Split(\"\") }",
     path_and_filepath_mixed_expression => "package main; import \"path\"; import \"path/filepath\"; func main() { _ = filepath.Clean(path.Join(\"src\", \"main.go\")) }",
-    filepath_join_leading_absolute_segment => "package main; import \"path/filepath\"; func main() { _ = filepath.Join(\"/tmp\", \"vybe\", \"out\") }",
-}
+    filepath_join_leading_absolute_segment => "package main; import \"path/filepath\"; func main() { _ = filepath.Join(\"/tmp\", \"vybe\", \"out\") }" }

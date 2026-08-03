@@ -32,5 +32,4 @@ lua_print! {
     pcall_returns_all => {
         "local function multi() return 1, 2, 3 end\nlocal ok, a, b, c = pcall(multi)\nprint(ok, a, b, c)\n",
         "true\t1\t2\t3"
-    },
-}
+    } }

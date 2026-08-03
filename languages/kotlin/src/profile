@@ -71,6 +71,7 @@ slice        = "slice"
 # `emitter/tostring.rs`.
 println = { emit = "common:kotlin.print", min_args = 0, max_args = 1, slot = "to_string" }
 print   = { emit = "common:kotlin.print", min_args = 0, max_args = 1, slot = "to_string" }
+__kt_print_double = { emit = "common:kotlin.print_double", min_args = 0, max_args = 1 }
 
 # Common Collections Primitives
 #
@@ -100,6 +101,11 @@ __coll_slice      = { emit = "common:collections.slice", min_args = 3, max_args 
 __coll_sum        = { emit = "common:collections.sum", min_args = 1, max_args = 1 }
 __coll_min        = { emit = "common:collections.min", min_args = 1, max_args = 1 }
 __coll_max        = { emit = "common:collections.max", min_args = 1, max_args = 1 }
+__jvm_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 3 }
+__jvm_map_size = { emit = "common:jvm.java.map_size", min_args = 1, max_args = 1 }
+__jvm_list_iterator = { emit = "common:jvm.java.list_iterator", min_args = 1, max_args = 2 }
+__jvm_iterator_next = { emit = "common:jvm.java.iterator_next", min_args = 1, max_args = 1 }
+__jvm_iterator_has_next = { emit = "common:jvm.java.iterator_has_next", min_args = 1, max_args = 1 }
 
 # Common Dict Primitives
 __dict_size   = { emit = "common:dict.size",        min_args = 1, max_args = 1, slot = "len" }
@@ -111,6 +117,20 @@ __dict_clear  = { emit = "common:dict.clear",       min_args = 1, max_args = 1 }
 __dict_keys   = { emit = "common:dict.keys",        min_args = 1, max_args = 1 }
 __dict_values = { emit = "common:dict.values",      min_args = 1, max_args = 1 }
 __dict_items  = { emit = "common:dict.items",       min_args = 1, max_args = 1 }
+__kt_add      = { emit = "common:kotlin.add",       min_args = 2, max_args = 2 }
+__kt_set_add  = { emit = "common:kotlin.set_add",   min_args = 3, max_args = 3 }
+__kt_set_size = { emit = "common:kotlin.set_size",  min_args = 1, max_args = 1 }
+__kt_to_set   = { emit = "common:kotlin.to_set",    min_args = 1, max_args = 1 }
+__kt_to_list  = { emit = "common:kotlin.to_list",   min_args = 1, max_args = 1 }
+__kt_add_all  = { emit = "common:kotlin.add_all",   min_args = 2, max_args = 2 }
+__kt_set_union = { emit = "common:kotlin.set_union", min_args = 2, max_args = 2 }
+__kt_set_intersect = { emit = "common:kotlin.set_intersect", min_args = 2, max_args = 2 }
+__kt_set_subtract = { emit = "common:kotlin.set_subtract", min_args = 2, max_args = 2 }
+__kt_remove_all = { emit = "common:kotlin.remove_all", min_args = 2, max_args = 2 }
+__kt_retain_all = { emit = "common:kotlin.retain_all", min_args = 2, max_args = 2 }
+__kt_contains_all = { emit = "common:kotlin.contains_all", min_args = 2, max_args = 2 }
+__kt_is_empty = { emit = "common:kotlin.is_empty",  min_args = 1, max_args = 1 }
+__kt_is_not_empty = { emit = "common:kotlin.is_not_empty", min_args = 1, max_args = 1 }
 
 # String templates: `"$x"` / `"${expr}"` call `toString()` on the part, which is
 # NOT what `+` coercion does — a `Boolean` concatenates as `1`, a `List` as
@@ -119,6 +139,11 @@ __kt_tostring = { emit = "common:kotlin.tostring", min_args = 1, max_args = 1 }
 # The hash a `data class`'s synthesized `hashCode` returns. Shared primitive —
 # `object.hash_code` is the same one Java's `Objects.hashCode` rides on.
 __kt_hash     = { emit = "common:object.hash_code", min_args = 1, max_args = 1 }
+
+# String methods backed by the JVM/Java adapters.
+startsWith = { emit = "common:java.str_starts_with", min_args = 1, max_args = 2 }
+endsWith   = { emit = "common:str_ends_with",        min_args = 1, max_args = 1 }
+contains   = { emit = "common:str_contains",         min_args = 1, max_args = 1 }
 
 # Common Host Helpers
 __object_keys = { emit = "ecma:object.keys", min_args = 1, max_args = 1 }
@@ -141,6 +166,9 @@ longArrayOf     = { emit = "common:collections.new" }
 buildList       = { emit = "common:collections.new" }
 sequenceOf      = { emit = "common:collections.new" }
 generateSequence= { emit = "common:collections.new" }
+ByteArray       = { emit = "common:jvm.java.byte_array_new", min_args = 1, max_args = 2 }
+CharArray       = { emit = "common:jvm.java.char_array_new", min_args = 1, max_args = 2 }
+String          = { emit = "common:jvm.java.chars_to_string", min_args = 1, max_args = 1 }
 
 # Maps
 mapOf           = { emit = "common:dict.new" }
@@ -169,10 +197,9 @@ downTo  = { emit = "common:collections.range_desc", min_args = 2, max_args = 2 }
 __kt_step_asc  = { emit = "common:collections.range_step", min_args = 3, max_args = 3 }
 __kt_step_desc = { emit = "common:collections.range_step", min_args = 3, max_args = 3 }
 
-# Math Primitives
-# Qualified `kotlin.math.*` calls resolve through the JVM platform namespace
-# tree. These bare names model Kotlin's default/imported top-level stdlib
-# surface until import-mount lowering is fully migrated.
+# Math primitives. Bare names model Kotlin's default/imported top-level stdlib
+# surface; qualified `kotlin.math.*` names are registered as Kotlin-owned tree
+# leaves in `tree_register.rs`.
 max   = { emit = "host:ecma:math:maxOf", min_args = 1, max_args = 255 }
 min   = { emit = "host:ecma:math:minOf", min_args = 1, max_args = 255 }
 abs   = { emit = "host:ecma:math:abs",   min_args = 1, max_args = 1 }
@@ -194,40 +221,13 @@ requireNotNull = { emit = "common:kotlin.require_not_null", min_args = 1, max_ar
 checkNotNull   = { emit = "common:kotlin.check_not_null", min_args = 1, max_args = 1 }
 __kt_not_null_assert = { emit = "common:kotlin.not_null_assert", min_args = 1, max_args = 1 }
 __kt_class_of = { emit = "common:kotlin.class_of", min_args = 1, max_args = 1 }
+__kt_char_code = { emit = "common:jvm.java.char_code", min_args = 1, max_args = 1 }
 __kt_illegal_state_exception = { emit = "common:kotlin.illegal_state_exception", min_args = 0, max_args = 1 }
 Exception                  = { emit = "common:kotlin.exception", min_args = 0, max_args = 1 }
 IllegalArgumentException   = { emit = "common:kotlin.illegal_argument_exception", min_args = 0, max_args = 1 }
 IllegalStateException      = { emit = "common:kotlin.illegal_state_exception", min_args = 0, max_args = 1 }
 NullPointerException       = { emit = "common:kotlin.null_pointer_exception", min_args = 0, max_args = 1 }
 IndexOutOfBoundsException  = { emit = "common:kotlin.index_out_of_bounds_exception", min_args = 0, max_args = 1 }
-
-[builtin_return_types]
-"kotlin.math.sign" = "Double"
-"kotlin.math.sqrt" = "Double"
-"kotlin.math.pow" = "Double"
-"kotlin.math.round" = "Double"
-"kotlin.math.ceil" = "Double"
-"kotlin.math.floor" = "Double"
-"kotlin.math.sin" = "Double"
-"kotlin.math.cos" = "Double"
-"kotlin.math.tan" = "Double"
-"kotlin.math.asin" = "Double"
-"kotlin.math.acos" = "Double"
-"kotlin.math.atan" = "Double"
-"kotlin.math.atan2" = "Double"
-"kotlin.math.sinh" = "Double"
-"kotlin.math.cosh" = "Double"
-"kotlin.math.tanh" = "Double"
-"kotlin.math.exp" = "Double"
-"kotlin.math.ln" = "Double"
-"kotlin.math.log10" = "Double"
-"kotlin.math.hypot" = "Double"
-"kotlin.math.max" = "Double"
-"kotlin.math.min" = "Double"
-"kotlin.math.ulp" = "Double"
-"kotlin.math.nextafter" = "Double"
-"kotlin.math.nextup" = "Double"
-"kotlin.math.nextdown" = "Double"
 
 [value_methods]
 
@@ -248,6 +248,7 @@ isNaN      = { emit = "host:ecma:number:isNaN",   min_args = 0, max_args = 0 }
 # Kotlin's `toInt()`/`toLong()` TRUNCATE toward zero (`4.9.toInt() == 4`,
 # `(-4.9).toInt() == -4`) — `Math.trunc`, not `floor`, which would answer -5.
 toInt      = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
+toChar     = { emit = "common:jvm.java.int_to_char", min_args = 0, max_args = 0 }
 roundToInt = { emit = "host:ecma:math:round",     min_args = 0, max_args = 0 }
 toLong     = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
 # Every number is an f64 at runtime, so widening is the identity. The
@@ -264,6 +265,8 @@ isInfinite = { emit = "common:kotlin.is_infinite", min_args = 0, max_args = 0 }
 uppercase  = { emit = "common:strings.to_upper", min_args = 0, max_args = 0 }
 lowercase  = { emit = "common:strings.to_lower", min_args = 0, max_args = 0 }
 capitalize = { emit = "intrinsic:capitalize", min_args = 0, max_args = 0 }
+toByteArray = { emit = "common:jvm.java.string_to_byte_array", min_args = 0, max_args = 1 }
+toCharArray = { emit = "common:jvm.java.string_to_char_array", min_args = 0, max_args = 0 }
 
 # Kotlin's spellings of the shared built-in types — builtinslotplan.md step 4a.
 #

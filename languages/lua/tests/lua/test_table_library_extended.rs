@@ -48,5 +48,4 @@ lua_print! {
     table_unpack_indices => {
         "local a, b = table.unpack({10, 20, 30, 40}, 2, 3)\nprint(a .. \",\" .. b)\n",
         "20,30"
-    },
-}
+    } }

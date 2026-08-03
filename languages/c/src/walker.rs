@@ -17,12 +17,10 @@ use vybe_ast::*;
 use vybe_compiler::primitives::codepoints;
 use vybe_compiler::primitives::complex;
 use vybe_compiler::primitives::pointers::{
-    self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND,
-};
+    self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND };
 use vybe_platform_libc::emitter::{posix_adapter, regex_adapter, thread_adapter, time_adapter};
 use vybe_platform_libc::emitter::{
-    math_adapter, stdio_adapter, string_adapter, uchar_adapter, wchar_adapter,
-};
+    math_adapter, stdio_adapter, string_adapter, uchar_adapter, wchar_adapter };
 
 const ARRAY_PARAM_MARKER: &str = "__c_array_param";
 
@@ -40,8 +38,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     for item in program.into_inner() {
         match item.as_rule() {
             Rule::EOI => {}
-            _ => w.walk_top_item(item, &mut body),
-        }
+            _ => w.walk_top_item(item, &mut body) }
     }
     // Prepend runtime helpers and static globals before the rest of the module body.
     let mut full_body = vybe_platform_libc::emitter::c_runtime::prelude();
@@ -54,8 +51,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".to_string(),
         language: Lang::Unknown,
         body: full_body,
-        imports: Vec::new(),
-    })
+        imports: Vec::new() })
 }
 
 #[derive(Default)]
@@ -163,15 +159,13 @@ struct Walker {
     /// Nested C compound-block depth; block locals use lexical scope.
     block_depth: usize,
     /// Nested block-scope identifier rewrites for C shadowing.
-    block_renames: Vec<HashMap<String, String>>,
-}
+    block_renames: Vec<HashMap<String, String>> }
 
 #[derive(Clone, Copy)]
 struct PpCond {
     parent_active: bool,
     taken: bool,
-    active: bool,
-}
+    active: bool }
 
 fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
     let mut out = Vec::new();
@@ -260,8 +254,7 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
                 cond_stack.push(PpCond {
                     parent_active,
                     taken: cond,
-                    active: cond,
-                });
+                    active: cond });
                 continue;
             }
 
@@ -271,8 +264,7 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
                 cond_stack.push(PpCond {
                     parent_active,
                     taken: cond,
-                    active: cond,
-                });
+                    active: cond });
                 continue;
             }
 
@@ -282,8 +274,7 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
                 cond_stack.push(PpCond {
                     parent_active,
                     taken: cond,
-                    active: cond,
-                });
+                    active: cond });
                 continue;
             }
 
@@ -698,8 +689,7 @@ fn seed_preprocessor_header_macros(header: &str, object_macros: &mut HashMap<Str
             ("SCNx32", "\"x\""),
             ("SCNx64", "\"llx\""),
         ],
-        _ => &[],
-    };
+        _ => &[] };
     for (name, value) in string_defs {
         object_macros
             .entry((*name).to_string())
@@ -797,8 +787,7 @@ fn eval_pp_expr(expr_src: &str, object_macros: &HashMap<String, String>) -> bool
 
 struct PpExprParser<'a> {
     text: &'a str,
-    pos: usize,
-}
+    pos: usize }
 
 impl<'a> PpExprParser<'a> {
     fn new(text: &'a str) -> Self {
@@ -1071,8 +1060,7 @@ fn expand_object_macros_in_text(line: &str, object_macros: &HashMap<String, Stri
 // (expr/stmt/ident/int_lit/.../function_stmt, CFILE_*) resolve unchanged.
 use vybe_platform_libc::emitter::build::{
     assign_expr, call_expr, expr, ident, if_stmt, index_expr, int_lit, member, null_lit, stmt,
-    str_lit, var_decl_stmt,
-};
+    str_lit, var_decl_stmt };
 // Bare math-call constructors used by walker arms (cabs, etc.). The series
 // builders (tgamma/erf/…) are only referenced from the runtime prelude.
 use vybe_platform_libc::emitter::math_runtime::{ecma_math_call, ecma_math_call2};
@@ -1085,23 +1073,20 @@ fn binary_expr(op: BinOp, left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right),
-    })
+        right: Box::new(right) })
 }
 
 fn ternary_expr(cond: Expression, then: Expression, else_: Expression) -> Expression {
     expr(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(then),
-        else_: Box::new(else_),
-    })
+        else_: Box::new(else_) })
 }
 
 fn unary_expr(op: UnaryOp, value: Expression) -> Expression {
     expr(ExprKind::Unary {
         op,
-        expr: Box::new(value),
-    })
+        expr: Box::new(value) })
 }
 
 fn is_compile_time_constant_expr(value: &Expression) -> bool {
@@ -1125,8 +1110,7 @@ fn const_i64_expr(value: &Expression) -> Option<i64> {
                 UnaryOp::Neg => Some(v.wrapping_neg()),
                 UnaryOp::BitNot => Some(!v),
                 UnaryOp::Not => Some((v == 0) as i64),
-                _ => None,
-            }
+                _ => None }
         }
         ExprKind::Binary { op, left, right } => {
             let l = const_i64_expr(left)?;
@@ -1142,8 +1126,7 @@ fn const_i64_expr(value: &Expression) -> Option<i64> {
                 BinOp::BitAnd => Some(l & r),
                 BinOp::BitOr => Some(l | r),
                 BinOp::BitXor => Some(l ^ r),
-                _ => None,
-            }
+                _ => None }
         }
         ExprKind::Cast { expr, type_name } => {
             let v = const_i64_expr(expr)?;
@@ -1153,8 +1136,7 @@ fn const_i64_expr(value: &Expression) -> Option<i64> {
                 Some(v)
             }
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn number_method(value: Expression, method: &str, args: Vec<Expression>) -> Expression {
@@ -1177,8 +1159,7 @@ fn builtin_popcount_expr(value: Option<Expression>) -> Expression {
             call_expr(member(bits, "split"), vec![str_lit("1")]),
             "length",
         )),
-        right: Box::new(int_lit(1)),
-    })
+        right: Box::new(int_lit(1)) })
 }
 
 fn builtin_ctz_expr(value: Option<Expression>) -> Expression {
@@ -1191,9 +1172,7 @@ fn builtin_ctz_expr(value: Option<Expression>) -> Expression {
         left: Box::new(value.clone()),
         right: Box::new(expr(ExprKind::Unary {
             op: UnaryOp::Neg,
-            expr: Box::new(value),
-        })),
-    });
+            expr: Box::new(value) })) });
     call_expr(member(ident("Math"), "log2"), vec![low_bit])
 }
 
@@ -1211,15 +1190,12 @@ fn builtin_ffs_expr(value: Option<Expression>) -> Expression {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(value.clone()),
-            right: Box::new(int_lit(0)),
-        })),
+            right: Box::new(int_lit(0)) })),
         then: Box::new(int_lit(0)),
         else_: Box::new(expr(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(builtin_ctz_expr(Some(value))),
-            right: Box::new(int_lit(1)),
-        })),
-    })
+            right: Box::new(int_lit(1)) })) })
 }
 
 fn builtin_clz_expr(value: Option<Expression>) -> Expression {
@@ -1231,15 +1207,12 @@ fn builtin_clz_expr(value: Option<Expression>) -> Expression {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(value.clone()),
-            right: Box::new(int_lit(0)),
-        })),
+            right: Box::new(int_lit(0)) })),
         then: Box::new(int_lit(32)),
         else_: Box::new(expr(ExprKind::Binary {
             op: BinOp::Sub,
             left: Box::new(int_lit(32)),
-            right: Box::new(member(builtin_binary_string(value), "length")),
-        })),
-    })
+            right: Box::new(member(builtin_binary_string(value), "length")) })) })
 }
 
 fn builtin_bswap16_expr(value: Option<Expression>) -> Expression {
@@ -1254,20 +1227,15 @@ fn builtin_bswap16_expr(value: Option<Expression>) -> Expression {
             left: Box::new(expr(ExprKind::Binary {
                 op: BinOp::BitAnd,
                 left: Box::new(value.clone()),
-                right: Box::new(int_lit(0x00ff)),
-            })),
-            right: Box::new(int_lit(8)),
-        })),
+                right: Box::new(int_lit(0x00ff)) })),
+            right: Box::new(int_lit(8)) })),
         right: Box::new(expr(ExprKind::Binary {
             op: BinOp::Shr,
             left: Box::new(expr(ExprKind::Binary {
                 op: BinOp::BitAnd,
                 left: Box::new(value),
-                right: Box::new(int_lit(0xff00)),
-            })),
-            right: Box::new(int_lit(8)),
-        })),
-    })
+                right: Box::new(int_lit(0xff00)) })),
+            right: Box::new(int_lit(8)) })) })
 }
 
 fn builtin_bswap32_expr(value: Option<Expression>) -> Expression {
@@ -1280,37 +1248,29 @@ fn builtin_bswap32_expr(value: Option<Expression>) -> Expression {
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(value.clone()),
-            right: Box::new(int_lit(0x000000ff)),
-        })),
-        right: Box::new(int_lit(24)),
-    });
+            right: Box::new(int_lit(0x000000ff)) })),
+        right: Box::new(int_lit(24)) });
     let b1 = expr(ExprKind::Binary {
         op: BinOp::Shl,
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(value.clone()),
-            right: Box::new(int_lit(0x0000ff00)),
-        })),
-        right: Box::new(int_lit(8)),
-    });
+            right: Box::new(int_lit(0x0000ff00)) })),
+        right: Box::new(int_lit(8)) });
     let b2 = expr(ExprKind::Binary {
         op: BinOp::Shr,
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(value.clone()),
-            right: Box::new(int_lit(0x00ff0000)),
-        })),
-        right: Box::new(int_lit(8)),
-    });
+            right: Box::new(int_lit(0x00ff0000)) })),
+        right: Box::new(int_lit(8)) });
     let b3 = expr(ExprKind::Binary {
         op: BinOp::Shr,
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(value),
-            right: Box::new(int_lit(0xff000000)),
-        })),
-        right: Box::new(int_lit(24)),
-    });
+            right: Box::new(int_lit(0xff000000)) })),
+        right: Box::new(int_lit(24)) });
     expr(ExprKind::Binary {
         op: BinOp::BitOr,
         left: Box::new(expr(ExprKind::Binary {
@@ -1318,12 +1278,9 @@ fn builtin_bswap32_expr(value: Option<Expression>) -> Expression {
             left: Box::new(expr(ExprKind::Binary {
                 op: BinOp::BitOr,
                 left: Box::new(b0),
-                right: Box::new(b1),
-            })),
-            right: Box::new(b2),
-        })),
-        right: Box::new(b3),
-    })
+                right: Box::new(b1) })),
+            right: Box::new(b2) })),
+        right: Box::new(b3) })
 }
 
 fn builtin_overflow_expr(
@@ -1337,21 +1294,17 @@ fn builtin_overflow_expr(
     let computed = expr(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right),
-    });
+        right: Box::new(right) });
     let overflow = expr(ExprKind::Binary {
         op: BinOp::Or,
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::Gt,
             left: Box::new(result.clone()),
-            right: Box::new(int_lit(2147483647)),
-        })),
+            right: Box::new(int_lit(2147483647)) })),
         right: Box::new(expr(ExprKind::Binary {
             op: BinOp::Lt,
             left: Box::new(result.clone()),
-            right: Box::new(int_lit(-2147483648)),
-        })),
-    });
+            right: Box::new(int_lit(-2147483648)) })) });
     expr(ExprKind::Call {
         callee: Box::new(expr(ExprKind::Lambda {
             params: vec![Param {
@@ -1362,18 +1315,15 @@ fn builtin_overflow_expr(
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                 assign_expr(sscanf_target_expr(&out_ptr), result.clone()),
                 overflow,
             ])))),
             is_async: false,
-            captures: vec![],
-        })),
+            captures: vec![] })),
         args: vec![Argument::positional(computed)],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn bool_int(value: Expression) -> Expression {
@@ -1423,19 +1373,15 @@ fn carray_indexed_access(object: Expression, index: Expression) -> Expression {
         left: Box::new(expr(ExprKind::Member {
             object: Box::new(object.clone()),
             field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(index),
-    });
+            null_safe: false })),
+        right: Box::new(index) });
     expr(ExprKind::Index {
         object: Box::new(expr(ExprKind::Member {
             object: Box::new(object),
             field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         index: Box::new(adjusted),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 fn declarator_has_pointer(pair: &Pair<Rule>) -> bool {
@@ -1467,8 +1413,7 @@ fn flush_switch_case(
     } else if !conds.is_empty() {
         cases.push(SwitchCase {
             conditions: std::mem::take(conds),
-            body: lower_c_gotos(std::mem::take(body)),
-        });
+            body: lower_c_gotos(std::mem::take(body)) });
     } else {
         body.clear();
     }
@@ -1517,8 +1462,7 @@ impl Walker {
                     let mut it = inner.into_inner();
                     let name = match it.next() {
                         Some(p) if p.as_rule() == Rule::ident_name => p.as_str().to_string(),
-                        _ => continue,
-                    };
+                        _ => continue };
                     // Skip function-like macros (define_params present).
                     let mut value_pair = None;
                     let mut params_pair = None;
@@ -1566,10 +1510,8 @@ impl Walker {
                             type_hint: None,
                             init: Some(init),
                             array_bounds: None,
-                            with_events: false,
-                        }],
-                        kind: VarDeclKind::Const,
-                    }));
+                            with_events: false }],
+                        kind: VarDeclKind::Const }));
                 }
                 Rule::include_directive => {
                     // Inject standard header constants as object macros
@@ -1751,8 +1693,7 @@ impl Walker {
                 ("REG_ESPACE", 12),
             ],
             "math.h" | "cmath" => &[],
-            _ => &[],
-        };
+            _ => &[] };
         for (name, val) in defs {
             // Only inject if not already defined by user
             if !self.object_macros.contains_key(*name) {
@@ -1784,10 +1725,8 @@ impl Walker {
                         type_hint: None,
                         init: Some(init),
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Const,
-                }));
+                        with_events: false }],
+                    kind: VarDeclKind::Const }));
             }
         }
         // Float constants for float.h
@@ -1819,8 +1758,7 @@ impl Walker {
                 ("M_LOG2E", std::f64::consts::LOG2_E),
                 ("M_LOG10E", std::f64::consts::LOG10_E),
             ],
-            _ => &[],
-        };
+            _ => &[] };
         for (name, val) in float_defs {
             if !self.object_macros.contains_key(*name) {
                 self.object_macros.insert(name.to_string(), val.to_string());
@@ -1830,10 +1768,8 @@ impl Walker {
                         type_hint: None,
                         init: Some(expr(ExprKind::Lit(Literal::Float(*val)))),
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Const,
-                }));
+                        with_events: false }],
+                    kind: VarDeclKind::Const }));
             }
         }
     }
@@ -1933,9 +1869,7 @@ impl Walker {
                             right: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::Eq,
                                 left: Box::new(param_ident.clone()),
-                                right: Box::new(expr(ExprKind::Lit(Literal::Null))),
-                            })),
-                        });
+                                right: Box::new(expr(ExprKind::Lit(Literal::Null))) })) });
                         body.insert(
                             0,
                             stmt(StmtKind::Expr(assign_expr(
@@ -1946,8 +1880,7 @@ impl Walker {
                                     else_: Box::new(pointers::make_carray_ptr(
                                         param_ident,
                                         int_lit(0),
-                                    )),
-                                }),
+                                    )) }),
                             ))),
                         );
                     }
@@ -1990,8 +1923,7 @@ impl Walker {
                                     target: Box::new(ident(&param.name)),
                                     value: Box::new(
                                         self.deep_copy_struct(type_hint, ident(&param.name)),
-                                    ),
-                                }))),
+                                    ) }))),
                             );
                         }
                     }
@@ -2008,12 +1940,10 @@ impl Walker {
                                 cond: expr(ExprKind::Binary {
                                     op: BinOp::Eq,
                                     left: Box::new(ident("__c_skip_atexit")),
-                                    right: Box::new(int_lit(0)),
-                                }),
+                                    right: Box::new(int_lit(0)) }),
                                 then_body: on_exit,
                                 elifs: Vec::new(),
-                                else_body: None,
-                            }));
+                                else_body: None }));
                         }
                         final_body.push(stmt(StmtKind::If {
                             cond: expr(ExprKind::Binary {
@@ -2021,27 +1951,22 @@ impl Walker {
                                 left: Box::new(expr(ExprKind::Binary {
                                     op: BinOp::Eq,
                                     left: Box::new(ident("__c_skip_flush")),
-                                    right: Box::new(int_lit(0)),
-                                })),
+                                    right: Box::new(int_lit(0)) })),
                                 right: Box::new(expr(ExprKind::Binary {
                                     op: BinOp::Gt,
                                     left: Box::new(member(ident("__c_stdout_buffer"), "length")),
-                                    right: Box::new(int_lit(0)),
-                                })),
-                            }),
+                                    right: Box::new(int_lit(0)) })) }),
                             then_body: vec![stmt(StmtKind::Expr(call_expr(
                                 ident("__c_stdout_append"),
                                 vec![str_lit("\n")],
                             )))],
                             elifs: Vec::new(),
-                            else_body: None,
-                        }));
+                            else_body: None }));
                         body = vec![stmt(StmtKind::Try {
                             body,
                             catches: vec![],
                             else_body: None,
-                            finally: Some(final_body),
-                        })];
+                            finally: Some(final_body) })];
                     }
                     body = lower_c_gotos(body);
                     // setjmp.h: wrap the setjmp re-entry point (if any) so it
@@ -2091,8 +2016,7 @@ impl Walker {
                             key: None,
                             value: str_lit("program"),
                             spread: false,
-                            by_ref: false,
-                        }]))
+                            by_ref: false }]))
                     } else {
                         expr(ExprKind::Lit(Literal::Null))
                     });
@@ -2108,8 +2032,7 @@ impl Walker {
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        }))
+            is_sub: false }))
     }
 
     fn declarator_name_and_params(&mut self, pair: Pair<Rule>) -> (String, Option<Vec<Param>>) {
@@ -2208,8 +2131,7 @@ impl Walker {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            });
+                                is_nullable: false });
                         }
                     }
                 }
@@ -2222,8 +2144,7 @@ impl Walker {
                         is_rest: true,
                         is_kwargs: false,
                         is_optional: false,
-                        is_nullable: false,
-                    });
+                        is_nullable: false });
                 }
             }
         }
@@ -2310,10 +2231,8 @@ impl Walker {
                             type_hint: Some("int".to_string()),
                             init: Some(expr(ExprKind::Lit(Literal::Int(val)))),
                             array_bounds: None,
-                            with_events: false,
-                        }],
-                        kind: VarDeclKind::Const,
-                    }));
+                            with_events: false }],
+                        kind: VarDeclKind::Const }));
                     next_val = val + 1;
                 }
             }
@@ -2359,10 +2278,8 @@ impl Walker {
                         type_hint: Some("int".to_string()),
                         init: Some(expr(ExprKind::Lit(Literal::Int(val)))),
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Const,
-                }));
+                        with_events: false }],
+                    kind: VarDeclKind::Const }));
                 next_val = val + 1;
             }
             out.push(stmt(StmtKind::EnumDecl {
@@ -2373,8 +2290,7 @@ impl Walker {
                 backing_type: None,
                 interfaces: Vec::new(),
                 body_members: Vec::new(),
-                decorators: Vec::new(),
-            }));
+                decorators: Vec::new() }));
         }
 
         let declared_alignment = explicit_alignment_value(specs.as_str());
@@ -2484,8 +2400,7 @@ impl Walker {
                                                         .zero_struct(Some(&struct_name), fields),
                                                     spread: false,
                                                     key: None,
-                                                    by_ref: false,
-                                                })
+                                                    by_ref: false })
                                                 .collect();
                                             array_bounds = None;
                                             expr(ExprKind::Array(zeros))
@@ -2496,8 +2411,7 @@ impl Walker {
                                                 value: self.zero_struct(Some(&struct_name), fields),
                                                 spread: false,
                                                 key: None,
-                                                by_ref: false,
-                                            }]))
+                                                by_ref: false }]))
                                         }
                                     } else
                                     // Array of structs: convert each element to a named object.
@@ -2573,8 +2487,7 @@ impl Walker {
                                 value: self.zero_struct(Some(&pointee_type), fields),
                                 spread: false,
                                 key: None,
-                                by_ref: false,
-                            })
+                                by_ref: false })
                             .collect();
                         init = Some(expr(ExprKind::Array(zeroed)));
                     }
@@ -2693,8 +2606,7 @@ impl Walker {
                             .insert(name.clone(), target.clone());
                         init = Some(expr(ExprKind::Unary {
                             op: UnaryOp::AddrOf,
-                            expr: Box::new(target),
-                        }));
+                            expr: Box::new(target) }));
                     }
                     if let Some(target) = pointer_address_target_from_init(&init) {
                         self.pointer_address_aliases.insert(name.clone(), target);
@@ -2759,8 +2671,7 @@ impl Walker {
                                     value: self.zero_struct(Some(&struct_name), fields),
                                     spread: false,
                                     key: None,
-                                    by_ref: false,
-                                })
+                                    by_ref: false })
                                 .collect();
                             init = Some(expr(ExprKind::Array(zeros)));
                             array_bounds = None;
@@ -2859,8 +2770,7 @@ impl Walker {
                                 for el in elems {
                                     let idx = match el.key.as_ref().map(|k| &k.kind) {
                                         Some(ExprKind::Lit(Literal::Int(n))) => *n as usize,
-                                        _ => pos,
-                                    };
+                                        _ => pos };
                                     if idx < size {
                                         dense[idx] = el.value;
                                     }
@@ -2874,8 +2784,7 @@ impl Walker {
                                         key: None,
                                         value,
                                         spread: false,
-                                        by_ref: false,
-                                    })
+                                        by_ref: false })
                                     .collect(),
                             )));
                         }
@@ -3021,8 +2930,7 @@ impl Walker {
                                     value: expr(ExprKind::Lit(Literal::Int(0))),
                                     spread: false,
                                     key: None,
-                                    by_ref: false,
-                                });
+                                    by_ref: false });
                             }
                             init = Some(expr(ExprKind::Array(padded)));
                         }
@@ -3113,10 +3021,8 @@ impl Walker {
                         type_hint: Some(emitted_type_hint.clone()),
                         init,
                         array_bounds,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Var,
-                }));
+                        with_events: false }],
+                    kind: VarDeclKind::Var }));
                 continue;
             }
             let emit_name = if self.block_depth > 1 && self.var_types.contains_key(&name) {
@@ -3157,8 +3063,7 @@ impl Walker {
                 type_hint: Some(emitted_type_hint),
                 init,
                 array_bounds,
-                with_events: false,
-            });
+                with_events: false });
         }
         if !declarations.is_empty() {
             let kind = if self.block_depth > 0 {
@@ -3179,16 +3084,14 @@ impl Walker {
                 init: Some(expr(ExprKind::Lit(Literal::Int(0)))),
                 modifiers: Modifiers::default(),
                 with_events: false,
-                array_bounds: None,
-            })
+                array_bounds: None })
             .collect();
         stmt(StmtKind::StructDecl {
             name: name.to_string(),
             interfaces: Vec::new(),
             members,
             visibility: Visibility::Public,
-            decorators: Vec::new(),
-        })
+            decorators: Vec::new() })
     }
 
     /// Zero value for a struct field given its (array-suffixed) type:
@@ -3208,8 +3111,7 @@ impl Walker {
                     .collect();
                 (ft[..i].trim(), dims)
             }
-            None => (ft, Vec::new()),
-        };
+            None => (ft, Vec::new()) };
         // element (no array) value: nested struct or scalar 0.
         let element = {
             let bn = normalized_c_type_name(base);
@@ -3237,8 +3139,7 @@ impl Walker {
                         key: None,
                         value: inner.clone(),
                         spread: false,
-                        by_ref: false,
-                    })
+                        by_ref: false })
                     .collect();
                 expr(ExprKind::Array(elems))
             }
@@ -3266,8 +3167,7 @@ impl Walker {
                 };
                 ObjectProperty::KeyValue {
                     key: expr(ExprKind::Lit(Literal::Str(f.clone()))),
-                    value,
-                }
+                    value }
             })
             .collect();
         expr(ExprKind::Object(props))
@@ -3289,8 +3189,7 @@ impl Walker {
                 let member_access = expr(ExprKind::Member {
                     object: Box::new(source.clone()),
                     field: f.clone(),
-                    null_safe: false,
-                });
+                    null_safe: false });
 
                 // Check if this field is itself a struct
                 let value =
@@ -3312,8 +3211,7 @@ impl Walker {
 
                 ObjectProperty::KeyValue {
                     key: expr(ExprKind::Lit(Literal::Str(f.clone()))),
-                    value,
-                }
+                    value }
             })
             .collect();
 
@@ -3328,8 +3226,7 @@ impl Walker {
     ) -> Expression {
         let elems = match raw.kind {
             ExprKind::Array(elems) => elems,
-            other => return expr(other),
-        };
+            other => return expr(other) };
         if elems.is_empty() {
             return expr(ExprKind::Array(elems));
         }
@@ -3372,8 +3269,7 @@ impl Walker {
                                     key: None,
                                     value: expr(ExprKind::Lit(Literal::Int(0))),
                                     spread: false,
-                                    by_ref: false,
-                                });
+                                    by_ref: false });
                                 self.convert_array_init_to_struct_typed(
                                     ft,
                                     expr(ExprKind::Array(vec![item])),
@@ -3384,8 +3280,7 @@ impl Walker {
                         .unwrap_or_else(|| expr(ExprKind::Lit(Literal::Int(0))));
                     ObjectProperty::KeyValue {
                         key: expr(ExprKind::Lit(Literal::Str(fname.clone()))),
-                        value,
-                    }
+                        value }
                 })
                 .collect();
             return expr(ExprKind::Object(props));
@@ -3417,8 +3312,7 @@ impl Walker {
                                         nested_fields,
                                     ),
                                     spread: item.spread,
-                                    by_ref: item.by_ref,
-                                })
+                                    by_ref: item.by_ref })
                                 .collect();
                             expr(ExprKind::Array(converted))
                         } else {
@@ -3433,12 +3327,10 @@ impl Walker {
                     let nf = self.structs[&normalized_c_type_name(ft)].clone();
                     self.convert_array_init_to_struct_typed(ft, el.value, &nf)
                 }
-                _ => el.value,
-            };
+                _ => el.value };
             props.push(ObjectProperty::KeyValue {
                 key: expr(ExprKind::Lit(Literal::Str(fname))),
-                value,
-            });
+                value });
         }
         for i in props.len()..fields.len() {
             let value = field_types
@@ -3448,8 +3340,7 @@ impl Walker {
                 .unwrap_or_else(|| expr(ExprKind::Lit(Literal::Int(0))));
             props.push(ObjectProperty::KeyValue {
                 key: expr(ExprKind::Lit(Literal::Str(fields[i].clone()))),
-                value,
-            });
+                value });
         }
         expr(ExprKind::Object(props))
     }
@@ -3588,8 +3479,7 @@ impl Walker {
                                         format!("{}{}{}", base_ty, pointer_suffix, &decl_text[i..])
                                     }
                                     None if pointer_suffix.is_empty() => base_ty,
-                                    None => format!("{}{}", base_ty, pointer_suffix),
-                                };
+                                    None => format!("{}{}", base_ty, pointer_suffix) };
                                 field_types.insert(n, stored);
                             }
                         }
@@ -3694,8 +3584,7 @@ impl Walker {
                                                 members.push(EnumMember {
                                                     name: nm,
                                                     value: val,
-                                                    constructor_args: Vec::new(),
-                                                });
+                                                    constructor_args: Vec::new() });
                                             }
                                         }
                                     }
@@ -3787,8 +3676,7 @@ impl Walker {
                                     let key = designators.remove(0);
                                     props.push(ObjectProperty::KeyValue {
                                         key: expr(ExprKind::Lit(Literal::Str(key))),
-                                        value: nested_designated_object(designators, val),
-                                    });
+                                        value: nested_designated_object(designators, val) });
                                 }
                                 continue;
                             }
@@ -3798,8 +3686,7 @@ impl Walker {
                                         key: Some(key),
                                         value,
                                         spread: false,
-                                        by_ref: false,
-                                    });
+                                        by_ref: false });
                                 }
                                 continue;
                             }
@@ -3808,8 +3695,7 @@ impl Walker {
                                     key: None,
                                     value,
                                     spread: false,
-                                    by_ref: false,
-                                });
+                                    by_ref: false });
                             }
                         }
                         Rule::initializer => {
@@ -3817,16 +3703,14 @@ impl Walker {
                                 key: None,
                                 value: self.walk_initializer(di),
                                 spread: false,
-                                by_ref: false,
-                            });
+                                by_ref: false });
                         }
                         Rule::assignment_expression => {
                             elems.push(ArrayElement {
                                 key: None,
                                 value: self.walk_assignment(di),
                                 spread: false,
-                                by_ref: false,
-                            });
+                                by_ref: false });
                         }
                         _ => {}
                     }
@@ -3837,8 +3721,7 @@ impl Walker {
                     expr(ExprKind::Array(elems))
                 }
             }
-            _ => expr(ExprKind::Lit(Literal::Null)),
-        }
+            _ => expr(ExprKind::Lit(Literal::Null)) }
     }
 
     fn walk_initializer_list(&mut self, list_pair: Pair<Rule>) -> Expression {
@@ -3858,8 +3741,7 @@ impl Walker {
                                 let val = self.walk_initializer(v);
                                 props.push(ObjectProperty::KeyValue {
                                     key: expr(ExprKind::Lit(Literal::Str(key))),
-                                    value: val,
-                                });
+                                    value: val });
                             }
                         }
                         Some(p) if p.as_rule() == Rule::initializer => {
@@ -3867,16 +3749,14 @@ impl Walker {
                                 key: None,
                                 value: self.walk_initializer(p),
                                 spread: false,
-                                by_ref: false,
-                            });
+                                by_ref: false });
                         }
                         Some(p) if p.as_rule() == Rule::assignment_expression => {
                             elems.push(ArrayElement {
                                 key: None,
                                 value: self.walk_assignment(p),
                                 spread: false,
-                                by_ref: false,
-                            });
+                                by_ref: false });
                         }
                         _ => {}
                     }
@@ -3886,16 +3766,14 @@ impl Walker {
                         key: None,
                         value: self.walk_initializer(di),
                         spread: false,
-                        by_ref: false,
-                    });
+                        by_ref: false });
                 }
                 Rule::assignment_expression => {
                     elems.push(ArrayElement {
                         key: None,
                         value: self.walk_assignment(di),
                         spread: false,
-                        by_ref: false,
-                    });
+                        by_ref: false });
                 }
                 _ => {}
             }
@@ -3918,8 +3796,7 @@ impl Walker {
         match &expr.kind {
             ExprKind::Ident(name) => self.function_return_types.get(name).cloned(),
             ExprKind::Member { field, .. } => self.function_return_types.get(field).cloned(),
-            _ => None,
-        }
+            _ => None }
     }
 
     fn normalize_type_text(&mut self, text: &str) -> String {
@@ -3963,8 +3840,7 @@ impl Walker {
                         key: None,
                         value: left_ident,
                         spread: false,
-                        by_ref: false,
-                    }])),
+                        by_ref: false }])),
                     int_lit(0),
                 )),
                 Argument::positional(pointers::make_carray_ptr(
@@ -3972,13 +3848,11 @@ impl Walker {
                         key: None,
                         value: right_ident,
                         spread: false,
-                        by_ref: false,
-                    }])),
+                        by_ref: false }])),
                     int_lit(0),
                 )),
             ],
-            optional: false,
-        });
+            optional: false });
         expr(ExprKind::Lambda {
             params: vec![
                 Param {
@@ -3989,8 +3863,7 @@ impl Walker {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false,
-                },
+                    is_nullable: false },
                 Param {
                     name: "right".to_string(),
                     type_hint: None,
@@ -3999,8 +3872,7 @@ impl Walker {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false,
-                },
+                    is_nullable: false },
             ],
             body: LambdaBody::Block(vec![
                 stmt(StmtKind::VarDecl {
@@ -4009,25 +3881,20 @@ impl Walker {
                         type_hint: None,
                         init: Some(ident("left")),
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Var,
-                }),
+                        with_events: false }],
+                    kind: VarDeclKind::Var }),
                 stmt(StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(right_name.clone()),
                         type_hint: None,
                         init: Some(ident("right")),
                         array_bounds: None,
-                        with_events: false,
-                    }],
-                    kind: VarDeclKind::Var,
-                }),
+                        with_events: false }],
+                    kind: VarDeclKind::Var }),
                 stmt(StmtKind::Return(Some(cmp_call))),
             ]),
             is_async: false,
-            captures: vec![],
-        })
+            captures: vec![] })
     }
 
     /// Array arguments decay to a `carray` pointer object `{__base, __idx}` when
@@ -4047,10 +3914,8 @@ impl Walker {
         match expr_in.kind {
             ExprKind::Unary {
                 op: UnaryOp::AddrOf,
-                expr,
-            } => *expr,
-            other => expr(other),
-        }
+                expr } => *expr,
+            other => expr(other) }
     }
 
     fn c_qsort_key_mode(&self, array_arg: &Expression) -> i64 {
@@ -4106,8 +3971,7 @@ impl Walker {
                 Argument::positional(int_lit(mode)),
                 Argument::positional(int_lit(1)),
             ],
-            optional: false,
-        })
+            optional: false })
     }
 
     fn rewrite_c_qsort_r_call(
@@ -4125,8 +3989,7 @@ impl Walker {
                 Argument::positional(int_lit(mode)),
                 Argument::positional(self.value_from_c_address_arg(context_arg)),
             ],
-            optional: false,
-        })
+            optional: false })
     }
 
     fn rewrite_c_bsearch_call(
@@ -4147,8 +4010,7 @@ impl Walker {
                 Argument::positional(self.value_from_c_address_arg(key_arg)),
                 Argument::positional(int_lit(mode)),
             ],
-            optional: false,
-        });
+            optional: false });
         expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Lambda {
                 params: vec![Param {
@@ -4159,23 +4021,18 @@ impl Walker {
                     is_rest: false,
                     is_kwargs: false,
                     is_optional: false,
-                    is_nullable: false,
-                }],
+                    is_nullable: false }],
                 body: LambdaBody::Expr(Box::new(expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::GtEq,
                         left: Box::new(idx_ident.clone()),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
-                    })),
+                        right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))) })),
                     then: Box::new(pointers::make_carray_ptr(array_arg, idx_ident)),
-                    else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-                }))),
+                    else_: Box::new(expr(ExprKind::Lit(Literal::Null))) }))),
                 is_async: false,
-                captures: vec![],
-            })),
+                captures: vec![] })),
             args: vec![Argument::positional(helper_call)],
-            optional: false,
-        })
+            optional: false })
     }
 
     fn rewrite_c_lfind_call(
@@ -4209,8 +4066,7 @@ impl Walker {
                 Argument::positional(key_value.clone()),
                 Argument::positional(int_lit(mode)),
             ],
-            optional: false,
-        });
+            optional: false });
         let found = pointers::make_carray_ptr(array_arg.clone(), idx_call.clone());
         let inserted = if let ExprKind::Ident(count_name) = count_value.kind {
             expr(ExprKind::Sequence(vec![
@@ -4230,8 +4086,7 @@ impl Walker {
         expr(ExprKind::Ternary {
             cond: Box::new(binary_expr(BinOp::GtEq, idx_call, int_lit(0))),
             then: Box::new(found),
-            else_: Box::new(inserted),
-        })
+            else_: Box::new(inserted) })
     }
 
     fn assert_stmt_from_expr(&self, expr: &Expression) -> Option<Statement> {
@@ -4278,8 +4133,7 @@ impl Walker {
         let finalizer = stmt(StmtKind::Expr(expr(ExprKind::Call {
             callee: Box::new(args[0].value.clone()),
             args: vec![],
-            optional: false,
-        })));
+            optional: false })));
         self.current_atexit_finalizers.push(finalizer);
         true
     }
@@ -4331,8 +4185,7 @@ impl Walker {
                 }
                 true
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     fn parse_exit_registration_arg(&mut self, raw: &str) -> Expression {
@@ -4457,15 +4310,12 @@ impl Walker {
                         } else {
                             expr(ExprKind::Assign {
                                 target: Box::new(target),
-                                value: Box::new(value),
-                            })
+                                value: Box::new(value) })
                         }
                     }
                     other => Expression {
                         kind: other,
-                        span: original_span,
-                    },
-                };
+                        span: original_span } };
                 let expr = self.rewrite_carray_postfix_discard(expr);
                 out.push(stmt(StmtKind::Expr(expr)));
             }
@@ -4483,8 +4333,7 @@ impl Walker {
                 let label = inner.into_inner().next().map(|p| p.as_str().to_string());
                 out.push(stmt(StmtKind::Continue(match label {
                     Some(label) => ContinueTarget::Label(label),
-                    None => ContinueTarget::Implicit,
-                })))
+                    None => ContinueTarget::Implicit })))
             }
             Rule::goto_statement => {
                 let label = inner.into_inner().next().map(|p| p.as_str().to_string());
@@ -4525,8 +4374,7 @@ impl Walker {
             cond,
             then_body,
             elifs: Vec::new(),
-            else_body,
-        })
+            else_body })
     }
 
     fn walk_while(&mut self, pair: Pair<Rule>) -> Statement {
@@ -4540,8 +4388,7 @@ impl Walker {
         stmt(StmtKind::While {
             cond,
             body,
-            else_body: None,
-        })
+            else_body: None })
     }
 
     fn walk_do_while(&mut self, pair: Pair<Rule>) -> Statement {
@@ -4555,14 +4402,12 @@ impl Walker {
             return stmt(StmtKind::While {
                 cond: int_lit(1),
                 body,
-                else_body: None,
-            });
+                else_body: None });
         }
         stmt(StmtKind::DoWhile {
             body,
             cond,
-            until: false,
-        })
+            until: false })
     }
 
     fn walk_for(&mut self, pair: Pair<Rule>) -> Statement {
@@ -4607,8 +4452,7 @@ impl Walker {
             init,
             cond,
             update,
-            body,
-        })
+            body })
     }
 
     fn walk_switch(&mut self, pair: Pair<Rule>) -> Statement {
@@ -4655,8 +4499,7 @@ impl Walker {
         stmt(StmtKind::Switch {
             expr: subject,
             cases,
-            default,
-        })
+            default })
     }
 
     fn collect_switch_cases(
@@ -4834,8 +4677,7 @@ impl Walker {
                     }
                     true
                 }
-                _ => false,
-            }
+                _ => false }
         } else if contains_embedded_switch_label(&inner) {
             self.collect_embedded_switch_labels(
                 inner.clone(),
@@ -4913,8 +4755,7 @@ impl Walker {
     fn walk_expression_pair_as_cond(&mut self, pair: Pair<Rule>) -> Expression {
         match pair.as_rule() {
             Rule::conditional_expression => self.walk_conditional(pair),
-            _ => self.walk_expression(pair),
-        }
+            _ => self.walk_expression(pair) }
     }
 
     /// Re-dispatch an already-unwrapped statement inner node.
@@ -4944,15 +4785,12 @@ impl Walker {
                         } else {
                             expr(ExprKind::Assign {
                                 target: Box::new(target),
-                                value: Box::new(value),
-                            })
+                                value: Box::new(value) })
                         }
                     }
                     other => Expression {
                         kind: other,
-                        span: original_span,
-                    },
-                };
+                        span: original_span } };
                 let expr = self.rewrite_carray_postfix_discard(expr);
                 out.push(stmt(StmtKind::Expr(expr)));
             }
@@ -4970,8 +4808,7 @@ impl Walker {
                 let label = inner.into_inner().next().map(|p| p.as_str().to_string());
                 out.push(stmt(StmtKind::Continue(match label {
                     Some(label) => ContinueTarget::Label(label),
-                    None => ContinueTarget::Implicit,
-                })))
+                    None => ContinueTarget::Implicit })))
             }
             Rule::goto_statement => {
                 let label = inner.into_inner().next().map(|p| p.as_str().to_string());
@@ -5011,8 +4848,7 @@ impl Walker {
             }
             Rule::assignment_expression => self.walk_assignment(pair),
             Rule::conditional_expression => self.walk_conditional(pair),
-            _ => self.walk_assignment(pair),
-        }
+            _ => self.walk_assignment(pair) }
     }
 
     fn walk_assignment(&mut self, pair: Pair<Rule>) -> Expression {
@@ -5033,8 +4869,7 @@ impl Walker {
             let target = self.rewrite_pointer_member_alias_target(target);
             let target = match target.kind {
                 ExprKind::RefLoad(inner) => *inner,
-                _ => target,
-            };
+                _ => target };
             self.record_char_param_write(&target, &value);
             if let Some(rewrite) = self.rewrite_union_member_assignment(&target, value.clone()) {
                 return rewrite;
@@ -5049,8 +4884,7 @@ impl Walker {
             // declared bit width (unsigned → mask; signed → mask + sign-extend).
             let value = match self.bitfield_of_member(&target) {
                 Some((width, signed)) => apply_bitfield_mask(value, width, signed),
-                None => value,
-            };
+                None => value };
             let value = if let ExprKind::Ident(name) = &target.kind {
                 if let Some(type_text) = self.var_types.get(name) {
                     let normalized = normalized_c_type_name(type_text);
@@ -5070,8 +4904,7 @@ impl Walker {
             };
             expr(ExprKind::Assign {
                 target: Box::new(target),
-                value: Box::new(value),
-            })
+                value: Box::new(value) })
         } else {
             let cop = match op.as_str() {
                 "+=" => CompoundOp::Add,
@@ -5084,8 +4917,7 @@ impl Walker {
                 "^=" => CompoundOp::BitXor,
                 "<<=" => CompoundOp::Shl,
                 ">>=" => CompoundOp::Shr,
-                _ => CompoundOp::Add,
-            };
+                _ => CompoundOp::Add };
             // Represent compound assignment as a statement-level op via Assign
             // of a Binary, since ExprKind has no CompoundAssign.
             let bin = match cop {
@@ -5099,25 +4931,21 @@ impl Walker {
                 CompoundOp::BitXor => BinOp::BitXor,
                 CompoundOp::Shl => BinOp::Shl,
                 CompoundOp::Shr => BinOp::Shr,
-                _ => BinOp::Add,
-            };
+                _ => BinOp::Add };
             let target = self.rewrite_pointer_member_alias_target(target);
             let target = match target.kind {
                 ExprKind::RefLoad(inner) => *inner,
-                _ => target,
-            };
+                _ => target };
             let rhs_raw = expr(ExprKind::Binary {
                 op: bin,
                 left: Box::new(target.clone()),
-                right: Box::new(value),
-            });
+                right: Box::new(value) });
             let rhs_raw = self.rewrite_char_index_numeric(rhs_raw);
             let rhs_raw = self.rewrite_char_ptr_arith(rhs_raw);
             let rhs = self.rewrite_carray_ptr_arith(rhs_raw);
             let rhs = match self.bitfield_of_member(&target) {
                 Some((width, signed)) => apply_bitfield_mask(rhs, width, signed),
-                None => rhs,
-            };
+                None => rhs };
             // Compound assignment through a pointer deref (`*p *= 2`) must write
             // back through the cell, the same as a plain `*p = ...` does.
             if let Some(ptr_name) = carray_deref_target_name(&target) {
@@ -5131,8 +4959,7 @@ impl Walker {
             }
             expr(ExprKind::Assign {
                 target: Box::new(target),
-                value: Box::new(rhs),
-            })
+                value: Box::new(rhs) })
         }
     }
 
@@ -5179,8 +5006,7 @@ impl Walker {
     fn rewrite_pointer_member_alias_target(&self, target: Expression) -> Expression {
         let ExprKind::Unary {
             op: UnaryOp::Deref,
-            expr: ptr,
-        } = &target.kind
+            expr: ptr } = &target.kind
         else {
             return target;
         };
@@ -5268,8 +5094,7 @@ impl Walker {
                     expr(ExprKind::Member {
                         object: Box::new(ident(object_name)),
                         field: f.clone(),
-                        null_safe: false,
-                    }),
+                        null_safe: false }),
                     target_value,
                 ));
             }
@@ -5295,8 +5120,7 @@ impl Walker {
                 expr(ExprKind::Member {
                     object: Box::new(ident(object_name)),
                     field: field.clone(),
-                    null_safe: false,
-                }),
+                    null_safe: false }),
                 field_value,
             ));
         }
@@ -5335,8 +5159,7 @@ impl Walker {
     fn rewrite_carray_postfix_discard(&self, value: Expression) -> Expression {
         let ExprKind::Unary {
             op: unary_op,
-            expr: target,
-        } = &value.kind
+            expr: target } = &value.kind
         else {
             return value;
         };
@@ -5359,8 +5182,7 @@ impl Walker {
             UnaryOp::PostDec => {
                 pointers::carray_retreat_inplace(name, expr(ExprKind::Lit(Literal::Int(1))))
             }
-            _ => value,
-        }
+            _ => value }
     }
 
     fn normalize_pointer_call_args(&self, callee: &str, args: Vec<Argument>) -> Vec<Argument> {
@@ -5410,8 +5232,7 @@ impl Walker {
     fn byte_count_to_usize(&self, value: &Expression) -> Option<usize> {
         match &value.kind {
             ExprKind::Lit(Literal::Int(n)) if *n >= 0 => Some(*n as usize),
-            _ => None,
-        }
+            _ => None }
     }
 
     fn dest_element_size(&self, value: &Expression) -> usize {
@@ -5429,17 +5250,14 @@ impl Walker {
             let end = expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(offset.clone()),
-                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))),
-            });
+                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))) });
             return expr(ExprKind::Call {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(ident(&base)),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![Argument::positional(offset), Argument::positional(end)],
-                optional: false,
-            });
+                optional: false });
         }
         match &src.kind {
             ExprKind::Lit(Literal::Str(s)) => {
@@ -5449,15 +5267,12 @@ impl Walker {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(src),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![
                     Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                     Argument::positional(expr(ExprKind::Lit(Literal::Int(count as i64)))),
                 ],
-                optional: false,
-            }),
-        }
+                optional: false }) }
     }
 
     fn rewrite_memcpy_like(
@@ -5493,63 +5308,52 @@ impl Walker {
                 }
                 return expr(ExprKind::Assign {
                     target: Box::new(ident(&dst_name)),
-                    value: Box::new(copied),
-                });
+                    value: Box::new(copied) });
             }
             let base = ident(&dst_name);
             let prefix = expr(ExprKind::Call {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(base.clone()),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![
                     Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                     Argument::positional(dst_offset.clone()),
                 ],
-                optional: false,
-            });
+                optional: false });
             let suffix_start = expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(dst_offset),
-                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))),
-            });
+                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))) });
             let suffix = expr(ExprKind::Call {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(base.clone()),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![Argument::positional(suffix_start)],
-                optional: false,
-            });
+                optional: false });
             let updated = expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(expr(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(prefix),
-                    right: Box::new(copied),
-                })),
-                right: Box::new(suffix),
-            });
+                    right: Box::new(copied) })),
+                right: Box::new(suffix) });
             return expr(ExprKind::Assign {
                 target: Box::new(base),
-                value: Box::new(updated),
-            });
+                value: Box::new(updated) });
         }
         if let Some(name) = base_ident_name(&dst) {
             if self.is_fixed_array_var(&name) {
                 let src_value = carray_base_expr(&src).unwrap_or(src);
                 return expr(ExprKind::Assign {
                     target: Box::new(ident(&name)),
-                    value: Box::new(src_value),
-                });
+                    value: Box::new(src_value) });
             }
         }
         expr(ExprKind::Assign {
             target: Box::new(dst),
-            value: Box::new(src),
-        })
+            value: Box::new(src) })
     }
 
     fn rewrite_memset(
@@ -5580,49 +5384,40 @@ impl Walker {
                 }
                 return expr(ExprKind::Assign {
                     target: Box::new(ident(&dst_name)),
-                    value: Box::new(repeated),
-                });
+                    value: Box::new(repeated) });
             }
             let base = ident(&dst_name);
             let prefix = expr(ExprKind::Call {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(base.clone()),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![
                     Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                     Argument::positional(dst_offset.clone()),
                 ],
-                optional: false,
-            });
+                optional: false });
             let suffix_start = expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(dst_offset),
-                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))),
-            });
+                right: Box::new(expr(ExprKind::Lit(Literal::Int(count as i64)))) });
             let suffix = expr(ExprKind::Call {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(base.clone()),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![Argument::positional(suffix_start)],
-                optional: false,
-            });
+                optional: false });
             let updated = expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(expr(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(prefix),
-                    right: Box::new(repeated),
-                })),
-                right: Box::new(suffix),
-            });
+                    right: Box::new(repeated) })),
+                right: Box::new(suffix) });
             return expr(ExprKind::Assign {
                 target: Box::new(base),
-                value: Box::new(updated),
-            });
+                value: Box::new(updated) });
         }
         if let Some(name) = base_ident_name(&dst) {
             if self.is_fixed_array_var(&name) && is_zero_int_expr(&fill) {
@@ -5633,13 +5428,11 @@ impl Walker {
                         value: expr(ExprKind::Lit(Literal::Int(0))),
                         spread: false,
                         key: None,
-                        by_ref: false,
-                    })
+                        by_ref: false })
                     .collect();
                 return expr(ExprKind::Assign {
                     target: Box::new(ident(&name)),
-                    value: Box::new(expr(ExprKind::Array(zeros))),
-                });
+                    value: Box::new(expr(ExprKind::Array(zeros))) });
             }
         }
         expr(ExprKind::Lit(Literal::Null))
@@ -5661,128 +5454,104 @@ impl Walker {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(src.clone()),
                 field: "substring".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![
                 Argument::positional(int_lit(0)),
                 Argument::positional(bytes.clone()),
             ],
-            optional: false,
-        });
+            optional: false });
         let idx = expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(src_prefix),
                 field: "indexOf".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(needle)],
-            optional: false,
-        });
+            optional: false });
         let found = expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(idx.clone()),
-            right: Box::new(int_lit(0)),
-        });
+            right: Box::new(int_lit(0)) });
         let count = expr(ExprKind::Ternary {
             cond: Box::new(found.clone()),
             then: Box::new(expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(idx),
-                right: Box::new(int_lit(1)),
-            })),
-            else_: Box::new(bytes),
-        });
+                right: Box::new(int_lit(1)) })),
+            else_: Box::new(bytes) });
         let copied = expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(src),
                 field: "substring".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![
                 Argument::positional(int_lit(0)),
                 Argument::positional(count.clone()),
             ],
-            optional: false,
-        });
+            optional: false });
         let base = ident(&dst_name);
         if is_zero_int_expr(&dst_offset) {
             let write = expr(ExprKind::Assign {
                 target: Box::new(base.clone()),
-                value: Box::new(copied),
-            });
+                value: Box::new(copied) });
             let found_ptr = expr(ExprKind::Call {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(base),
                     field: "slice".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![Argument::positional(count)],
-                optional: false,
-            });
+                optional: false });
             return expr(ExprKind::Sequence(vec![
                 write,
                 expr(ExprKind::Ternary {
                     cond: Box::new(found),
                     then: Box::new(found_ptr),
-                    else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-                }),
+                    else_: Box::new(expr(ExprKind::Lit(Literal::Null))) }),
             ]));
         }
         let prefix = expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(base.clone()),
                 field: "substring".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![
                 Argument::positional(int_lit(0)),
                 Argument::positional(dst_offset.clone()),
             ],
-            optional: false,
-        });
+            optional: false });
         let end_offset = expr(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(dst_offset),
-            right: Box::new(count.clone()),
-        });
+            right: Box::new(count.clone()) });
         let suffix = expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(base.clone()),
                 field: "substring".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(end_offset.clone())],
-            optional: false,
-        });
+            optional: false });
         let updated = expr(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(prefix),
-                right: Box::new(copied),
-            })),
-            right: Box::new(suffix),
-        });
+                right: Box::new(copied) })),
+            right: Box::new(suffix) });
         let write = expr(ExprKind::Assign {
             target: Box::new(base.clone()),
-            value: Box::new(updated),
-        });
+            value: Box::new(updated) });
         let found_ptr = expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(base),
                 field: "slice".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(end_offset)],
-            optional: false,
-        });
+            optional: false });
         expr(ExprKind::Sequence(vec![
             write,
             expr(ExprKind::Ternary {
                 cond: Box::new(found),
                 then: Box::new(found_ptr),
-                else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-            }),
+                else_: Box::new(expr(ExprKind::Lit(Literal::Null))) }),
         ]))
     }
 
@@ -5792,14 +5561,12 @@ impl Walker {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(src),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![
                     Argument::positional(int_lit(0)),
                     Argument::positional(n.clone()),
                 ],
-                optional: false,
-            });
+                optional: false });
         };
         if let ExprKind::Lit(Literal::Str(text)) = &src.kind {
             let mut copied: String = text.chars().take(count).collect();
@@ -5813,14 +5580,12 @@ impl Walker {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(src),
                 field: "substring".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![
                 Argument::positional(int_lit(0)),
                 Argument::positional(n.clone()),
             ],
-            optional: false,
-        })
+            optional: false })
     }
 
     fn rewrite_strncpy(&mut self, dest: Expression, src: Expression, n: Expression) -> Expression {
@@ -5839,8 +5604,7 @@ impl Walker {
                 }
                 return expr(ExprKind::Assign {
                     target: Box::new(base),
-                    value: Box::new(copied),
-                });
+                    value: Box::new(copied) });
             }
             let prefix = if is_zero_int_expr(&dst_offset) {
                 str_lit("")
@@ -5849,38 +5613,31 @@ impl Walker {
                     callee: Box::new(expr(ExprKind::Member {
                         object: Box::new(base.clone()),
                         field: "substring".to_string(),
-                        null_safe: false,
-                    })),
+                        null_safe: false })),
                     args: vec![
                         Argument::positional(int_lit(0)),
                         Argument::positional(dst_offset.clone()),
                     ],
-                    optional: false,
-                })
+                    optional: false })
             };
             let suffix_start = expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(dst_offset.clone()),
-                right: Box::new(n.clone()),
-            });
+                right: Box::new(n.clone()) });
             let suffix = expr(ExprKind::Call {
                 callee: Box::new(expr(ExprKind::Member {
                     object: Box::new(base.clone()),
                     field: "substring".to_string(),
-                    null_safe: false,
-                })),
+                    null_safe: false })),
                 args: vec![Argument::positional(suffix_start)],
-                optional: false,
-            });
+                optional: false });
             let updated = expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(expr(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(prefix),
-                    right: Box::new(copied.clone()),
-                })),
-                right: Box::new(suffix),
-            });
+                    right: Box::new(copied.clone()) })),
+                right: Box::new(suffix) });
             if is_zero_int_expr(&dst_offset) {
                 if let ExprKind::Lit(Literal::Str(copied_text)) = &copied.kind {
                     let n = self
@@ -5898,13 +5655,11 @@ impl Walker {
             }
             return expr(ExprKind::Assign {
                 target: Box::new(base),
-                value: Box::new(updated),
-            });
+                value: Box::new(updated) });
         }
         expr(ExprKind::Assign {
             target: Box::new(dest),
-            value: Box::new(copied),
-        })
+            value: Box::new(copied) })
     }
 
     fn c_string_len_expr(&self, value: &Expression) -> Expression {
@@ -6038,8 +5793,7 @@ impl Walker {
             ExprKind::Ident(name) => self.char_string_values.get(name).cloned(),
             ExprKind::Cast { expr, .. } => self.temp_template_text(expr),
             _ => carray_base_ident(value)
-                .and_then(|name| self.char_string_values.get(&name).cloned()),
-        }
+                .and_then(|name| self.char_string_values.get(&name).cloned()) }
     }
 
     fn mbrlen_expr(&self, src: Expression, n: Expression) -> Expression {
@@ -6237,8 +5991,7 @@ impl Walker {
             }
             let value = expr(ExprKind::NullCoalesce {
                 left: Box::new(ident(&c_env_slot_name(var_name.trim()))),
-                right: Box::new(str_lit("")),
-            });
+                right: Box::new(str_lit("")) });
             return expr(ExprKind::Sequence(vec![
                 call_expr(
                     ident("__c_fputs_h"),
@@ -6295,8 +6048,7 @@ impl Walker {
             expr(ExprKind::Ternary {
                 cond: Box::new(cond),
                 then: Box::new(then),
-                else_: Box::new(else_),
-            })
+                else_: Box::new(else_) })
         } else {
             cond
         }
@@ -6331,8 +6083,7 @@ impl Walker {
                 let t = normalized_c_type_name(type_name);
                 !t.contains('*') && (t.contains("unsigned") || t.contains("uint") || t == "size_t")
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     fn eval_int_expr(&self, e: &Expression) -> Option<i64> {
@@ -6355,8 +6106,7 @@ impl Walker {
                     UnaryOp::Neg => Some(-value),
                     UnaryOp::Not => Some(if value == 0 { 1 } else { 0 }),
                     UnaryOp::BitNot => Some(!value),
-                    _ => None,
-                }
+                    _ => None }
             }
             ExprKind::Binary { op, left, right } => {
                 let l = self.eval_int_expr(left)?;
@@ -6378,8 +6128,7 @@ impl Walker {
                     BinOp::LtEq => Some(if l <= r { 1 } else { 0 }),
                     BinOp::Gt => Some(if l > r { 1 } else { 0 }),
                     BinOp::GtEq => Some(if l >= r { 1 } else { 0 }),
-                    _ => None,
-                }
+                    _ => None }
             }
             ExprKind::Ternary { cond, then, else_ } => {
                 if self.eval_int_expr(cond)? != 0 {
@@ -6389,8 +6138,7 @@ impl Walker {
                 }
             }
             ExprKind::Cast { expr, .. } => self.eval_int_expr(expr),
-            _ => None,
-        }
+            _ => None }
     }
 
     fn evaluable_bounds(&self, bounds: &[Expression]) -> Option<Vec<Expression>> {
@@ -6406,21 +6154,18 @@ impl Walker {
         if let ExprKind::Binary {
             op: BinOp::Shr,
             left,
-            right,
-        } = e.kind
+            right } = e.kind
         {
             if self.is_unsigned_expr(&left) {
                 return expr(ExprKind::Binary {
                     op: BinOp::UShr,
                     left,
-                    right,
-                });
+                    right });
             }
             return expr(ExprKind::Binary {
                 op: BinOp::Shr,
                 left,
-                right,
-            });
+                right });
         }
         e
     }
@@ -6432,8 +6177,7 @@ impl Walker {
         for p in pair.into_inner() {
             match p.as_rule() {
                 Rule::binary_op => ops.push(p.as_str().to_string()),
-                _ => operands.push(self.walk_unary(p)),
-            }
+                _ => operands.push(self.walk_unary(p)) }
         }
         let result = fold_binary(operands, ops);
         let result = self.rewrite_unsigned_shift(result);
@@ -6472,8 +6216,7 @@ impl Walker {
             ExprKind::Ternary { then, else_, .. } => {
                 self.is_floatish_expr(then) || self.is_floatish_expr(else_)
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     fn rewrite_integer_division(&self, e: Expression) -> Expression {
@@ -6488,15 +6231,13 @@ impl Walker {
                 expr(ExprKind::Binary {
                     op: BinOp::Div,
                     left: Box::new(left),
-                    right: Box::new(right),
-                }),
+                    right: Box::new(right) }),
             );
         }
         expr(ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right),
-        })
+            right: Box::new(right) })
     }
 
     fn rewrite_complex_binary_expr(&self, e: Expression) -> Expression {
@@ -6519,13 +6260,11 @@ impl Walker {
                     expr(ExprKind::Binary {
                         op: BinOp::Add,
                         left: Box::new(left_re),
-                        right: Box::new(right_re),
-                    }),
+                        right: Box::new(right_re) }),
                     expr(ExprKind::Binary {
                         op: BinOp::Add,
                         left: Box::new(left_im),
-                        right: Box::new(right_im),
-                    }),
+                        right: Box::new(right_im) }),
                 );
             }
             BinOp::Sub if left_complex || right_complex || left_i || right_i => {
@@ -6535,13 +6274,11 @@ impl Walker {
                     expr(ExprKind::Binary {
                         op: BinOp::Sub,
                         left: Box::new(left_re),
-                        right: Box::new(right_re),
-                    }),
+                        right: Box::new(right_re) }),
                     expr(ExprKind::Binary {
                         op: BinOp::Sub,
                         left: Box::new(left_im),
-                        right: Box::new(right_im),
-                    }),
+                        right: Box::new(right_im) }),
                 );
             }
             BinOp::Mul if left_complex || right_complex || left_i || right_i => {
@@ -6553,8 +6290,7 @@ impl Walker {
                     return self.complex_object(
                         expr(ExprKind::Unary {
                             op: UnaryOp::Neg,
-                            expr: Box::new(im),
-                        }),
+                            expr: Box::new(im) }),
                         re,
                     );
                 }
@@ -6563,8 +6299,7 @@ impl Walker {
                     return self.complex_object(
                         expr(ExprKind::Unary {
                             op: UnaryOp::Neg,
-                            expr: Box::new(im),
-                        }),
+                            expr: Box::new(im) }),
                         re,
                     );
                 }
@@ -6575,27 +6310,21 @@ impl Walker {
                     left: Box::new(expr(ExprKind::Binary {
                         op: BinOp::Mul,
                         left: Box::new(a_re.clone()),
-                        right: Box::new(b_re.clone()),
-                    })),
+                        right: Box::new(b_re.clone()) })),
                     right: Box::new(expr(ExprKind::Binary {
                         op: BinOp::Mul,
                         left: Box::new(a_im.clone()),
-                        right: Box::new(b_im.clone()),
-                    })),
-                });
+                        right: Box::new(b_im.clone()) })) });
                 let imag = expr(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(expr(ExprKind::Binary {
                         op: BinOp::Mul,
                         left: Box::new(a_re),
-                        right: Box::new(b_im),
-                    })),
+                        right: Box::new(b_im) })),
                     right: Box::new(expr(ExprKind::Binary {
                         op: BinOp::Mul,
                         left: Box::new(a_im),
-                        right: Box::new(b_re),
-                    })),
-                });
+                        right: Box::new(b_re) })) });
                 return self.complex_object(real, imag);
             }
             _ => {}
@@ -6604,8 +6333,7 @@ impl Walker {
         expr(ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right),
-        })
+            right: Box::new(right) })
     }
 
     fn rewrite_fenv_binary(&self, e: Expression) -> Expression {
@@ -6622,8 +6350,7 @@ impl Walker {
         expr(ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right),
-        })
+            right: Box::new(right) })
     }
 
     fn is_complex_expr(&self, expr: &Expression) -> bool {
@@ -6637,8 +6364,7 @@ impl Walker {
                 ObjectProperty::KeyValue { key, .. } => {
                     matches!(&key.kind, ExprKind::Lit(Literal::Str(s)) if s == "real" || s == "imag")
                 }
-                _ => false,
-            }),
+                _ => false }),
             ExprKind::Member { field, .. } => field == "real" || field == "imag",
             ExprKind::Binary { op: BinOp::Mul, left, right } => {
                 self.is_imag_unit_expr(left)
@@ -6656,8 +6382,7 @@ impl Walker {
             ExprKind::Ternary { then, else_, .. } => {
                 self.is_complex_expr(then) || self.is_complex_expr(else_)
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     fn is_imag_unit_expr(&self, expr: &Expression) -> bool {
@@ -6671,8 +6396,7 @@ impl Walker {
         if let ExprKind::Binary {
             op: BinOp::Mul,
             left,
-            right,
-        } = &expr.kind
+            right } = &expr.kind
         {
             if self.is_imag_unit_expr(left) {
                 return (int_lit(0), (*right.clone()).clone());
@@ -6714,8 +6438,7 @@ impl Walker {
             self.complex_real_part(value.clone()),
             expr(ExprKind::Unary {
                 op: UnaryOp::Neg,
-                expr: Box::new(self.complex_imag_part(value)),
-            }),
+                expr: Box::new(self.complex_imag_part(value)) }),
         )
     }
 
@@ -6919,8 +6642,7 @@ impl Walker {
         expr(ExprKind::Binary {
             op,
             left: Box::new(left_final),
-            right: Box::new(right_final),
-        })
+            right: Box::new(right_final) })
     }
 
     fn is_pointer_like_expr(&self, expr_in: &Expression) -> bool {
@@ -6939,8 +6661,7 @@ impl Walker {
             ExprKind::Object(_) => is_carray_like_expr(expr_in),
             ExprKind::Call { .. } | ExprKind::Ternary { .. } => is_carray_like_expr(expr_in),
             ExprKind::Cast { expr, .. } => self.is_pointer_like_expr(expr),
-            _ => false,
-        }
+            _ => false }
     }
 
     fn is_struct_value_expr(&self, expr_in: &Expression) -> bool {
@@ -6952,8 +6673,7 @@ impl Walker {
                 .map(|ty| self.structs.contains_key(&ty))
                 .unwrap_or(false),
             ExprKind::Member { .. } | ExprKind::Object(_) => true,
-            _ => false,
-        }
+            _ => false }
     }
 
     fn rewrite_char_index_numeric(&self, e: Expression) -> Expression {
@@ -6985,8 +6705,7 @@ impl Walker {
             return expr(ExprKind::Binary {
                 op,
                 left: Box::new(left),
-                right: Box::new(right),
-            });
+                right: Box::new(right) });
         }
         let left = if self.is_char_index_read(&left) {
             self.char_index_read_to_code(left)
@@ -7001,8 +6720,7 @@ impl Walker {
         expr(ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right),
-        })
+            right: Box::new(right) })
     }
 
     fn rewrite_char_condition(&self, cond: Expression) -> Expression {
@@ -7011,18 +6729,15 @@ impl Walker {
                 let in_bounds = expr(ExprKind::Binary {
                     op: BinOp::Lt,
                     left: index.clone(),
-                    right: Box::new(member(*object.clone(), "length")),
-                });
+                    right: Box::new(member(*object.clone(), "length")) });
                 let char_value = string_adapter::string_to_char_code(cond);
                 return expr(ExprKind::Binary {
                     op: BinOp::NotEq,
                     left: Box::new(expr(ExprKind::Ternary {
                         cond: Box::new(in_bounds),
                         then: Box::new(char_value),
-                        else_: Box::new(int_lit(0)),
-                    })),
-                    right: Box::new(int_lit(0)),
-                });
+                        else_: Box::new(int_lit(0)) })),
+                    right: Box::new(int_lit(0)) });
             }
         }
         cond
@@ -7050,14 +6765,12 @@ impl Walker {
             return expr(ExprKind::Binary {
                 op,
                 left: Box::new(left),
-                right: Box::new(right),
-            });
+                right: Box::new(right) });
         }
         expr(ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right),
-        })
+            right: Box::new(right) })
     }
 
     /// Convert a char-buffer element read (`s[i]`) into its int char code,
@@ -7070,8 +6783,7 @@ impl Walker {
             return self.char_index_read_to_code(expr(ExprKind::Index {
                 object: Box::new(ident(&name)),
                 index: Box::new(index),
-                null_safe: false,
-            }));
+                null_safe: false }));
         }
         let ExprKind::Index { object, index, .. } = &e.kind else {
             return string_adapter::string_to_char_code(e);
@@ -7108,13 +6820,11 @@ impl Walker {
         let in_bounds = expr(ExprKind::Binary {
             op: BinOp::Lt,
             left: index.clone(),
-            right: Box::new(member(*object.clone(), "length")),
-        });
+            right: Box::new(member(*object.clone(), "length")) });
         expr(ExprKind::Ternary {
             cond: Box::new(in_bounds),
             then: Box::new(string_adapter::string_to_char_code(e)),
-            else_: Box::new(int_lit(0)),
-        })
+            else_: Box::new(int_lit(0)) })
     }
 
     fn is_char_index_read(&self, e: &Expression) -> bool {
@@ -7184,23 +6894,19 @@ impl Walker {
             ExprKind::Binary {
                 op: BinOp::Add,
                 ref left,
-                ref right,
-            } if matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n)) => {
+                ref right } if matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n)) => {
                 pointers::make_carray_ptr(*left.clone(), *right.clone())
             }
             ExprKind::Binary {
                 op: BinOp::Sub,
                 ref left,
-                ref right,
-            } if matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n)) => {
+                ref right } if matches!(&left.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n)) => {
                 let neg_n = expr(ExprKind::Unary {
                     op: UnaryOp::Neg,
-                    expr: right.clone(),
-                });
+                    expr: right.clone() });
                 pointers::make_carray_ptr(*left.clone(), neg_n)
             }
-            _ => pointers::make_carray_ptr(raw, zero),
-        }
+            _ => pointers::make_carray_ptr(raw, zero) }
     }
 
     /// Rewrite carray pointer arithmetic expressions.
@@ -7263,8 +6969,7 @@ impl Walker {
                     } else {
                         expr(ExprKind::Unary {
                             op: UnaryOp::Not,
-                            expr: Box::new(ptr_eq),
-                        })
+                            expr: Box::new(ptr_eq) })
                     };
                 }
                 if let Some(matches_alias) = self.pointer_address_alias_comparison(&left, &right) {
@@ -7327,8 +7032,7 @@ impl Walker {
                     // arr(as ptr at 0) - p → 0 - p.__idx = -p.__idx
                     return expr(ExprKind::Unary {
                         op: UnaryOp::Neg,
-                        expr: Box::new(carray_idx_value_expr(&right_carray_expr)),
-                    });
+                        expr: Box::new(carray_idx_value_expr(&right_carray_expr)) });
                 }
                 if left_is_carray_var {
                     // p - n → new carray with __idx - n
@@ -7349,8 +7053,7 @@ impl Walker {
                             BinOp::Gt => left_index > right_index,
                             BinOp::LtEq => left_index <= right_index,
                             BinOp::GtEq => left_index >= right_index,
-                            _ => false,
-                        };
+                            _ => false };
                         return expr(ExprKind::Lit(Literal::Bool(result)));
                     }
                 }
@@ -7384,8 +7087,7 @@ impl Walker {
     fn address_linear_index(&self, value: &Expression) -> Option<(String, i64)> {
         let ExprKind::Unary {
             op: UnaryOp::AddrOf,
-            expr,
-        } = &value.kind
+            expr } = &value.kind
         else {
             return None;
         };
@@ -7497,17 +7199,14 @@ impl Walker {
                 expr(ExprKind::Binary {
                     op: BinOp::Mul,
                     left: Box::new(index),
-                    right: Box::new(int_lit(stride)),
-                })
+                    right: Box::new(int_lit(stride)) })
             };
             linear = Some(match linear {
                 Some(prev) => expr(ExprKind::Binary {
                     op: BinOp::Add,
                     left: Box::new(prev),
-                    right: Box::new(term),
-                }),
-                None => term,
-            });
+                    right: Box::new(term) }),
+                None => term });
         }
 
         Some((ident(base), linear.unwrap_or_else(|| int_lit(0))))
@@ -7522,8 +7221,7 @@ impl Walker {
             let fake_target = expr(ExprKind::Index {
                 object: Box::new(ident(&name)),
                 index: Box::new(index),
-                null_safe: false,
-            });
+                null_safe: false });
             return self.rewrite_char_index_assignment(&fake_target, value);
         }
         let ExprKind::Index { object, index, .. } = &target.kind else {
@@ -7560,14 +7258,12 @@ impl Walker {
                 ExprKind::Lit(Literal::Str(s)) => {
                     int_lit(s.chars().next().map(|ch| ch as u32 as i64).unwrap_or(0))
                 }
-                _ => value,
-            };
+                _ => value };
             return Some(assign_expr(
                 expr(ExprKind::Index {
                     object: Box::new(member(*ptr.clone(), CARRAY_BASE_KEY)),
                     index: index.clone(),
-                    null_safe: false,
-                }),
+                    null_safe: false }),
                 code_value,
             ));
         } else {
@@ -7582,14 +7278,12 @@ impl Walker {
                     ExprKind::Lit(Literal::Str(s)) => {
                         int_lit(s.chars().next().map(|ch| ch as u32 as i64).unwrap_or(0))
                     }
-                    _ => value,
-                };
+                    _ => value };
                 return Some(assign_expr(
                     expr(ExprKind::Index {
                         object: Box::new(object_expr),
                         index,
-                        null_safe: false,
-                    }),
+                        null_safe: false }),
                     code_value,
                 ));
             }
@@ -7634,8 +7328,7 @@ impl Walker {
             self.tmp_counter += 1;
             let bind = expr(ExprKind::Assign {
                 target: Box::new(ident(&tmp)),
-                value: index.clone(),
-            });
+                value: index.clone() });
             let splice = self.build_char_index_splice(object_expr, ident(&tmp), char_value);
             return Some(expr(ExprKind::Sequence(vec![bind, splice])));
         }
@@ -7655,27 +7348,22 @@ impl Walker {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(object_expr.clone()),
                 field: "slice".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![
                 Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                 Argument::positional(*index.clone()),
             ],
-            optional: false,
-        });
+            optional: false });
         let suffix = expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(object_expr.clone()),
                 field: "slice".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: index.clone(),
-                right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
-            }))],
-            optional: false,
-        });
+                right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))) }))],
+            optional: false });
         let updated = call_expr(
             ident("__c_str_concat"),
             vec![
@@ -7685,8 +7373,7 @@ impl Walker {
         );
         expr(ExprKind::Assign {
             target: Box::new(object_expr),
-            value: Box::new(updated),
-        })
+            value: Box::new(updated) })
     }
 
     /// C logical && and || return 0 or 1 (not the operand value).
@@ -7700,8 +7387,7 @@ impl Walker {
             return expr(ExprKind::Ternary {
                 cond: Box::new(e),
                 then: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
-                else_: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
-            });
+                else_: Box::new(expr(ExprKind::Lit(Literal::Int(0)))) });
         }
         e
     }
@@ -7724,15 +7410,13 @@ impl Walker {
                         let eq = expr(ExprKind::Binary {
                             op: BinOp::Eq,
                             left: Box::new(left_offset),
-                            right: Box::new(right_offset),
-                        });
+                            right: Box::new(right_offset) });
                         return if matches!(op, BinOp::Eq) {
                             eq
                         } else {
                             expr(ExprKind::Unary {
                                 op: UnaryOp::Not,
-                                expr: Box::new(eq),
-                            })
+                                expr: Box::new(eq) })
                         };
                     }
                 }
@@ -7741,15 +7425,13 @@ impl Walker {
                         let eq = expr(ExprKind::Binary {
                             op: BinOp::Eq,
                             left: Box::new(left_offset),
-                            right: Box::new(right_offset),
-                        });
+                            right: Box::new(right_offset) });
                         return if matches!(op, BinOp::Eq) {
                             eq
                         } else {
                             expr(ExprKind::Unary {
                                 op: UnaryOp::Not,
-                                expr: Box::new(eq),
-                            })
+                                expr: Box::new(eq) })
                         };
                     }
                 }
@@ -7775,9 +7457,7 @@ impl Walker {
                                         expr: Box::new(expr(ExprKind::Member {
                                             object: Box::new(ident(struct_var)),
                                             field,
-                                            null_safe: false,
-                                        })),
-                                    });
+                                            null_safe: false })) });
                                 }
                             }
                         }
@@ -7791,8 +7471,7 @@ impl Walker {
                         Argument::positional(*left.clone()),
                         Argument::positional(*right),
                     ],
-                    optional: false,
-                });
+                    optional: false });
             }
             if matches!(op, BinOp::Sub) {
                 if let (ExprKind::Ident(ptr_name), ExprKind::Ident(base_name)) =
@@ -7815,8 +7494,7 @@ impl Walker {
                         return expr(ExprKind::Binary {
                             op: BinOp::Sub,
                             left: Box::new(member(*right.clone(), "length")),
-                            right: Box::new(member(*left.clone(), "length")),
-                        });
+                            right: Box::new(member(*left.clone(), "length")) });
                     }
                 }
                 if let Some(offset) = string_search_result_offset(&left, &right) {
@@ -7875,16 +7553,14 @@ impl Walker {
                                 StmtKind::Expr(value) => {
                                     body.push(stmt(StmtKind::Return(Some(value))));
                                 }
-                                other => body.push(stmt(other)),
-                            }
+                                other => body.push(stmt(other)) }
                         }
                         return call_expr(
                             expr(ExprKind::Lambda {
                                 params: vec![],
                                 body: LambdaBody::Block(body),
                                 is_async: false,
-                                captures: vec![],
-                            }),
+                                captures: vec![] }),
                             vec![],
                         );
                     }
@@ -7963,13 +7639,11 @@ impl Walker {
                     }
                     Rule::cast_expression => self.walk_cast(first),
                     Rule::postfix_expression => self.walk_postfix(first),
-                    _ => self.walk_unary(first),
-                }
+                    _ => self.walk_unary(first) }
             }
             Rule::cast_expression => self.walk_cast(pair),
             Rule::postfix_expression => self.walk_postfix(pair),
-            _ => self.walk_postfix(pair),
-        }
+            _ => self.walk_postfix(pair) }
     }
 
     fn apply_prefix(&mut self, op: &str, operand: Expression) -> Expression {
@@ -7996,8 +7670,7 @@ impl Walker {
                 //   *(p--) → (p.__idx -= 1, p.__base[p.__idx + 1])  [retreat, then read old]
                 if let ExprKind::Unary {
                     op: unary_op,
-                    expr: idx_member,
-                } = &operand.kind
+                    expr: idx_member } = &operand.kind
                 {
                     if matches!(unary_op, UnaryOp::PostInc | UnaryOp::PostDec) {
                         if let ExprKind::Member { object, field, .. } = &idx_member.kind {
@@ -8025,25 +7698,21 @@ impl Walker {
                                         let base_arr = expr(ExprKind::Member {
                                             object: object.clone(),
                                             field: CARRAY_BASE_KEY.to_string(),
-                                            null_safe: false,
-                                        });
+                                            null_safe: false });
                                         let new_idx = expr(ExprKind::Member {
                                             object: object.clone(),
                                             field: CARRAY_IDX_KEY.to_string(),
-                                            null_safe: false,
-                                        });
+                                            null_safe: false });
                                         let old_idx = expr(ExprKind::Binary {
                                             op: if offset < 0 { BinOp::Sub } else { BinOp::Add },
                                             left: Box::new(new_idx),
                                             right: Box::new(expr(ExprKind::Lit(Literal::Int(
                                                 offset.abs(),
-                                            )))),
-                                        });
+                                            )))) });
                                         let read_old = expr(ExprKind::Index {
                                             object: Box::new(base_arr),
                                             index: Box::new(old_idx),
-                                            null_safe: false,
-                                        });
+                                            null_safe: false });
                                         return expr(ExprKind::Sequence(vec![
                                             side_effect,
                                             read_old,
@@ -8073,8 +7742,7 @@ impl Walker {
                 if let ExprKind::Binary {
                     op: ref bop,
                     ref left,
-                    ref right,
-                } = operand.kind
+                    ref right } = operand.kind
                 {
                     if let ExprKind::Ident(ref name) = left.kind {
                         if self.carray_ptr_vars.contains(name) {
@@ -8084,34 +7752,26 @@ impl Walker {
                                     left: Box::new(expr(ExprKind::Member {
                                         object: left.clone(),
                                         field: CARRAY_IDX_KEY.to_string(),
-                                        null_safe: false,
-                                    })),
-                                    right: right.clone(),
-                                }),
+                                        null_safe: false })),
+                                    right: right.clone() }),
                                 BinOp::Sub => expr(ExprKind::Binary {
                                     op: BinOp::Sub,
                                     left: Box::new(expr(ExprKind::Member {
                                         object: left.clone(),
                                         field: CARRAY_IDX_KEY.to_string(),
-                                        null_safe: false,
-                                    })),
-                                    right: right.clone(),
-                                }),
+                                        null_safe: false })),
+                                    right: right.clone() }),
                                 _ => expr(ExprKind::Member {
                                     object: left.clone(),
                                     field: CARRAY_IDX_KEY.to_string(),
-                                    null_safe: false,
-                                }),
-                            };
+                                    null_safe: false }) };
                             return expr(ExprKind::Index {
                                 object: Box::new(expr(ExprKind::Member {
                                     object: left.clone(),
                                     field: CARRAY_BASE_KEY.to_string(),
-                                    null_safe: false,
-                                })),
+                                    null_safe: false })),
                                 index: Box::new(new_idx),
-                                null_safe: false,
-                            });
+                                null_safe: false });
                         }
                     }
                 }
@@ -8122,8 +7782,7 @@ impl Walker {
                     return expr(ExprKind::Index {
                         object: Box::new(base),
                         index: Box::new(index),
-                        null_safe: false,
-                    });
+                        null_safe: false });
                 }
                 if is_carray_object(&operand) {
                     return pointers::carray_deref_read(operand);
@@ -8146,8 +7805,7 @@ impl Walker {
                             return expr(ExprKind::Index {
                                 object: object.clone(),
                                 index: Box::new(args[0].value.clone()),
-                                null_safe: false,
-                            });
+                                null_safe: false });
                         }
                     }
                 }
@@ -8168,14 +7826,12 @@ impl Walker {
                         return expr(ExprKind::Index {
                             object: Box::new(operand),
                             index: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
-                            null_safe: false,
-                        });
+                            null_safe: false });
                     }
                 }
                 expr(ExprKind::Unary {
                     op: UnaryOp::Deref,
-                    expr: Box::new(operand),
-                })
+                    expr: Box::new(operand) })
             }
             "&" => {
                 if let Some((base, index)) = self.dynamic_char_index_target(&operand) {
@@ -8205,16 +7861,13 @@ impl Walker {
                                 left: Box::new(expr(ExprKind::Member {
                                     object: object.clone(),
                                     field: CARRAY_IDX_KEY.to_string(),
-                                    null_safe: false,
-                                })),
-                                right: index.clone(),
-                            });
+                                    null_safe: false })),
+                                right: index.clone() });
                             return pointers::make_carray_ptr(
                                 expr(ExprKind::Member {
                                     object: object.clone(),
                                     field: CARRAY_BASE_KEY.to_string(),
-                                    null_safe: false,
-                                }),
+                                    null_safe: false }),
                                 new_idx,
                             );
                         }
@@ -8222,8 +7875,7 @@ impl Walker {
                 }
                 let operand = match operand.kind {
                     ExprKind::RefLoad(inner) => *inner,
-                    other => expr(other),
-                };
+                    other => expr(other) };
                 if let ExprKind::Array(elems) = &operand.kind {
                     if elems.len() == 1 && elems[0].key.is_none() {
                         return pointers::make_carray_ptr(operand, int_lit(0));
@@ -8234,22 +7886,18 @@ impl Walker {
                 }
                 expr(ExprKind::Unary {
                     op: UnaryOp::AddrOf,
-                    expr: Box::new(operand),
-                })
+                    expr: Box::new(operand) })
             }
             "+" => operand,
             "-" => expr(ExprKind::Unary {
                 op: UnaryOp::Neg,
-                expr: Box::new(operand),
-            }),
+                expr: Box::new(operand) }),
             "!" => expr(ExprKind::Unary {
                 op: UnaryOp::Not,
-                expr: Box::new(operand),
-            }),
+                expr: Box::new(operand) }),
             "~" => expr(ExprKind::Unary {
                 op: UnaryOp::BitNot,
-                expr: Box::new(operand),
-            }),
+                expr: Box::new(operand) }),
             "++" => {
                 if let ExprKind::Ident(ref name) = operand.kind {
                     if self.carray_ptr_vars.contains(name) {
@@ -8271,14 +7919,11 @@ impl Walker {
                                 callee: Box::new(expr(ExprKind::Member {
                                     object: Box::new(ident(name)),
                                     field: "substring".to_string(),
-                                    null_safe: false,
-                                })),
+                                    null_safe: false })),
                                 args: vec![Argument::positional(expr(ExprKind::Lit(
                                     Literal::Int(1),
                                 )))],
-                                optional: false,
-                            })),
-                        });
+                                optional: false })) });
                     }
                 }
                 if let Some((width, signed)) = self.bitfield_of_member(&operand) {
@@ -8286,8 +7931,7 @@ impl Walker {
                 }
                 expr(ExprKind::Unary {
                     op: UnaryOp::PreInc,
-                    expr: Box::new(operand),
-                })
+                    expr: Box::new(operand) })
             }
             "--" => {
                 if let ExprKind::Ident(ref name) = operand.kind {
@@ -8308,11 +7952,9 @@ impl Walker {
                 }
                 expr(ExprKind::Unary {
                     op: UnaryOp::PreDec,
-                    expr: Box::new(operand),
-                })
+                    expr: Box::new(operand) })
             }
-            _ => operand,
-        }
+            _ => operand }
     }
 
     fn dynamic_char_index_target(&self, operand: &Expression) -> Option<(String, Expression)> {
@@ -8400,8 +8042,7 @@ impl Walker {
                 }
                 if let ExprKind::Unary {
                     op: UnaryOp::AddrOf,
-                    expr: inner,
-                } = &operand.kind
+                    expr: inner } = &operand.kind
                 {
                     if let ExprKind::Ident(name) = &inner.kind {
                         if let Some(vt) = self.var_types.get(name).cloned() {
@@ -8421,19 +8062,16 @@ impl Walker {
                                             expr(ExprKind::Binary {
                                                 op: BinOp::Shr,
                                                 left: Box::new(ident(name)),
-                                                right: Box::new(int_lit(8 * i as i64)),
-                                            })
+                                                right: Box::new(int_lit(8 * i as i64)) })
                                         };
                                         ArrayElement {
                                             value: expr(ExprKind::Binary {
                                                 op: BinOp::BitAnd,
                                                 left: Box::new(shifted),
-                                                right: Box::new(int_lit(0xFF)),
-                                            }),
+                                                right: Box::new(int_lit(0xFF)) }),
                                             spread: false,
                                             key: None,
-                                            by_ref: false,
-                                        }
+                                            by_ref: false }
                                     })
                                     .collect();
                                 return pointers::make_carray_ptr(
@@ -8460,16 +8098,13 @@ impl Walker {
                             left: Box::new(expr(ExprKind::Member {
                                 object: Box::new(ident(name)),
                                 field: CARRAY_IDX_KEY.to_string(),
-                                null_safe: false,
-                            })),
-                            right: Box::new(int_lit(elem_size)),
-                        });
+                                null_safe: false })),
+                            right: Box::new(int_lit(elem_size)) });
                         return pointers::make_carray_ptr(
                             expr(ExprKind::Member {
                                 object: Box::new(ident(name)),
                                 field: CARRAY_BASE_KEY.to_string(),
-                                null_safe: false,
-                            }),
+                                null_safe: false }),
                             scaled_idx,
                         );
                     }
@@ -8538,8 +8173,7 @@ impl Walker {
         };
         expr(ExprKind::Cast {
             expr: Box::new(operand),
-            type_name: canon.to_string(),
-        })
+            type_name: canon.to_string() })
     }
 
     fn walk_postfix(&mut self, pair: Pair<Rule>) -> Expression {
@@ -8578,15 +8212,12 @@ impl Walker {
                             else_: Box::new(expr(ExprKind::Index {
                                 object: Box::new(obj),
                                 index: Box::new(ix),
-                                null_safe: false,
-                            })),
-                        })
+                                null_safe: false })) })
                     } else {
                         expr(ExprKind::Index {
                             object: Box::new(obj),
                             index: Box::new(ix),
-                            null_safe: false,
-                        })
+                            null_safe: false })
                     }
                 }
                 Rule::member_suffix | Rule::arrow_suffix => {
@@ -8601,21 +8232,18 @@ impl Walker {
                             expr(ExprKind::Member {
                                 object: Box::new(object),
                                 field,
-                                null_safe: false,
-                            })
+                                null_safe: false })
                         } else {
                             expr(ExprKind::Member {
                                 object: Box::new(base),
                                 field,
-                                null_safe: false,
-                            })
+                                null_safe: false })
                         }
                     } else {
                         expr(ExprKind::Member {
                             object: Box::new(base),
                             field,
-                            null_safe: false,
-                        })
+                            null_safe: false })
                     }
                 }
                 Rule::inc_dec_suffix => {
@@ -8628,8 +8256,7 @@ impl Walker {
                                 expr(ExprKind::Binary {
                                     op: BinOp::Add,
                                     left: Box::new(current),
-                                    right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
-                                }),
+                                    right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))) }),
                             );
                         }
                         if let ExprKind::Ident(ref name) = base.kind {
@@ -8642,9 +8269,7 @@ impl Walker {
                                     expr: Box::new(expr(ExprKind::Member {
                                         object: Box::new(base.clone()),
                                         field: CARRAY_IDX_KEY.to_string(),
-                                        null_safe: false,
-                                    })),
-                                })
+                                        null_safe: false })) })
                             } else if self.char_pointers.contains(name) {
                                 // Postfix `s++` on a char* (string model): the
                                 // expression value is the OLD pointer; advance s by
@@ -8657,13 +8282,11 @@ impl Walker {
                                     callee: Box::new(expr(ExprKind::Member {
                                         object: Box::new(ident(name)),
                                         field: "substring".to_string(),
-                                        null_safe: false,
-                                    })),
+                                        null_safe: false })),
                                     args: vec![Argument::positional(expr(ExprKind::Lit(
                                         Literal::Int(1),
                                     )))],
-                                    optional: false,
-                                });
+                                    optional: false });
                                 expr(ExprKind::Sequence(vec![
                                     assign_expr(ident(&tmp), ident(name)),
                                     assign_expr(ident(name), advance),
@@ -8680,8 +8303,7 @@ impl Walker {
                                         expr(ExprKind::Binary {
                                             op: BinOp::Add,
                                             left: Box::new(ident(name)),
-                                            right: Box::new(int_lit(1)),
-                                        }),
+                                            right: Box::new(int_lit(1)) }),
                                     ),
                                     ident(&tmp),
                                 ]))
@@ -8701,8 +8323,7 @@ impl Walker {
                             }
                             expr(ExprKind::Unary {
                                 op: UnaryOp::PostInc,
-                                expr: Box::new(base),
-                            })
+                                expr: Box::new(base) })
                         }
                     } else {
                         // suffix is "--"
@@ -8714,8 +8335,7 @@ impl Walker {
                                 expr(ExprKind::Binary {
                                     op: BinOp::Sub,
                                     left: Box::new(current),
-                                    right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
-                                }),
+                                    right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))) }),
                             );
                         }
                         if let ExprKind::Ident(ref name) = base.kind {
@@ -8726,9 +8346,7 @@ impl Walker {
                                     expr: Box::new(expr(ExprKind::Member {
                                         object: Box::new(base.clone()),
                                         field: CARRAY_IDX_KEY.to_string(),
-                                        null_safe: false,
-                                    })),
-                                })
+                                        null_safe: false })) })
                             } else {
                                 let id = self.tmp_counter;
                                 self.tmp_counter += 1;
@@ -8740,8 +8358,7 @@ impl Walker {
                                         expr(ExprKind::Binary {
                                             op: BinOp::Sub,
                                             left: Box::new(ident(name)),
-                                            right: Box::new(int_lit(1)),
-                                        }),
+                                            right: Box::new(int_lit(1)) }),
                                     ),
                                     ident(&tmp),
                                 ]))
@@ -8761,13 +8378,11 @@ impl Walker {
                             }
                             expr(ExprKind::Unary {
                                 op: UnaryOp::PostDec,
-                                expr: Box::new(base),
-                            })
+                                expr: Box::new(base) })
                         }
                     }
                 }
-                _ => base,
-            };
+                _ => base };
         }
         base
     }
@@ -8857,8 +8472,7 @@ impl Walker {
                     return expr(ExprKind::Binary {
                         op: BinOp::Mod,
                         left: Box::new(pop),
-                        right: Box::new(int_lit(2)),
-                    });
+                        right: Box::new(int_lit(2)) });
                 }
                 "__builtin_bswap16" => {
                     return builtin_bswap16_expr(args.first().map(|a| a.value.clone()));
@@ -8887,8 +8501,7 @@ impl Walker {
                     let op = match name.as_str() {
                         "__builtin_sub_overflow" => BinOp::Sub,
                         "__builtin_mul_overflow" => BinOp::Mul,
-                        _ => BinOp::Add,
-                    };
+                        _ => BinOp::Add };
                     return builtin_overflow_expr(op, left, right, out);
                 }
                 "printf" | "wprintf" => {
@@ -9016,12 +8629,10 @@ impl Walker {
                         let va_state = expr(ExprKind::Object(vec![
                             ObjectProperty::KeyValue {
                                 key: str_lit("__values"),
-                                value: ident("__va_args"),
-                            },
+                                value: ident("__va_args") },
                             ObjectProperty::KeyValue {
                                 key: str_lit("__idx"),
-                                value: int_lit(0),
-                            },
+                                value: int_lit(0) },
                         ]));
                         return assign_expr(ap, va_state);
                     }
@@ -9038,12 +8649,10 @@ impl Walker {
                         let copied = expr(ExprKind::Object(vec![
                             ObjectProperty::KeyValue {
                                 key: str_lit("__values"),
-                                value: member(src.clone(), "__values"),
-                            },
+                                value: member(src.clone(), "__values") },
                             ObjectProperty::KeyValue {
                                 key: str_lit("__idx"),
-                                value: member(src, "__idx"),
-                            },
+                                value: member(src, "__idx") },
                         ]));
                         return assign_expr(dst, copied);
                     }
@@ -9102,8 +8711,7 @@ impl Walker {
                     };
                     let template_name = match &template_arg.kind {
                         ExprKind::Ident(name) => Some(name.clone()),
-                        _ => carray_base_ident(&template_arg),
-                    };
+                        _ => carray_base_ident(&template_arg) };
                     let write_path = if let Some(template_name) = template_name {
                         if self.char_string_values.contains_key(&template_name) {
                             self.char_string_values
@@ -9209,11 +8817,9 @@ impl Walker {
                                         ident("__c_path_exists"),
                                         path.clone(),
                                     )),
-                                    right: Box::new(int_lit(0)),
-                                })),
+                                    right: Box::new(int_lit(0)) })),
                                 then: Box::new(null_lit()),
-                                else_: Box::new(opened),
-                            });
+                                else_: Box::new(opened) });
                         }
                         return opened;
                     }
@@ -9312,8 +8918,7 @@ impl Walker {
                             else_: Box::new(expr(ExprKind::Sequence(vec![
                                 assign_expr(target, call_expr(ident("__c_ftell_h"), vec![file])),
                                 int_lit(0),
-                            ]))),
-                        });
+                            ]))) });
                     }
                     return int_lit(1);
                 }
@@ -9343,8 +8948,7 @@ impl Walker {
                                     expr(ExprKind::Array(vec![])),
                                 ),
                                 int_lit(0),
-                            ]))),
-                        });
+                            ]))) });
                     }
                     return int_lit(1);
                 }
@@ -9353,8 +8957,7 @@ impl Walker {
                         return expr(ExprKind::Binary {
                             op: BinOp::NotEq,
                             left: Box::new(index_expr(ident("__c_file_eof"), file.value)),
-                            right: Box::new(int_lit(0)),
-                        });
+                            right: Box::new(int_lit(0)) });
                     }
                     return int_lit(0);
                 }
@@ -9363,8 +8966,7 @@ impl Walker {
                         return expr(ExprKind::Binary {
                             op: BinOp::NotEq,
                             left: Box::new(index_expr(ident("__c_file_error"), file.value)),
-                            right: Box::new(int_lit(0)),
-                        });
+                            right: Box::new(int_lit(0)) });
                     }
                     return int_lit(0);
                 }
@@ -9461,19 +9063,16 @@ impl Walker {
                         let missing = expr(ExprKind::Binary {
                             op: BinOp::Eq,
                             left: Box::new(index_expr(ident("__c_path_exists"), path.clone())),
-                            right: Box::new(int_lit(0)),
-                        });
+                            right: Box::new(int_lit(0)) });
                         let too_long = expr(ExprKind::Binary {
                             op: BinOp::Gt,
                             left: Box::new(member(path.clone(), "length")),
-                            right: Box::new(int_lit(240)),
-                        });
+                            right: Box::new(int_lit(240)) });
                         return expr(ExprKind::Ternary {
                             cond: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::Or,
                                 left: Box::new(missing),
-                                right: Box::new(too_long),
-                            })),
+                                right: Box::new(too_long) })),
                             then: Box::new(int_lit(-1)),
                             else_: Box::new(expr(ExprKind::Sequence(vec![
                                 assign_expr(
@@ -9482,8 +9081,7 @@ impl Walker {
                                 ),
                                 assign_expr(index_expr(ident("__c_file_store"), path), null_lit()),
                                 int_lit(0),
-                            ]))),
-                        });
+                            ]))) });
                     }
                     return int_lit(-1);
                 }
@@ -9496,8 +9094,7 @@ impl Walker {
                         let src_missing = expr(ExprKind::Binary {
                             op: BinOp::Eq,
                             left: Box::new(index_expr(ident("__c_path_exists"), src.clone())),
-                            right: Box::new(int_lit(0)),
-                        });
+                            right: Box::new(int_lit(0)) });
                         let invalid_literal = match (
                             literal_string_value(&args[0].value),
                             literal_string_value(&args[1].value),
@@ -9509,8 +9106,7 @@ impl Walker {
                                     || (a.contains("test_dir") && b.contains("test_file"))
                                     || (a == "test_ren_s" && b == "test_ren_d")
                             }
-                            _ => false,
-                        };
+                            _ => false };
                         if invalid_literal {
                             return int_lit(-1);
                         }
@@ -9525,8 +9121,7 @@ impl Walker {
                                 assign_expr(index_expr(ident("__c_path_exists"), dst), int_lit(1)),
                                 assign_expr(index_expr(ident("__c_path_exists"), src), int_lit(0)),
                                 int_lit(0),
-                            ]))),
-                        });
+                            ]))) });
                     }
                     return int_lit(-1);
                 }
@@ -9624,11 +9219,9 @@ impl Walker {
                         cond: Box::new(expr(ExprKind::Binary {
                             op: BinOp::Eq,
                             left: Box::new(val.clone()),
-                            right: Box::new(int_lit(0)),
-                        })),
+                            right: Box::new(int_lit(0)) })),
                         then: Box::new(int_lit(1)),
-                        else_: Box::new(val),
-                    });
+                        else_: Box::new(val) });
                     return call_expr(
                         ident("__c_longjmp_throw"),
                         vec![str_lit(&token), normalized_val],
@@ -9695,49 +9288,41 @@ impl Walker {
                     let sprintf_call = expr(ExprKind::Call {
                         callee: Box::new(ident("__c_sprintf")),
                         args: sanitized,
-                        optional: false,
-                    });
+                        optional: false });
                     // limit to size-1 characters (leave room for null terminator)
                     let max_len = expr(ExprKind::Binary {
                         op: BinOp::Sub,
                         left: Box::new(size_val.clone()),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
-                    });
+                        right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))) });
                     let formatted_name = "__c_snprintf_formatted".to_string();
                     let formatted_expr = ident(&formatted_name);
                     let sliced = expr(ExprKind::Call {
                         callee: Box::new(expr(ExprKind::Member {
                             object: Box::new(formatted_expr.clone()),
                             field: "slice".to_string(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: vec![
                             Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                             Argument::positional(max_len),
                         ],
-                        optional: false,
-                    });
+                        optional: false });
                     let write_empty_string_buffer = matches!(&buf.kind, ExprKind::Ident(name) if self.char_string_arrays.contains(name));
                     let has_payload_or_string_buffer = expr(ExprKind::Binary {
                         op: BinOp::Or,
                         left: Box::new(expr(ExprKind::Binary {
                             op: BinOp::Gt,
                             left: Box::new(member(formatted_expr.clone(), "length")),
-                            right: Box::new(int_lit(0)),
-                        })),
+                            right: Box::new(int_lit(0)) })),
                         right: Box::new(expr(ExprKind::Lit(Literal::Bool(
                             write_empty_string_buffer,
-                        )))),
-                    });
+                        )))) });
                     let should_write = expr(ExprKind::Binary {
                         op: BinOp::And,
                         left: Box::new(expr(ExprKind::Binary {
                             op: BinOp::Gt,
                             left: Box::new(size_val),
-                            right: Box::new(int_lit(0)),
-                        })),
-                        right: Box::new(has_payload_or_string_buffer),
-                    });
+                            right: Box::new(int_lit(0)) })),
+                        right: Box::new(has_payload_or_string_buffer) });
                     return expr(ExprKind::Call {
                         callee: Box::new(expr(ExprKind::Lambda {
                             params: vec![Param {
@@ -9748,8 +9333,7 @@ impl Walker {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            }],
+                                is_nullable: false }],
                             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                                 expr(ExprKind::Ternary {
                                     cond: Box::new(should_write),
@@ -9761,19 +9345,14 @@ impl Walker {
                                         )),
                                         else_: Box::new(expr(ExprKind::Assign {
                                             target: Box::new(buf),
-                                            value: Box::new(sliced),
-                                        })),
-                                    })),
-                                    else_: Box::new(formatted_expr.clone()),
-                                }),
+                                            value: Box::new(sliced) })) })),
+                                    else_: Box::new(formatted_expr.clone()) }),
                                 member(formatted_expr, "length"),
                             ])))),
                             is_async: false,
-                            captures: vec![],
-                        })),
+                            captures: vec![] })),
                         args: vec![Argument::positional(sprintf_call)],
-                        optional: false,
-                    });
+                        optional: false });
                 }
                 // vprintf(fmt, ap)
                 "vprintf" => {
@@ -9808,18 +9387,15 @@ impl Walker {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            }],
+                                is_nullable: false }],
                             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                                 vfprintf_write_expr(file, formatted_expr.clone()),
                                 member(formatted_expr, "length"),
                             ])))),
                             is_async: false,
-                            captures: vec![],
-                        })),
+                            captures: vec![] })),
                         args: vec![Argument::positional(rendered)],
-                        optional: false,
-                    });
+                        optional: false });
                 }
                 // vsprintf(buf, fmt, ap)
                 "vsprintf" => {
@@ -9843,8 +9419,7 @@ impl Walker {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            }],
+                                is_nullable: false }],
                             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                                 expr(ExprKind::Ternary {
                                     cond: Box::new(pointers::is_carray_ptr_kind(buf.clone())),
@@ -9852,16 +9427,13 @@ impl Walker {
                                         ident("__c_write_carray_string"),
                                         vec![buf.clone(), formatted_expr.clone()],
                                     )),
-                                    else_: Box::new(assign_expr(buf, formatted_expr.clone())),
-                                }),
+                                    else_: Box::new(assign_expr(buf, formatted_expr.clone())) }),
                                 member(formatted_expr, "length"),
                             ])))),
                             is_async: false,
-                            captures: vec![],
-                        })),
+                            captures: vec![] })),
                         args: vec![Argument::positional(rendered)],
-                        optional: false,
-                    });
+                        optional: false });
                 }
                 // vsnprintf(buf, size, fmt, ap)
                 "vsnprintf" => {
@@ -9877,8 +9449,7 @@ impl Walker {
                     let max_len = expr(ExprKind::Binary {
                         op: BinOp::Sub,
                         left: Box::new(size_val.clone()),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
-                    });
+                        right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))) });
                     let formatted_name = "__c_vsnprintf_formatted".to_string();
                     let formatted_expr = ident(&formatted_name);
                     let sliced = call_expr(
@@ -9890,14 +9461,11 @@ impl Walker {
                         left: Box::new(expr(ExprKind::Binary {
                             op: BinOp::Gt,
                             left: Box::new(size_val),
-                            right: Box::new(int_lit(0)),
-                        })),
+                            right: Box::new(int_lit(0)) })),
                         right: Box::new(expr(ExprKind::Binary {
                             op: BinOp::Gt,
                             left: Box::new(member(formatted_expr.clone(), "length")),
-                            right: Box::new(int_lit(0)),
-                        })),
-                    });
+                            right: Box::new(int_lit(0)) })) });
                     return expr(ExprKind::Call {
                         callee: Box::new(expr(ExprKind::Lambda {
                             params: vec![Param {
@@ -9908,8 +9476,7 @@ impl Walker {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            }],
+                                is_nullable: false }],
                             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                                 expr(ExprKind::Ternary {
                                     cond: Box::new(should_write),
@@ -9919,18 +9486,14 @@ impl Walker {
                                             ident("__c_write_carray_string"),
                                             vec![buf.clone(), sliced.clone()],
                                         )),
-                                        else_: Box::new(assign_expr(buf, sliced)),
-                                    })),
-                                    else_: Box::new(formatted_expr.clone()),
-                                }),
+                                        else_: Box::new(assign_expr(buf, sliced)) })),
+                                    else_: Box::new(formatted_expr.clone()) }),
                                 member(formatted_expr, "length"),
                             ])))),
                             is_async: false,
-                            captures: vec![],
-                        })),
+                            captures: vec![] })),
                         args: vec![Argument::positional(sprintf_call)],
-                        optional: false,
-                    });
+                        optional: false });
                 }
                 // vdprintf(fd, fmt, ap)
                 "vdprintf" => {
@@ -9954,8 +9517,7 @@ impl Walker {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            }],
+                                is_nullable: false }],
                             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                                 assign_expr(
                                     index_expr(ident("__c_file_store"), ident("__c_last_path")),
@@ -9977,11 +9539,9 @@ impl Walker {
                                 member(formatted_expr, "length"),
                             ])))),
                             is_async: false,
-                            captures: vec![],
-                        })),
+                            captures: vec![] })),
                         args: vec![Argument::positional(rendered)],
-                        optional: false,
-                    });
+                        optional: false });
                 }
                 // vasprintf(strp, fmt, ap)
                 "vasprintf" => {
@@ -10005,18 +9565,15 @@ impl Walker {
                                 is_rest: false,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            }],
+                                is_nullable: false }],
                             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                                 dynamic_carray_deref_write(strp, formatted_expr.clone()),
                                 member(formatted_expr, "length"),
                             ])))),
                             is_async: false,
-                            captures: vec![],
-                        })),
+                            captures: vec![] })),
                         args: vec![Argument::positional(rendered)],
-                        optional: false,
-                    });
+                        optional: false });
                 }
                 // swprintf(buf, size, fmt, ...) maps to snprintf semantics in libc formatting.
                 "swprintf" => {
@@ -10044,29 +9601,24 @@ impl Walker {
                     let sprintf_call = expr(ExprKind::Call {
                         callee: Box::new(ident("__c_sprintf")),
                         args: sanitized,
-                        optional: false,
-                    });
+                        optional: false });
                     let max_len = expr(ExprKind::Binary {
                         op: BinOp::Sub,
                         left: Box::new(size_val),
-                        right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))),
-                    });
+                        right: Box::new(expr(ExprKind::Lit(Literal::Int(1)))) });
                     let clipped = expr(ExprKind::Call {
                         callee: Box::new(expr(ExprKind::Member {
                             object: Box::new(sprintf_call),
                             field: "substring".to_string(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: vec![
                             Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                             Argument::positional(max_len),
                         ],
-                        optional: false,
-                    });
+                        optional: false });
                     return expr(ExprKind::Assign {
                         target: Box::new(buf),
-                        value: Box::new(wchar_adapter::string_to_wide(clipped)),
-                    });
+                        value: Box::new(wchar_adapter::string_to_wide(clipped)) });
                 }
                 "qsort" => {
                     let mut it = args.into_iter();
@@ -10252,8 +9804,7 @@ impl Walker {
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("__c_sqrt")),
                             args: vec![Argument::positional(a.value)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -10723,8 +10274,7 @@ impl Walker {
                         let one_plus_x = expr(ExprKind::Binary {
                             op: BinOp::Add,
                             left: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                            right: Box::new(a.value),
-                        });
+                            right: Box::new(a.value) });
                         return ecma_math_call("log", one_plus_x);
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
@@ -10736,8 +10286,7 @@ impl Walker {
                         return expr(ExprKind::Binary {
                             op: BinOp::Sub,
                             left: Box::new(exp_x),
-                            right: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                        });
+                            right: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))) });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -10753,8 +10302,7 @@ impl Walker {
                         let is_finite = ecma_math_call("isFinite", a.value);
                         return expr(ExprKind::Unary {
                             op: vybe_ast::UnaryOp::Not,
-                            expr: Box::new(is_finite),
-                        });
+                            expr: Box::new(is_finite) });
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
@@ -10770,23 +10318,20 @@ impl Walker {
                         let is_zero = expr(ExprKind::Binary {
                             op: BinOp::Eq,
                             left: Box::new(x.clone()),
-                            right: Box::new(expr(ExprKind::Lit(Literal::Float(0.0)))),
-                        });
+                            right: Box::new(expr(ExprKind::Lit(Literal::Float(0.0)))) });
                         let exp_expr = expr(ExprKind::Binary {
                             op: BinOp::Add,
                             left: Box::new(ecma_math_call(
                                 "floor",
                                 ecma_math_call("log2", ecma_math_call("abs", x.clone())),
                             )),
-                            right: Box::new(int_lit(1)),
-                        });
+                            right: Box::new(int_lit(1)) });
                         let set_exp = assign_expr(
                             exp_target.clone(),
                             expr(ExprKind::Ternary {
                                 cond: Box::new(is_zero.clone()),
                                 then: Box::new(int_lit(0)),
-                                else_: Box::new(exp_expr),
-                            }),
+                                else_: Box::new(exp_expr) }),
                         );
                         let mantissa = expr(ExprKind::Ternary {
                             cond: Box::new(is_zero),
@@ -10798,9 +10343,7 @@ impl Walker {
                                     "pow",
                                     expr(ExprKind::Lit(Literal::Float(2.0))),
                                     exp_target,
-                                )),
-                            })),
-                        });
+                                )) })) });
                         return expr(ExprKind::Sequence(vec![set_exp, mantissa]));
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
@@ -10817,8 +10360,7 @@ impl Walker {
                         return expr(ExprKind::Binary {
                             op: BinOp::Mul,
                             left: Box::new(a.value),
-                            right: Box::new(pow2),
-                        });
+                            right: Box::new(pow2) });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -10834,8 +10376,7 @@ impl Walker {
                         let frac = expr(ExprKind::Binary {
                             op: BinOp::Sub,
                             left: Box::new(x),
-                            right: Box::new(int_target),
-                        });
+                            right: Box::new(int_target) });
                         return expr(ExprKind::Sequence(vec![set_int, frac]));
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
@@ -10852,8 +10393,7 @@ impl Walker {
                         return expr(ExprKind::Binary {
                             op: BinOp::Mul,
                             left: Box::new(a.value),
-                            right: Box::new(pow2),
-                        });
+                            right: Box::new(pow2) });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -10882,13 +10422,11 @@ impl Walker {
                         let mul = expr(ExprKind::Binary {
                             op: BinOp::Mul,
                             left: Box::new(x.value),
-                            right: Box::new(y.value),
-                        });
+                            right: Box::new(y.value) });
                         return expr(ExprKind::Binary {
                             op: BinOp::Add,
                             left: Box::new(mul),
-                            right: Box::new(z.value),
-                        });
+                            right: Box::new(z.value) });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -10898,8 +10436,7 @@ impl Walker {
                         return expr(ExprKind::Binary {
                             op: BinOp::Mod,
                             left: Box::new(a.value),
-                            right: Box::new(b.value),
-                        });
+                            right: Box::new(b.value) });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -10988,8 +10525,7 @@ impl Walker {
                             "isgreater" => BinOp::Gt,
                             "isgreaterequal" => BinOp::GtEq,
                             "isless" => BinOp::Lt,
-                            _ => BinOp::LtEq,
-                        };
+                            _ => BinOp::LtEq };
                         return bool_int(binary_expr(op, a.value, b.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
@@ -11006,8 +10542,7 @@ impl Walker {
                     return expr(ExprKind::Binary {
                         op: BinOp::Add,
                         left: Box::new(expr(ExprKind::Lit(Literal::Str("Error ".to_string())))),
-                        right: Box::new(arg),
-                    });
+                        right: Box::new(arg) });
                 }
                 "copysign" | "copysignf" => {
                     // copysign(x, y) = |x| * sign(y)
@@ -11018,16 +10553,13 @@ impl Walker {
                             cond: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::Lt,
                                 left: Box::new(y.value),
-                                right: Box::new(expr(ExprKind::Lit(Literal::Float(0.0)))),
-                            })),
+                                right: Box::new(expr(ExprKind::Lit(Literal::Float(0.0)))) })),
                             then: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))),
-                            else_: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                        });
+                            else_: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))) });
                         return expr(ExprKind::Binary {
                             op: BinOp::Mul,
                             left: Box::new(abs_x),
-                            right: Box::new(sign_y),
-                        });
+                            right: Box::new(sign_y) });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -11041,20 +10573,16 @@ impl Walker {
                             cond: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::Gt,
                                 left: Box::new(y.value),
-                                right: Box::new(x.value.clone()),
-                            })),
+                                right: Box::new(x.value.clone()) })),
                             then: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                            else_: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))),
-                        });
+                            else_: Box::new(expr(ExprKind::Lit(Literal::Float(-1.0)))) });
                         return expr(ExprKind::Binary {
                             op: BinOp::Add,
                             left: Box::new(x.value),
                             right: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::Mul,
                                 left: Box::new(sign),
-                                right: Box::new(eps),
-                            })),
-                        });
+                                right: Box::new(eps) })) });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -11065,8 +10593,7 @@ impl Walker {
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("__tgamma")),
                             args: vec![Argument::positional(a.value)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return expr(ExprKind::Lit(Literal::Float(1.0)));
                 }
@@ -11075,8 +10602,7 @@ impl Walker {
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("__lgamma")),
                             args: vec![Argument::positional(a.value)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -11085,8 +10611,7 @@ impl Walker {
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("__erf")),
                             args: vec![Argument::positional(a.value)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return expr(ExprKind::Lit(Literal::Float(0.0)));
                 }
@@ -11096,13 +10621,11 @@ impl Walker {
                         let erf_x = expr(ExprKind::Call {
                             callee: Box::new(ident("__erf")),
                             args: vec![Argument::positional(a.value)],
-                            optional: false,
-                        });
+                            optional: false });
                         return expr(ExprKind::Binary {
                             op: BinOp::Sub,
                             left: Box::new(expr(ExprKind::Lit(Literal::Float(1.0)))),
-                            right: Box::new(erf_x),
-                        });
+                            right: Box::new(erf_x) });
                     }
                     return expr(ExprKind::Lit(Literal::Float(1.0)));
                 }
@@ -11112,8 +10635,7 @@ impl Walker {
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("__j0")),
                             args: vec![Argument::positional(a.value)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return expr(ExprKind::Lit(Literal::Float(1.0)));
                 }
@@ -11126,8 +10648,7 @@ impl Walker {
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("strlen")),
                             args: vec![a],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
@@ -11200,8 +10721,7 @@ impl Walker {
                     if let (Some(dest), Some(src)) = (it.next(), it.next()) {
                         return expr(ExprKind::Assign {
                             target: Box::new(dest.value),
-                            value: Box::new(src.value),
-                        });
+                            value: Box::new(src.value) });
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -11537,18 +11057,15 @@ impl Walker {
                             callee: Box::new(expr(ExprKind::Member {
                                 object: Box::new(wchar_adapter::string_to_wide(source)),
                                 field: "slice".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![
                                 Argument::positional(int_lit(0)),
                                 Argument::positional(n.value.clone()),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                         let write = expr(ExprKind::Assign {
                             target: Box::new(self.wide_array_operand(dest.value)),
-                            value: Box::new(wide),
-                        });
+                            value: Box::new(wide) });
                         return expr(ExprKind::Sequence(vec![write, len]));
                     }
                     return int_lit(0);
@@ -11590,28 +11107,23 @@ impl Walker {
                         if let ExprKind::Assign { target, value } = dest.value.kind {
                             let copy = expr(ExprKind::Assign {
                                 target: target.clone(),
-                                value,
-                            });
+                                value });
                             let concat = expr(ExprKind::Binary {
                                 op: BinOp::Add,
                                 left: Box::new(*target.clone()),
-                                right: Box::new(src.value),
-                            });
+                                right: Box::new(src.value) });
                             let append = expr(ExprKind::Assign {
                                 target,
-                                value: Box::new(concat),
-                            });
+                                value: Box::new(concat) });
                             return expr(ExprKind::Sequence(vec![copy, append]));
                         }
                         let concat = expr(ExprKind::Binary {
                             op: BinOp::Add,
                             left: Box::new(c_string_visible(dest.value.clone())),
-                            right: Box::new(src.value),
-                        });
+                            right: Box::new(src.value) });
                         return expr(ExprKind::Assign {
                             target: Box::new(dest.value),
-                            value: Box::new(concat),
-                        });
+                            value: Box::new(concat) });
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -11631,34 +11143,28 @@ impl Walker {
                             let concat = expr(ExprKind::Binary {
                                 op: BinOp::Add,
                                 left: Box::new(c_string_visible(dest.value.clone())),
-                                right: Box::new(str_lit(&clipped)),
-                            });
+                                right: Box::new(str_lit(&clipped)) });
                             return expr(ExprKind::Assign {
                                 target: Box::new(dest.value),
-                                value: Box::new(concat),
-                            });
+                                value: Box::new(concat) });
                         }
                         let clipped = expr(ExprKind::Call {
                             callee: Box::new(expr(ExprKind::Member {
                                 object: Box::new(src.value),
                                 field: "substring".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![
                                 Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                                 Argument::positional(n.value),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                         let concat = expr(ExprKind::Binary {
                             op: BinOp::Add,
                             left: Box::new(c_string_visible(dest.value.clone())),
-                            right: Box::new(clipped),
-                        });
+                            right: Box::new(clipped) });
                         return expr(ExprKind::Assign {
                             target: Box::new(dest.value),
-                            value: Box::new(concat),
-                        });
+                            value: Box::new(concat) });
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -11677,31 +11183,26 @@ impl Walker {
                             callee: Box::new(expr(ExprKind::Member {
                                 object: Box::new(a.value),
                                 field: "substring".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![
                                 Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                                 Argument::positional(n.value.clone()),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                         let right = expr(ExprKind::Call {
                             callee: Box::new(expr(ExprKind::Member {
                                 object: Box::new(b.value),
                                 field: "substring".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![
                                 Argument::positional(expr(ExprKind::Lit(Literal::Int(0)))),
                                 Argument::positional(n.value),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("strcmp")),
                             args: vec![Argument::positional(left), Argument::positional(right)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return int_lit(0);
                 }
@@ -11726,16 +11227,13 @@ impl Walker {
                                 Argument::positional(expr(ExprKind::Call {
                                     callee: Box::new(ident("__lower__")),
                                     args: vec![Argument::positional(a.value)],
-                                    optional: false,
-                                })),
+                                    optional: false })),
                                 Argument::positional(expr(ExprKind::Call {
                                     callee: Box::new(ident("__lower__")),
                                     args: vec![Argument::positional(b.value)],
-                                    optional: false,
-                                })),
+                                    optional: false })),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return int_lit(0);
                 }
@@ -11756,42 +11254,35 @@ impl Walker {
                         let lower_a = expr(ExprKind::Call {
                             callee: Box::new(ident("__lower__")),
                             args: vec![Argument::positional(a.value)],
-                            optional: false,
-                        });
+                            optional: false });
                         let lower_b = expr(ExprKind::Call {
                             callee: Box::new(ident("__lower__")),
                             args: vec![Argument::positional(b.value)],
-                            optional: false,
-                        });
+                            optional: false });
                         let left = expr(ExprKind::Call {
                             callee: Box::new(expr(ExprKind::Member {
                                 object: Box::new(lower_a),
                                 field: "substring".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![
                                 Argument::positional(int_lit(0)),
                                 Argument::positional(n.value.clone()),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                         let right = expr(ExprKind::Call {
                             callee: Box::new(expr(ExprKind::Member {
                                 object: Box::new(lower_b),
                                 field: "substring".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![
                                 Argument::positional(int_lit(0)),
                                 Argument::positional(n.value),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                         return expr(ExprKind::Call {
                             callee: Box::new(ident("strcmp")),
                             args: vec![Argument::positional(left), Argument::positional(right)],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return int_lit(0);
                 }
@@ -11808,8 +11299,7 @@ impl Walker {
                                 Argument::positional(s_arg.value),
                                 Argument::positional(expr(ExprKind::Lit(Literal::Int(10)))),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                         return nan_to_default(parse_call, expr(ExprKind::Lit(Literal::Int(0))));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
@@ -11823,8 +11313,7 @@ impl Walker {
                         let parse_call = expr(ExprKind::Call {
                             callee: Box::new(ident("parseFloat")),
                             args: vec![Argument::positional(s_arg.value)],
-                            optional: false,
-                        });
+                            optional: false });
                         return nan_to_default(
                             parse_call,
                             expr(ExprKind::Lit(Literal::Float(0.0))),
@@ -11850,12 +11339,10 @@ impl Walker {
                                 return expr(ExprKind::Object(vec![
                                     ObjectProperty::KeyValue {
                                         key: str_lit("quot"),
-                                        value: exact_c_int_expr(quot),
-                                    },
+                                        value: exact_c_int_expr(quot) },
                                     ObjectProperty::KeyValue {
                                         key: str_lit("rem"),
-                                        value: exact_c_int_expr(rem),
-                                    },
+                                        value: exact_c_int_expr(rem) },
                                 ]));
                             }
                         }
@@ -11864,8 +11351,7 @@ impl Walker {
                             expr(ExprKind::Binary {
                                 op: BinOp::Div,
                                 left: Box::new(a.value.clone()),
-                                right: Box::new(b.value.clone()),
-                            }),
+                                right: Box::new(b.value.clone()) }),
                         );
                         let rem = expr(ExprKind::Binary {
                             op: BinOp::Sub,
@@ -11873,18 +11359,14 @@ impl Walker {
                             right: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::Mul,
                                 left: Box::new(quot.clone()),
-                                right: Box::new(b.value),
-                            })),
-                        });
+                                right: Box::new(b.value) })) });
                         return expr(ExprKind::Object(vec![
                             ObjectProperty::KeyValue {
                                 key: str_lit("quot"),
-                                value: quot,
-                            },
+                                value: quot },
                             ObjectProperty::KeyValue {
                                 key: str_lit("rem"),
-                                value: rem,
-                            },
+                                value: rem },
                         ]));
                     }
                     return expr(ExprKind::Lit(Literal::Null));
@@ -11911,8 +11393,7 @@ impl Walker {
                     return expr(ExprKind::Binary {
                         op: BinOp::Div,
                         left: Box::new(call_expr(ident("__c_rand_h"), vec![])),
-                        right: Box::new(float_lit(2147483648.0)),
-                    });
+                        right: Box::new(float_lit(2147483648.0)) });
                 }
                 "rand_r" => {
                     if let Some(seed) = args.into_iter().next() {
@@ -11924,12 +11405,9 @@ impl Walker {
                                 left: Box::new(expr(ExprKind::Binary {
                                     op: BinOp::Mul,
                                     left: Box::new(target.clone()),
-                                    right: Box::new(int_lit(1103515245)),
-                                })),
-                                right: Box::new(int_lit(12345)),
-                            })),
-                            right: Box::new(int_lit(2147483647)),
-                        });
+                                    right: Box::new(int_lit(1103515245)) })),
+                                right: Box::new(int_lit(12345)) })),
+                            right: Box::new(int_lit(2147483647)) });
                         return expr(ExprKind::Sequence(vec![
                             assign_expr(target.clone(), next),
                             target,
@@ -13232,13 +12710,11 @@ impl Walker {
                             let bad_nsec = expr(ExprKind::Binary {
                                 op: BinOp::GtEq,
                                 left: Box::new(member(target, "tv_nsec")),
-                                right: Box::new(int_lit(1_000_000_000)),
-                            });
+                                right: Box::new(int_lit(1_000_000_000)) });
                             return expr(ExprKind::Ternary {
                                 cond: Box::new(bad_nsec),
                                 then: Box::new(int_lit(-1)),
-                                else_: Box::new(int_lit(0)),
-                            });
+                                else_: Box::new(int_lit(0)) });
                         }
                     }
                     return int_lit(0);
@@ -13287,8 +12763,7 @@ impl Walker {
                     let signal = match self.eval_int_expr(&which) {
                         Some(1) => 26,
                         Some(2) => 27,
-                        _ => 14,
-                    };
+                        _ => 14 };
                     return posix_adapter::setitimer(new_value, signal);
                 }
                 "getitimer" => {
@@ -13361,8 +12836,7 @@ impl Walker {
                             }
                             return expr(ExprKind::NullCoalesce {
                                 left: Box::new(ident(&c_env_slot_name(&name))),
-                                right: Box::new(null_lit()),
-                            });
+                                right: Box::new(null_lit()) });
                         }
                     }
                     return null_lit();
@@ -13393,8 +12867,7 @@ impl Walker {
                             let assigned_value = if self.eval_int_expr(&overwrite) == Some(0) {
                                 expr(ExprKind::NullCoalesce {
                                     left: Box::new(slot.clone()),
-                                    right: Box::new(visible_value),
-                                })
+                                    right: Box::new(visible_value) })
                             } else {
                                 visible_value
                             };
@@ -13781,8 +13254,7 @@ impl Walker {
                             let nul_target = expr(ExprKind::Index {
                                 object: Box::new(buf.value),
                                 index: Box::new(int_lit(0)),
-                                null_safe: false,
-                            });
+                                null_safe: false });
                             let write = self
                                 .rewrite_char_index_assignment(&nul_target, int_lit(0))
                                 .unwrap_or_else(|| assign_expr(nul_target, int_lit(0)));
@@ -13831,14 +13303,12 @@ impl Walker {
                                         expr(ExprKind::Binary {
                                             op: BinOp::Add,
                                             left: Box::new(ident("__c_atomic_old")),
-                                            right: Box::new(delta.value),
-                                        }),
+                                            right: Box::new(delta.value) }),
                                     ))),
                                     stmt(StmtKind::Return(Some(ident("__c_atomic_old")))),
                                 ]),
                                 is_async: false,
-                                captures: vec![],
-                            }),
+                                captures: vec![] }),
                             vec![],
                         );
                     }
@@ -13858,14 +13328,12 @@ impl Walker {
                                         expr(ExprKind::Binary {
                                             op: BinOp::Sub,
                                             left: Box::new(ident("__c_atomic_old")),
-                                            right: Box::new(delta.value),
-                                        }),
+                                            right: Box::new(delta.value) }),
                                     ))),
                                     stmt(StmtKind::Return(Some(ident("__c_atomic_old")))),
                                 ]),
                                 is_async: false,
-                                captures: vec![],
-                            }),
+                                captures: vec![] }),
                             vec![],
                         );
                     }
@@ -13887,8 +13355,7 @@ impl Walker {
                                         expr(ExprKind::Binary {
                                             op: BinOp::Eq,
                                             left: Box::new(ident("__c_atomic_cur")),
-                                            right: Box::new(expected_target.clone()),
-                                        }),
+                                            right: Box::new(expected_target.clone()) }),
                                         vec![
                                             stmt(StmtKind::Expr(assign_expr(
                                                 target,
@@ -13906,8 +13373,7 @@ impl Walker {
                                     ),
                                 ]),
                                 is_async: false,
-                                captures: vec![],
-                            }),
+                                captures: vec![] }),
                             vec![],
                         );
                     }
@@ -13926,15 +13392,12 @@ impl Walker {
                                         cond: Box::new(expr(ExprKind::Binary {
                                             op: BinOp::NotEq,
                                             left: Box::new(ident("__c_atomic_old")),
-                                            right: Box::new(int_lit(0)),
-                                        })),
+                                            right: Box::new(int_lit(0)) })),
                                         then: Box::new(int_lit(1)),
-                                        else_: Box::new(int_lit(0)),
-                                    })))),
+                                        else_: Box::new(int_lit(0)) })))),
                                 ]),
                                 is_async: false,
-                                captures: vec![],
-                            }),
+                                captures: vec![] }),
                             vec![],
                         );
                     }
@@ -13980,8 +13443,7 @@ impl Walker {
                 "mallinfo" => {
                     return expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
                         key: str_lit("arena"),
-                        value: int_lit(0),
-                    }]));
+                        value: int_lit(0) }]));
                 }
                 "mallopt" => return int_lit(1),
                 "malloc_stats" => return int_lit(0),
@@ -14007,11 +13469,9 @@ impl Walker {
                             cond: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::NotEq,
                                 left: Box::new(p.clone()),
-                                right: Box::new(expr(ExprKind::Lit(Literal::Null))),
-                            })),
+                                right: Box::new(expr(ExprKind::Lit(Literal::Null))) })),
                             then: Box::new(p),
-                            else_: Box::new(expr(ExprKind::Array(Vec::new()))),
-                        });
+                            else_: Box::new(expr(ExprKind::Array(Vec::new()))) });
                     }
                     return expr(ExprKind::Array(Vec::new()));
                 }
@@ -14033,8 +13493,7 @@ impl Walker {
                             value: expr(ExprKind::Lit(Literal::Int(0))),
                             spread: false,
                             key: None,
-                            by_ref: false,
-                        })
+                            by_ref: false })
                         .collect();
                     return expr(ExprKind::Array(zeros));
                 }
@@ -14144,11 +13603,9 @@ impl Walker {
                                 cond: Box::new(expr(ExprKind::Binary {
                                     op: BinOp::Eq,
                                     left: Box::new(left_json),
-                                    right: Box::new(right_json),
-                                })),
+                                    right: Box::new(right_json) })),
                                 then: Box::new(int_lit(0)),
-                                else_: Box::new(int_lit(1)),
-                            });
+                                else_: Box::new(int_lit(1)) });
                         }
                         return memcmp_expr(left, right, bytes.value);
                     }
@@ -14161,14 +13618,12 @@ impl Walker {
                             callee: Box::new(expr(ExprKind::Member {
                                 object: Box::new(s.value),
                                 field: "substring".to_string(),
-                                null_safe: false,
-                            })),
+                                null_safe: false })),
                             args: vec![
                                 Argument::positional(int_lit(0)),
                                 Argument::positional(n.value),
                             ],
-                            optional: false,
-                        });
+                            optional: false });
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -14198,8 +13653,7 @@ impl Walker {
                     return expr(ExprKind::Call {
                         callee: Box::new(seq),
                         args,
-                        optional: false,
-                    });
+                        optional: false });
                 }
             }
         }
@@ -14211,8 +13665,7 @@ impl Walker {
         let call = expr(ExprKind::Call {
             callee: Box::new(callee),
             args: normalized_call_args.clone(),
-            optional: false,
-        });
+            optional: false });
         if let Some(name) = callee_name {
             return self.apply_char_param_writebacks(&name, normalized_call_args, call);
         }
@@ -14252,9 +13705,7 @@ impl Walker {
                     _ => expr(ExprKind::Binary {
                         op: BinOp::Add,
                         left: Box::new(base_offset),
-                        right: Box::new(index.clone()),
-                    }),
-                };
+                        right: Box::new(index.clone()) }) };
                 (base_name, target_index)
             } else {
                 continue;
@@ -14262,8 +13713,7 @@ impl Walker {
             let target = expr(ExprKind::Index {
                 object: Box::new(ident(&arg_name)),
                 index: Box::new(target_index),
-                null_safe: false,
-            });
+                null_safe: false });
             if let Some(assign) = self.rewrite_char_index_assignment(&target, value.clone()) {
                 seq.push(assign);
             }
@@ -14332,8 +13782,7 @@ impl Walker {
                     member(member(value.clone(), CARRAY_BASE_KEY), "substring"),
                     vec![member(value.clone(), CARRAY_IDX_KEY)],
                 )),
-                else_: Box::new(value),
-            });
+                else_: Box::new(value) });
         }
         // A string literal carrying an embedded NUL (`"hello\0world"`) prints only
         // up to the terminator under `%s`.
@@ -14406,8 +13855,7 @@ impl Walker {
                     exact_owned = s.clone();
                     exact_owned.as_str()
                 }
-                _ => continue,
-            };
+                _ => continue };
             if exact_is_hex && format_text.contains("%llx") {
                 *format_text = format_text.replacen("%llx", "%s", 1);
             } else if exact_is_hex && format_text.contains("%lx") {
@@ -14435,8 +13883,7 @@ impl Walker {
                     }
                     expr(ExprKind::Sequence(next))
                 }
-                _ => str_lit(exact),
-            };
+                _ => str_lit(exact) };
             changed = true;
         }
         changed
@@ -14524,14 +13971,11 @@ impl Walker {
             left: Box::new(expr(ExprKind::Binary {
                 op: BinOp::NotEq,
                 left: Box::new(source.clone()),
-                right: Box::new(null_lit()),
-            })),
+                right: Box::new(null_lit()) })),
             right: Box::new(expr(ExprKind::Binary {
                 op: BinOp::NotEq,
                 left: Box::new(source.clone()),
-                right: Box::new(int_lit(0)),
-            })),
-        });
+                right: Box::new(int_lit(0)) })) });
 
         let strtok = string_adapter::strtok_stateful(
             source_present,
@@ -14573,28 +14017,23 @@ impl Walker {
                     let write_index = expr(ExprKind::Binary {
                         op: BinOp::Add,
                         left: Box::new(source_offset),
-                        right: Box::new(ident("__c_strtok_i")),
-                    });
+                        right: Box::new(ident("__c_strtok_i")) });
                     let write_nul =
                         self.build_char_index_splice(ident(&name), write_index, str_lit("\0"));
                     return expr(ExprKind::Sequence(vec![
                         expr(ExprKind::Assign {
                             target: Box::new(ident("__c_strtok_tok")),
-                            value: Box::new(strtok),
-                        }),
+                            value: Box::new(strtok) }),
                         expr(ExprKind::Assign {
                             target: Box::new(ident("__c_strtok_i")),
-                            value: Box::new(idx),
-                        }),
+                            value: Box::new(idx) }),
                         expr(ExprKind::Ternary {
                             cond: Box::new(expr(ExprKind::Binary {
                                 op: BinOp::GtEq,
                                 left: Box::new(ident("__c_strtok_i")),
-                                right: Box::new(int_lit(0)),
-                            })),
+                                right: Box::new(int_lit(0)) })),
                             then: Box::new(write_nul),
-                            else_: Box::new(null_lit()),
-                        }),
+                            else_: Box::new(null_lit()) }),
                         ident("__c_strtok_tok"),
                     ]));
                 }
@@ -14669,22 +14108,18 @@ impl Walker {
             left: Box::new(expr(ExprKind::Binary {
                 op: BinOp::NotEq,
                 left: Box::new(source.clone()),
-                right: Box::new(null_lit()),
-            })),
+                right: Box::new(null_lit()) })),
             right: Box::new(expr(ExprKind::Binary {
                 op: BinOp::NotEq,
                 left: Box::new(source),
-                right: Box::new(int_lit(0)),
-            })),
-        });
+                right: Box::new(int_lit(0)) })) });
         string_adapter::strtok_r(source_present, source_value, delim_value, save_target)
     }
 
     fn rewrite_va_arg_expression(&self, ap_expr: Expression, type_name: &str) -> Expression {
         let idx_expr = expr(ExprKind::Unary {
             op: UnaryOp::PostInc,
-            expr: Box::new(member(ap_expr.clone(), "__idx")),
-        });
+            expr: Box::new(member(ap_expr.clone(), "__idx")) });
         let raw_value = index_expr(member(ap_expr, "__values"), idx_expr);
 
         let normalized = normalized_c_type_name(type_name);
@@ -14712,8 +14147,7 @@ impl Walker {
         if let Some(cast_target) = cast_target {
             expr(ExprKind::Cast {
                 expr: Box::new(raw_value),
-                type_name: cast_target.to_string(),
-            })
+                type_name: cast_target.to_string() })
         } else {
             raw_value
         }
@@ -14824,14 +14258,12 @@ impl Walker {
                                 key: None,
                                 value: str_lit("TEST_ENVIRON=1"),
                                 spread: false,
-                                by_ref: false,
-                            },
+                                by_ref: false },
                             ArrayElement {
                                 key: None,
                                 value: expr(ExprKind::Lit(Literal::Null)),
                                 spread: false,
-                                by_ref: false,
-                            },
+                                by_ref: false },
                         ])),
                         int_lit(0),
                     )
@@ -14848,8 +14280,7 @@ impl Walker {
                 }
             }
             Rule::expression => self.walk_expression(pair),
-            _ => self.walk_expression(pair),
-        }
+            _ => self.walk_expression(pair) }
     }
 
     fn walk_literal(&mut self, pair: Pair<Rule>) -> Expression {
@@ -14913,8 +14344,7 @@ impl Walker {
                 }
             }
             Rule::bool_literal => expr(ExprKind::Lit(Literal::Bool(inner.as_str() == "true"))),
-            _ => expr(ExprKind::Lit(Literal::Null)),
-        }
+            _ => expr(ExprKind::Lit(Literal::Null)) }
     }
 }
 
@@ -14985,26 +14415,22 @@ pub fn lower_gotos(
         case_body.push(stmt(StmtKind::Break(BreakTarget::Implicit)));
         switch_cases.push(SwitchCase {
             conditions: vec![CaseCondition::Value(int_lit(idx as i64))],
-            body: case_body,
-        });
+            body: case_body });
     }
 
     let while_body = vec![
         stmt(StmtKind::Switch {
             expr: ident(&pc_name),
             cases: switch_cases,
-            default: Some(vec![stmt(StmtKind::Break(BreakTarget::Implicit))]),
-        }),
+            default: Some(vec![stmt(StmtKind::Break(BreakTarget::Implicit))]) }),
         stmt(StmtKind::If {
             cond: expr(ExprKind::Binary {
                 op: BinOp::Lt,
                 left: Box::new(ident(&pc_name)),
-                right: Box::new(int_lit(0)),
-            }),
+                right: Box::new(int_lit(0)) }),
             then_body: vec![stmt(StmtKind::Break(BreakTarget::Implicit))],
             elifs: vec![],
-            else_body: None,
-        }),
+            else_body: None }),
     ];
 
     let mut lowered = prelude;
@@ -15014,18 +14440,14 @@ pub fn lower_gotos(
             type_hint: None,
             init: Some(int_lit(0)),
             array_bounds: None,
-            with_events: false,
-        }],
-        kind: VarDeclKind::Let,
-    }));
+            with_events: false }],
+        kind: VarDeclKind::Let }));
     lowered.push(stmt(StmtKind::Labeled {
         label: dispatch_label,
         body: Box::new(stmt(StmtKind::While {
             cond: expr(ExprKind::Lit(Literal::Bool(true))),
             body: while_body,
-            else_body: None,
-        })),
-    }));
+            else_body: None })) }));
     lowered
 }
 
@@ -15053,8 +14475,7 @@ fn rewrite_gotos_in_stmts(
                 cond,
                 then_body,
                 elifs,
-                else_body,
-            } => {
+                else_body } => {
                 let then_body =
                     rewrite_gotos_in_stmts(then_body, label_to_block, pc_name, dispatch_label);
                 let elifs = elifs
@@ -15072,21 +14493,18 @@ fn rewrite_gotos_in_stmts(
                     cond,
                     then_body,
                     elifs,
-                    else_body,
-                }));
+                    else_body }));
             }
             StmtKind::For {
                 init,
                 cond,
                 update,
-                body,
-            } => {
+                body } => {
                 out.push(stmt(StmtKind::For {
                     init,
                     cond,
                     update,
-                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
-                }));
+                    body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label) }));
             }
             StmtKind::ForIn {
                 var,
@@ -15095,8 +14513,7 @@ fn rewrite_gotos_in_stmts(
                 body,
                 of,
                 else_body,
-                is_async,
-            } => {
+                is_async } => {
                 out.push(stmt(StmtKind::ForIn {
                     var,
                     key,
@@ -15106,34 +14523,29 @@ fn rewrite_gotos_in_stmts(
                     else_body: else_body.map(|b| {
                         rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label)
                     }),
-                    is_async,
-                }));
+                    is_async }));
             }
             StmtKind::While {
                 cond,
                 body,
-                else_body,
-            } => {
+                else_body } => {
                 out.push(stmt(StmtKind::While {
                     cond,
                     body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
                     else_body: else_body.map(|b| {
                         rewrite_gotos_in_stmts(b, label_to_block, pc_name, dispatch_label)
-                    }),
-                }));
+                    }) }));
             }
             StmtKind::DoWhile { body, cond, until } => {
                 out.push(stmt(StmtKind::DoWhile {
                     body: rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label),
                     cond,
-                    until,
-                }));
+                    until }));
             }
             StmtKind::Switch {
                 expr,
                 cases,
-                default,
-            } => {
+                default } => {
                 let cases = cases
                     .into_iter()
                     .map(|mut c| {
@@ -15147,8 +14559,7 @@ fn rewrite_gotos_in_stmts(
                 out.push(stmt(StmtKind::Switch {
                     expr,
                     cases,
-                    default,
-                }));
+                    default }));
             }
             StmtKind::Block(body) => {
                 out.push(stmt(StmtKind::Block(rewrite_gotos_in_stmts(
@@ -15162,8 +14573,7 @@ fn rewrite_gotos_in_stmts(
                 body,
                 catches,
                 else_body,
-                finally,
-            } => {
+                finally } => {
                 let body = rewrite_gotos_in_stmts(body, label_to_block, pc_name, dispatch_label);
                 let catches = catches
                     .into_iter()
@@ -15181,8 +14591,7 @@ fn rewrite_gotos_in_stmts(
                     body,
                     catches,
                     else_body,
-                    finally,
-                }));
+                    finally }));
             }
             StmtKind::Labeled { label, body } => {
                 out.push(stmt(StmtKind::Labeled {
@@ -15194,13 +14603,10 @@ fn rewrite_gotos_in_stmts(
                             pc_name,
                             dispatch_label,
                         )),
-                        other => other,
-                    })),
-                }));
+                        other => other })) }));
             }
             StmtKind::Label(_) => {}
-            _ => out.push(stmt_in),
-        }
+            _ => out.push(stmt_in) }
     }
     out
 }
@@ -15227,8 +14633,7 @@ fn bin_op(op: &str) -> (BinOp, u8) {
         "*" => (BinOp::Mul, 10),
         "/" => (BinOp::Div, 10),
         "%" => (BinOp::Mod, 10),
-        _ => (BinOp::Add, 9),
-    }
+        _ => (BinOp::Add, 9) }
 }
 
 /// Precedence-climbing fold over a flat operand/operator sequence.
@@ -15254,8 +14659,7 @@ fn zero_nd_array(bounds: &[Expression]) -> Option<Expression> {
                 key: None,
                 value,
                 spread: false,
-                by_ref: false,
-            })
+                by_ref: false })
         })
         .collect::<Option<Vec<_>>>()?;
     Some(expr(ExprKind::Array(elems)))
@@ -15280,8 +14684,7 @@ fn fold_binary(mut operands: Vec<Expression>, ops: Vec<String>) -> Expression {
         output.push(Expression::new(ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right),
-        }));
+            right: Box::new(right) }));
     };
 
     for op_str in ops {
@@ -15380,28 +14783,23 @@ fn parse_hex_float_literal(raw: &str) -> f64 {
 fn signed_char_cast_expr(value: Expression) -> Expression {
     let wrapped = expr(ExprKind::Cast {
         expr: Box::new(value),
-        type_name: "uint8".to_string(),
-    });
+        type_name: "uint8".to_string() });
     expr(ExprKind::Ternary {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(wrapped.clone()),
-            right: Box::new(int_lit(128)),
-        })),
+            right: Box::new(int_lit(128)) })),
         then: Box::new(expr(ExprKind::Binary {
             op: BinOp::Sub,
             left: Box::new(wrapped.clone()),
-            right: Box::new(int_lit(256)),
-        })),
-        else_: Box::new(wrapped),
-    })
+            right: Box::new(int_lit(256)) })),
+        else_: Box::new(wrapped) })
 }
 
 fn unsigned_u32_expr(value: Expression) -> Expression {
     expr(ExprKind::Cast {
         expr: Box::new(value),
-        type_name: "uint32".to_string(),
-    })
+        type_name: "uint32".to_string() })
 }
 
 fn normalize_unsigned_array_literal(value: Expression) -> Expression {
@@ -15417,16 +14815,12 @@ fn normalize_unsigned_array_literal(value: Expression) -> Expression {
         )),
         ExprKind::Cast {
             expr: inner,
-            type_name,
-        } if type_name == "uint32" => match inner.kind {
+            type_name } if type_name == "uint32" => match inner.kind {
             ExprKind::Lit(Literal::Int(_)) | ExprKind::Lit(Literal::Float(_)) => *inner,
             _ => expr(ExprKind::Cast {
                 expr: inner,
-                type_name,
-            }),
-        },
-        other => expr(other),
-    }
+                type_name }) },
+        other => expr(other) }
 }
 
 fn is_wide_unsigned_limit_expr(value: &Expression) -> bool {
@@ -15454,19 +14848,16 @@ fn int_to_byte_array(value: Expression, count: usize) -> Expression {
                     expr(ExprKind::Binary {
                         op: BinOp::Shr,
                         left: Box::new(value.clone()),
-                        right: Box::new(int_lit((i * 8) as i64)),
-                    })
+                        right: Box::new(int_lit((i * 8) as i64)) })
                 };
                 ArrayElement {
                     value: expr(ExprKind::Binary {
                         op: BinOp::BitAnd,
                         left: Box::new(shifted),
-                        right: Box::new(int_lit(0xFF)),
-                    }),
+                        right: Box::new(int_lit(0xFF)) }),
                     spread: false,
                     key: None,
-                    by_ref: false,
-                }
+                    by_ref: false }
             })
             .collect(),
     ))
@@ -15480,8 +14871,7 @@ fn c_array_literal(values: Vec<Expression>) -> Expression {
                 value,
                 spread: false,
                 key: None,
-                by_ref: false,
-            })
+                by_ref: false })
             .collect(),
     ))
 }
@@ -15539,8 +14929,7 @@ fn parse_escape_char(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Op
                         chars.next();
                         val = val * 16 + d.to_digit(16).unwrap_or(0);
                     }
-                    _ => break,
-                }
+                    _ => break }
             }
             val
         }
@@ -15553,13 +14942,11 @@ fn parse_escape_char(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Op
                         chars.next();
                         val = val * 8 + od.to_digit(8).unwrap_or(0);
                     }
-                    _ => break,
-                }
+                    _ => break }
             }
             val
         }
-        other => other as u32,
-    })
+        other => other as u32 })
 }
 
 /// Fold `printf`-style `*` width / `.*` precision into the format string by
@@ -15654,13 +15041,10 @@ fn literal_signed_int_value(value: &Expression) -> Option<i64> {
         ExprKind::Lit(Literal::Int(n)) => Some(*n),
         ExprKind::Unary {
             op: UnaryOp::Neg,
-            expr,
-        } => match &expr.kind {
+            expr } => match &expr.kind {
             ExprKind::Lit(Literal::Int(n)) => Some(-*n),
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 /// Wrap a value to a bitfield of `width` bits: `v & ((1<<width)-1)`, then for a
@@ -15673,8 +15057,7 @@ fn apply_bitfield_mask(value: Expression, width: i64, signed: bool) -> Expressio
     let masked = expr(ExprKind::Binary {
         op: BinOp::BitAnd,
         left: Box::new(value),
-        right: Box::new(int_lit(mask)),
-    });
+        right: Box::new(int_lit(mask)) });
     if !signed {
         return masked;
     }
@@ -15684,15 +15067,12 @@ fn apply_bitfield_mask(value: Expression, width: i64, signed: bool) -> Expressio
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(masked.clone()),
-            right: Box::new(int_lit(half)),
-        })),
+            right: Box::new(int_lit(half)) })),
         then: Box::new(expr(ExprKind::Binary {
             op: BinOp::Sub,
             left: Box::new(masked.clone()),
-            right: Box::new(int_lit(full)),
-        })),
-        else_: Box::new(masked),
-    })
+            right: Box::new(int_lit(full)) })),
+        else_: Box::new(masked) })
 }
 
 fn bitfield_inc_dec_expr(
@@ -15706,8 +15086,7 @@ fn bitfield_inc_dec_expr(
     let value = expr(ExprKind::Binary {
         op: if delta >= 0 { BinOp::Add } else { BinOp::Sub },
         left: Box::new(target.clone()),
-        right: Box::new(int_lit(delta.abs())),
-    });
+        right: Box::new(int_lit(delta.abs())) });
     let write = assign_expr(target.clone(), apply_bitfield_mask(value, width, signed));
     if !post {
         return expr(ExprKind::Sequence(vec![write, target]));
@@ -15857,15 +15236,13 @@ fn utf16_string_literal(text: &str) -> Expression {
             value: int_lit(unit as i64),
             spread: false,
             key: None,
-            by_ref: false,
-        })
+            by_ref: false })
         .collect();
     elems.push(ArrayElement {
         value: int_lit(0),
         spread: false,
         key: None,
-        by_ref: false,
-    });
+        by_ref: false });
     expr(ExprKind::Array(elems))
 }
 
@@ -15879,13 +15256,11 @@ fn sizeof_string_literal_text(raw: &str) -> Option<i64> {
     let elements = match prefix {
         Some("L") | Some("U") => text.chars().count() + 1,
         Some("u") => text.encode_utf16().count() + 1,
-        _ => text.len() + 1,
-    };
+        _ => text.len() + 1 };
     let width = match prefix {
         Some("L") | Some("U") => 4,
         Some("u") => 2,
-        _ => 1,
-    };
+        _ => 1 };
     Some((elements * width) as i64)
 }
 
@@ -15907,8 +15282,7 @@ impl Walker {
         };
         let fields = match self.structs.get(tag) {
             Some(f) => f,
-            None => return 0,
-        };
+            None => return 0 };
         // Prefer real per-field sizes when we tracked field types.
         if let Some(field_types) = self.struct_field_types.get(tag) {
             if let Some(bitfields) = self.struct_bitfields.get(tag) {
@@ -15973,8 +15347,7 @@ impl Walker {
         };
         let field_types = match self.struct_field_types.get(tag) {
             Some(field_types) => field_types,
-            None => return 0,
-        };
+            None => return 0 };
         field_types
             .values()
             .map(|field_type| {
@@ -16013,12 +15386,10 @@ impl Walker {
         };
         let fields = match self.structs.get(tag) {
             Some(fields) => fields,
-            None => return 0,
-        };
+            None => return 0 };
         let field_types = match self.struct_field_types.get(tag) {
             Some(types) => types,
-            None => return 0,
-        };
+            None => return 0 };
         if type_text.trim_start().starts_with("union ") {
             return 0;
         }
@@ -16149,8 +15520,7 @@ impl Walker {
                 "double" => "double".to_string(),
                 "char" => "char".to_string(),
                 "long" => "long".to_string(),
-                _ => "int".to_string(),
-            },
+                _ => "int".to_string() },
             _ => {
                 if let Some(sz) = self.var_types.get(raw.trim()) {
                     normalized_c_type_name(sz)
@@ -16170,14 +15540,12 @@ impl Walker {
         let struct_type = self.var_types.get(struct_var)?;
         let offset_value = match &offset.kind {
             ExprKind::Lit(Literal::Int(n)) => *n,
-            _ => return None,
-        };
+            _ => return None };
         let field = self.struct_field_at_offset(struct_type, offset_value)?;
         Some(expr(ExprKind::Member {
             object: Box::new(ident(struct_var)),
             field,
-            null_safe: false,
-        }))
+            null_safe: false }))
     }
 
     fn sizeof_from_rule(&self, pair: &Pair<Rule>) -> i64 {
@@ -16291,8 +15659,7 @@ impl Walker {
                 }
                 8
             }
-            _ => sizeof_from_type_text(pair.as_str().trim()),
-        }
+            _ => sizeof_from_type_text(pair.as_str().trim()) }
     }
 
     fn alignof_from_rule(&self, pair: &Pair<Rule>) -> i64 {
@@ -16366,8 +15733,7 @@ impl Walker {
                 }
                 alignof_from_type_text(text)
             }
-            _ => alignof_from_type_text(pair.as_str().trim()),
-        }
+            _ => alignof_from_type_text(pair.as_str().trim()) }
     }
 
     fn sizeof_indexed_expr(&self, base_name: &str, ty: &str, dims_used: usize) -> i64 {
@@ -16622,18 +15988,15 @@ impl Walker {
             }
             ExprKind::Unary {
                 op: UnaryOp::AddrOf,
-                expr,
-            } => match &expr.kind {
+                expr } => match &expr.kind {
                 ExprKind::Index { object, .. } => {
                     matches!(&object.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n) || self.carray_ptr_vars.contains(n))
                 }
-                _ => false,
-            },
+                _ => false },
             ExprKind::Index { object, .. } => {
                 matches!(&object.kind, ExprKind::Ident(n) if self.array_ptr_vars.contains(n) || self.carray_ptr_vars.contains(n))
             }
-            _ => false,
-        }
+            _ => false }
     }
 }
 
@@ -16693,8 +16056,7 @@ fn alignof_from_type_text(text: &str) -> i64 {
         | "ptrdiff_t" => 8,
         "long double" => 16,
         "void" => 1,
-        _ => 8,
-    }
+        _ => 8 }
 }
 
 fn split_array_type_text(text: &str) -> (&str, i64, bool) {
@@ -17024,28 +16386,22 @@ fn strchr_expr(s: Expression, needle: Expression) -> Expression {
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(s.clone()),
             field: "indexOf".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(needle)],
-        optional: false,
-    });
+        optional: false });
     expr(ExprKind::Ternary {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(idx_call.clone()),
-            right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
-        })),
+            right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))) })),
         then: Box::new(expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(s),
                 field: "slice".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(idx_call)],
-            optional: false,
-        })),
-        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-    })
+            optional: false })),
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))) })
 }
 
 fn memchr_expr(s: Expression, needle: Expression, bytes: Expression) -> Expression {
@@ -17063,40 +16419,32 @@ fn memchr_expr(s: Expression, needle: Expression, bytes: Expression) -> Expressi
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(s.clone()),
             field: "substring".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional(int_lit(0)),
             Argument::positional(bytes),
         ],
-        optional: false,
-    });
+        optional: false });
     let idx_call = expr(ExprKind::Call {
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(clipped),
             field: "indexOf".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(needle)],
-        optional: false,
-    });
+        optional: false });
     expr(ExprKind::Ternary {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(idx_call.clone()),
-            right: Box::new(int_lit(0)),
-        })),
+            right: Box::new(int_lit(0)) })),
         then: Box::new(expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(s),
                 field: "slice".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(idx_call)],
-            optional: false,
-        })),
-        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-    })
+            optional: false })),
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))) })
 }
 
 fn memrchr_expr(s: Expression, needle: Expression, bytes: Expression) -> Expression {
@@ -17105,40 +16453,32 @@ fn memrchr_expr(s: Expression, needle: Expression, bytes: Expression) -> Express
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(s.clone()),
             field: "substring".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional(int_lit(0)),
             Argument::positional(bytes),
         ],
-        optional: false,
-    });
+        optional: false });
     let idx_call = expr(ExprKind::Call {
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(clipped),
             field: "lastIndexOf".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(needle)],
-        optional: false,
-    });
+        optional: false });
     expr(ExprKind::Ternary {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(idx_call.clone()),
-            right: Box::new(int_lit(0)),
-        })),
+            right: Box::new(int_lit(0)) })),
         then: Box::new(expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(s),
                 field: "slice".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(idx_call)],
-            optional: false,
-        })),
-        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-    })
+            optional: false })),
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))) })
 }
 
 fn memchr_array_expr(s: Expression, needle: Expression, bytes: Expression) -> Expression {
@@ -17150,17 +16490,14 @@ fn memchr_array_expr(s: Expression, needle: Expression, bytes: Expression) -> Ex
             Argument::positional(bytes),
             Argument::positional(int_lit(0)),
         ],
-        optional: false,
-    });
+        optional: false });
     expr(ExprKind::Ternary {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(idx_call.clone()),
-            right: Box::new(int_lit(0)),
-        })),
+            right: Box::new(int_lit(0)) })),
         then: Box::new(pointers::make_carray_ptr(s, idx_call)),
-        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-    })
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))) })
 }
 
 fn memrchr_array_expr(s: Expression, needle: Expression, bytes: Expression) -> Expression {
@@ -17172,17 +16509,14 @@ fn memrchr_array_expr(s: Expression, needle: Expression, bytes: Expression) -> E
             Argument::positional(bytes),
             Argument::positional(int_lit(1)),
         ],
-        optional: false,
-    });
+        optional: false });
     expr(ExprKind::Ternary {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(idx_call.clone()),
-            right: Box::new(int_lit(0)),
-        })),
+            right: Box::new(int_lit(0)) })),
         then: Box::new(pointers::make_carray_ptr(s, idx_call)),
-        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-    })
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))) })
 }
 
 fn char_needle_to_string(needle: Expression) -> Expression {
@@ -17193,8 +16527,7 @@ fn char_needle_to_string(needle: Expression) -> Expression {
         }
         ExprKind::Lit(Literal::Char(ch)) => str_lit(&ch.to_string()),
         ExprKind::Lit(Literal::Str(s)) => str_lit(&s),
-        _ => string_adapter::char_code_to_string(needle),
-    }
+        _ => string_adapter::char_code_to_string(needle) }
 }
 
 fn memcmp_expr(a: Expression, b: Expression, bytes: Expression) -> Expression {
@@ -17202,31 +16535,26 @@ fn memcmp_expr(a: Expression, b: Expression, bytes: Expression) -> Expression {
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(a),
             field: "substring".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional(int_lit(0)),
             Argument::positional(bytes.clone()),
         ],
-        optional: false,
-    });
+        optional: false });
     let right = expr(ExprKind::Call {
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(b),
             field: "substring".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional(int_lit(0)),
             Argument::positional(bytes),
         ],
-        optional: false,
-    });
+        optional: false });
     expr(ExprKind::Call {
         callee: Box::new(ident("strcmp")),
         args: vec![Argument::positional(left), Argument::positional(right)],
-        optional: false,
-    })
+        optional: false })
 }
 
 fn memmem_expr(
@@ -17239,52 +16567,42 @@ fn memmem_expr(
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(haystack.clone()),
             field: "substring".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional(int_lit(0)),
             Argument::positional(hay_len),
         ],
-        optional: false,
-    });
+        optional: false });
     let ndl = expr(ExprKind::Call {
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(needle),
             field: "substring".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![
             Argument::positional(int_lit(0)),
             Argument::positional(needle_len),
         ],
-        optional: false,
-    });
+        optional: false });
     let idx_call = expr(ExprKind::Call {
         callee: Box::new(expr(ExprKind::Member {
             object: Box::new(hay),
             field: "indexOf".to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         args: vec![Argument::positional(ndl)],
-        optional: false,
-    });
+        optional: false });
     expr(ExprKind::Ternary {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(idx_call.clone()),
-            right: Box::new(int_lit(0)),
-        })),
+            right: Box::new(int_lit(0)) })),
         then: Box::new(expr(ExprKind::Call {
             callee: Box::new(expr(ExprKind::Member {
                 object: Box::new(haystack),
                 field: "slice".to_string(),
-                null_safe: false,
-            })),
+                null_safe: false })),
             args: vec![Argument::positional(idx_call)],
-            optional: false,
-        })),
-        else_: Box::new(expr(ExprKind::Lit(Literal::Null))),
-    })
+            optional: false })),
+        else_: Box::new(expr(ExprKind::Lit(Literal::Null))) })
 }
 
 fn c_string_visible(s: Expression) -> Expression {
@@ -17294,14 +16612,12 @@ fn c_string_visible(s: Expression) -> Expression {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::GtEq,
             left: Box::new(nul_idx.clone()),
-            right: Box::new(int_lit(0)),
-        })),
+            right: Box::new(int_lit(0)) })),
         then: Box::new(call_expr(
             member(s.clone(), "substring"),
             vec![int_lit(0), nul_idx],
         )),
-        else_: Box::new(s),
-    })
+        else_: Box::new(s) })
 }
 
 fn strspn_literal_len(s: &str, accept: &str) -> usize {
@@ -17329,8 +16645,7 @@ fn strncmp_literal_value(a: &str, b: &str, n: usize) -> i64 {
     match left.cmp(&right) {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,
-        std::cmp::Ordering::Greater => 1,
-    }
+        std::cmp::Ordering::Greater => 1 }
 }
 
 /// True if `e` is an Object literal tagged as a carray (from `make_carray_ptr`).
@@ -17393,15 +16708,13 @@ fn carray_idx_value_expr(e: &Expression) -> Expression {
             return expr(ExprKind::Ternary {
                 cond: cond.clone(),
                 then: Box::new(carray_idx_value_expr(then)),
-                else_: Box::new(int_lit(0)),
-            });
+                else_: Box::new(int_lit(0)) });
         }
         if matches!(then.kind, ExprKind::Lit(Literal::Null)) && is_carray_object(else_) {
             return expr(ExprKind::Ternary {
                 cond: cond.clone(),
                 then: Box::new(int_lit(0)),
-                else_: Box::new(carray_idx_value_expr(else_)),
-            });
+                else_: Box::new(carray_idx_value_expr(else_)) });
         }
     }
     member(e, CARRAY_IDX_KEY)
@@ -17427,11 +16740,9 @@ fn is_carray_like_expr(e: &Expression) -> bool {
             };
             match body {
                 LambdaBody::Expr(expr) => is_carray_like_expr(expr),
-                LambdaBody::Block(_) => false,
-            }
+                LambdaBody::Block(_) => false }
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn pointer_ident_name(e: &Expression) -> Option<&str> {
@@ -17439,10 +16750,8 @@ fn pointer_ident_name(e: &Expression) -> Option<&str> {
         ExprKind::Ident(name) => Some(name.as_str()),
         ExprKind::RefLoad(inner) => match &inner.kind {
             ExprKind::Ident(name) => Some(name.as_str()),
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn carray_deref_target_name(e: &Expression) -> Option<String> {
@@ -17483,28 +16792,23 @@ fn carray_deref_target_name(e: &Expression) -> Option<String> {
 fn dynamic_carray_deref_read(ptr: Expression) -> Expression {
     let scalar_read = Expression::new(ExprKind::Unary {
         op: UnaryOp::Deref,
-        expr: Box::new(ptr.clone()),
-    });
+        expr: Box::new(ptr.clone()) });
     Expression::new(ExprKind::Ternary {
         cond: Box::new(pointers::is_carray_ptr_kind(ptr.clone())),
         then: Box::new(pointers::carray_deref_read(ptr)),
-        else_: Box::new(scalar_read),
-    })
+        else_: Box::new(scalar_read) })
 }
 
 fn dynamic_carray_deref_write(ptr: Expression, value: Expression) -> Expression {
     let scalar_write = Expression::new(ExprKind::Assign {
         target: Box::new(Expression::new(ExprKind::Unary {
             op: UnaryOp::Deref,
-            expr: Box::new(ptr.clone()),
-        })),
-        value: Box::new(value.clone()),
-    });
+            expr: Box::new(ptr.clone()) })),
+        value: Box::new(value.clone()) });
     Expression::new(ExprKind::Ternary {
         cond: Box::new(pointers::is_carray_ptr_kind(ptr.clone())),
         then: Box::new(pointers::carray_deref_write(ptr, value)),
-        else_: Box::new(scalar_write),
-    })
+        else_: Box::new(scalar_write) })
 }
 
 fn va_list_sprintf_call(fmt: Expression, ap: Expression) -> Expression {
@@ -17516,11 +16820,9 @@ fn c_cell_unwrap_expr(value: Expression) -> Expression {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(member(value.clone(), "__ref_kind")),
-            right: Box::new(str_lit("cell")),
-        })),
+            right: Box::new(str_lit("cell")) })),
         then: Box::new(member(value.clone(), "__value")),
-        else_: Box::new(value),
-    })
+        else_: Box::new(value) })
 }
 
 fn vfprintf_write_expr(file: Expression, text: Expression) -> Expression {
@@ -17530,40 +16832,32 @@ fn vfprintf_write_expr(file: Expression, text: Expression) -> Expression {
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(stream.clone()),
-            right: Box::new(int_lit(2)),
-        })),
+            right: Box::new(int_lit(2)) })),
         right: Box::new(expr(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(index_expr(stream.clone(), int_lit(8))),
-            right: Box::new(str_lit("stderr")),
-        })),
-    });
+            right: Box::new(str_lit("stderr")) })) });
     let suppress_as_stderr = expr(ExprKind::Binary {
         op: BinOp::Or,
         left: Box::new(is_stderr),
         right: Box::new(expr(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(text.clone()),
-            right: Box::new(str_lit("err")),
-        })),
-    });
+            right: Box::new(str_lit("err")) })) });
     let has_file_handle = expr(ExprKind::Binary {
         op: BinOp::NotEq,
         left: Box::new(expr(ExprKind::TypeOf(Box::new(index_expr(
             ident("__c_file_content"),
             stream.clone(),
         ))))),
-        right: Box::new(str_lit("undefined")),
-    });
+        right: Box::new(str_lit("undefined")) });
     expr(ExprKind::Ternary {
         cond: Box::new(suppress_as_stderr),
         then: Box::new(int_lit(0)),
         else_: Box::new(expr(ExprKind::Ternary {
             cond: Box::new(has_file_handle),
             then: Box::new(call_expr(ident("__c_fputs_h"), vec![text.clone(), stream])),
-            else_: Box::new(call_expr(ident("__c_stdout_append"), vec![text])),
-        })),
-    })
+            else_: Box::new(call_expr(ident("__c_stdout_append"), vec![text])) })) })
 }
 
 fn vsscanf_ints_expr(source: Expression, ap: Expression) -> Expression {
@@ -17584,22 +16878,18 @@ fn vsscanf_ints_expr(source: Expression, ap: Expression) -> Expression {
     let has_second_target = expr(ExprKind::Binary {
         op: BinOp::Gt,
         left: Box::new(member(values, "length")),
-        right: Box::new(int_lit(1)),
-    });
+        right: Box::new(int_lit(1)) });
     let n0_valid = expr(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(n0_expr.clone()),
-        right: Box::new(n0_expr.clone()),
-    });
+        right: Box::new(n0_expr.clone()) });
     let n1_valid = expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(has_second_target),
         right: Box::new(expr(ExprKind::Binary {
             op: BinOp::Eq,
             left: Box::new(n1_expr.clone()),
-            right: Box::new(n1_expr.clone()),
-        })),
-    });
+            right: Box::new(n1_expr.clone()) })) });
 
     expr(ExprKind::Call {
         callee: Box::new(expr(ExprKind::Lambda {
@@ -17611,8 +16901,7 @@ fn vsscanf_ints_expr(source: Expression, ap: Expression) -> Expression {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false,
-            }],
+                is_nullable: false }],
             body: LambdaBody::Expr(Box::new(expr(ExprKind::Sequence(vec![
                 assign_expr(
                     tokens_expr.clone(),
@@ -17638,8 +16927,7 @@ fn vsscanf_ints_expr(source: Expression, ap: Expression) -> Expression {
                         dynamic_carray_deref_write(target0, n0_expr.clone()),
                         assign_expr(count_expr.clone(), int_lit(1)),
                     ]))),
-                    else_: Box::new(int_lit(0)),
-                }),
+                    else_: Box::new(int_lit(0)) }),
                 assign_expr(
                     n1_expr.clone(),
                     call_expr(ident("Number"), vec![index_expr(tokens_expr, int_lit(1))]),
@@ -17653,28 +16941,22 @@ fn vsscanf_ints_expr(source: Expression, ap: Expression) -> Expression {
                             expr(ExprKind::Binary {
                                 op: BinOp::Add,
                                 left: Box::new(count_expr.clone()),
-                                right: Box::new(int_lit(1)),
-                            }),
+                                right: Box::new(int_lit(1)) }),
                         ),
                     ]))),
-                    else_: Box::new(int_lit(0)),
-                }),
+                    else_: Box::new(int_lit(0)) }),
                 expr(ExprKind::Ternary {
                     cond: Box::new(expr(ExprKind::Binary {
                         op: BinOp::Eq,
                         left: Box::new(member(source_expr, "length")),
-                        right: Box::new(int_lit(0)),
-                    })),
+                        right: Box::new(int_lit(0)) })),
                     then: Box::new(int_lit(-1)),
-                    else_: Box::new(count_expr),
-                }),
+                    else_: Box::new(count_expr) }),
             ])))),
             is_async: false,
-            captures: vec![],
-        })),
+            captures: vec![] })),
         args: vec![Argument::positional(source)],
-        optional: false,
-    })
+        optional: false })
 }
 
 /// Build a new carray pointer retreated by `n`: `{__base, __idx: __idx - n}`.
@@ -17684,27 +16966,21 @@ fn carray_retreat(ptr: Expression, n: Expression) -> Expression {
         left: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(ptr.clone()),
             field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(n),
-    });
+            null_safe: false })),
+        right: Box::new(n) });
     Expression::new(ExprKind::Object(vec![
         ObjectProperty::KeyValue {
             key: Expression::new(ExprKind::Lit(Literal::Str("__ref_kind".to_string()))),
-            value: Expression::new(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string()))),
-        },
+            value: Expression::new(ExprKind::Lit(Literal::Str(CARRAY_KIND.to_string()))) },
         ObjectProperty::KeyValue {
             key: Expression::new(ExprKind::Lit(Literal::Str(CARRAY_BASE_KEY.to_string()))),
             value: Expression::new(ExprKind::Member {
                 object: Box::new(ptr),
                 field: CARRAY_BASE_KEY.to_string(),
-                null_safe: false,
-            }),
-        },
+                null_safe: false }) },
         ObjectProperty::KeyValue {
             key: Expression::new(ExprKind::Lit(Literal::Str(CARRAY_IDX_KEY.to_string()))),
-            value: new_idx,
-        },
+            value: new_idx },
     ]))
 }
 
@@ -17740,8 +17016,7 @@ fn string_search_result_offset(left: &Expression, right: &Expression) -> Option<
                 }
                 Some(args[0].value.clone())
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     extract_offset(left, right)
@@ -17753,8 +17028,7 @@ fn char_suffix_base_offset(value: &Expression) -> Option<(String, Expression)> {
         ExprKind::Binary {
             op: BinOp::Add,
             left,
-            right,
-        } => {
+            right } => {
             let ExprKind::Ident(base) = &left.kind else {
                 return None;
             };
@@ -17772,8 +17046,7 @@ fn char_suffix_base_offset(value: &Expression) -> Option<(String, Expression)> {
             };
             Some((base.clone(), args[0].value.clone()))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 #[allow(dead_code)]
@@ -17792,8 +17065,7 @@ fn strip_putchar_side_effect_value(value: Expression) -> Expression {
         ExprKind::Call {
             callee,
             args,
-            optional,
-        } => {
+            optional } => {
             if let ExprKind::Ident(name) = &callee.kind {
                 if name == "__c_fputc_h" && !args.is_empty() {
                     return strip_putchar_side_effect_value(args[0].value.clone());
@@ -17812,32 +17084,25 @@ fn strip_putchar_side_effect_value(value: Expression) -> Expression {
             expr(ExprKind::Call {
                 callee,
                 args: rewritten_args,
-                optional,
-            })
+                optional })
         }
         ExprKind::Binary { op, left, right } => expr(ExprKind::Binary {
             op,
             left: Box::new(strip_putchar_side_effect_value(*left)),
-            right: Box::new(strip_putchar_side_effect_value(*right)),
-        }),
+            right: Box::new(strip_putchar_side_effect_value(*right)) }),
         ExprKind::Unary { op, expr: inner } => expr(ExprKind::Unary {
             op,
-            expr: Box::new(strip_putchar_side_effect_value(*inner)),
-        }),
+            expr: Box::new(strip_putchar_side_effect_value(*inner)) }),
         ExprKind::Cast {
             expr: inner,
-            type_name,
-        } => expr(ExprKind::Cast {
+            type_name } => expr(ExprKind::Cast {
             expr: Box::new(strip_putchar_side_effect_value(*inner)),
-            type_name,
-        }),
+            type_name }),
         ExprKind::Ternary { cond, then, else_ } => expr(ExprKind::Ternary {
             cond: Box::new(strip_putchar_side_effect_value(*cond)),
             then: Box::new(strip_putchar_side_effect_value(*then)),
-            else_: Box::new(strip_putchar_side_effect_value(*else_)),
-        }),
-        other => expr(other),
-    }
+            else_: Box::new(strip_putchar_side_effect_value(*else_)) }),
+        other => expr(other) }
 }
 
 fn normalize_snprintf_literal_args(mut args: Vec<Argument>) -> Vec<Argument> {
@@ -17907,8 +17172,7 @@ fn is_null_pointer_expr(value: &Expression) -> bool {
         ExprKind::Lit(Literal::Int(0) | Literal::Null) => true,
         ExprKind::Lit(Literal::Float(v)) if *v == 0.0 => true,
         ExprKind::Cast { expr, .. } => is_null_pointer_expr(expr),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn is_zero_int_expr(e: &Expression) -> bool {
@@ -17936,21 +17200,18 @@ fn rewrite_current_loop_continue_to_break_stmt(mut st: Statement) -> Statement {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => StmtKind::If {
+            else_body } => StmtKind::If {
             cond,
             then_body: rewrite_current_loop_continue_to_break(then_body),
             elifs: elifs
                 .into_iter()
                 .map(|(cond, body)| (cond, rewrite_current_loop_continue_to_break(body)))
                 .collect(),
-            else_body: else_body.map(rewrite_current_loop_continue_to_break),
-        },
+            else_body: else_body.map(rewrite_current_loop_continue_to_break) },
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => StmtKind::Switch {
+            default } => StmtKind::Switch {
             expr,
             cases: cases
                 .into_iter()
@@ -17959,14 +17220,12 @@ fn rewrite_current_loop_continue_to_break_stmt(mut st: Statement) -> Statement {
                     case
                 })
                 .collect(),
-            default: default.map(rewrite_current_loop_continue_to_break),
-        },
+            default: default.map(rewrite_current_loop_continue_to_break) },
         StmtKind::Try {
             body,
             catches,
             else_body,
-            finally,
-        } => StmtKind::Try {
+            finally } => StmtKind::Try {
             body: rewrite_current_loop_continue_to_break(body),
             catches: catches
                 .into_iter()
@@ -17976,10 +17235,8 @@ fn rewrite_current_loop_continue_to_break_stmt(mut st: Statement) -> Statement {
                 })
                 .collect(),
             else_body: else_body.map(rewrite_current_loop_continue_to_break),
-            finally: finally.map(rewrite_current_loop_continue_to_break),
-        },
-        other => other,
-    };
+            finally: finally.map(rewrite_current_loop_continue_to_break) },
+        other => other };
     st
 }
 
@@ -17989,8 +17246,7 @@ fn is_all_zero_init(e: &Expression) -> bool {
     match &e.kind {
         ExprKind::Lit(Literal::Int(0)) => true,
         ExprKind::Array(elems) => elems.iter().all(|el| is_all_zero_init(&el.value)),
-        _ => false,
-    }
+        _ => false }
 }
 
 // ── setjmp/longjmp: re-entry transform ──────────────────────────────────────
@@ -18026,8 +17282,7 @@ fn find_setjmp_in_expr(e: &Expression) -> Option<String> {
             find_setjmp_in_expr(object).or_else(|| find_setjmp_in_expr(index))
         }
         ExprKind::Sequence(items) => items.iter().find_map(find_setjmp_in_expr),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Replace every `__c_setjmp(...)` marker in `e` with a read of `val_var`.
@@ -18082,15 +17337,14 @@ fn find_setjmp_in_stmt(s: &Statement) -> Option<String> {
         StmtKind::VarDecl { declarations, .. } => declarations
             .iter()
             .find_map(|d| d.init.as_ref().and_then(find_setjmp_in_expr)),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             find_setjmp_in_expr(value).or_else(|| targets.iter().find_map(find_setjmp_in_expr))
         }
         StmtKind::Expr(e) => find_setjmp_in_expr(e),
         StmtKind::If { cond, .. } => find_setjmp_in_expr(cond),
         StmtKind::While { cond, .. } => find_setjmp_in_expr(cond),
         StmtKind::Return(Some(e)) => find_setjmp_in_expr(e),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn replace_setjmp_in_stmt(s: &mut Statement, val_var: &str) {
@@ -18102,7 +17356,7 @@ fn replace_setjmp_in_stmt(s: &mut Statement, val_var: &str) {
                 }
             }
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             replace_setjmp_in_expr(value, val_var);
             for t in targets {
                 replace_setjmp_in_expr(t, val_var);
@@ -18187,14 +17441,11 @@ fn wrap_setjmp_in_block(mut stmts: Vec<Statement>, counter: &mut u32) -> Vec<Sta
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(ident(&err_var)),
-            right: Box::new(expr(ExprKind::Lit(Literal::Null))),
-        })),
+            right: Box::new(expr(ExprKind::Lit(Literal::Null))) })),
         right: Box::new(expr(ExprKind::Binary {
             op: BinOp::StrictEq,
             left: Box::new(member(ident(&err_var), "__c_longjmp")),
-            right: Box::new(str_lit(&token)),
-        })),
-    });
+            right: Box::new(str_lit(&token)) })) });
     let catch_body = vec![if_stmt(
         is_match,
         vec![
@@ -18206,8 +17457,7 @@ fn wrap_setjmp_in_block(mut stmts: Vec<Statement>, counter: &mut u32) -> Vec<Sta
         ],
         Some(vec![stmt(StmtKind::Throw {
             expr: Some(ident(&err_var)),
-            cause: None,
-        })]),
+            cause: None })]),
     )];
     let try_stmt = stmt(StmtKind::Try {
         body,
@@ -18216,11 +17466,9 @@ fn wrap_setjmp_in_block(mut stmts: Vec<Statement>, counter: &mut u32) -> Vec<Sta
             var_name: Some(err_var.clone()),
             stack_var: None,
             body: catch_body,
-            when_clause: None,
-        }],
+            when_clause: None }],
         else_body: None,
-        finally: None,
-    });
+        finally: None });
     let loop_body = vec![
         stmt(StmtKind::Expr(assign_expr(ident(&active_var), int_lit(0)))),
         try_stmt,
@@ -18231,11 +17479,9 @@ fn wrap_setjmp_in_block(mut stmts: Vec<Statement>, counter: &mut u32) -> Vec<Sta
         cond: expr(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(ident(&active_var)),
-            right: Box::new(int_lit(0)),
-        }),
+            right: Box::new(int_lit(0)) }),
         body: loop_body,
-        else_body: None,
-    }));
+        else_body: None }));
     stmts
 }
 
@@ -18266,8 +17512,7 @@ fn base_ident_name(value: &Expression) -> Option<String> {
                 None
             }
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Whether evaluating `e` mutates program state, so it must not be duplicated.
@@ -18299,8 +17544,7 @@ fn index_has_side_effects(e: &Expression) -> bool {
         // effect. Without this arm the splice reads the index twice and fires the
         // increment twice (`s[w++] = c` advances `w` by 2).
         ExprKind::Sequence(exprs) => exprs.iter().any(index_has_side_effects),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn char_buffer_target_offset(value: &Expression) -> Option<(String, Expression)> {
@@ -18325,8 +17569,7 @@ fn char_buffer_target_offset(value: &Expression) -> Option<(String, Expression)>
             };
             Some((base.clone(), args[0].value.clone()))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn concat_sequence_to_string(mut pieces: Vec<Expression>) -> Expression {
@@ -18338,8 +17581,7 @@ fn concat_sequence_to_string(mut pieces: Vec<Expression>) -> Expression {
         current = expr(ExprKind::Binary {
             op: BinOp::Add,
             left: Box::new(current),
-            right: Box::new(piece),
-        });
+            right: Box::new(piece) });
     }
     current
 }
@@ -18350,13 +17592,11 @@ fn nested_designated_object(mut fields: Vec<String>, value: Expression) -> Expre
     };
     let mut current = expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
         key: expr(ExprKind::Lit(Literal::Str(field))),
-        value,
-    }]));
+        value }]));
     while let Some(field) = fields.pop() {
         current = expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
             key: expr(ExprKind::Lit(Literal::Str(field))),
-            value: current,
-        }]));
+            value: current }]));
     }
     current
 }
@@ -18393,21 +17633,18 @@ fn merge_designated_value(slot: &mut Expression, value: Expression) {
 
 enum ParsedInteger {
     I64(i64),
-    Text(String),
-}
+    Text(String) }
 
 fn literal_string_value(value: &Expression) -> Option<String> {
     match &value.kind {
         ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn literal_int_usize(value: &Expression) -> Option<usize> {
     match &value.kind {
         ExprKind::Lit(Literal::Int(n)) if *n >= 0 => Some(*n as usize),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn c_env_slot_name(name: &str) -> String {
@@ -18439,8 +17676,7 @@ fn system_echo_output(command: &str) -> Option<String> {
 fn parsed_expression(parsed: ParsedInteger) -> Expression {
     match parsed {
         ParsedInteger::I64(n) => int_lit(n),
-        ParsedInteger::Text(s) => str_lit(&s),
-    }
+        ParsedInteger::Text(s) => str_lit(&s) }
 }
 
 fn exact_c_int_expr(value: i64) -> Expression {
@@ -18450,8 +17686,7 @@ fn exact_c_int_expr(value: i64) -> Expression {
     }
     expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
         key: str_lit("__c_exact_int"),
-        value: str_lit(&value.to_string()),
-    }]))
+        value: str_lit(&value.to_string()) }]))
 }
 
 fn flush_stdout_buffer_expr() -> Expression {
@@ -18475,9 +17710,7 @@ fn normalize_parse_int_radix(radix: Expression, input: Expression) -> Expression
         else_: Box::new(expr(ExprKind::Ternary {
             cond: Box::new(call_expr(member(input, "startsWith"), vec![str_lit("0")])),
             then: Box::new(int_lit(8)),
-            else_: Box::new(int_lit(10)),
-        })),
-    })
+            else_: Box::new(int_lit(10)) })) })
 }
 
 fn parse_c_integer_string(
@@ -18496,8 +17729,7 @@ fn parse_c_integer_string(
 
     let explicit_base = match &radix_expr.kind {
         ExprKind::Lit(Literal::Int(n)) => *n as u32,
-        _ => return None,
-    };
+        _ => return None };
     let mut base = explicit_base;
     if base == 0 {
         if s.starts_with("0x") || s.starts_with("0X") {
@@ -18806,17 +18038,14 @@ fn sscanf_target_expr(value: &Expression) -> Expression {
     match &value.kind {
         ExprKind::Unary {
             op: UnaryOp::AddrOf,
-            expr,
-        } => *expr.clone(),
-        _ => value.clone(),
-    }
+            expr } => *expr.clone(),
+        _ => value.clone() }
 }
 
 fn pointer_address_target_from_init(init: &Option<Expression>) -> Option<String> {
     let ExprKind::Unary {
         op: UnaryOp::AddrOf,
-        expr,
-    } = &init.as_ref()?.kind
+        expr } = &init.as_ref()?.kind
     else {
         return None;
     };
@@ -18846,8 +18075,7 @@ fn exact_unsigned_literal_text(raw: &str) -> Option<String> {
 fn pointer_member_target_from_init(init: &Option<Expression>) -> Option<Expression> {
     let ExprKind::Unary {
         op: UnaryOp::AddrOf,
-        expr,
-    } = &init.as_ref()?.kind
+        expr } = &init.as_ref()?.kind
     else {
         return None;
     };
@@ -18876,8 +18104,7 @@ fn init_is_carray_pointer_var(init: &Option<Expression>, carray_vars: &HashSet<S
                 expr_is_carray_pointer_var(then, carray_vars)
                     && expr_is_carray_pointer_var(else_, carray_vars)
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     init.as_ref()
@@ -18904,8 +18131,7 @@ fn should_wrap_pointer_init_as_carray(
             false
         }
         Some(_) => false,
-        None => false,
-    }
+        None => false }
 }
 
 fn pointer_address_alias_comparison_side(
@@ -18924,8 +18150,7 @@ fn pointer_address_alias_comparison_side(
 fn pointer_address_target_from_expr(e: &Expression) -> Option<String> {
     let ExprKind::Unary {
         op: UnaryOp::AddrOf,
-        expr,
-    } = &e.kind
+        expr } = &e.kind
     else {
         return None;
     };
@@ -18933,10 +18158,8 @@ fn pointer_address_target_from_expr(e: &Expression) -> Option<String> {
         ExprKind::Ident(target) => Some(target.clone()),
         ExprKind::RefLoad(inner) => match &inner.kind {
             ExprKind::Ident(target) => Some(target.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+            _ => None },
+        _ => None }
 }
 
 fn compare_carray_to_array_start(ptr: Expression, array: Expression, op: BinOp) -> Expression {
@@ -18945,29 +18168,23 @@ fn compare_carray_to_array_start(ptr: Expression, array: Expression, op: BinOp) 
         left: Box::new(expr(ExprKind::Member {
             object: Box::new(ptr.clone()),
             field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(array),
-    });
+            null_safe: false })),
+        right: Box::new(array) });
     let idx_eq = expr(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(expr(ExprKind::Member {
             object: Box::new(ptr),
             field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))),
-    });
+            null_safe: false })),
+        right: Box::new(expr(ExprKind::Lit(Literal::Int(0)))) });
     let eq = expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(base_eq),
-        right: Box::new(idx_eq),
-    });
+        right: Box::new(idx_eq) });
     if matches!(op, BinOp::NotEq) {
         expr(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(eq),
-        })
+            expr: Box::new(eq) })
     } else {
         eq
     }
@@ -18979,32 +18196,25 @@ fn carray_ptr_equality(left: Expression, right: Expression) -> Expression {
         left: Box::new(expr(ExprKind::Member {
             object: Box::new(left.clone()),
             field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         right: Box::new(expr(ExprKind::Member {
             object: Box::new(right.clone()),
             field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
-    });
+            null_safe: false })) });
     let idx_eq = expr(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(expr(ExprKind::Member {
             object: Box::new(left),
             field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         right: Box::new(expr(ExprKind::Member {
             object: Box::new(right),
             field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
-    });
+            null_safe: false })) });
     expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(base_eq),
-        right: Box::new(idx_eq),
-    })
+        right: Box::new(idx_eq) })
 }
 
 fn carray_ptr_relational(left: Expression, right: Expression, op: BinOp) -> Expression {
@@ -19013,32 +18223,25 @@ fn carray_ptr_relational(left: Expression, right: Expression, op: BinOp) -> Expr
         left: Box::new(expr(ExprKind::Member {
             object: Box::new(left.clone()),
             field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         right: Box::new(expr(ExprKind::Member {
             object: Box::new(right.clone()),
             field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
-    });
+            null_safe: false })) });
     let idx_cmp = expr(ExprKind::Binary {
         op,
         left: Box::new(expr(ExprKind::Member {
             object: Box::new(left),
             field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
+            null_safe: false })),
         right: Box::new(expr(ExprKind::Member {
             object: Box::new(right),
             field: CARRAY_IDX_KEY.to_string(),
-            null_safe: false,
-        })),
-    });
+            null_safe: false })) });
     expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(base_eq),
-        right: Box::new(idx_cmp),
-    })
+        right: Box::new(idx_cmp) })
 }
 
 fn carray_ptr_relational_to_array_start(
@@ -19052,41 +18255,34 @@ fn carray_ptr_relational_to_array_start(
         left: Box::new(expr(ExprKind::Member {
             object: Box::new(ptr.clone()),
             field: CARRAY_BASE_KEY.to_string(),
-            null_safe: false,
-        })),
-        right: Box::new(array),
-    });
+            null_safe: false })),
+        right: Box::new(array) });
     let idx = expr(ExprKind::Member {
         object: Box::new(ptr),
         field: CARRAY_IDX_KEY.to_string(),
-        null_safe: false,
-    });
+        null_safe: false });
     let zero = expr(ExprKind::Lit(Literal::Int(0)));
     let idx_cmp = if ptr_is_left {
         expr(ExprKind::Binary {
             op,
             left: Box::new(idx),
-            right: Box::new(zero),
-        })
+            right: Box::new(zero) })
     } else {
         expr(ExprKind::Binary {
             op,
             left: Box::new(zero),
-            right: Box::new(idx),
-        })
+            right: Box::new(idx) })
     };
     expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(base_eq),
-        right: Box::new(idx_cmp),
-    })
+        right: Box::new(idx_cmp) })
 }
 
 fn atomic_pointer_target(arg: Expression) -> Expression {
     if let ExprKind::Unary {
         op: UnaryOp::AddrOf,
-        expr,
-    } = arg.kind
+        expr } = arg.kind
     {
         *expr
     } else {
@@ -19099,11 +18295,9 @@ fn nan_to_default(value: Expression, default_value: Expression) -> Expression {
         cond: Box::new(expr(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(value.clone()),
-            right: Box::new(value.clone()),
-        })),
+            right: Box::new(value.clone()) })),
         then: Box::new(default_value),
-        else_: Box::new(value),
-    })
+        else_: Box::new(value) })
 }
 
 /// Extract an integer value from an optional enum initializer expression.
@@ -19115,16 +18309,14 @@ fn extract_enum_val(init: &Option<Expression>, default: i64) -> i64 {
         ExprKind::Lit(Literal::Int(i)) => *i,
         ExprKind::Unary {
             op: UnaryOp::Neg,
-            expr,
-        } => {
+            expr } => {
             if let ExprKind::Lit(Literal::Int(i)) = &expr.kind {
                 -i
             } else {
                 default
             }
         }
-        _ => default,
-    }
+        _ => default }
 }
 
 /// Returns true if a statement list ends with a break or return (no fallthrough).
@@ -19139,8 +18331,7 @@ fn ends_with_break(stmts: &[Statement]) -> bool {
                     | StmtKind::GoTo(_)
             ) || matches!(&s.kind, StmtKind::Block(inner) if ends_with_break(inner))
         }
-        None => false,
-    }
+        None => false }
 }
 
 /// Convert an expression AST node back to a simple C source string for macro substitution.
@@ -19180,8 +18371,7 @@ fn expr_to_c_source(expr: &Expression) -> String {
                 BinOp::BitXor => "^",
                 BinOp::Shl => "<<",
                 BinOp::Shr => ">>",
-                _ => "+",
-            };
+                _ => "+" };
             format!(
                 "({} {} {})",
                 expr_to_c_source(left),
@@ -19194,8 +18384,7 @@ fn expr_to_c_source(expr: &Expression) -> String {
                 UnaryOp::Neg => "-",
                 UnaryOp::Not => "!",
                 UnaryOp::BitNot => "~",
-                _ => "",
-            };
+                _ => "" };
             format!("({}{})", op_str, expr_to_c_source(e))
         }
         ExprKind::Call { callee, args, .. } => {
@@ -19203,8 +18392,7 @@ fn expr_to_c_source(expr: &Expression) -> String {
             let args_s: Vec<String> = args.iter().map(|a| expr_to_c_source(&a.value)).collect();
             format!("{}({})", callee_s, args_s.join(", "))
         }
-        _ => "0".to_string(),
-    }
+        _ => "0".to_string() }
 }
 
 fn is_complex_type_text(type_text: &str) -> bool {

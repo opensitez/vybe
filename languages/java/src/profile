@@ -149,18 +149,18 @@ __java_enum_set_equals = { emit = "common:java.enum_set_equals", min_args = 2, m
 __java_enum_set_hash_code = { emit = "common:java.enum_set_hash_code", min_args = 1, max_args = 1 }
 __java_enum_set_iterator = { emit = "common:java.enum_set_iterator", min_args = 1, max_args = 1 }
 __java_enum_set_get_class = { emit = "common:java.enum_set_get_class", min_args = 1, max_args = 1 }
-__java_instant_compare_to = { emit = "common:java.instant_compare_to", min_args = 2, max_args = 2 }
-__java_instant_equals = { emit = "common:java.instant_equals", min_args = 2, max_args = 2 }
-__java_instant_is_before = { emit = "common:java.instant_is_before", min_args = 2, max_args = 2 }
-__java_instant_is_after = { emit = "common:java.instant_is_after", min_args = 2, max_args = 2 }
-__java_instant_to_string = { emit = "common:java.instant_to_string", min_args = 1, max_args = 1 }
-__java_instant_hash_code = { emit = "common:java.instant_hash_code", min_args = 1, max_args = 1 }
-__java_time_to_string = { emit = "common:java.time_to_string", min_args = 1, max_args = 1 }
-__java_duration_plus_hours = { emit = "common:java.duration_plus_hours", min_args = 2, max_args = 2 }
-__java_duration_minus_minutes = { emit = "common:java.duration_minus_minutes", min_args = 2, max_args = 2 }
-__java_zone_id_short_ids = { emit = "common:java.zone_id_short_ids", min_args = 0, max_args = 0 }
-__java_zone_compare_to = { emit = "common:java.zone_compare_to", min_args = 2, max_args = 2 }
-__java_zone_hash_code = { emit = "common:java.zone_hash_code", min_args = 1, max_args = 1 }
+__java_instant_compare_to = { emit = "common:jvm.java.instant_compare_to", min_args = 2, max_args = 2 }
+__java_instant_equals = { emit = "common:jvm.java.instant_equals", min_args = 2, max_args = 2 }
+__java_instant_is_before = { emit = "common:jvm.java.instant_is_before", min_args = 2, max_args = 2 }
+__java_instant_is_after = { emit = "common:jvm.java.instant_is_after", min_args = 2, max_args = 2 }
+__java_instant_to_string = { emit = "common:jvm.java.instant_to_string", min_args = 1, max_args = 1 }
+__java_instant_hash_code = { emit = "common:jvm.java.instant_hash_code", min_args = 1, max_args = 1 }
+__java_time_to_string = { emit = "common:jvm.java.time_to_string", min_args = 1, max_args = 1 }
+__java_duration_plus_hours = { emit = "common:jvm.java.duration_plus_hours", min_args = 2, max_args = 2 }
+__java_duration_minus_minutes = { emit = "common:jvm.java.duration_minus_minutes", min_args = 2, max_args = 2 }
+__java_zone_id_short_ids = { emit = "common:jvm.java.zone_id_short_ids", min_args = 0, max_args = 0 }
+__java_zone_compare_to = { emit = "common:jvm.java.zone_compare_to", min_args = 2, max_args = 2 }
+__java_zone_hash_code = { emit = "common:jvm.java.zone_hash_code", min_args = 1, max_args = 1 }
 __java_string_value_of   = { emit = "common:java.string_value_of", min_args = 1, max_args = 1 }
 __java_string_concat     = { emit = "common:java.string_concat",   min_args = 2, max_args = 2 }
 __j_char_code_at         = { emit = "host:wasm:js-string:charCodeAt", min_args = 2, max_args = 2 }
@@ -193,11 +193,11 @@ __java_bigint_test_bit   = { emit = "common:java.bigint_test_bit", min_args = 2,
 __java_bigint_gcd        = { emit = "common:java.bigint_gcd",      min_args = 2, max_args = 2 }
 __java_bigint_is_probable_prime = { emit = "common:java.bigint_is_probable_prime", min_args = 2, max_args = 2 }
 __java_bigint_next_probable_prime = { emit = "common:java.bigint_next_probable_prime", min_args = 1, max_args = 1 }
-__java_set_add = { emit = "common:java.add", min_args = 2, max_args = 2 }
-__java_set_remove = { emit = "common:java.list_remove_value", min_args = 2, max_args = 2 }
-__java_queue_add = { emit = "common:java.add", min_args = 2, max_args = 2 }
-__java_queue_peek = { emit = "common:java.peek_first", min_args = 1, max_args = 1 }
-__java_queue_poll = { emit = "common:java.queue_poll", min_args = 1, max_args = 1 }
+__java_set_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 2 }
+__java_set_remove = { emit = "common:jvm.java.list_remove_value", min_args = 2, max_args = 2 }
+__java_queue_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 2 }
+__java_queue_peek = { emit = "common:jvm.java.peek_first", min_args = 1, max_args = 1 }
+__java_queue_poll = { emit = "common:jvm.java.queue_poll", min_args = 1, max_args = 1 }
 __java_blocking_queue_add = { emit = "common:java.blocking_queue_add", min_args = 2, max_args = 2 }
 __java_blocking_queue_offer = { emit = "common:java.blocking_queue_offer", min_args = 2, max_args = 4 }
 __java_blocking_queue_put = { emit = "common:java.blocking_queue_put", min_args = 2, max_args = 2 }
@@ -205,24 +205,24 @@ __java_blocking_queue_take = { emit = "common:java.blocking_queue_take", min_arg
 __java_blocking_queue_poll = { emit = "common:java.blocking_queue_poll", min_args = 1, max_args = 3 }
 __java_queue_remove_checked = { emit = "common:java.queue_remove_checked", min_args = 1, max_args = 1 }
 __java_queue_element_checked = { emit = "common:java.queue_element_checked", min_args = 1, max_args = 1 }
-__java_list_add = { emit = "common:java.add", min_args = 2, max_args = 3 }
+__java_list_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 3 }
 __java_copy_on_write_add_if_absent = { emit = "common:java.copy_on_write_add_if_absent", min_args = 2, max_args = 2 }
-__java_list_size = { emit = "common:java.size", min_args = 1, max_args = 1 }
+__java_list_size = { emit = "common:jvm.java.size", min_args = 1, max_args = 1 }
 __java_iterator_remove_unsupported = { emit = "common:java.iterator_remove_unsupported", min_args = 1, max_args = 1 }
-__java_deque_push = { emit = "common:java.add_first", min_args = 2, max_args = 2 }
-__java_deque_pop = { emit = "common:java.poll_first", min_args = 1, max_args = 1 }
+__java_deque_push = { emit = "common:jvm.java.add_first", min_args = 2, max_args = 2 }
+__java_deque_pop = { emit = "common:jvm.java.poll_first", min_args = 1, max_args = 1 }
 __java_stack_push = { emit = "common:java.stack_push", min_args = 2, max_args = 2 }
 __java_stack_pop = { emit = "common:java.poll_last", min_args = 1, max_args = 1 }
-__java_stack_peek = { emit = "common:java.peek_last", min_args = 1, max_args = 1 }
-__java_stack_element_at = { emit = "common:java.list_get", min_args = 2, max_args = 2 }
-__java_stack_first_element = { emit = "common:java.peek_first", min_args = 1, max_args = 1 }
-__java_stack_last_element = { emit = "common:java.peek_last", min_args = 1, max_args = 1 }
+__java_stack_peek = { emit = "common:jvm.java.peek_last", min_args = 1, max_args = 1 }
+__java_stack_element_at = { emit = "common:jvm.java.get", min_args = 2, max_args = 2 }
+__java_stack_first_element = { emit = "common:jvm.java.peek_first", min_args = 1, max_args = 1 }
+__java_stack_last_element = { emit = "common:jvm.java.peek_last", min_args = 1, max_args = 1 }
 __java_stack_search = { emit = "common:java.stack_search", min_args = 2, max_args = 2 }
-__java_stack_set = { emit = "common:java.list_set", min_args = 3, max_args = 3 }
+__java_stack_set = { emit = "common:jvm.java.list_set", min_args = 3, max_args = 3 }
 __java_stack_clone = { emit = "common:java.list_clone", min_args = 1, max_args = 1 }
-__java_list_remove = { emit = "common:java.list_remove", min_args = 2, max_args = 2 }
-__java_list_remove_value = { emit = "common:java.list_remove_value", min_args = 2, max_args = 2 }
-__java_list_index_of = { emit = "common:java.list_index_of", min_args = 2, max_args = 2 }
+__java_list_remove = { emit = "common:jvm.java.list_remove", min_args = 2, max_args = 2 }
+__java_list_remove_value = { emit = "common:jvm.java.list_remove_value", min_args = 2, max_args = 2 }
+__java_list_index_of = { emit = "common:jvm.java.list_index_of", min_args = 2, max_args = 2 }
 __java_list_contains_all = { emit = "common:java.list_contains_all", min_args = 2, max_args = 2 }
 __java_list_equals = { emit = "common:java.list_equals", min_args = 2, max_args = 2 }
 __java_vector_capacity = { emit = "common:java.vector_capacity", min_args = 1, max_args = 1 }
@@ -235,30 +235,30 @@ __java_enumeration_next = { emit = "common:java.enumeration_next", min_args = 1,
 __java_hashtable_put = { emit = "common:java.hashtable_put", min_args = 3, max_args = 3 }
 __java_hashtable_keys = { emit = "common:java.hashtable_keys", min_args = 1, max_args = 1 }
 __java_hashtable_elements = { emit = "common:java.hashtable_elements", min_args = 1, max_args = 1 }
-__java_sorted_add = { emit = "common:java.sorted_add", min_args = 2, max_args = 2 }
-__java_priority_add = { emit = "common:java.priority_add", min_args = 2, max_args = 2 }
-__java_sorted_poll = { emit = "common:java.sorted_poll", min_args = 1, max_args = 1 }
-__java_priority_peek = { emit = "common:java.priority_peek", min_args = 1, max_args = 1 }
-__java_sorted_ceiling = { emit = "common:java.sorted_ceiling", min_args = 2, max_args = 2 }
-__java_sorted_floor = { emit = "common:java.sorted_floor", min_args = 2, max_args = 2 }
-__java_sorted_higher = { emit = "common:java.sorted_higher", min_args = 2, max_args = 2 }
-__java_sorted_lower = { emit = "common:java.sorted_lower", min_args = 2, max_args = 2 }
-__java_sorted_descending_set = { emit = "common:java.sorted_descending_set", min_args = 1, max_args = 1 }
+__java_sorted_add = { emit = "common:jvm.java.sorted_add", min_args = 2, max_args = 2 }
+__java_priority_add = { emit = "common:jvm.java.priority_add", min_args = 2, max_args = 2 }
+__java_sorted_poll = { emit = "common:jvm.java.queue_poll", min_args = 1, max_args = 1 }
+__java_priority_peek = { emit = "common:jvm.java.priority_peek", min_args = 1, max_args = 1 }
+__java_sorted_ceiling = { emit = "common:jvm.java.sorted_ceiling", min_args = 2, max_args = 2 }
+__java_sorted_floor = { emit = "common:jvm.java.sorted_floor", min_args = 2, max_args = 2 }
+__java_sorted_higher = { emit = "common:jvm.java.sorted_higher", min_args = 2, max_args = 2 }
+__java_sorted_lower = { emit = "common:jvm.java.sorted_lower", min_args = 2, max_args = 2 }
+__java_sorted_descending_set = { emit = "common:jvm.java.sorted_descending_set", min_args = 1, max_args = 1 }
 __java_sorted_sub_set = { emit = "common:java.sorted_sub_set", min_args = 3, max_args = 3 }
 __java_sorted_head_set = { emit = "common:java.sorted_head_set", min_args = 2, max_args = 2 }
 __java_sorted_tail_set = { emit = "common:java.sorted_tail_set", min_args = 2, max_args = 2 }
 __java_double_to_string = { emit = "common:java.double_to_string", min_args = 1, max_args = 1 }
 __j_stream_builder_add = { emit = "common:java.stream_builder_add", min_args = 2, max_args = 2 }
-__java_map_get = { emit = "common:java.map_get", min_args = 2, max_args = 2 }
-__java_map_put = { emit = "common:java.map_put", min_args = 3, max_args = 3 }
+__java_map_get = { emit = "common:jvm.java.map_get", min_args = 2, max_args = 2 }
+__java_map_put = { emit = "common:jvm.java.map_put", min_args = 3, max_args = 3 }
 __java_map_put_all = { emit = "common:java.map_put_all", min_args = 2, max_args = 2 }
 __java_map_remove = { emit = "common:java.map_remove", min_args = 2, max_args = 3 }
 __java_map_get_or_default = { emit = "common:java.map_get_or_default", min_args = 3, max_args = 3 }
 __java_map_contains_key = { emit = "common:java.map_contains_key", min_args = 2, max_args = 2 }
 __java_map_contains_value = { emit = "common:java.map_contains_value", min_args = 2, max_args = 2 }
-__java_map_key_set = { emit = "common:java.map_key_set", min_args = 1, max_args = 1 }
-__java_map_values = { emit = "common:java.map_values", min_args = 1, max_args = 1 }
-__java_map_entry_set = { emit = "common:java.entry_set", min_args = 1, max_args = 1 }
+__java_map_key_set = { emit = "common:jvm.java.map_key_set", min_args = 1, max_args = 1 }
+__java_map_values = { emit = "common:jvm.java.map_values", min_args = 1, max_args = 1 }
+__java_map_entry_set = { emit = "common:jvm.java.entry_set", min_args = 1, max_args = 1 }
 __java_map_put_if_absent = { emit = "common:java.put_if_absent", min_args = 3, max_args = 3 }
 __java_map_compute_if_absent = { emit = "common:java.compute_if_absent", min_args = 3, max_args = 3 }
 __java_map_compute_if_present = { emit = "common:java.compute_if_present", min_args = 3, max_args = 3 }
@@ -267,10 +267,10 @@ __java_map_merge = { emit = "common:java.map_merge", min_args = 4, max_args = 4 
 __java_map_replace = { emit = "common:java.map_replace", min_args = 3, max_args = 4 }
 __java_map_replace_all = { emit = "common:java.map_replace_all", min_args = 2, max_args = 2 }
 __java_map_for_each = { emit = "common:java.map_for_each", min_args = 2, max_args = 2 }
-__java_map_clear = { emit = "common:java.map_clear", min_args = 1, max_args = 1 }
+__java_map_clear = { emit = "common:jvm.java.map_clear", min_args = 1, max_args = 1 }
 __java_map_clone = { emit = "common:java.map_clone", min_args = 1, max_args = 1 }
-__java_map_size = { emit = "common:java.map_size", min_args = 1, max_args = 1 }
-__java_map_is_empty = { emit = "common:java.map_is_empty", min_args = 1, max_args = 1 }
+__java_map_size = { emit = "common:jvm.java.map_size", min_args = 1, max_args = 1 }
+__java_map_is_empty = { emit = "common:jvm.java.map_is_empty", min_args = 1, max_args = 1 }
 __java_map_equals = { emit = "common:java.map_equals", min_args = 2, max_args = 2 }
 __java_map_key_set_remove = { emit = "common:java.map_key_set_remove", min_args = 2, max_args = 2 }
 __java_optional_of_long = { emit = "common:java.optional_of_long", min_args = 1, max_args = 1 }
@@ -285,9 +285,9 @@ __java_optional_or_get = { emit = "common:java.optional_or_get", min_args = 2, m
 __java_optional_stream = { emit = "common:java.optional_stream", min_args = 1, max_args = 1 }
 __java_optional_equals = { emit = "common:java.optional_equals", min_args = 2, max_args = 2 }
 __java_optional_to_string = { emit = "common:java.optional_to_string", min_args = 1, max_args = 1 }
-__java_sorted_map_key_set = { emit = "common:java.sorted_map_key_set", min_args = 1, max_args = 1 }
-__java_sorted_map_first_key = { emit = "common:java.sorted_map_first_key", min_args = 1, max_args = 1 }
-__java_sorted_map_last_key = { emit = "common:java.sorted_map_last_key", min_args = 1, max_args = 1 }
+__java_sorted_map_key_set = { emit = "common:jvm.java.sorted_map_key_set", min_args = 1, max_args = 1 }
+__java_sorted_map_first_key = { emit = "common:jvm.java.sorted_map_first_key", min_args = 1, max_args = 1 }
+__java_sorted_map_last_key = { emit = "common:jvm.java.sorted_map_last_key", min_args = 1, max_args = 1 }
 __java_sorted_map_first_entry = { emit = "common:java.sorted_map_first_entry", min_args = 1, max_args = 1 }
 __java_sorted_map_last_entry = { emit = "common:java.sorted_map_last_entry", min_args = 1, max_args = 1 }
 __java_sorted_map_ceiling_entry = { emit = "common:java.sorted_map_ceiling_entry", min_args = 2, max_args = 2 }
@@ -296,8 +296,8 @@ __java_sorted_map_higher_entry = { emit = "common:java.sorted_map_higher_entry",
 __java_sorted_map_lower_entry = { emit = "common:java.sorted_map_lower_entry", min_args = 2, max_args = 2 }
 __java_sorted_map_ceiling_key = { emit = "common:java.sorted_map_ceiling_key", min_args = 2, max_args = 2 }
 __java_sorted_map_floor_key = { emit = "common:java.sorted_map_floor_key", min_args = 2, max_args = 2 }
-__java_sorted_map_higher_key = { emit = "common:java.sorted_map_higher_key", min_args = 2, max_args = 2 }
-__java_sorted_map_lower_key = { emit = "common:java.sorted_map_lower_key", min_args = 2, max_args = 2 }
+__java_sorted_map_higher_key = { emit = "common:jvm.java.sorted_map_higher_key", min_args = 2, max_args = 2 }
+__java_sorted_map_lower_key = { emit = "common:jvm.java.sorted_map_lower_key", min_args = 2, max_args = 2 }
 __java_sorted_map_poll_first_entry = { emit = "common:java.sorted_map_poll_first_entry", min_args = 1, max_args = 1 }
 __java_sorted_map_poll_last_entry = { emit = "common:java.sorted_map_poll_last_entry", min_args = 1, max_args = 1 }
 __java_sorted_map_descending_key_set = { emit = "common:java.sorted_map_descending_key_set", min_args = 1, max_args = 1 }
@@ -373,7 +373,7 @@ __j_normalize      = { emit = "host:ecma:string:normalize",  min_args = 2, max_a
 # ── String utilities ──────────────────────────────────────────────────────────
 
 __java_string_format = { emit = "common:sprintf.format",  min_args = 1, max_args = 255 }
-__java_string_join = { emit = "common:java.string_join",   min_args = 2, max_args = 255 }
+__java_string_join = { emit = "common:jvm.java.string_join",   min_args = 2, max_args = 255 }
 
 # ── Object / misc ─────────────────────────────────────────────────────────────
 
@@ -386,7 +386,10 @@ __java_string_join = { emit = "common:java.string_join",   min_args = 2, max_arg
 
 # ── Process ───────────────────────────────────────────────────────────────────
 
-__process_exit = { emit = "host:wasi:cli:exit",  min_args = 1, max_args = 1 }
+# `wasi:cli/exit` is the interface; `wasi:cli` matched no registration at all, so
+# `System.exit(4)` failed as "undefined is not callable". `exit-with-code` is the
+# arm that carries a status; plain `exit` takes a result<(),()> and says 0 or 1.
+__process_exit = { emit = "common:control_flow.exit",  min_args = 1, max_args = 1 }
 
 # ── Array helpers ─────────────────────────────────────────────────────────────
 
@@ -446,9 +449,6 @@ getBytes      = { emit = "common:java.to_char_array",    min_args = 0, max_args 
 formatted     = { emit = "common:sprintf.format",        min_args = 0, max_args = 255 }
 indent        = { emit = "noop",                         min_args = 1, max_args = 1 }
 
-# String → number
-"Integer.parseInt" = { emit = "common:java.parse_int",  min_args = 1, max_args = 2 }
-
 # toString / hashCode / equals
 toString      = { emit = "invoke:toString",              min_args = 0, max_args = 0 }
 hashCode      = { emit = "common:java.hash_code",        min_args = 0, max_args = 0 }
@@ -456,81 +456,83 @@ equals        = { emit = "common:java.equals",           min_args = 1, max_args 
 getName       = { emit = "common:java.class_name",        min_args = 0, max_args = 0 }
 getSimpleName = { emit = "common:java.class_simple_name", min_args = 0, max_args = 0 }
 getClass      = { emit = "common:java.object_get_class",  min_args = 0, max_args = 0 }
-getEpochSecond = { emit = "common:java.instant_get_epoch_second", min_args = 0, max_args = 0 }
-getNano      = { emit = "common:java.instant_get_nano", min_args = 0, max_args = 0 }
-toEpochMilli = { emit = "common:java.instant_to_epoch_milli", min_args = 0, max_args = 0 }
-plusSeconds  = { emit = "common:java.instant_plus_seconds", min_args = 1, max_args = 1 }
-minusSeconds = { emit = "common:java.instant_minus_seconds", min_args = 1, max_args = 1 }
-plusMillis   = { emit = "common:java.instant_plus_millis", min_args = 1, max_args = 1 }
-minusMillis  = { emit = "common:java.instant_minus_millis", min_args = 1, max_args = 1 }
-plusNanos    = { emit = "common:java.instant_plus_nanos", min_args = 1, max_args = 1 }
-minusNanos   = { emit = "common:java.instant_minus_nanos", min_args = 1, max_args = 1 }
-plus         = { emit = "common:java.instant_plus_seconds", min_args = 1, max_args = 1 }
-minus        = { emit = "common:java.instant_minus_seconds", min_args = 1, max_args = 1 }
-isBefore     = { emit = "common:java.instant_is_before", min_args = 1, max_args = 1 }
-isAfter      = { emit = "common:java.instant_is_after", min_args = 1, max_args = 1 }
-atZone       = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
-atOffset     = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
+getEpochSecond = { emit = "common:jvm.java.instant_get_epoch_second", min_args = 0, max_args = 0 }
+getNano      = { emit = "common:jvm.java.instant_get_nano", min_args = 0, max_args = 0 }
+toEpochMilli = { emit = "common:jvm.java.instant_to_epoch_milli", min_args = 0, max_args = 0 }
+plusSeconds  = { emit = "common:jvm.java.instant_plus_seconds", min_args = 1, max_args = 1 }
+minusSeconds = { emit = "common:jvm.java.instant_minus_seconds", min_args = 1, max_args = 1 }
+plusMillis   = { emit = "common:jvm.java.instant_plus_millis", min_args = 1, max_args = 1 }
+minusMillis  = { emit = "common:jvm.java.instant_minus_millis", min_args = 1, max_args = 1 }
+plusNanos    = { emit = "common:jvm.java.instant_plus_nanos", min_args = 1, max_args = 1 }
+minusNanos   = { emit = "common:jvm.java.instant_minus_nanos", min_args = 1, max_args = 1 }
+plus         = { emit = "common:jvm.java.instant_plus_seconds", min_args = 1, max_args = 1 }
+minus        = { emit = "common:jvm.java.instant_minus_seconds", min_args = 1, max_args = 1 }
+isBefore     = { emit = "common:jvm.java.instant_is_before", min_args = 1, max_args = 1 }
+isAfter      = { emit = "common:jvm.java.instant_is_after", min_args = 1, max_args = 1 }
+atZone       = { emit = "common:jvm.java.instant_with_offset", min_args = 1, max_args = 1 }
+atOffset     = { emit = "common:jvm.java.instant_with_offset", min_args = 1, max_args = 1 }
 getId        = { emit = "noop", min_args = 0, max_args = 0 }
 getRules     = { emit = "noop", min_args = 0, max_args = 0 }
-normalized   = { emit = "common:java.zone_normalized", min_args = 0, max_args = 0 }
-getDisplayName = { emit = "common:java.zone_display_name", min_args = 2, max_args = 2 }
-isFixedOffset = { emit = "common:java.zone_rules_fixed", min_args = 0, max_args = 0 }
+normalized   = { emit = "common:jvm.java.zone_normalized", min_args = 0, max_args = 0 }
+getDisplayName = { emit = "common:jvm.java.zone_display_name", min_args = 2, max_args = 2 }
+isFixedOffset = { emit = "common:jvm.java.zone_rules_fixed", min_args = 0, max_args = 0 }
 getOffset    = [
-    { emit = "common:java.instant_get_offset", min_args = 0, max_args = 0 },
-    { emit = "common:java.zone_rules_get_offset", min_args = 1, max_args = 1 },
+    { emit = "common:jvm.java.instant_get_offset", min_args = 0, max_args = 0 },
+    { emit = "common:jvm.java.zone_rules_get_offset", min_args = 1, max_args = 1 },
 ]
-getTotalSeconds = { emit = "common:java.zone_offset_total_seconds", min_args = 0, max_args = 0 }
+getTotalSeconds = { emit = "common:jvm.java.zone_offset_total_seconds", min_args = 0, max_args = 0 }
 getSeconds   = { emit = "noop", min_args = 0, max_args = 0 }
-getYear      = { emit = "common:java.instant_get_year", min_args = 0, max_args = 0 }
-getMonthValue = { emit = "common:java.instant_get_month", min_args = 0, max_args = 0 }
-getDayOfMonth = { emit = "common:java.instant_get_day", min_args = 0, max_args = 0 }
-getHour      = { emit = "common:java.instant_get_hour", min_args = 0, max_args = 0 }
-getMinute    = { emit = "common:java.instant_get_minute", min_args = 0, max_args = 0 }
-getSecond    = { emit = "common:java.instant_get_second", min_args = 0, max_args = 0 }
-toLocalDate  = { emit = "common:java.instant_to_local_date", min_args = 0, max_args = 0 }
+getYear      = { emit = "common:jvm.java.instant_get_year", min_args = 0, max_args = 0 }
+getMonthValue = { emit = "common:jvm.java.instant_get_month", min_args = 0, max_args = 0 }
+getDayOfMonth = { emit = "common:jvm.java.instant_get_day", min_args = 0, max_args = 0 }
+getHour      = { emit = "common:jvm.java.instant_get_hour", min_args = 0, max_args = 0 }
+getMinute    = { emit = "common:jvm.java.instant_get_minute", min_args = 0, max_args = 0 }
+getSecond    = { emit = "common:jvm.java.instant_get_second", min_args = 0, max_args = 0 }
+toLocalDate  = { emit = "common:jvm.java.instant_to_local_date", min_args = 0, max_args = 0 }
 toLocalTime  = { emit = "noop", min_args = 0, max_args = 0 }
 toLocalDateTime = { emit = "noop", min_args = 0, max_args = 0 }
 toInstant    = { emit = "noop", min_args = 0, max_args = 0 }
 toZonedDateTime = { emit = "noop", min_args = 0, max_args = 0 }
 toOffsetDateTime = { emit = "noop", min_args = 0, max_args = 0 }
-getZone      = { emit = "common:java.instant_get_zone", min_args = 0, max_args = 0 }
-format       = { emit = "common:java.time_format", min_args = 1, max_args = 1 }
-atZoneSameInstant = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
-atZoneSimilarLocal = { emit = "common:java.time_with_offset_same_local", min_args = 1, max_args = 1 }
-withOffsetSameInstant = { emit = "common:java.instant_with_offset", min_args = 1, max_args = 1 }
-withOffsetSameLocal = { emit = "common:java.time_with_offset_same_local", min_args = 1, max_args = 1 }
-withZoneSameInstant = { emit = "common:java.instant_with_zone", min_args = 1, max_args = 1 }
-withZoneSameLocal = { emit = "common:java.time_with_zone_same_local", min_args = 1, max_args = 1 }
-withLaterOffsetAtOverlap = { emit = "common:java.zoned_later_overlap", min_args = 0, max_args = 0 }
-withEarlierOffsetAtOverlap = { emit = "common:java.zoned_earlier_overlap", min_args = 0, max_args = 0 }
-range       = { emit = "common:java.time_range_day", min_args = 1, max_args = 1 }
+getZone      = { emit = "common:jvm.java.instant_get_zone", min_args = 0, max_args = 0 }
+format       = { emit = "common:jvm.java.time_format", min_args = 1, max_args = 1 }
+atZoneSameInstant = { emit = "common:jvm.java.instant_with_offset", min_args = 1, max_args = 1 }
+atZoneSimilarLocal = { emit = "common:jvm.java.time_with_offset_same_local", min_args = 1, max_args = 1 }
+withOffsetSameInstant = { emit = "common:jvm.java.instant_with_offset", min_args = 1, max_args = 1 }
+withOffsetSameLocal = { emit = "common:jvm.java.time_with_offset_same_local", min_args = 1, max_args = 1 }
+withZoneSameInstant = { emit = "common:jvm.java.instant_with_zone", min_args = 1, max_args = 1 }
+withZoneSameLocal = { emit = "common:jvm.java.time_with_zone_same_local", min_args = 1, max_args = 1 }
+withLaterOffsetAtOverlap = { emit = "common:jvm.java.zoned_later_overlap", min_args = 0, max_args = 0 }
+withEarlierOffsetAtOverlap = { emit = "common:jvm.java.zoned_earlier_overlap", min_args = 0, max_args = 0 }
+range       = { emit = "common:jvm.java.time_range_day", min_args = 1, max_args = 1 }
 getMaximum  = { emit = "noop", min_args = 0, max_args = 0 }
-toEpochSecond = { emit = "common:java.instant_get_epoch_second", min_args = 0, max_args = 0 }
-truncatedTo  = { emit = "common:java.instant_truncated", min_args = 1, max_args = 1 }
-plusDays     = { emit = "common:java.time_plus_days", min_args = 1, max_args = 1 }
-minusDays    = { emit = "common:java.time_minus_days", min_args = 1, max_args = 1 }
-plusWeeks    = { emit = "common:java.time_plus_weeks", min_args = 1, max_args = 1 }
-plusMonths   = { emit = "common:java.time_plus_months", min_args = 1, max_args = 1 }
-minusMonths  = { emit = "common:java.time_minus_months", min_args = 1, max_args = 1 }
-plusHours    = { emit = "common:java.time_plus_hours", min_args = 1, max_args = 1 }
-minusHours   = { emit = "common:java.time_minus_hours", min_args = 1, max_args = 1 }
-plusMinutes  = { emit = "common:java.time_plus_minutes", min_args = 1, max_args = 1 }
-minusMinutes = { emit = "common:java.time_minus_minutes", min_args = 1, max_args = 1 }
-withYear     = { emit = "common:java.time_with_year", min_args = 1, max_args = 1 }
-withMonth    = { emit = "common:java.time_with_month", min_args = 1, max_args = 1 }
-withDayOfMonth = { emit = "common:java.time_with_day", min_args = 1, max_args = 1 }
-withHour     = { emit = "common:java.time_with_hour", min_args = 1, max_args = 1 }
-withMinute   = { emit = "common:java.time_with_minute", min_args = 1, max_args = 1 }
-withSecond   = { emit = "common:java.time_with_second", min_args = 1, max_args = 1 }
-lengthOfMonth = { emit = "common:java.time_length_of_month", min_args = 0, max_args = 0 }
-isLeapYear   = { emit = "common:java.time_is_leap_year", min_args = 0, max_args = 0 }
-getDayOfYear = { emit = "common:java.time_day_of_year", min_args = 0, max_args = 0 }
-getDayOfWeek = { emit = "common:java.time_day_of_week", min_args = 0, max_args = 0 }
-getDays      = { emit = "noop", min_args = 0, max_args = 0 }
-getMonths    = { emit = "noop", min_args = 0, max_args = 0 }
-toHours      = { emit = "common:java.duration_to_hours", min_args = 0, max_args = 0 }
-toMinutes    = { emit = "common:java.duration_to_minutes", min_args = 0, max_args = 0 }
+toEpochSecond = { emit = "common:jvm.java.instant_get_epoch_second", min_args = 0, max_args = 0 }
+truncatedTo  = { emit = "common:jvm.java.instant_truncated", min_args = 1, max_args = 1 }
+plusDays     = { emit = "common:jvm.java.time_plus_days", min_args = 1, max_args = 1 }
+minusDays    = { emit = "common:jvm.java.time_minus_days", min_args = 1, max_args = 1 }
+plusWeeks    = { emit = "common:jvm.java.time_plus_weeks", min_args = 1, max_args = 1 }
+plusMonths   = { emit = "common:jvm.java.time_plus_months", min_args = 1, max_args = 1 }
+minusMonths  = { emit = "common:jvm.java.time_minus_months", min_args = 1, max_args = 1 }
+plusHours    = { emit = "common:jvm.java.time_plus_hours", min_args = 1, max_args = 1 }
+minusHours   = { emit = "common:jvm.java.time_minus_hours", min_args = 1, max_args = 1 }
+plusMinutes  = { emit = "common:jvm.java.time_plus_minutes", min_args = 1, max_args = 1 }
+minusMinutes = { emit = "common:jvm.java.time_minus_minutes", min_args = 1, max_args = 1 }
+withYear     = { emit = "common:jvm.java.time_with_year", min_args = 1, max_args = 1 }
+withMonth    = { emit = "common:jvm.java.time_with_month", min_args = 1, max_args = 1 }
+withDayOfMonth = { emit = "common:jvm.java.time_with_day", min_args = 1, max_args = 1 }
+withHour     = { emit = "common:jvm.java.time_with_hour", min_args = 1, max_args = 1 }
+withMinute   = { emit = "common:jvm.java.time_with_minute", min_args = 1, max_args = 1 }
+withSecond   = { emit = "common:jvm.java.time_with_second", min_args = 1, max_args = 1 }
+lengthOfMonth = { emit = "common:jvm.java.time_length_of_month", min_args = 0, max_args = 0 }
+isLeapYear   = { emit = "common:jvm.java.time_is_leap_year", min_args = 0, max_args = 0 }
+getDayOfYear = { emit = "common:jvm.java.time_day_of_year", min_args = 0, max_args = 0 }
+getDayOfWeek = { emit = "common:jvm.java.time_day_of_week", min_args = 0, max_args = 0 }
+getDays      = { emit = "common:jvm.java.period_get_days", min_args = 0, max_args = 0 }
+getMonths    = { emit = "common:jvm.java.period_get_months", min_args = 0, max_args = 0 }
+getYears     = { emit = "common:jvm.java.period_get_years", min_args = 0, max_args = 0 }
+toHours      = { emit = "common:jvm.java.duration_to_hours", min_args = 0, max_args = 0 }
+toMinutes    = { emit = "common:jvm.java.duration_to_minutes", min_args = 0, max_args = 0 }
+toMillis     = { emit = "common:jvm.java.duration_to_millis", min_args = 0, max_args = 0 }
 version       = { emit = "common:java.uuid_version",     min_args = 0, max_args = 0 }
 variant       = { emit = "common:java.uuid_variant",     min_args = 0, max_args = 0 }
 getMostSignificantBits = { emit = "common:java.uuid_most_bits", min_args = 0, max_args = 0 }
@@ -541,11 +543,11 @@ longValue     = { emit = "common:java.trunc_cast",       min_args = 0, max_args 
 doubleValue   = { emit = "common:java.double_to_string", min_args = 0, max_args = 0 }
 
 # List / ArrayList methods
-add           = { emit = "common:java.add",              min_args = 1, max_args = 2 }
+add           = { emit = "common:jvm.java.add",              min_args = 1, max_args = 2 }
 addAll        = { emit = "common:java.add_all",          min_args = 1, max_args = 2 }
 remove        = [
     { emit = "common:java.iterator_remove_unsupported", min_args = 0, max_args = 0 },
-    { emit = "common:java.list_remove",      min_args = 1, max_args = 1 },
+    { emit = "common:jvm.java.list_remove",      min_args = 1, max_args = 1 },
     { emit = "common:java.map_remove",       min_args = 1, max_args = 2 },
 ]
 removeAll     = { emit = "common:java.remove_all",       min_args = 1, max_args = 1 }
@@ -553,11 +555,11 @@ retainAll     = { emit = "common:java.retain_all",       min_args = 1, max_args 
 removeIf      = { emit = "common:java.list_remove_if",   min_args = 1, max_args = 1 }
 clear         = { emit = "common:java.list_clear",       min_args = 0, max_args = 0 }
 get           = { emit = "common:java.get",              min_args = 1, max_args = 1 }
-getFirst      = { emit = "common:java.peek_first",       min_args = 0, max_args = 0 }
-getLast       = { emit = "common:java.peek_last",        min_args = 0, max_args = 0 }
-set           = { emit = "common:java.list_set",         min_args = 1, max_args = 2 }
-size          = { emit = "common:java.size",             min_args = 0, max_args = 0 }
-mappingCount  = { emit = "common:java.size",             min_args = 0, max_args = 0 }
+getFirst      = { emit = "common:jvm.java.peek_first",       min_args = 0, max_args = 0 }
+getLast       = { emit = "common:jvm.java.peek_last",        min_args = 0, max_args = 0 }
+set           = { emit = "common:jvm.java.list_set",         min_args = 1, max_args = 2 }
+size          = { emit = "common:jvm.java.size",             min_args = 0, max_args = 0 }
+mappingCount  = { emit = "common:jvm.java.size",             min_args = 0, max_args = 0 }
 subList       = { emit = "common:java.sub_list",         min_args = 2, max_args = 2 }
 sort          = { emit = "common:java.list_sort",        min_args = 0, max_args = 1 }
 iterator      = { emit = "common:java.list_iterator",    min_args = 0, max_args = 0 }
@@ -574,7 +576,7 @@ parallelStream = { emit = "noop",                       min_args = 0, max_args =
 # Map methods
 put           = [
     { emit = "common:java.blocking_queue_put", min_args = 1, max_args = 1 },
-    { emit = "common:java.map_put",            min_args = 2, max_args = 2 },
+    { emit = "common:jvm.java.map_put",            min_args = 2, max_args = 2 },
 ]
 putAll        = { emit = "common:java.map_put_all",      min_args = 1, max_args = 1 }
 getOrDefault  = { emit = "common:java.map_get_or_default", min_args = 2, max_args = 2 }
@@ -582,7 +584,7 @@ containsKey   = { emit = "common:java.map_contains_key", min_args = 1, max_args 
 containsValue = { emit = "common:java.map_contains_value", min_args = 1, max_args = 1 }
 keySet        = { emit = "common:dict.keys",             min_args = 0, max_args = 0 }
 values        = { emit = "common:dict.values",           min_args = 0, max_args = 0 }
-entrySet      = { emit = "common:java.entry_set",        min_args = 0, max_args = 0 }
+entrySet      = { emit = "common:jvm.java.entry_set",        min_args = 0, max_args = 0 }
 putIfAbsent   = { emit = "common:java.put_if_absent",    min_args = 2, max_args = 2 }
 computeIfAbsent = { emit = "common:java.compute_if_absent", min_args = 2, max_args = 2 }
 merge         = { emit = "common:java.map_merge",        min_args = 3, max_args = 3 }
@@ -683,29 +685,29 @@ remainingCapacity = { emit = "common:java.blocking_queue_remaining_capacity", mi
 drainTo       = { emit = "common:java.blocking_queue_drain_to", min_args = 1, max_args = 2 }
 addIfAbsent   = { emit = "common:java.copy_on_write_add_if_absent", min_args = 1, max_args = 1 }
 containsAll   = { emit = "common:java.list_contains_all", min_args = 1, max_args = 1 }
-poll          = { emit = "common:java.queue_poll",       min_args = 0, max_args = 0 }
+poll          = { emit = "common:jvm.java.queue_poll",       min_args = 0, max_args = 0 }
 first         = { emit = "common:java.sorted_first",     min_args = 0, max_args = 0 }
 last          = { emit = "common:java.sorted_last",      min_args = 0, max_args = 0 }
-ceiling       = { emit = "common:java.sorted_ceiling",   min_args = 1, max_args = 1 }
-floor         = { emit = "common:java.sorted_floor",     min_args = 1, max_args = 1 }
-higher        = { emit = "common:java.sorted_higher",    min_args = 1, max_args = 1 }
-lower         = { emit = "common:java.sorted_lower",     min_args = 1, max_args = 1 }
-descendingSet = { emit = "common:java.sorted_descending_set", min_args = 0, max_args = 0 }
+ceiling       = { emit = "common:jvm.java.sorted_ceiling",   min_args = 1, max_args = 1 }
+floor         = { emit = "common:jvm.java.sorted_floor",     min_args = 1, max_args = 1 }
+higher        = { emit = "common:jvm.java.sorted_higher",    min_args = 1, max_args = 1 }
+lower         = { emit = "common:jvm.java.sorted_lower",     min_args = 1, max_args = 1 }
+descendingSet = { emit = "common:jvm.java.sorted_descending_set", min_args = 0, max_args = 0 }
 subSet        = { emit = "common:java.sorted_sub_set",   min_args = 2, max_args = 2 }
 headSet       = { emit = "common:java.sorted_head_set",  min_args = 1, max_args = 1 }
 tailSet       = { emit = "common:java.sorted_tail_set",  min_args = 1, max_args = 1 }
 firstKey      = { emit = "common:java.sorted_first_key", min_args = 0, max_args = 0 }
 lastKey       = { emit = "common:java.sorted_last_key",  min_args = 0, max_args = 0 }
-addFirst      = { emit = "common:java.add_first",        min_args = 1, max_args = 1 }
+addFirst      = { emit = "common:jvm.java.add_first",        min_args = 1, max_args = 1 }
 addLast       = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
-offerFirst    = { emit = "common:java.add_first",        min_args = 1, max_args = 1 }
+offerFirst    = { emit = "common:jvm.java.add_first",        min_args = 1, max_args = 1 }
 offerLast     = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
 removeFirst   = { emit = "common:java.remove_first",     min_args = 0, max_args = 0 }
 removeLast    = { emit = "common:collections.pop",       min_args = 0, max_args = 0 }
-pollFirst     = { emit = "common:java.poll_first",       min_args = 0, max_args = 0 }
+pollFirst     = { emit = "common:jvm.java.poll_first",       min_args = 0, max_args = 0 }
 pollLast      = { emit = "common:java.poll_last",        min_args = 0, max_args = 0 }
-peekFirst     = { emit = "common:java.peek_first",       min_args = 0, max_args = 0 }
-peekLast      = { emit = "common:java.peek_last",        min_args = 0, max_args = 0 }
+peekFirst     = { emit = "common:jvm.java.peek_first",       min_args = 0, max_args = 0 }
+peekLast      = { emit = "common:jvm.java.peek_last",        min_args = 0, max_args = 0 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # ARRAY METHODS — higher-order functions
@@ -729,87 +731,18 @@ cbool     = [["to_bool"]]
 tostring  = [["to_string"]]
 
 # ────────────────────────────────────────────────────────────────────────────
-# NAMESPACE CONSTANTS
-# ────────────────────────────────────────────────────────────────────────────
-
-[namespace_constants]
-"Math.PI"             = 3.141592653589793
-"Math.E"              = 2.718281828459045
-"StrictMath.PI"       = 3.141592653589793
-"StrictMath.E"        = 2.718281828459045
-"Double.MAX_VALUE"    = 1.7976931348623157e308
-"Double.MIN_VALUE"    = 5e-324
-"Double.MIN_EXPONENT" = -1022
-"Integer.MAX_VALUE"   = 2147483647
-"Integer.MIN_VALUE"   = -2147483648
-"Thread.MIN_PRIORITY" = 1
-"Thread.NORM_PRIORITY" = 5
-"Thread.MAX_PRIORITY" = 10
-"Long.MAX_VALUE"      = 9.223372036854776e18
-"Long.MIN_VALUE"      = -9.223372036854776e18
-"Double.NaN"          = "NaN"
-"Double.POSITIVE_INFINITY" = "Infinity"
-"ZoneOffset.UTC" = "Z"
-"ZoneId.SHORT_IDS" = "common:java.zone_id_short_ids"
-"ChronoUnit.SECONDS" = "SECONDS"
-"ChronoUnit.MILLIS" = "MILLIS"
-"ChronoUnit.MINUTES" = "MINUTES"
-"ChronoUnit.HOURS" = "HOURS"
-"ChronoField.DAY_OF_MONTH" = "DAY_OF_MONTH"
-"DateTimeFormatter.ISO_OFFSET_DATE_TIME" = "ISO_OFFSET_DATE_TIME"
-"DateTimeFormatter.ISO_ZONED_DATE_TIME" = "ISO_ZONED_DATE_TIME"
-"Locale.FRANCE" = "FR"
-"Locale.GERMANY" = "DE"
-"Locale.ITALY" = "IT"
-"Locale.US" = "US"
-"Locale.UK" = "UK"
-"Locale.JAPAN" = "JP"
-"Locale.CANADA" = "CA"
-"Locale.CANADA_FRENCH" = "FR_CA"
-"Double.NEGATIVE_INFINITY" = "-Infinity"
-"Boolean.TRUE" = true
-"Boolean.FALSE" = false
-"Character.UPPERCASE_LETTER" = 1
-
-# ────────────────────────────────────────────────────────────────────────────
 # KNOWN TYPES — constructor resolution for `new X()`
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
-# Common Java collections are constructed as plain JS arrays/objects
-# StringBuilder/StringBuffer: mutable string backed by the Java prelude runtime.
-StringBuilder = ["common", "java.stringbuilder_new"]
-StringBuffer  = ["common", "java.stringbuilder_new"]
-Object        = ["common", "java.hash_map_new"]
+# Fallback-only constructors for entries not yet represented as JVM namespace
+# tree `Type` leaves. Do not add java.* library classes here when they can be
+# registered in platforms/jvm; this table is not the stdlib resolver.
 String        = ["ecma:string", "new"]
-Random        = ["common", "java.random_new"]
-SplittableRandom = ["common", "java.random_new"]
 Integer       = ["ecma:number", "new"]
 BigInteger    = ["ecma:bigint", "BigInt"]
-ArrayList     = ["common", "java.mutable_list_of"]
-LinkedList    = ["common", "java.mutable_list_of"]
-ArrayDeque    = ["common", "java.mutable_list_of"]
-CopyOnWriteArrayList = ["common", "java.copy_on_write_list_new"]
-LinkedBlockingQueue = ["common", "java.linked_blocking_queue_new"]
-Vector        = ["common", "java.vector_new"]
-Stack         = ["common", "java.mutable_list_of"]
-HashSet       = ["common", "java.hash_set_new"]
-LinkedHashSet = ["common", "java.hash_set_new"]
-TreeSet       = ["common", "java.sorted_set_new"]
-PriorityQueue = ["common", "java.priority_queue_new"]
-TreeMap       = ["common", "java.sorted_map_new"]
-HashMap       = ["common", "java.hash_map_new"]
-ConcurrentHashMap = ["common", "java.concurrent_hash_map_new"]
 Semaphore     = ["common", "java.semaphore_new"]
-IdentityHashMap = ["common", "java.identity_hash_map_new"]
-LinkedHashMap = ["common", "java.linked_hash_map_new"]
-WeakHashMap   = ["common", "java.hash_map_new"]
-Hashtable     = ["common", "java.hash_map_new"]
-Properties    = ["common", "java.hash_map_new"]
 Boolean       = ["ecma:boolean", "new"]
-OutOfMemoryError = ["common", "java.hash_map_new"]
-UUID          = ["common", "java.uuid_new"]
-BitSet        = ["common", "java.bitset_new"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # ESM DEFAULTS (namespaceplan.md): Java packages ARE its namespaces.

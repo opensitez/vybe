@@ -100,11 +100,9 @@ class IXR_Server {
         language,
         sources: vec![SourceFile {
             path: entry_path.clone(),
-            code: fs::read_to_string(&entry_path).expect("read entry"),
-        }],
+            code: fs::read_to_string(&entry_path).expect("read entry") }],
         wasm_files: vec![],
-        entry_point: EntryPoint::Auto,
-    };
+        entry_point: EntryPoint::Auto };
 
     let prepared = bundle.prepared_module();
     let _ = fs::remove_dir_all(&temp_root);

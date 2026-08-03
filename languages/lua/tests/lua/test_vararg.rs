@@ -76,5 +76,4 @@ lua_print! {
     vararg_with_extra_args_past_select_index => {
         "local function from_second(...)\n  return select(2, ...)\nend\nlocal a, b = from_second(10, 20, 30)\nprint(a .. ',' .. b)\n",
         "20,30"
-    },
-}
+    } }

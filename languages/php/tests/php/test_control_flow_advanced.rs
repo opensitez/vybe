@@ -25,8 +25,7 @@ function classify(int $n): string {
         $n === 0 => 'zero',
         $n < 10 => 'small',
         $n < 100 => 'medium',
-        default => 'large',
-    };
+        default => 'large' };
 }
 echo classify(-5) . ',' . classify(0) . ',' . classify(7) . ',' . classify(50) . ',' . classify(200);
 "#
@@ -278,8 +277,7 @@ function bsearch(array $a, int $target, int $lo = 0, ?int $hi = null): int {
     return match(true) {
         $a[$mid] === $target => $mid,
         $a[$mid] < $target  => bsearch($a, $target, $mid + 1, $hi),
-        default              => bsearch($a, $target, $lo, $mid - 1),
-    };
+        default              => bsearch($a, $target, $lo, $mid - 1) };
 }
 $sorted = range(0, 20, 2);
 echo bsearch($sorted, 14);
@@ -383,8 +381,7 @@ fn match_with_non_matching_subject_and_no_default_traps_error() {
 try {
     match ('none') {
         'a' => 'alpha',
-        'b' => 'beta',
-    };
+        'b' => 'beta' };
 } catch (UnhandledMatchError $e) {
     echo 'fatal';
 }

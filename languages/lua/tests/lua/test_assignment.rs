@@ -84,5 +84,4 @@ lua_print! {
     multiple_assignment_with_empty_vararg => {
         "local function f(...)\n  local a, b = 1, ...\n  print(tostring(a) .. \",\" .. tostring(b))\nend\nf()\n",
         "1,nil"
-    },
-}
+    } }

@@ -136,5 +136,4 @@ lua_print! {
     getmetatable_returns_nil_on_plain_table => {
         "local t = {}\nprint(tostring(getmetatable(t)))\n",
         "nil"
-    },
-}
+    } }

@@ -210,7 +210,7 @@ fn array_methods_skip_missing_holes() {
     assert_eq!(
         run_js(
             r#"
-const sparse = [, 2, , 4];
+const sparse = [, 2,  4];
 const doubled = sparse.map(x => x * 2);
 console.log(doubled.length);
 console.log(0 in doubled, 1 in doubled, 2 in doubled);

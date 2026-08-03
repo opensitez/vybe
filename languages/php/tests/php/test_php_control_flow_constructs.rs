@@ -455,13 +455,11 @@ fn control_flow_match_truthy_subject_vs_falsey_default_runtime() {
 echo match (false) {
     true => 'T',
     false => 'F',
-    default => 'D',
-} . '|' .
+    default => 'D' } . '|' .
 match (0) {
     '' => 'E',
     0 => 'Z',
-    default => 'D',
-};
+    default => 'D' };
 "#
         ),
         vec!["F|Z".to_string()]
@@ -501,8 +499,7 @@ $out = match (true) {
     $score >= 90 => 'A',
     $score >= 80 => 'B',
     $score >= 70 => 'C',
-    default => 'D',
-};
+    default => 'D' };
 if ($out === 'C') {
     echo 'pass';
 } else {
