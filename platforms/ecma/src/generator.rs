@@ -44,17 +44,14 @@ fn gen_next(genobj: &Arc<Mutex<Object>>) -> Value {
     }
     let pos = match o.properties.get(GEN_POS) {
         Some(Value::I32(n)) => *n as usize,
-        _ => 0,
-    };
+        _ => 0 };
     let items_obj = match o.properties.get(GEN_ITEMS).cloned() {
         Some(Value::Object(a)) => a,
-        _ => return iter_result(Value::Undefined, true),
-    };
+        _ => return iter_result(Value::Undefined, true) };
     let items = items_obj.lock().unwrap();
     let arr = match &items.kind {
         ObjectKind::Array(v) => v.clone(),
-        _ => return iter_result(Value::Undefined, true),
-    };
+        _ => return iter_result(Value::Undefined, true) };
     drop(items);
     if pos >= arr.len() {
         o.properties.insert(GEN_DONE.into(), Value::Bool(true));
@@ -104,11 +101,9 @@ pub fn register(vm: &mut VM) {
                     let o = obj.lock().unwrap();
                     match &o.kind {
                         ObjectKind::Array(v) => v.clone(),
-                        _ => Vec::new(),
-                    }
+                        _ => Vec::new() }
                 }
-                _ => Vec::new(),
-            };
+                _ => Vec::new() };
             new_generator(items)
         }),
     );
@@ -172,8 +167,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let src = match args.first().and_then(is_generator) {
                 Some(g) => g,
-                None => return Value::Undefined,
-            };
+                None => return Value::Undefined };
             let cb = args.get(1).cloned().unwrap_or(Value::Undefined);
             let mut out = Vec::new();
             loop {
@@ -189,8 +183,7 @@ pub fn register(vm: &mut VM) {
                         let d = matches!(o.properties.get("done"), Some(Value::Bool(true)));
                         (v, d)
                     }
-                    _ => (Value::Undefined, true),
-                };
+                    _ => (Value::Undefined, true) };
                 if done {
                     break;
                 }
@@ -207,8 +200,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let src = match args.first().and_then(is_generator) {
                 Some(g) => g,
-                None => return Value::Undefined,
-            };
+                None => return Value::Undefined };
             let cb = args.get(1).cloned().unwrap_or(Value::Undefined);
             let mut out = Vec::new();
             loop {
@@ -224,8 +216,7 @@ pub fn register(vm: &mut VM) {
                         let d = matches!(o.properties.get("done"), Some(Value::Bool(true)));
                         (v, d)
                     }
-                    _ => (Value::Undefined, true),
-                };
+                    _ => (Value::Undefined, true) };
                 if done {
                     break;
                 }
@@ -246,8 +237,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let src = match args.first().and_then(is_generator) {
                 Some(g) => g,
-                None => return Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
-            };
+                None => return Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))) };
             let mut out = Vec::new();
             loop {
                 let step = gen_next(&src);
@@ -262,8 +252,7 @@ pub fn register(vm: &mut VM) {
                         let d = matches!(o.properties.get("done"), Some(Value::Bool(true)));
                         (v, d)
                     }
-                    _ => (Value::Undefined, true),
-                };
+                    _ => (Value::Undefined, true) };
                 if done {
                     break;
                 }

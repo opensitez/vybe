@@ -23,14 +23,11 @@ fn extract_bytes(buf: &Value) -> Vec<u8> {
                     .map(|v| match v {
                         Value::I32(n) => *n as u8,
                         Value::F64(f) => *f as u8,
-                        _ => 0,
-                    })
+                        _ => 0 })
                     .collect(),
-                _ => vec![],
-            }
+                _ => vec![] }
         }
-        _ => vec![],
-    }
+        _ => vec![] }
 }
 
 fn get_buf_bytes(decoder: &Value) -> Vec<u8> {
@@ -44,8 +41,7 @@ fn get_buf_bytes(decoder: &Value) -> Vec<u8> {
                     .map(|v| match v {
                         Value::I32(n) => *n as u8,
                         Value::F64(f) => *f as u8,
-                        _ => 0,
-                    })
+                        _ => 0 })
                     .collect();
             }
         }
@@ -61,8 +57,7 @@ fn set_buf_bytes(decoder: &Value, bytes: Vec<u8>) {
             kind: ObjectKind::Array(elems),
             properties: Default::default(),
             type_id: 0,
-            fields: Vec::new(),
-        }));
+            fields: Vec::new() }));
         obj.properties.insert("__buf".into(), buf);
     }
 }
@@ -112,8 +107,7 @@ fn decode_utf8_partial(bytes: &[u8]) -> (String, Vec<u8>) {
             let slice = &bytes[i..=i + needed];
             match std::str::from_utf8(slice) {
                 Ok(s) => out.push_str(s),
-                Err(_) => out.push('\u{FFFD}'),
-            }
+                Err(_) => out.push('\u{FFFD}') }
             i += needed + 1;
         } else {
             // Incomplete — buffer remaining bytes
@@ -180,8 +174,7 @@ fn decode_bytes(encoding: &str, all_bytes: &[u8]) -> (String, Vec<u8>) {
                 .collect();
             (String::from_utf16_lossy(&chars), vec![])
         }
-        _ => (String::from_utf8_lossy(all_bytes).to_string(), vec![]),
-    }
+        _ => (String::from_utf8_lossy(all_bytes).to_string(), vec![]) }
 }
 
 pub fn register(vm: &mut VM) {
@@ -191,8 +184,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let enc_raw = match args.first() {
                 Some(Value::String(e)) => e.to_string(),
-                _ => "utf8".to_string(),
-            };
+                _ => "utf8".to_string() };
             let enc_norm = match enc_raw.to_lowercase().as_str() {
                 "utf8" | "utf-8" => "utf-8",
                 "latin1" | "binary" | "iso-8859-1" => "latin1",
@@ -200,8 +192,7 @@ pub fn register(vm: &mut VM) {
                 "base64" | "base64url" => "base64",
                 "ascii" => "ascii",
                 "utf16le" | "utf-16le" | "ucs2" | "ucs-2" => "utf16le",
-                _ => "utf-8",
-            };
+                _ => "utf-8" };
             let mut obj = Object::new();
             obj.properties.insert("encoding".into(), s(enc_norm));
             let empty: Vec<Value> = vec![];
@@ -211,8 +202,7 @@ pub fn register(vm: &mut VM) {
                     kind: ObjectKind::Array(empty),
                     properties: Default::default(),
                     type_id: 0,
-                    fields: Vec::new(),
-                })),
+                    fields: Vec::new() })),
             );
             Value::Object(vybe_runtime::heap::alloc(obj))
         }),

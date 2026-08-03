@@ -20,8 +20,7 @@ fn arr_val(elems: Vec<Value>) -> Value {
         kind: ObjectKind::Array(elems),
         properties: Default::default(),
         type_id: 0,
-        fields: Vec::new(),
-    }))
+        fields: Vec::new() }))
 }
 
 fn parse_url(input: &str, base: Option<&str>) -> Option<Url> {
@@ -36,15 +35,13 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<Url> {
 fn port_str(url: &Url) -> String {
     match url.port() {
         Some(p) => p.to_string(),
-        None => String::new(),
-    }
+        None => String::new() }
 }
 
 fn host_with_port(url: &Url) -> String {
     match url.port() {
         Some(p) => format!("{}:{}", url.host_str().unwrap_or(""), p),
-        None => url.host_str().unwrap_or("").to_string(),
-    }
+        None => url.host_str().unwrap_or("").to_string() }
 }
 
 fn origin_str(url: &Url) -> String {
@@ -53,12 +50,10 @@ fn origin_str(url: &Url) -> String {
     let default_port = match scheme {
         "https" => Some(443u16),
         "http" => Some(80),
-        _ => None,
-    };
+        _ => None };
     match (url.port(), default_port) {
         (Some(p), Some(dp)) if p != dp => format!("{scheme}://{host}:{p}"),
-        _ => format!("{scheme}://{host}"),
-    }
+        _ => format!("{scheme}://{host}") }
 }
 
 fn build_url_obj(url: &Url) -> Value {
@@ -143,8 +138,7 @@ fn encode_param(s: &str) -> String {
                 out.push(b as char);
             }
             b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
+            _ => out.push_str(&format!("%{b:02X}")) }
     }
     out
 }
@@ -157,8 +151,7 @@ fn get_keys(params: &Object) -> Vec<String> {
                 .iter()
                 .map(|v| match v {
                     Value::String(s) => s.to_string(),
-                    _ => String::new(),
-                })
+                    _ => String::new() })
                 .collect();
         }
     }
@@ -173,8 +166,7 @@ fn get_vals(params: &Object) -> Vec<String> {
                 .iter()
                 .map(|v| match v {
                     Value::String(s) => s.to_string(),
-                    _ => String::new(),
-                })
+                    _ => String::new() })
                 .collect();
         }
     }
@@ -218,16 +210,13 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let input = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             let base = match args.get(1) {
                 Some(Value::String(s)) => Some(s.to_string()),
-                _ => None,
-            };
+                _ => None };
             match parse_url(&input, base.as_deref()) {
                 Some(url) => build_url_obj(&url),
-                None => Value::Undefined,
-            }
+                None => Value::Undefined }
         }),
     );
 
@@ -238,12 +227,10 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let input = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Bool(false),
-            };
+                _ => return Value::Bool(false) };
             let base = match args.get(1) {
                 Some(Value::String(s)) => Some(s.to_string()),
-                _ => None,
-            };
+                _ => None };
             Value::Bool(parse_url(&input, base.as_deref()).is_some())
         }),
     );
@@ -258,8 +245,7 @@ pub fn register(vm: &mut VM) {
                     let q = s.as_ref();
                     if q.starts_with('?') { &q[1..] } else { q }.to_string()
                 }
-                _ => String::new(),
-            };
+                _ => String::new() };
             build_search_params(&query)
         }),
     );
@@ -271,8 +257,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let key = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Null,
-            };
+                _ => return Value::Null };
             if let Some(sp) = get_sp_object(args.first().unwrap_or(&Value::Undefined)) {
                 let keys = get_keys(&sp);
                 for (i, k) in keys.iter().enumerate() {
@@ -293,8 +278,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let key = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return empty_array(),
-            };
+                _ => return empty_array() };
             if let Some(sp) = get_sp_object(args.first().unwrap_or(&Value::Undefined)) {
                 let keys = get_keys(&sp);
                 let vals = get_vals(&sp);
@@ -317,8 +301,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let key = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Bool(false),
-            };
+                _ => return Value::Bool(false) };
             if let Some(sp) = get_sp_object(args.first().unwrap_or(&Value::Undefined)) {
                 return Value::Bool(get_keys(&sp).contains(&key));
             }
@@ -333,12 +316,10 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let key = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             let val = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             if let Some(mut sp) = get_sp_object(args.first().unwrap_or(&Value::Undefined)) {
                 let mut keys = get_keys(&sp);
                 let mut vals = get_vals(&sp);
@@ -367,12 +348,10 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let key = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             let val = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             if let Some(mut sp) = get_sp_object(args.first().unwrap_or(&Value::Undefined)) {
                 let mut keys = get_keys(&sp);
                 let mut vals = get_vals(&sp);
@@ -391,8 +370,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let key = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             if let Some(mut sp) = get_sp_object(args.first().unwrap_or(&Value::Undefined)) {
                 let mut keys = get_keys(&sp);
                 let mut vals = get_vals(&sp);
@@ -512,12 +490,10 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let input = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Null,
-            };
+                _ => return Value::Null };
             match parse_url(&input, None) {
                 Some(url) => build_url_obj(&url),
-                None => Value::Null,
-            }
+                None => Value::Null }
         }),
     );
 
@@ -543,16 +519,13 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let from = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return s(""),
-            };
+                _ => return s("") };
             let to = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return s(""),
-            };
+                _ => return s("") };
             match parse_url(&to, Some(&from)) {
                 Some(url) => s(url.as_str()),
-                None => s(""),
-            }
+                None => s("") }
         }),
     );
 
@@ -563,8 +536,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let input = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return s(""),
-            };
+                _ => return s("") };
             if let Some(url) = parse_url(&input, None) {
                 if url.scheme() == "file" {
                     let path = url.path().to_string();
@@ -587,8 +559,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let path = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             let file_url = format!("file://{path}");
             match parse_url(&file_url, None) {
                 Some(url) => build_url_obj(&url),
@@ -610,16 +581,14 @@ pub fn register(vm: &mut VM) {
         "domainToASCII",
         Box::new(|_ctx, args| match args.first() {
             Some(Value::String(s)) => Value::String(s.clone()),
-            _ => s(""),
-        }),
+            _ => s("") }),
     );
     vm.register_host_fn(
         "node:url",
         "domainToUnicode",
         Box::new(|_ctx, args| match args.first() {
             Some(Value::String(s)) => Value::String(s.clone()),
-            _ => s(""),
-        }),
+            _ => s("") }),
     );
 
     // urlToString / urlToJSON

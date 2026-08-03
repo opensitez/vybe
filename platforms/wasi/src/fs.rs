@@ -12,8 +12,7 @@ pub fn register(vm: &mut VM) {
             let path = s(args, 0);
             match std::fs::read_to_string(&path) {
                 Ok(contents) => Value::String(Arc::from(contents.as_str())),
-                Err(e) => Value::String(Arc::from(format!("Error: {}", e).as_str())),
-            }
+                Err(e) => Value::String(Arc::from(format!("Error: {}", e).as_str())) }
         }),
     );
 
@@ -27,8 +26,7 @@ pub fn register(vm: &mut VM) {
                     let vals: Vec<Value> = bytes.iter().map(|b| Value::F64(*b as f64)).collect();
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(vals)))
                 }
-                Err(_) => Value::Null,
-            }
+                Err(_) => Value::Null }
         }),
     );
 
@@ -40,8 +38,7 @@ pub fn register(vm: &mut VM) {
             let data = s(args, 1);
             match std::fs::write(&path, &data) {
                 Ok(_) => Value::Bool(true),
-                Err(_) => Value::Bool(false),
-            }
+                Err(_) => Value::Bool(false) }
         }),
     );
 
@@ -61,8 +58,7 @@ pub fn register(vm: &mut VM) {
                     let _ = f.write_all(data.as_bytes());
                     Value::Bool(true)
                 }
-                Err(_) => Value::Bool(false),
-            }
+                Err(_) => Value::Bool(false) }
         }),
     );
 
@@ -118,8 +114,7 @@ pub fn register(vm: &mut VM) {
                         .collect();
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
                 }
-                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))),
-            }
+                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))) }
         }),
     );
 
@@ -137,8 +132,7 @@ pub fn register(vm: &mut VM) {
         Box::new(
             |_ctx: &mut HostContext, args: &[Value]| match std::fs::metadata(&s(args, 0)) {
                 Ok(m) => Value::F64(m.len() as f64),
-                Err(_) => Value::F64(-1.0),
-            },
+                Err(_) => Value::F64(-1.0) },
         ),
     );
 
@@ -189,8 +183,7 @@ pub fn register(vm: &mut VM) {
                     }
                     Value::Object(vybe_runtime::heap::alloc(obj))
                 }
-                Err(_) => Value::Null,
-            }
+                Err(_) => Value::Null }
         }),
     );
 
@@ -221,8 +214,7 @@ pub fn register(vm: &mut VM) {
                         .collect();
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
                 }
-                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))),
-            }
+                Err(_) => Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))) }
         }),
     );
 
@@ -307,8 +299,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match std::fs::canonicalize(s(args, 0)) {
                 Ok(p) => Value::String(Arc::from(p.to_string_lossy().as_ref())),
-                Err(_) => Value::String(Arc::from(s(args, 0).as_str())),
-            }
+                Err(_) => Value::String(Arc::from(s(args, 0).as_str())) }
         }),
     );
 
@@ -351,17 +342,13 @@ pub fn register(vm: &mut VM) {
                 "Input" => match std::fs::File::open(&path) {
                     Ok(f) => FileHandle {
                         reader: Some(std::io::BufReader::new(f)),
-                        writer: None,
-                    },
-                    Err(_) => return Value::Null,
-                },
+                        writer: None },
+                    Err(_) => return Value::Null },
                 "Output" => match std::fs::File::create(&path) {
                     Ok(f) => FileHandle {
                         reader: None,
-                        writer: Some(std::io::BufWriter::new(f)),
-                    },
-                    Err(_) => return Value::Null,
-                },
+                        writer: Some(std::io::BufWriter::new(f)) },
+                    Err(_) => return Value::Null },
                 "Append" => {
                     match std::fs::OpenOptions::new()
                         .append(true)
@@ -370,13 +357,10 @@ pub fn register(vm: &mut VM) {
                     {
                         Ok(f) => FileHandle {
                             reader: None,
-                            writer: Some(std::io::BufWriter::new(f)),
-                        },
-                        Err(_) => return Value::Null,
-                    }
+                            writer: Some(std::io::BufWriter::new(f)) },
+                        Err(_) => return Value::Null }
                 }
-                _ => return Value::Null,
-            };
+                _ => return Value::Null };
             if let Ok(mut handles) = FILE_HANDLES.lock() {
                 handles.insert(fnum, handle);
             }
@@ -503,8 +487,7 @@ pub fn register(vm: &mut VM) {
 
 struct FileHandle {
     reader: Option<std::io::BufReader<std::fs::File>>,
-    writer: Option<std::io::BufWriter<std::fs::File>>,
-}
+    writer: Option<std::io::BufWriter<std::fs::File>> }
 
 static FILE_HANDLES: std::sync::LazyLock<Mutex<std::collections::HashMap<i32, FileHandle>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));

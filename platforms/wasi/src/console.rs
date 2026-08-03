@@ -35,20 +35,39 @@ pub fn register(vm: &mut VM) {
     // it must NOT tear down the host process. Signalling the VM to end the run
     // (request_exit) is the conformant behaviour — `std::process::exit` here
     // would kill the whole embedder (e.g. the test binary) on the first call.
+    // `exit(status: result<(), ()>)` carries no number: ok is success, err is
+    // failure. Anything truthy passed here is the error arm, hence 1.
     vm.register_host_fn(
         "wasi:cli/exit",
         "exit",
-        Box::new(|ctx: &mut HostContext, _args: &[Value]| {
-            ctx.request_exit();
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let failed = args.first().is_some_and(|v| v.as_bool());
+            ctx.request_exit_with_code(if failed { 1 } else { 0 });
             Value::Null
         }),
     );
 
+    // `exit-with-code(status: u8)` is the arm that carries a real status. The
+    // code was being dropped here (`_args`), which is why `sys.exit(3)`,
+    // `System.exit(4)` and `halt(2)` all produced 0. The VM only *carries* it;
+    // turning it into a process status stays with the embedder.
     vm.register_host_fn(
         "wasi:cli/exit",
         "exit-with-code",
-        Box::new(|ctx: &mut HostContext, _args: &[Value]| {
-            ctx.request_exit();
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let code = match args.first() {
+                Some(Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) | Value::Bool(_)) => {
+                    args[0].as_i32()
+                }
+                // Python's `sys.exit("message")` prints the object to stderr and
+                // exits 1; a bare `sys.exit()` / `sys.exit(None)` exits 0.
+                Some(Value::Null | Value::Undefined) | None => 0,
+                Some(other) => {
+                    eprintln!("{}", other);
+                    1
+                }
+            };
+            ctx.request_exit_with_code(code);
             Value::Null
         }),
     );

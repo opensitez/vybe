@@ -282,8 +282,7 @@ fn format_value(v: &Value) -> String {
         Value::I64(n) => format!("{n}i64"),
         Value::F64(n) => format!("{n}"),
         Value::String(s) => format!("{:?}", s.as_ref()),
-        _ => "<obj>".into(),
-    }
+        _ => "<obj>".into() }
 }
 
 fn sanitize_ident(s: &str) -> String {

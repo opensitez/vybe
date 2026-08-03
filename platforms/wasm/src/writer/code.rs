@@ -10,8 +10,7 @@
 
 use crate::encoding::*;
 use crate::writer::sections::{
-    emit_box_f64, emit_box_i32, emit_import_call, emit_unbox_f64, emit_unbox_i32,
-};
+    emit_box_f64, emit_box_i32, emit_import_call, emit_unbox_f64, emit_unbox_i32 };
 use crate::writer::types::WasmTypeContext;
 use vybe_runtime::opcode::{OperandFormat, read_leb_u32};
 use vybe_runtime::value::Value;
@@ -53,8 +52,7 @@ struct TryRegion {
     catch_ip: usize,
     /// Byte offset where normal control flow resumes after the whole
     /// try region (target of the skip-BR).
-    after_ip: usize,
-}
+    after_ip: usize }
 
 /// Walk the bytecode collecting try regions keyed by TRY_START offset.
 ///
@@ -145,8 +143,7 @@ fn collect_try_regions(chunk: &Chunk) -> std::collections::HashMap<usize, TryReg
                                 try_start_pos: op_pos,
                                 try_end_pos: te_pos,
                                 catch_ip,
-                                after_ip,
-                            },
+                                after_ip },
                         );
                     }
                 }
@@ -648,14 +645,12 @@ fn emit_core_op(
             body.push(0x22);
             write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
         } // local.tee
-        _ if op == Op::CALL => {
-            body.push(op.sub() as u8);
-            let func_idx = read_u16(&chunk.code, ip);
-            let _argc = chunk.code[*ip];
-            *ip += 1;
-            write_leb128_u32(body, func_idx as u32);
-        }
-        _ if op == Op::CALL_REF => {
+        // `call` and `call_ref` are the SAME shape in this VM: one `u8` argc,
+        // callee on the stack. `call` used to be lowered here as a static
+        // `call $func_idx`, reading a u16 function index that no emitter ever
+        // wrote — three operand bytes against the one that is actually
+        // emitted. Both now take the dynamic path.
+        _ if op == Op::CALL || op == Op::CALL_REF => {
             let argc = chunk.code[*ip];
             *ip += 1;
             // Stack: [externref_funcref, arg1, ..., argN] — funcref is below args
@@ -829,22 +824,19 @@ fn emit_core_op(
             let (align, offset, memidx) = read_optional_memarg(chunk, ip, 2);
             encode_memarg_with_memidx(body, align, offset, memidx);
         }
-        // WASM global.get/set — resolved to indexed globals via global_map.
-        // WASM global indices are module-wide: imported globals come first
-        // (indices 0..imported_globals_count), user globals follow. The
-        // `rt_globals()` list (UNDEFINED/TRUE/FALSE from
-        // js-primitive-builtins) accounts for the 3 imported ones, so
-        // user-global idx N in the bytecode maps to WASM idx N +
-        // imported_globals_count. Without this offset, `global.set 0`
-        // would target the first imported `wasm:js-*` global (immutable)
-        // and v8 correctly rejects it.
+        // WASM global.get/set — resolved via `global_map`, whose values are
+        // already ABSOLUTE WASM global indices. WASM numbers imported globals
+        // first: the `rt_globals()` js-primitive singletons, then one per
+        // imported string constant, then the module's own globals.
+        // `collect_globals` applies that offset once, so nothing is added
+        // here — adding it again would make `global.set 0` target an
+        // immutable imported global, which v8 correctly rejects.
         _ if op == Op::GLOBAL_GET => {
             let name_idx = read_u16(&chunk.code, ip);
             if let Some(vybe_runtime::value::Value::String(name)) =
                 chunk.constants.get(name_idx as usize)
             {
-                if let Some(&gidx) = global_map.get(name.as_ref()) {
-                    let wasm_gidx = gidx + crate::writer::sections::rt_globals().len() as u32;
+                if let Some(&wasm_gidx) = global_map.get(name.as_ref()) {
                     body.push(0x23); // global.get
                     write_leb128_u32(body, wasm_gidx);
                 } else {
@@ -861,8 +853,7 @@ fn emit_core_op(
             if let Some(vybe_runtime::value::Value::String(name)) =
                 chunk.constants.get(name_idx as usize)
             {
-                if let Some(&gidx) = global_map.get(name.as_ref()) {
-                    let wasm_gidx = gidx + crate::writer::sections::rt_globals().len() as u32;
+                if let Some(&wasm_gidx) = global_map.get(name.as_ref()) {
                     // Stack has [value]. global.set consumes it — but our VM keeps it.
                     // Use local.tee pattern: tee to keep value, then global.set
                     body.push(0x22);
@@ -931,12 +922,16 @@ fn emit_core_op(
             write_leb128_u32(body, 1); // 1 result type
             body.push(TYPE_EXTERNREF);
         }
-        // `ref.null extern` — core opcode path. Typed variants
-        // (NULL_FUNC / NULL_ANY / NULL_NONE) use the 0xFF prefix and
-        // lower in `emit_vm_internal_op`.
+        // `ref.null <heaptype>` — the heaptype is carried as the instruction's
+        // own immediate and written straight through, so `ref.null extern` and
+        // `ref.null none` round-trip as themselves. This used to hardcode
+        // `HT_EXTERN` here, with a separate `0xFF` opcode standing in for the
+        // GC-heap case.
         _ if op == Op::NULL => {
+            let ht = chunk.code.get(*ip).copied().unwrap_or(HT_EXTERN);
+            *ip += 1;
             body.push(0xD0);
-            body.push(HT_EXTERN);
+            body.push(ht);
         }
         // ref.is_null produces i32 — box it since our value representation is externref
         _ if op == Op::REF_IS_NULL => {
@@ -1244,8 +1239,7 @@ fn default_simd_align(op: Op) -> u32 {
         0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x0A | 0x57 | 0x5B | 0x5D => 3,
         0x09 | 0x56 | 0x5A | 0x5C => 2,
         0x08 | 0x55 | 0x59 => 1,
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 // ── Binary operation helpers ─────────────────────────────────────────
@@ -1343,14 +1337,23 @@ fn emit_gc_op(
 ) {
     match op {
         _ if op == Op::STRUCT_NEW => {
+            // `(typeidx, count)`. A real typeidx names the type directly; the
+            // dynamic form (0) still has to guess a wasm struct type from the
+            // key/value pair count, as before.
+            let chunk_typeidx = read_u16(&chunk.code, ip);
             let prop_count = read_u16(&chunk.code, ip);
-            let typeidx = wasm_struct_type_matching_field_count(chunk, type_ctx, prop_count);
+            let typeidx = if chunk_typeidx != 0 {
+                wasm_struct_type_for_chunk_type(chunk, type_ctx, chunk_typeidx)
+            } else {
+                wasm_struct_type_matching_field_count(chunk, type_ctx, prop_count)
+            };
             body.push(0xFB);
             write_leb128_u32(body, 0x00); // struct.new
             write_leb128_u32(body, typeidx);
             emit_externalize(body); // (ref $struct) → externref
         }
         _ if op == Op::STRUCT_GET => {
+            let _typeidx = read_u16(&chunk.code, ip);
             let field_name_idx = read_u16(&chunk.code, ip);
             let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
             emit_internalize(body); // externref → anyref
@@ -1362,6 +1365,7 @@ fn emit_gc_op(
             // Result is externref (field type) — no conversion needed
         }
         _ if op == Op::STRUCT_SET => {
+            let _typeidx = read_u16(&chunk.code, ip);
             let field_name_idx = read_u16(&chunk.code, ip);
             let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
             // Stack: [externref_obj, externref_val]. struct.set expects
@@ -1558,6 +1562,7 @@ fn emit_gc_op(
             // Our struct.get uses a field-name-constant u16 operand;
             // spec packed variants take typeidx + fieldidx. Emit the
             // spec byte with conservative indices for round-trip sanity.
+            let _typeidx = read_u16(&chunk.code, ip);
             let field_name_idx = read_u16(&chunk.code, ip);
             let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
             emit_internalize(body);
@@ -1848,11 +1853,6 @@ fn emit_vm_internal_op(
                 }
             }
         }
-        _ if op == Op::NULL => {
-            body.push(0xD0);
-            body.push(HT_EXTERN);
-        }
-
         // ── Typed stack-switching helpers ────────────────────────────────
         // These VM-internal typed helpers lower to the real proposal bytes.
         // The untyped stack-switching opcodes themselves live in core 0xE0..=0xE6
@@ -1890,15 +1890,6 @@ fn emit_vm_internal_op(
         // Upvalue get/set — closures use WASM function references
         // Memory64 reuses the standard memory instruction bytes. The i64
         // address shape is carried by the memory type in the binary format.
-        // Set type ID — GC type stamps handled by WASM GC type system
-        _ if op == Op::SET_TYPE_ID => {
-            body.push(0x01);
-        } // nop (type is structural in GC)
-        // WASM GC typed null → the real `ref.null none` bytes.
-        _ if op == Op::NULL_NONE => {
-            body.push(0xD0);
-            body.push(HT_NONE);
-        }
         _ if op == Op::HALT => {
             body.push(0x0F);
         } // return (not unreachable — _start should return cleanly)

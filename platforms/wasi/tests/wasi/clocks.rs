@@ -208,8 +208,7 @@ fn iana_id_is_a_zone_name_or_nothing() {
     match invoke("wasi:clocks/timezone", "iana-id", vec![]) {
         Value::Null => {}
         Value::String(id) => assert!(!id.is_empty(), "an empty id must be reported as none"),
-        other => panic!("iana-id must be option<string>, got {other:?}"),
-    }
+        other => panic!("iana-id must be option<string>, got {other:?}") }
 }
 
 /// `system-clock` is the current name for what used to be `wall-clock`; both

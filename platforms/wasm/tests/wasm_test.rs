@@ -69,7 +69,7 @@ fn roundtrip_simple_constant() {
 #[test]
 fn roundtrip_preserves_chunk_count() {
     let mut c1 = Chunk::new("main");
-    c1.emit_op(Op::NULL, 0);
+    c1.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c1.emit_op(Op::HALT, 0);
 
     let mut c2 = Chunk::new("helper");
@@ -106,8 +106,7 @@ fn roundtrip_f64_arithmetic() {
         (Value::F64(a), Value::F64(b)) => {
             assert!((a - b).abs() < 1e-10, "Results differ: {} vs {}", a, b);
         }
-        _ => panic!("Expected F64 results"),
-    }
+        _ => panic!("Expected F64 results") }
 }
 
 #[test]
@@ -125,8 +124,7 @@ fn roundtrip_i32_arithmetic() {
     let result = run_chunks(restored);
     match result {
         Value::I32(10) => {}
-        _ => panic!("Expected I32(10), got {:?}", result),
-    }
+        _ => panic!("Expected I32(10), got {:?}", result) }
 }
 
 #[test]
@@ -144,8 +142,7 @@ fn roundtrip_locals() {
     let result = run_chunks(restored);
     match result {
         Value::F64(v) if v == 99.0 => {}
-        _ => panic!("Expected F64(99), got {:?}", result),
-    }
+        _ => panic!("Expected F64(99), got {:?}", result) }
 }
 
 // ============================================================
@@ -175,8 +172,7 @@ fn i32_div_and_rem() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(5) => {}
-        _ => panic!("Expected I32(5), got {:?}", result),
-    }
+        _ => panic!("Expected I32(5), got {:?}", result) }
 }
 
 #[test]
@@ -213,8 +209,7 @@ fn i32_rotate() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(3) => {}
-        _ => panic!("Expected I32(3), got {:?}", result),
-    }
+        _ => panic!("Expected I32(3), got {:?}", result) }
 }
 
 #[test]
@@ -241,8 +236,7 @@ fn i32_clz_ctz_popcnt() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(46) => {}
-        _ => panic!("Expected I32(46), got {:?}", result),
-    }
+        _ => panic!("Expected I32(46), got {:?}", result) }
 }
 
 #[test]
@@ -275,8 +269,7 @@ fn i64_arithmetic() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I64(3_000_000_000_000) => {}
-        _ => panic!("Expected I64(3T), got {:?}", result),
-    }
+        _ => panic!("Expected I64(3T), got {:?}", result) }
 }
 
 #[test]
@@ -293,8 +286,7 @@ fn i64_bitwise() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I64(0x0F00) => {}
-        _ => panic!("Expected I64(0x0F00), got {:?}", result),
-    }
+        _ => panic!("Expected I64(0x0F00), got {:?}", result) }
 }
 
 // ============================================================
@@ -313,8 +305,7 @@ fn f64_math_ops() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 4.0 => {}
-        _ => panic!("Expected F64(4.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(4.0), got {:?}", result) }
 }
 
 #[test]
@@ -328,8 +319,7 @@ fn f64_floor() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 3.0 => {}
-        _ => panic!("Expected F64(3.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(3.0), got {:?}", result) }
 }
 
 #[test]
@@ -343,8 +333,7 @@ fn f64_sqrt() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 12.0 => {}
-        _ => panic!("Expected F64(12.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(12.0), got {:?}", result) }
 }
 
 #[test]
@@ -358,8 +347,7 @@ fn f64_abs_neg() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 7.5 => {}
-        _ => panic!("Expected F64(7.5), got {:?}", result),
-    }
+        _ => panic!("Expected F64(7.5), got {:?}", result) }
 }
 
 #[test]
@@ -382,8 +370,7 @@ fn f64_min_max() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 10.0 => {}
-        _ => panic!("Expected F64(10.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(10.0), got {:?}", result) }
 }
 
 #[test]
@@ -405,8 +392,7 @@ fn f64_trunc_nearest() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 5.0 => {}
-        _ => panic!("Expected F64(5.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(5.0), got {:?}", result) }
 }
 
 // ============================================================
@@ -428,8 +414,7 @@ fn select_true() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 10.0 => {}
-        _ => panic!("Expected F64(10.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(10.0), got {:?}", result) }
 }
 
 #[test]
@@ -447,8 +432,7 @@ fn select_false() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 20.0 => {}
-        _ => panic!("Expected F64(20.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(20.0), got {:?}", result) }
 }
 
 // ============================================================
@@ -466,8 +450,7 @@ fn i32_wrap_i64_test() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(42) => {}
-        _ => panic!("Expected I32(42), got {:?}", result),
-    }
+        _ => panic!("Expected I32(42), got {:?}", result) }
 }
 
 #[test]
@@ -482,8 +465,7 @@ fn i64_extend_i32() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I64(-1) => {}
-        _ => panic!("Expected I64(-1), got {:?}", result),
-    }
+        _ => panic!("Expected I64(-1), got {:?}", result) }
 }
 
 #[test]
@@ -498,8 +480,7 @@ fn i64_extend_i32_unsigned() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I64(v) if v == 0xFFFF_FFFF => {}
-        _ => panic!("Expected I64(0xFFFFFFFF), got {:?}", result),
-    }
+        _ => panic!("Expected I64(0xFFFFFFFF), got {:?}", result) }
 }
 
 #[test]
@@ -514,8 +495,7 @@ fn sign_extension_i32() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(-128) => {}
-        _ => panic!("Expected I32(-128), got {:?}", result),
-    }
+        _ => panic!("Expected I32(-128), got {:?}", result) }
 }
 
 #[test]
@@ -532,8 +512,7 @@ fn reinterpret_f64_i64() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 1.0 => {}
-        _ => panic!("Expected F64(1.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(1.0), got {:?}", result) }
 }
 
 // ============================================================
@@ -570,8 +549,7 @@ fn memory_i32_load8_signed() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(254) => {}
-        _ => panic!("Expected I32(254), got {:?}", result),
-    }
+        _ => panic!("Expected I32(254), got {:?}", result) }
 }
 
 #[test]
@@ -604,8 +582,7 @@ fn memory_i32_load16() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(2) => {}
-        _ => panic!("Expected I32(2), got {:?}", result),
-    }
+        _ => panic!("Expected I32(2), got {:?}", result) }
 }
 
 #[test]
@@ -632,8 +609,7 @@ fn memory_f32_roundtrip() {
     match result {
         // f32.load loads an f32 (spec) → Value::F32.
         Value::F32(v) => assert!((v as f64 - 3.14).abs() < 0.01, "Expected ~3.14, got {}", v),
-        _ => panic!("Expected F32, got {:?}", result),
-    }
+        _ => panic!("Expected F32, got {:?}", result) }
 }
 
 // ============================================================
@@ -660,8 +636,7 @@ fn bool_in_arithmetic() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(10) => {}
-        _ => panic!("Expected I32(10), got {:?}", result),
-    }
+        _ => panic!("Expected I32(10), got {:?}", result) }
 }
 
 #[test]
@@ -682,8 +657,7 @@ fn bool_true_as_one() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(11) => {}
-        _ => panic!("Expected I32(11), got {:?}", result),
-    }
+        _ => panic!("Expected I32(11), got {:?}", result) }
 }
 
 // ============================================================
@@ -710,8 +684,7 @@ fn roundtrip_run_hello() {
     let result = run_chunks(restored);
     match result {
         Value::F64(v) if v == 42.0 => {}
-        _ => panic!("Expected F64(42.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(42.0), got {:?}", result) }
 }
 
 #[test]
@@ -751,8 +724,7 @@ fn roundtrip_i32_ops() {
     let result = run_chunks(restored);
     match result {
         Value::I32(7) => {}
-        _ => panic!("Expected I32(7), got {:?}", result),
-    }
+        _ => panic!("Expected I32(7), got {:?}", result) }
 }
 
 // ============================================================
@@ -790,8 +762,7 @@ fn array_length_op() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(3) => {}
-        _ => panic!("Expected I32(3), got {:?}", result),
-    }
+        _ => panic!("Expected I32(3), got {:?}", result) }
 }
 
 #[test]
@@ -806,8 +777,7 @@ fn array_new_default_op() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(5) => {}
-        _ => panic!("Expected I32(5), got {:?}", result),
-    }
+        _ => panic!("Expected I32(5), got {:?}", result) }
 }
 
 // ============================================================
@@ -833,8 +803,7 @@ fn simd_i32x4_add() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(15) => {}
-        _ => panic!("Expected I32(15), got {:?}", result),
-    }
+        _ => panic!("Expected I32(15), got {:?}", result) }
 }
 
 #[test]
@@ -852,8 +821,7 @@ fn simd_f64x2_mul() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 21.0 => {}
-        _ => panic!("Expected F64(21.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(21.0), got {:?}", result) }
 }
 
 #[test]
@@ -872,8 +840,7 @@ fn simd_v128_bitwise() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(0x0F) => {}
-        _ => panic!("Expected I32(0x0F), got {:?}", result),
-    }
+        _ => panic!("Expected I32(0x0F), got {:?}", result) }
 }
 
 // ============================================================
@@ -910,8 +877,7 @@ fn atomic_rmw_add() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(100) => {}
-        _ => panic!("Expected I32(100), got {:?}", result),
-    }
+        _ => panic!("Expected I32(100), got {:?}", result) }
 }
 
 #[test]
@@ -941,8 +907,7 @@ fn atomic_cmpxchg() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(99) => {}
-        _ => panic!("Expected I32(99), got {:?}", result),
-    }
+        _ => panic!("Expected I32(99), got {:?}", result) }
 }
 
 // ============================================================
@@ -960,8 +925,7 @@ fn i31ref_roundtrip() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(42) => {}
-        _ => panic!("Expected I32(42), got {:?}", result),
-    }
+        _ => panic!("Expected I32(42), got {:?}", result) }
 }
 
 #[test]
@@ -976,8 +940,7 @@ fn i31ref_negative() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(-1) => {}
-        _ => panic!("Expected I32(-1), got {:?}", result),
-    }
+        _ => panic!("Expected I32(-1), got {:?}", result) }
 }
 
 // ============================================================
@@ -996,8 +959,7 @@ fn ref_cast_success() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::String(s) if s.as_ref() == "hello" => {}
-        _ => panic!("Expected String(\"hello\"), got {:?}", result),
-    }
+        _ => panic!("Expected String(\"hello\"), got {:?}", result) }
 }
 
 // ============================================================
@@ -1029,8 +991,7 @@ fn call_ref_basic() {
     let result = run_chunks(vec![script, double_chunk]);
     match result {
         Value::F64(v) if v == 42.0 => {}
-        _ => panic!("Expected F64(42.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(42.0), got {:?}", result) }
 }
 
 #[test]
@@ -1057,8 +1018,7 @@ fn call_ref_preserves_array_argument() {
     let result = run_chunks(vec![script, first_chunk]);
     match result {
         Value::F64(v) if v == 50.0 => {}
-        _ => panic!("Expected F64(50.0), got {:?}", result),
-    }
+        _ => panic!("Expected F64(50.0), got {:?}", result) }
 }
 
 // ============================================================
@@ -1122,8 +1082,7 @@ fn memory64_grow_and_load() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(42) => {}
-        _ => panic!("Expected I32(42), got {:?}", result),
-    }
+        _ => panic!("Expected I32(42), got {:?}", result) }
 }
 
 #[test]
@@ -1199,8 +1158,7 @@ fn jspi_resolved_promise_returns_immediately() {
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
         Value::String(s) if s.as_ref() == "data from server" => {}
-        _ => panic!("Expected 'data from server', got {:?}", result),
-    }
+        _ => panic!("Expected 'data from server', got {:?}", result) }
 }
 
 #[test]
@@ -1223,8 +1181,7 @@ fn jspi_non_promise_passes_through() {
     let result = vm.run(vec![chunk]).unwrap();
     match result {
         Value::I32(42) => {}
-        _ => panic!("Expected I32(42), got {:?}", result),
-    }
+        _ => panic!("Expected I32(42), got {:?}", result) }
 }
 
 #[test]
@@ -1264,8 +1221,7 @@ fn jspi_pending_promise_suspends() {
                 msg
             );
         }
-        Ok(v) => panic!("Expected JSPI suspension, got Ok({:?})", v),
-    }
+        Ok(v) => panic!("Expected JSPI suspension, got Ok({:?})", v) }
 }
 
 #[test]
@@ -1364,7 +1320,7 @@ fn jspi_promise_suspend_opcode() {
     chunk.emit_op_u16(Op::CONST, state_v, 0);
     chunk.emit_op_u16(Op::CONST, value_k, 0);
     chunk.emit_op_u16(Op::CONST, value_v, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 3, 0);
+    chunk.emit_struct_new(0, 3, 0);
 
     // promise_suspend should extract the value
     {
@@ -1377,6 +1333,5 @@ fn jspi_promise_suspend_opcode() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(99) => {}
-        _ => panic!("Expected I32(99), got {:?}", result),
-    }
+        _ => panic!("Expected I32(99), got {:?}", result) }
 }

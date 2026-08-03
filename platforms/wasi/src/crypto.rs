@@ -76,8 +76,7 @@ pub enum HashAlgorithm {
     Shake256,
     Blake2b512,
     Blake2s256,
-    Ripemd160,
-}
+    Ripemd160 }
 
 impl HashAlgorithm {
     /// Digest of `data`.
@@ -117,8 +116,7 @@ impl HashAlgorithm {
             Self::Shake256 => xof!(sha3::Shake256, 32),
             Self::Blake2b512 => fixed!(blake2::Blake2b512),
             Self::Blake2s256 => fixed!(blake2::Blake2s256),
-            Self::Ripemd160 => fixed!(ripemd::Ripemd160),
-        }
+            Self::Ripemd160 => fixed!(ripemd::Ripemd160) }
     }
 
     /// Digest length in bytes (the default output length for the XOFs).
@@ -134,8 +132,7 @@ impl HashAlgorithm {
             | Self::Blake2s256 => 32,
             Self::Sha384 | Self::Sha3_384 => 48,
             Self::Sha512 | Self::Sha3_512 | Self::Blake2b512 => 64,
-            Self::Shake128 => 16,
-        }
+            Self::Shake128 => 16 }
     }
 
     /// HMAC block size `B`. `None` for the XOFs, which have no fixed input
@@ -159,8 +156,7 @@ impl HashAlgorithm {
             Self::Sha3_256 => 136,
             Self::Sha3_384 => 104,
             Self::Sha3_512 => 72,
-            Self::Shake128 | Self::Shake256 => return None,
-        })
+            Self::Shake128 | Self::Shake256 => return None })
     }
 
     /// HMAC (RFC 2104). `None` when the algorithm has no HMAC block size.
@@ -234,8 +230,7 @@ const KIND_SYMMETRIC_TAG: &str = "symmetric-tag";
 struct SymmetricState {
     algorithm: String,
     key: Option<Vec<u8>>,
-    absorbed: Vec<u8>,
-}
+    absorbed: Vec<u8> }
 
 #[derive(Default)]
 struct Registry {
@@ -243,8 +238,7 @@ struct Registry {
     array_outputs: HashMap<u64, Vec<u8>>,
     keys: HashMap<u64, (String, Vec<u8>)>,
     states: HashMap<u64, SymmetricState>,
-    tags: HashMap<u64, Vec<u8>>,
-}
+    tags: HashMap<u64, Vec<u8>> }
 
 fn registry() -> &'static Mutex<Registry> {
     static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
@@ -280,8 +274,7 @@ fn handle_id(v: &Value, kind: &str) -> Option<u64> {
     match obj.properties.get("__wasi_id") {
         Some(Value::F64(id)) => Some(*id as u64),
         Some(Value::I32(id)) => Some(*id as u64),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// A `crypto_errno` return, in the `__wasi_error` carrier. Names are the
@@ -312,8 +305,7 @@ fn bytes_of(v: &Value) -> Vec<u8> {
                     .map(|e| match e {
                         Value::I32(n) => *n as u8,
                         Value::F64(f) => *f as u8,
-                        _ => 0,
-                    })
+                        _ => 0 })
                     .collect(),
                 ObjectKind::TypedArray(ta) => {
                     let buf = ta.buffer.lock().unwrap();
@@ -321,11 +313,9 @@ fn bytes_of(v: &Value) -> Vec<u8> {
                     let end = (start + ta.length).min(buf.len());
                     buf[start..end].to_vec()
                 }
-                _ => Vec::new(),
-            }
+                _ => Vec::new() }
         }
-        _ => Vec::new(),
-    }
+        _ => Vec::new() }
 }
 
 fn bytes_to_value(bytes: &[u8]) -> Value {
@@ -336,16 +326,14 @@ fn bytes_to_value(bytes: &[u8]) -> Value {
 fn str_of(v: Option<&Value>) -> String {
     match v {
         Some(Value::String(s)) => s.to_string(),
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 fn usize_of(v: Option<&Value>) -> Option<usize> {
     match v {
         Some(Value::F64(n)) => Some(*n as usize),
         Some(Value::I32(n)) => Some(*n as usize),
-        _ => None,
-    }
+        _ => None }
 }
 
 // ── Proposal algorithm names ─────────────────────────────────────────────
@@ -357,8 +345,7 @@ fn hash_named(algorithm: &str) -> Option<HashAlgorithm> {
         "SHA-256" => HashAlgorithm::Sha256,
         "SHA-512" => HashAlgorithm::Sha512,
         "SHA-512/256" => HashAlgorithm::Sha512_256,
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// The hash underlying a `HMAC/<hash>` algorithm name.
@@ -399,8 +386,7 @@ fn register_common(vm: &mut VM) {
             };
             match registry().lock().unwrap().array_outputs.get(&id) {
                 Some(bytes) => Value::F64(bytes.len() as f64),
-                None => err("closed"),
-            }
+                None => err("closed") }
         }),
     );
 
@@ -550,10 +536,8 @@ fn register_symmetric(vm: &mut VM) {
                         return err("invalid-key");
                     }
                     Some((_, raw)) => Some(raw.clone()),
-                    None => return err("closed"),
-                },
-                None => None,
-            };
+                    None => return err("closed") },
+                None => None };
             // MACs cannot run keyless.
             if mac_named(&algorithm).is_some() && key.is_none() {
                 return err("key-required");
@@ -564,8 +548,7 @@ fn register_symmetric(vm: &mut VM) {
                 SymmetricState {
                     algorithm,
                     key,
-                    absorbed: Vec::new(),
-                },
+                    absorbed: Vec::new() },
             );
             handle(KIND_SYMMETRIC_STATE, id)
         }),
@@ -586,8 +569,7 @@ fn register_symmetric(vm: &mut VM) {
                     state.absorbed.extend_from_slice(&data);
                     Value::Null
                 }
-                None => err("closed"),
-            }
+                None => err("closed") }
         }),
     );
 
@@ -660,8 +642,7 @@ fn register_symmetric(vm: &mut VM) {
             };
             match mac_named(&state.algorithm) {
                 Some(hash) => Value::F64(hash.digest_len() as f64),
-                None => err("invalid-operation"),
-            }
+                None => err("invalid-operation") }
         }),
     );
 
@@ -705,8 +686,7 @@ fn register_symmetric(vm: &mut VM) {
             };
             match registry().lock().unwrap().tags.get(&id) {
                 Some(tag) => Value::F64(tag.len() as f64),
-                None => err("closed"),
-            }
+                None => err("closed") }
         }),
     );
 

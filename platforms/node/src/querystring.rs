@@ -30,8 +30,7 @@ fn qs_escape(input: &str) -> String {
                 out.push(b as char);
             }
             b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
+            _ => out.push_str(&format!("%{b:02X}")) }
     }
     out
 }
@@ -118,8 +117,7 @@ fn qs_stringify(obj: &Value, sep: char, eq: char) -> String {
                             Value::String(s) => qs_escape(s),
                             Value::I32(n) => n.to_string(),
                             Value::F64(f) => f.to_string(),
-                            _ => String::new(),
-                        };
+                            _ => String::new() };
                         parts.push(format!("{}{}{}", encoded_k, eq, val_str));
                     }
                 }
@@ -137,16 +135,13 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let input = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             let sep = match args.get(1) {
                 Some(Value::String(s)) if !s.is_empty() => s.chars().next().unwrap_or('&'),
-                _ => '&',
-            };
+                _ => '&' };
             let eq = match args.get(2) {
                 Some(Value::String(s)) if !s.is_empty() => s.chars().next().unwrap_or('='),
-                _ => '=',
-            };
+                _ => '=' };
             qs_parse(&input, sep, eq)
         }),
     );
@@ -158,12 +153,10 @@ pub fn register(vm: &mut VM) {
             let obj = args.first().cloned().unwrap_or(Value::Undefined);
             let sep = match args.get(1) {
                 Some(Value::String(s)) if !s.is_empty() => s.chars().next().unwrap_or('&'),
-                _ => '&',
-            };
+                _ => '&' };
             let eq = match args.get(2) {
                 Some(Value::String(s)) if !s.is_empty() => s.chars().next().unwrap_or('='),
-                _ => '=',
-            };
+                _ => '=' };
             s(&qs_stringify(&obj, sep, eq))
         }),
     );
@@ -174,8 +167,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let input = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             s(&qs_escape(&input))
         }),
     );
@@ -186,8 +178,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let input = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             s(&qs_unescape(&input))
         }),
     );

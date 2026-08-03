@@ -23,23 +23,23 @@ fn emit_spec_gen_next(chunk: &mut Chunk) {
 
     // Done guard: completed continuation → (null, 0) without re-resuming.
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, 0);
-    chunk.emit_op_u16(Op::STRUCT_GET, done_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_key, 0);
     chunk.emit_op(Op::REF_IS_NULL, 0);
     chunk.emit_op(Op::I32_EQZ, 0);
     let _done_if = chunk.emit_if(0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(0, 0);
     chunk.emit_br(1, 0);
     chunk.emit_end(0);
 
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, 0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     let resume_ip = chunk.code.len();
     chunk.emit_op_u16(Op::RESUME, 0, 0);
     // Completion arm: stamp done, push has_more = 0.
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, 0);
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u16(Op::STRUCT_SET, done_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_key, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_i32_const(0, 0);
     chunk.emit_br(0, 0);
@@ -53,8 +53,7 @@ fn emit_spec_gen_next(chunk: &mut Chunk) {
         vec![StackSwitchHandler {
             kind: 0,
             tag_index: 0,
-            label_index: handler_ip as u32,
-        }],
+            label_index: handler_ip as u32 }],
     );
 }
 
@@ -180,19 +179,19 @@ fn stack_switching_opcodes_emit_spec_bytes() {
     // just whether the opcode byte appears somewhere in the module.
     let mut script = Chunk::new("<script>");
     script.local_count = 2;
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::CONT_NEW, 0); // e0 <cont_typeidx>
     script.emit_dup(0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op_u16(Op::RESUME, 0, 0); // e3 <cont_typeidx> <handlers>
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op_u16(Op::SUSPEND, 0, 0); // e2 <tagidx>
-    script.emit_op(Op::NULL, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op_u16(Op::SWITCH, 0, 0); // e6 <cont_typeidx> <tagidx>
     script.emit_op(Op::DROP, 0);
     script.emit_op(Op::DROP, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![script]);
@@ -222,7 +221,7 @@ fn stack_switching_opcodes_emit_spec_bytes() {
 #[test]
 fn stack_switching_opcodes_disassemble_with_proposal_names() {
     let mut script = Chunk::new("<script>");
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::CONT_NEW, 0);
     script.emit_op_u8(Op::CONT_BIND, 0, 0);
     script.emit_op_u16(Op::SUSPEND, 0, 0);
@@ -253,10 +252,10 @@ fn stack_switching_type_section_declares_continuation_type() {
     // `0x5D <funcidx>` wrapping it.
     let mut script = Chunk::new("<script>");
     script.local_count = 1;
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::CONT_NEW, 0);
     script.emit_op(Op::DROP, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![script]);
@@ -276,10 +275,10 @@ fn stack_switching_tag_section_declares_suspend_tag() {
     // larger than the single-tag baseline.
     let mut script = Chunk::new("<script>");
     script.local_count = 1;
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::CONT_NEW, 0);
     script.emit_op(Op::DROP, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![script]);
@@ -333,8 +332,7 @@ fn standard_resume_with_handler_vector_must_not_decode_as_noop() {
         &vec![StackSwitchHandler {
             kind: 0,
             tag_index: 0,
-            label_index: 0,
-        }]
+            label_index: 0 }]
     );
 }
 
@@ -383,8 +381,7 @@ fn standard_resume_throw_ref_with_handler_vector_decodes_and_roundtrips() {
         &vec![StackSwitchHandler {
             kind: 1,
             tag_index: 0,
-            label_index: 0,
-        }]
+            label_index: 0 }]
     );
 
     let emitted = write_wasm(&chunks);
@@ -440,8 +437,7 @@ fn standard_resume_throw_with_handler_vector_decodes_and_roundtrips() {
         &vec![StackSwitchHandler {
             kind: 0,
             tag_index: 0,
-            label_index: 0,
-        }]
+            label_index: 0 }]
     );
 
     let emitted = write_wasm(&chunks);
@@ -492,7 +488,7 @@ fn cont_new_returns_continuation_object() {
     chunk.emit_op(Op::RETURN, 0);
 
     let mut target = Chunk::new("target");
-    target.emit_op(Op::NULL, 0);
+    target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     target.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -502,17 +498,15 @@ fn cont_new_returns_continuation_object() {
             let o = obj.lock().unwrap();
             match &o.kind {
                 vybe_runtime::value::ObjectKind::Continuation(_) => {}
-                other => panic!("expected Continuation, got {other:?}"),
-            }
+                other => panic!("expected Continuation, got {other:?}") }
         }
-        other => panic!("expected Object, got {other:?}"),
-    }
+        other => panic!("expected Object, got {other:?}") }
 }
 
 #[test]
 fn cont_new_null_traps() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::CONT_NEW, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -524,12 +518,12 @@ fn cont_new_null_traps() {
 fn cont_bind_emits_spec_byte() {
     let mut script = Chunk::new("<script>");
     script.local_count = 2;
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::CONT_NEW, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op_u8(Op::CONT_BIND, 1, 0); // bind 1 arg
     script.emit_op(Op::DROP, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![script]);
@@ -544,11 +538,11 @@ fn cont_bind_emits_spec_byte() {
 fn resume_throw_emits_spec_byte() {
     let mut script = Chunk::new("<script>");
     script.local_count = 2;
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::CONT_NEW, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op_u16(Op::RESUME_THROW, 0, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![script]);
@@ -594,12 +588,12 @@ fn resume_throw_ref_null_exception_traps() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
     script.emit_op(Op::CONT_NEW, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RESUME_THROW_REF, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut target = Chunk::new("target");
-    target.emit_op(Op::NULL, 0);
+    target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     target.emit_op(Op::RETURN, 0);
 
     let err = VM::new().run(vec![script, target]).unwrap_err().to_string();
@@ -640,12 +634,12 @@ fn switch_without_active_prompt_traps() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
     script.emit_op(Op::CONT_NEW, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op_u16(Op::SWITCH, 0, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut target = Chunk::new("target");
-    target.emit_op(Op::NULL, 0);
+    target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     target.emit_op(Op::RETURN, 0);
 
     let err = VM::new().run(vec![script, target]).unwrap_err().to_string();
@@ -661,7 +655,7 @@ fn switch_requires_matching_on_tag_switch_handler() {
     let payload = switcher.add_constant(Value::I32(55));
     switcher.emit_op_u16(Op::CONST, payload, 0);
     switcher.emit_op_u16(Op::SWITCH, 3, 0);
-    switcher.emit_op(Op::NULL, 0);
+    switcher.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     switcher.emit_op(Op::RETURN, 0);
 
     let mut target = Chunk::new("target");
@@ -672,7 +666,7 @@ fn switch_requires_matching_on_tag_switch_handler() {
     target.emit_op_u16(Op::CONST, one, 0);
     target.emit_op(Op::I32_ADD, 0);
     target.emit_op_u16(Op::SUSPEND, 0, 0);
-    target.emit_op(Op::NULL, 0);
+    target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     target.emit_op(Op::RETURN, 0);
 
     let mut script = Chunk::new("<script>");
@@ -693,8 +687,7 @@ fn switch_requires_matching_on_tag_switch_handler() {
         vec![StackSwitchHandler {
             kind: 1,
             tag_index: 0,
-            label_index: 0,
-        }],
+            label_index: 0 }],
     );
 
     let err = VM::new()
@@ -725,7 +718,7 @@ fn switch_with_on_tag_switch_handler_transfers_to_target_continuation() {
     target.emit_op_u16(Op::CONST, one, 0);
     target.emit_op(Op::I32_ADD, 0);
     target.emit_op_u16(Op::SUSPEND, 0, 0);
-    target.emit_op(Op::NULL, 0);
+    target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     target.emit_op(Op::RETURN, 0);
 
     let mut script = Chunk::new("<script>");
@@ -746,8 +739,7 @@ fn switch_with_on_tag_switch_handler_transfers_to_target_continuation() {
         vec![StackSwitchHandler {
             kind: 1,
             tag_index: 0,
-            label_index: 0,
-        }],
+            label_index: 0 }],
     );
 
     let result = VM::new().run(vec![script, switcher, target]).unwrap();
@@ -772,7 +764,7 @@ fn cont_bind_non_continuation_traps() {
 fn cont_bind_null_traps() {
     let mut chunk = Chunk::new("<script>");
     let arg = chunk.add_constant(Value::I32(2));
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op_u16(Op::CONST, arg, 0);
     chunk.emit_op_u8(Op::CONT_BIND, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -799,20 +791,18 @@ fn cont_bind_produces_continuation_with_bound_args() {
     let mut target = Chunk::new("target");
     target.arity = 1;
     target.local_count = 1;
-    target.emit_op(Op::NULL, 0);
+    target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     target.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
     let result = vm.run(vec![chunk, target]).unwrap();
     let obj = match result {
         Value::Object(obj) => obj,
-        other => panic!("expected Continuation object, got {other:?}"),
-    };
+        other => panic!("expected Continuation object, got {other:?}") };
     let o = obj.lock().unwrap();
     match &o.kind {
         vybe_runtime::value::ObjectKind::Continuation(_) => {}
-        other => panic!("expected Continuation kind, got {other:?}"),
-    }
+        other => panic!("expected Continuation kind, got {other:?}") }
     let bound = o
         .properties
         .get("__bound_args")
@@ -838,17 +828,17 @@ fn cont_bind_consumes_source_continuation() {
     script.emit(0, 0);
     script.emit_op(Op::CONT_NEW, 0);
     script.emit_dup(0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op_u8(Op::CONT_BIND, 1, 0);
     script.emit_op(Op::DROP, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op_u16(Op::RESUME, 0, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut target = Chunk::new("target");
     target.arity = 1;
     target.local_count = 1;
-    target.emit_op(Op::NULL, 0);
+    target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     target.emit_op(Op::RETURN, 0);
 
     let err = VM::new().run(vec![script, target]).unwrap_err().to_string();
@@ -864,7 +854,7 @@ fn resume_handler_vector_routes_suspend_to_handler_offset() {
     let yielded = gen_body.add_constant(Value::I32(44));
     gen_body.emit_op_u16(Op::CONST, yielded, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
-    gen_body.emit_op(Op::NULL, 0);
+    gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
 
     let mut script = Chunk::new("<script>");
@@ -874,7 +864,7 @@ fn resume_handler_vector_routes_suspend_to_handler_offset() {
     script.emit_op_u8(Op::CALL_REF, 0, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     let resume_ip = script.code.len();
     script.emit_op_u16(Op::RESUME, 0, 0);
     script.emit_op(Op::DROP, 0);
@@ -892,8 +882,7 @@ fn resume_handler_vector_routes_suspend_to_handler_offset() {
         vec![StackSwitchHandler {
             kind: 0,
             tag_index: 0,
-            label_index: handler_ip as u32,
-        }],
+            label_index: handler_ip as u32 }],
     );
 
     let result = VM::new().run(vec![script, gen_body]).unwrap();
@@ -914,7 +903,7 @@ fn generator_chunk_returns_continuation_on_call() {
     let one = gen_body.add_constant(Value::I32(1));
     gen_body.emit_op_u16(Op::CONST, one, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
-    gen_body.emit_op(Op::NULL, 0);
+    gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
 
     // Caller builds a Function ref to gen_body, calls it with 0 args,
@@ -933,11 +922,9 @@ fn generator_chunk_returns_continuation_on_call() {
             let o = obj.lock().unwrap();
             match &o.kind {
                 vybe_runtime::value::ObjectKind::Continuation(_) => {}
-                other => panic!("expected Continuation, got {other:?}"),
-            }
+                other => panic!("expected Continuation, got {other:?}") }
         }
-        other => panic!("expected Object/Continuation, got {other:?}"),
-    }
+        other => panic!("expected Object/Continuation, got {other:?}") }
 }
 
 #[test]
@@ -955,15 +942,13 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
         is_loop: false,
         is_try: false,
         result_arity: 0,
-        stack_height: 0,
-    });
+        stack_height: 0 });
     vm.label_stack.push(LabelEntry {
         target: 456,
         is_loop: true,
         is_try: false,
         result_arity: 0,
-        stack_height: 0,
-    });
+        stack_height: 0 });
     // Build a dummy Continuation object so we have a Value to stash
     // in active_continuations (field is pub(crate); constructed via
     // a round-trip through CONT_NEW).
@@ -973,7 +958,7 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
     chunk.emit_op(Op::CONT_NEW, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut target = Chunk::new("target");
-    target.emit_op(Op::NULL, 0);
+    target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     target.emit_op(Op::RETURN, 0);
     let cont = vm.run(vec![chunk, target]).unwrap();
     // Re-set VM state for the fiber test.
@@ -983,15 +968,13 @@ fn fiber_roundtrip_preserves_label_stack_and_continuations() {
         is_loop: true,
         is_try: false,
         result_arity: 0,
-        stack_height: 0,
-    });
+        stack_height: 0 });
     vm.active_continuations
         .push(vybe_runtime::vm::ActiveContinuation {
             cont,
             caller_fiber: vybe_runtime::fiber::Fiber::new(Vec::new(), Vec::new(), Vec::new()),
             mode: vybe_runtime::vm::ResumeMode::Iterator,
-            handlers: Vec::new(),
-        });
+            handlers: Vec::new() });
 
     let fiber = vm.save_fiber();
     assert_eq!(fiber.label_stack.len(), 1);
@@ -1041,7 +1024,7 @@ fn generator_resume_preserves_loop_label_stack() {
     gen_body.patch_loop(loop_patch);
     gen_body.emit_end(0);
     gen_body.patch_block(block);
-    gen_body.emit_op(Op::NULL, 0);
+    gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
 
     let mut script = Chunk::new("<script>");
@@ -1151,7 +1134,7 @@ fn jspi_pending_promise_inside_generator_preserves_continuation_and_yields_on_re
         gen_body.emit(1, 0);
     }
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
-    gen_body.emit_op(Op::NULL, 0);
+    gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
 
     let mut script = Chunk::new("<script>");
@@ -1231,7 +1214,7 @@ fn reentrant_host_callback_inside_generator_does_not_complete_it() {
     let c99 = gen_body.add_constant(Value::I32(99));
     gen_body.emit_op_u16(Op::CONST, c99, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0); // yield 99
-    gen_body.emit_op(Op::NULL, 0);
+    gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
 
     // Script: drive the generator once, return the first yielded value.
@@ -1304,7 +1287,7 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     let k99 = gen_body.add_constant(Value::I32(99));
     gen_body.emit_op_u16(Op::CONST, k99, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0); // yield 99
-    gen_body.emit_op(Op::NULL, 0);
+    gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
 
     // cb(cont): GEN_NEXT(cont) → [value, has_more]; drop has_more; return value.

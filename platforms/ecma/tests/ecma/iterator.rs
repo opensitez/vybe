@@ -43,18 +43,15 @@ fn next_step(it: Value) -> (Value, bool) {
                 .unwrap_or(Value::Undefined);
             (val, done)
         }
-        _ => (Value::Undefined, true),
-    }
+        _ => (Value::Undefined, true) }
 }
 
 fn collect(it: Value) -> Vec<Value> {
     match invoke("toArray", vec![it]) {
         Value::Object(o) => match &o.lock().unwrap().kind {
             ObjectKind::Array(e) => e.clone(),
-            _ => vec![],
-        },
-        _ => vec![],
-    }
+            _ => vec![] },
+        _ => vec![] }
 }
 
 // ── next — iterator protocol ───────────────────────────────────────────────────

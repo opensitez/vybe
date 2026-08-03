@@ -37,8 +37,13 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     let host_import_count = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let total_imports = host_import_count + rt_imports.len(); // ALL WASM-level imports
 
-    // Collect globals (string-keyed → indexed)
-    let (globals, global_map) = sections::collect_globals(chunks);
+    // Imported string constants (js-string-builtins § String constants) — one
+    // imported global each. Collected before the globals so both the import
+    // section and `global_map` index the same ordered list.
+    let string_constants = sections::collect_string_constants(chunks);
+
+    // Collect globals (string-keyed → absolute WASM global index)
+    let (globals, global_map) = sections::collect_globals(chunks, &string_constants);
 
     // Type section: GC struct types + array type + function types
     let (type_section_data, type_ctx) =
@@ -49,7 +54,12 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     write_section(
         &mut out,
         SECTION_IMPORT,
-        &sections::encode_import_section(chunks, &rt_imports, type_ctx.func_type_base),
+        &sections::encode_import_section(
+            chunks,
+            &rt_imports,
+            type_ctx.func_type_base,
+            &string_constants,
+        ),
     );
 
     // Function section

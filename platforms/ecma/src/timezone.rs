@@ -195,8 +195,7 @@ pub fn set_system_identifier(name: &str) -> bool {
             }
             false
         }
-        None => false,
-    }
+        None => false }
 }
 
 /// ECMA-262 `SystemTimeZoneIdentifier()` — the host environment's zone as a
@@ -225,16 +224,14 @@ fn s(value: &str) -> Value {
 fn arg_str(args: &[Value], idx: usize) -> Option<String> {
     match args.get(idx) {
         Some(Value::String(v)) => Some(v.to_string()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn arg_ms(args: &[Value], idx: usize) -> f64 {
     match args.get(idx) {
         Some(Value::F64(v)) => *v,
         Some(Value::I32(v)) => *v as f64,
-        _ => 0.0,
-    }
+        _ => 0.0 }
 }
 
 fn make_array(items: Vec<Value>) -> Value {
@@ -277,8 +274,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match arg_str(args, 0).and_then(|n| canonicalize(&n)) {
                 Some(name) => s(&name),
-                None => Value::Null,
-            }
+                None => Value::Null }
         }),
     );
 
@@ -289,8 +285,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match arg_str(args, 0).and_then(|n| offset_seconds(&n, arg_ms(args, 1))) {
                 Some(secs) => Value::I32(secs),
-                None => Value::Null,
-            }
+                None => Value::Null }
         }),
     );
 
@@ -311,8 +306,7 @@ pub fn register(vm: &mut VM) {
         "setSystemIdentifier",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| match arg_str(args, 0) {
             Some(name) => Value::Bool(set_system_identifier(&name)),
-            None => Value::Bool(false),
-        }),
+            None => Value::Bool(false) }),
     );
 
     // isDst(name, msSinceEpoch) — whether daylight saving is in effect.
@@ -334,8 +328,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match arg_str(args, 0).and_then(|n| abbreviation(&n, arg_ms(args, 1))) {
                 Some(abbr) => s(&abbr),
-                None => Value::Null,
-            }
+                None => Value::Null }
         }),
     );
 }

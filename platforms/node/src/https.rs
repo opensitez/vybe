@@ -129,11 +129,9 @@ fn get_str_prop(args: &[Value], idx: usize, key: &str, default: &str) -> String 
             let o = opts.lock().unwrap();
             match o.properties.get(key) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => default.to_string(),
-            }
+                _ => default.to_string() }
         }
-        _ => default.to_string(),
-    }
+        _ => default.to_string() }
 }
 
 pub fn register(vm: &mut VM) {

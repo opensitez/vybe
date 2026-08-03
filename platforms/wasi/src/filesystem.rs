@@ -47,28 +47,24 @@ use vybe_runtime::{VM, Value};
 #[derive(Debug)]
 pub(super) enum DescriptorKind {
     File(PathBuf), // path retained for stat-at / open-at(child)
-    Directory(PathBuf),
-}
+    Directory(PathBuf) }
 
 #[derive(Debug)]
 pub(super) enum InputStreamKind {
     File { file: File, position: u64 },
-    Buffer { data: Vec<u8>, position: usize },
-}
+    Buffer { data: Vec<u8>, position: usize } }
 
 #[derive(Debug)]
 pub(super) enum OutputStreamKind {
     File { file: File },
-    Append(PathBuf),
-}
+    Append(PathBuf) }
 
 pub(super) struct Registry {
     pub(super) descriptors: HashMap<u32, DescriptorKind>,
     pub(super) dir_streams: HashMap<u32, ReadDir>,
     pub(super) input_streams: HashMap<u32, InputStreamKind>,
     pub(super) output_streams: HashMap<u32, OutputStreamKind>,
-    next_id: u32,
-}
+    next_id: u32 }
 
 impl Registry {
     fn new() -> Self {
@@ -77,8 +73,7 @@ impl Registry {
             dir_streams: HashMap::new(),
             input_streams: HashMap::new(),
             output_streams: HashMap::new(),
-            next_id: 1,
-        }
+            next_id: 1 }
     }
     fn alloc_id(&mut self) -> u32 {
         let id = self.next_id;
@@ -165,9 +160,7 @@ pub(super) fn map_io_error(e: &std::io::Error) -> &'static str {
             Some(39) | Some(66) | Some(145) => "not-empty",
             Some(21) => "is-directory",
             Some(20) => "not-directory",
-            _ => "io",
-        },
-    }
+            _ => "io" } }
 }
 
 // ── descriptor-stat / descriptor-type encoding ────────────────────
@@ -246,8 +239,7 @@ fn resolve_child_path(parent_id: u32, child: &str) -> Result<PathBuf, &'static s
         .ok_or("bad-descriptor")?;
     let parent_path = match parent {
         DescriptorKind::Directory(p) => p,
-        DescriptorKind::File(p) => p,
-    };
+        DescriptorKind::File(p) => p };
     Ok(parent_path.join(child))
 }
 
@@ -271,16 +263,14 @@ fn s_arg(args: &[Value], idx: usize) -> Option<String> {
     match args.get(idx) {
         Some(Value::String(text)) => Some(text.to_string()),
         Some(Value::F64(_)) | Some(Value::I32(_)) => None, // wrong type
-        _ => None,
-    }
+        _ => None }
 }
 
 fn i32_arg(args: &[Value], idx: usize, default: i32) -> i32 {
     match args.get(idx) {
         Some(Value::I32(n)) => *n,
         Some(Value::F64(n)) => *n as i32,
-        _ => default,
-    }
+        _ => default }
 }
 
 // Decode a WASI `new-timestamp` variant into an optional SystemTime.
@@ -302,16 +292,14 @@ fn new_timestamp(v: Option<&Value>) -> Option<SystemTime> {
                 .unwrap_or(0);
             Some(SystemTime::UNIX_EPOCH + Duration::new(secs, ns))
         }
-        _ => Some(SystemTime::now()),
-    }
+        _ => Some(SystemTime::now()) }
 }
 
 fn u64_arg(args: &[Value], idx: usize, default: u64) -> u64 {
     match args.get(idx) {
         Some(Value::F64(n)) => *n as u64,
         Some(Value::I32(n)) => *n as u64,
-        _ => default,
-    }
+        _ => default }
 }
 
 // ── Public registration ───────────────────────────────────────────
@@ -366,8 +354,7 @@ fn register_types(vm: &mut VM) {
 
             let resolved = match resolve_child_path(parent_id, &child) {
                 Ok(p) => p,
-                Err(code) => return err(code),
-            };
+                Err(code) => return err(code) };
 
             let create = (open_flags & OPEN_CREATE) != 0;
             let exclusive = (open_flags & OPEN_EXCLUSIVE) != 0;
@@ -436,13 +423,11 @@ fn register_types(vm: &mut VM) {
                 let reg = registry().lock().unwrap();
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) | Some(DescriptorKind::Directory(p)) => p.clone(),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             match std::fs::metadata(&path) {
                 Ok(meta) => build_stat(&meta),
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -459,12 +444,10 @@ fn register_types(vm: &mut VM) {
             };
             let resolved = match resolve_child_path(parent_id, &child) {
                 Ok(p) => p,
-                Err(code) => return err(code),
-            };
+                Err(code) => return err(code) };
             match std::fs::metadata(&resolved) {
                 Ok(meta) => build_stat(&meta),
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -479,13 +462,11 @@ fn register_types(vm: &mut VM) {
                 let reg = registry().lock().unwrap();
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) | Some(DescriptorKind::Directory(p)) => p.clone(),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             match std::fs::metadata(&path) {
                 Ok(meta) => Value::String(Arc::from(descriptor_type_string(&meta))),
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -501,8 +482,7 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::Directory(p)) => p.clone(),
                     Some(DescriptorKind::File(_)) => return err("not-directory"),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             match std::fs::read_dir(&path) {
                 Ok(rd) => {
@@ -514,8 +494,7 @@ fn register_types(vm: &mut VM) {
                     };
                     make_resource(KIND_DIR_STREAM, stream_id)
                 }
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -539,8 +518,7 @@ fn register_types(vm: &mut VM) {
                         Ok(ft) if ft.is_file() => "regular-file",
                         Ok(ft) if ft.is_dir() => "directory",
                         Ok(ft) if ft.is_symlink() => "symbolic-link",
-                        _ => "unknown",
-                    };
+                        _ => "unknown" };
                     let mut o = Object::new();
                     o.properties
                         .insert("type".into(), Value::String(Arc::from(entry_type)));
@@ -564,12 +542,10 @@ fn register_types(vm: &mut VM) {
             };
             let resolved = match resolve_child_path(parent_id, &child) {
                 Ok(p) => p,
-                Err(code) => return err(code),
-            };
+                Err(code) => return err(code) };
             match std::fs::create_dir(&resolved) {
                 Ok(_) => Value::Null,
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -585,15 +561,13 @@ fn register_types(vm: &mut VM) {
             };
             let resolved = match resolve_child_path(parent_id, &child) {
                 Ok(p) => p,
-                Err(code) => return err(code),
-            };
+                Err(code) => return err(code) };
             if resolved.is_dir() {
                 return err("is-directory");
             }
             match std::fs::remove_file(&resolved) {
                 Ok(_) => Value::Null,
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -609,12 +583,10 @@ fn register_types(vm: &mut VM) {
             };
             let resolved = match resolve_child_path(parent_id, &child) {
                 Ok(p) => p,
-                Err(code) => return err(code),
-            };
+                Err(code) => return err(code) };
             match std::fs::remove_dir(&resolved) {
                 Ok(_) => Value::Null,
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -636,16 +608,13 @@ fn register_types(vm: &mut VM) {
             };
             let old_path = match resolve_child_path(old_parent, &old_child) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             let new_path = match resolve_child_path(new_parent, &new_child) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             match std::fs::rename(&old_path, &new_path) {
                 Ok(_) => Value::Null,
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -661,12 +630,10 @@ fn register_types(vm: &mut VM) {
             };
             let resolved = match resolve_child_path(parent_id, &child) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             match std::fs::read_link(&resolved) {
                 Ok(target) => Value::String(Arc::from(target.to_string_lossy().as_ref())),
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -684,8 +651,7 @@ fn register_types(vm: &mut VM) {
                     let b_path = reg.descriptors.get(&b_id).map(path_of);
                     Value::Bool(a_path.is_some() && a_path == b_path)
                 }
-                _ => Value::Bool(false),
-            }
+                _ => Value::Bool(false) }
         }),
     );
 
@@ -702,13 +668,11 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             let mut file = match File::open(&path) {
                 Ok(f) => f,
-                Err(e) => return err(map_io_error(&e)),
-            };
+                Err(e) => return err(map_io_error(&e)) };
             if offset > 0 {
                 if let Err(e) = file.seek(SeekFrom::Start(offset)) {
                     return err(map_io_error(&e));
@@ -721,8 +685,7 @@ fn register_types(vm: &mut VM) {
                     stream_id,
                     InputStreamKind::File {
                         file,
-                        position: offset,
-                    },
+                        position: offset },
                 );
                 stream_id
             };
@@ -744,13 +707,11 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             let mut file = match OpenOptions::new().write(true).open(&path) {
                 Ok(f) => f,
-                Err(e) => return err(map_io_error(&e)),
-            };
+                Err(e) => return err(map_io_error(&e)) };
             if offset > 0 {
                 if let Err(e) = file.seek(SeekFrom::Start(offset)) {
                     return err(map_io_error(&e));
@@ -780,8 +741,7 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             let stream_id = {
                 let mut reg = registry().lock().unwrap();
@@ -819,13 +779,11 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return Value::Null,
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             match File::open(&path).and_then(|f| f.sync_data()) {
                 Ok(_) => Value::Null,
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -876,8 +834,7 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             match OpenOptions::new()
                 .write(true)
@@ -885,8 +842,7 @@ fn register_types(vm: &mut VM) {
                 .and_then(|f| f.set_len(size))
             {
                 Ok(_) => Value::Null,
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -905,8 +861,7 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return Value::Null, // dirs: no-op
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             match OpenOptions::new().write(true).open(&path) {
                 Ok(file) => {
@@ -919,11 +874,9 @@ fn register_types(vm: &mut VM) {
                     }
                     match file.set_times(times) {
                         Ok(_) => Value::Null,
-                        Err(e) => err(map_io_error(&e)),
-                    }
+                        Err(e) => err(map_io_error(&e)) }
                 }
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -942,13 +895,11 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             let mut file = match File::open(&path) {
                 Ok(f) => f,
-                Err(e) => return err(map_io_error(&e)),
-            };
+                Err(e) => return err(map_io_error(&e)) };
             if let Err(e) = file.seek(SeekFrom::Start(offset)) {
                 return err(map_io_error(&e));
             }
@@ -963,8 +914,7 @@ fn register_types(vm: &mut VM) {
                     let tuple = Object::new_array(vec![bytes_val, Value::Bool(eof)]);
                     Value::Object(vybe_runtime::heap::alloc(tuple))
                 }
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -993,20 +943,17 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return err("is-directory"),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             let mut file = match OpenOptions::new().write(true).open(&path) {
                 Ok(f) => f,
-                Err(e) => return err(map_io_error(&e)),
-            };
+                Err(e) => return err(map_io_error(&e)) };
             if let Err(e) = file.seek(SeekFrom::Start(offset)) {
                 return err(map_io_error(&e));
             }
             match file.write_all(&bytes) {
                 Ok(_) => Value::F64(bytes.len() as f64),
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -1023,13 +970,11 @@ fn register_types(vm: &mut VM) {
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) => p.clone(),
                     Some(DescriptorKind::Directory(_)) => return Value::Null,
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             match File::open(&path).and_then(|f| f.sync_all()) {
                 Ok(_) => Value::Null,
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -1048,8 +993,7 @@ fn register_types(vm: &mut VM) {
             let mtime = new_timestamp(args.get(4));
             let resolved = match resolve_child_path(parent_id, &child) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             match OpenOptions::new().write(true).open(&resolved) {
                 Ok(file) => {
                     let mut times = FileTimes::new();
@@ -1061,11 +1005,9 @@ fn register_types(vm: &mut VM) {
                     }
                     match file.set_times(times) {
                         Ok(_) => Value::Null,
-                        Err(e) => err(map_io_error(&e)),
-                    }
+                        Err(e) => err(map_io_error(&e)) }
                 }
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -1088,25 +1030,21 @@ fn register_types(vm: &mut VM) {
             };
             let old_path = match resolve_child_path(old_parent, &old_child) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             let new_path = match resolve_child_path(new_parent, &new_child) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             #[cfg(unix)]
             {
                 match std::fs::hard_link(&old_path, &new_path) {
                     Ok(_) => Value::Null,
-                    Err(e) => err(map_io_error(&e)),
-                }
+                    Err(e) => err(map_io_error(&e)) }
             }
             #[cfg(not(unix))]
             {
                 match std::fs::hard_link(&old_path, &new_path) {
                     Ok(_) => Value::Null,
-                    Err(e) => err(map_io_error(&e)),
-                }
+                    Err(e) => err(map_io_error(&e)) }
             }
         }),
     );
@@ -1130,18 +1068,15 @@ fn register_types(vm: &mut VM) {
             };
             let _old_path = match resolve_child_path(parent, &old_path_str) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             let new_path = match resolve_child_path(new_parent, &new_child) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             #[cfg(unix)]
             {
                 match std::os::unix::fs::symlink(&old_path_str, &new_path) {
                     Ok(_) => Value::Null,
-                    Err(e) => err(map_io_error(&e)),
-                }
+                    Err(e) => err(map_io_error(&e)) }
             }
             #[cfg(windows)]
             {
@@ -1167,8 +1102,7 @@ fn register_types(vm: &mut VM) {
                 let reg = registry().lock().unwrap();
                 match reg.descriptors.get(&id) {
                     Some(DescriptorKind::File(p)) | Some(DescriptorKind::Directory(p)) => p.clone(),
-                    None => return err("bad-descriptor"),
-                }
+                    None => return err("bad-descriptor") }
             };
             match std::fs::metadata(&path) {
                 Ok(meta) => {
@@ -1181,8 +1115,7 @@ fn register_types(vm: &mut VM) {
                         .insert("upper".into(), Value::F64((hash >> 32) as f64));
                     Value::Object(vybe_runtime::heap::alloc(o))
                 }
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -1199,8 +1132,7 @@ fn register_types(vm: &mut VM) {
             };
             let resolved = match resolve_child_path(parent_id, &child) {
                 Ok(p) => p,
-                Err(c) => return err(c),
-            };
+                Err(c) => return err(c) };
             match std::fs::metadata(&resolved) {
                 Ok(meta) => {
                     let hash = meta.len().wrapping_mul(0x9e37_79b9)
@@ -1212,8 +1144,7 @@ fn register_types(vm: &mut VM) {
                         .insert("upper".into(), Value::F64((hash >> 32) as f64));
                     Value::Object(vybe_runtime::heap::alloc(o))
                 }
-                Err(e) => err(map_io_error(&e)),
-            }
+                Err(e) => err(map_io_error(&e)) }
         }),
     );
 
@@ -1236,8 +1167,7 @@ fn register_types(vm: &mut VM) {
 
 fn path_of(kind: &DescriptorKind) -> PathBuf {
     match kind {
-        DescriptorKind::File(p) | DescriptorKind::Directory(p) => p.clone(),
-    }
+        DescriptorKind::File(p) | DescriptorKind::Directory(p) => p.clone() }
 }
 
 // ── wasi:io/streams (file streams) ────────────────────────────────
@@ -1275,8 +1205,7 @@ fn register_io_streams(vm: &mut VM) {
                                 buf.into_iter().map(|b| Value::I32(b as i32)).collect();
                             Value::Object(vybe_runtime::heap::alloc(Object::new_array(elements)))
                         }
-                        Err(e) => err(map_io_error(&e)),
-                    }
+                        Err(e) => err(map_io_error(&e)) }
                 }
                 InputStreamKind::Buffer { data, position } => {
                     let remaining = data.len().saturating_sub(*position);
@@ -1315,8 +1244,7 @@ fn register_io_streams(vm: &mut VM) {
                                 buf.into_iter().map(|b| Value::I32(b as i32)).collect();
                             Value::Object(vybe_runtime::heap::alloc(Object::new_array(elements)))
                         }
-                        Err(e) => err(map_io_error(&e)),
-                    }
+                        Err(e) => err(map_io_error(&e)) }
                 }
                 InputStreamKind::Buffer { data, position } => {
                     let remaining = data.len().saturating_sub(*position);
@@ -1354,8 +1282,7 @@ fn register_io_streams(vm: &mut VM) {
             match reg.output_streams.get_mut(&id) {
                 Some(OutputStreamKind::File { file }) => match file.write_all(&bytes) {
                     Ok(_) => Value::F64(bytes.len() as f64),
-                    Err(e) => err(map_io_error(&e)),
-                },
+                    Err(e) => err(map_io_error(&e)) },
                 Some(OutputStreamKind::Append(path)) => {
                     let path = path.clone();
                     match OpenOptions::new()
@@ -1364,11 +1291,9 @@ fn register_io_streams(vm: &mut VM) {
                         .and_then(|mut f| f.write_all(&bytes))
                     {
                         Ok(_) => Value::F64(bytes.len() as f64),
-                        Err(e) => err(map_io_error(&e)),
-                    }
+                        Err(e) => err(map_io_error(&e)) }
                 }
-                None => err("bad-descriptor"),
-            }
+                None => err("bad-descriptor") }
         }),
     );
 
@@ -1408,11 +1333,9 @@ fn register_io_streams(vm: &mut VM) {
                             f.flush()
                         }) {
                         Ok(_) => Value::Null,
-                        Err(e) => err(map_io_error(&e)),
-                    }
+                        Err(e) => err(map_io_error(&e)) }
                 }
-                None => err("bad-descriptor"),
-            }
+                None => err("bad-descriptor") }
         }),
     );
 
@@ -1441,8 +1364,7 @@ fn register_io_streams(vm: &mut VM) {
                     Value::Null
                 }
                 Some(OutputStreamKind::Append(_)) => Value::Null,
-                None => err("bad-descriptor"),
-            }
+                None => err("bad-descriptor") }
         }),
     );
 

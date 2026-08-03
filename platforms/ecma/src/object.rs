@@ -78,16 +78,14 @@ pub fn js_prototype_of(value: &Value) -> Value {
                 // yet; their instances carry an explicit `__proto__` from
                 // their host constructors, so they're handled above. A bare
                 // collection with no proto falls back to Object.prototype.
-                _ => shared_object_prototype(),
-            }
+                _ => shared_object_prototype() }
         }
         Value::String(_) => crate::string::shared_string_prototype(),
         Value::Bool(_) => crate::boolean::shared_boolean_prototype(),
         Value::F64(_) | Value::I32(_) | Value::I64(_) => {
             crate::number::shared_number_prototype()
         }
-        _ => Value::Null,
-    }
+        _ => Value::Null }
 }
 
 fn is_object(v: &Value) -> bool {
@@ -138,16 +136,14 @@ fn to_object_for_object_static(
                 .insert(PROTO_KEY.into(), shared_object_prototype());
             Some(Value::Object(vybe_runtime::heap::alloc(obj)))
         }
-        _ => Some(new_ordinary_object_with_proto()),
-    }
+        _ => Some(new_ordinary_object_with_proto()) }
 }
 
 fn key_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
         Value::Symbol(sym) => crate::symbol::canonical_property_key(sym),
-        _ => format!("{}", v),
-    }
+        _ => format!("{}", v) }
 }
 
 fn array_index_key(key: &str) -> Option<u32> {
@@ -346,8 +342,7 @@ fn assign_strict_set(
                 match &so.kind {
                     ObjectKind::Function(func) => Some(func.arity),
                     ObjectKind::HostFunction(_) => Some(0),
-                    _ => None,
-                }
+                    _ => None }
             };
             match setter_arity {
                 Some(1) => {
@@ -448,8 +443,7 @@ fn has_own_property_key(value: &Value, key_raw: &Value) -> Option<bool> {
             Some(false)
         }
         Value::Null | Value::Undefined => None,
-        _ => Some(false),
-    }
+        _ => Some(false) }
 }
 
 pub fn proxy_target_and_handler(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value)> {
@@ -473,8 +467,7 @@ pub fn proxy_trap(handler: &Value, name: &str) -> Option<Value> {
         {
             Some(trap)
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Append `key` to the object's `__keys` insertion-order tracker,
@@ -633,13 +626,11 @@ fn lookup_protocol_member(receiver: &Arc<Mutex<Object>>, key: &str) -> Option<Va
             }
             match lock.properties.get("__proto__").cloned() {
                 Some(Value::Object(proto)) => Some(proto),
-                _ => None,
-            }
+                _ => None }
         };
         match next_proto {
             Some(proto) => current = proto,
-            None => break,
-        }
+            None => break }
     }
     None
 }
@@ -659,8 +650,7 @@ fn call_iterator_if_generator(
         });
     let iterator = match await_or_reject(iterator) {
         Ok(value) => value,
-        Err(_) => return None,
-    };
+        Err(_) => return None };
     if let Value::Object(ref obj) = iterator {
         let o = obj.lock().unwrap();
         if matches!(o.kind, ObjectKind::Continuation(_)) {
@@ -693,8 +683,7 @@ pub fn collect_protocol_iterable_result(
         });
     let iterator = match await_or_reject(iterator) {
         Ok(value) => value,
-        Err(reason) => return Some(Err(reason)),
-    };
+        Err(reason) => return Some(Err(reason)) };
     let Value::Object(iterator_obj) = iterator else {
         return None;
     };
@@ -710,8 +699,7 @@ pub fn collect_protocol_iterable_result(
         {
             match result {
                 Ok(value) => value,
-                Err(reason) => return Some(Err(reason)),
-            }
+                Err(reason) => return Some(Err(reason)) }
         } else {
             match crate::function::try_invoke_with_explicit_this(
                 ctx,
@@ -720,13 +708,11 @@ pub fn collect_protocol_iterable_result(
                 &[],
             ) {
                 Ok(value) => value,
-                Err(reason) => return Some(Err(reason)),
-            }
+                Err(reason) => return Some(Err(reason)) }
         };
         let step = match await_or_reject(step) {
             Ok(value) => value,
-            Err(reason) => return Some(Err(reason)),
-        };
+            Err(reason) => return Some(Err(reason)) };
         let Value::Object(step_obj) = step else {
             break;
         };
@@ -863,8 +849,7 @@ pub fn ordered_own_string_keys(o: &Object) -> Vec<String> {
                                 Value::Symbol(sym) => {
                                     Some(crate::symbol::canonical_property_key(sym))
                                 }
-                                _ => None,
-                            })
+                                _ => None })
                             .collect(),
                     )
                 } else {
@@ -944,8 +929,7 @@ fn is_callable_value(value: &Value) -> bool {
                 ObjectKind::Function(_) | ObjectKind::HostFunction(_)
             ) || groupby_magic_key_callable(value)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn throw_type_error(ctx: &mut HostContext, message: &str) -> Value {
@@ -977,8 +961,7 @@ fn collect_groupby_items(
                 ctx.throw_value(error);
                 None
             }
-        },
-    }
+        } }
 }
 
 /// Walk the prototype chain looking for `key`. Returns the value if
@@ -1002,8 +985,7 @@ pub fn proto_walk_get(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
         // ends the chain immediately.
         let proto = match explicit {
             Some(p) => p,
-            None => js_prototype_of(&Value::Object(current.clone())),
-        };
+            None => js_prototype_of(&Value::Object(current.clone())) };
         match proto {
             Value::Object(p) => {
                 if Arc::ptr_eq(&p, &current) {
@@ -1011,8 +993,7 @@ pub fn proto_walk_get(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
                 }
                 current = p;
             }
-            _ => return None,
-        }
+            _ => return None }
     }
 }
 
@@ -1051,16 +1032,13 @@ fn proto_walk_invoke_getter(
             match &getter_guard.kind {
                 ObjectKind::Function(func) => Some(func.arity),
                 ObjectKind::HostFunction(_) => Some(0),
-                _ => None,
-            }
+                _ => None }
         }
-        _ => None,
-    };
+        _ => None };
     let receiver = Value::Object(obj.clone());
     Some(match getter_arity {
         Some(0) => ctx.invoke(&getter, &[]),
-        _ => ctx.invoke(&getter, &[receiver]),
-    })
+        _ => ctx.invoke(&getter, &[receiver]) })
 }
 
 fn object_to_string_tag(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> String {
@@ -1070,8 +1048,7 @@ fn object_to_string_tag(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> Stri
         match tag {
             Value::String(text) if !text.is_empty() => return text.to_string(),
             Value::Undefined | Value::Null => {}
-            other => return format!("{}", other),
-        }
+            other => return format!("{}", other) }
     }
 
     let object = obj.lock().unwrap();
@@ -1092,8 +1069,7 @@ fn object_to_string_tag(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> Stri
             .unwrap_or_else(|| "TypedArray".to_string()),
         ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "Function".to_string(),
         ObjectKind::ModuleNamespace => "Module".to_string(),
-        _ => "Object".to_string(),
-    }
+        _ => "Object".to_string() }
 }
 
 pub fn register(vm: &mut VM) {
@@ -1185,8 +1161,7 @@ fn register_construction(vm: &mut VM) {
                         .insert(PROTO_KEY.into(), shared_object_prototype());
                     Value::Object(vybe_runtime::heap::alloc(obj))
                 }
-                _ => new_ordinary_object_with_proto(),
-            },
+                _ => new_ordinary_object_with_proto() },
         ),
     );
 
@@ -1418,8 +1393,7 @@ fn register_construction(vm: &mut VM) {
                             let value = p.properties.get("1").cloned();
                             match (key, value) {
                                 (Some(k), Some(v)) => vec![k, v],
-                                _ => Vec::new(),
-                            }
+                                _ => Vec::new() }
                         }
                     }
                 };
@@ -1620,8 +1594,7 @@ fn register_access(vm: &mut VM) {
                             let so = setter_obj.lock().unwrap();
                             match &so.kind {
                                 vybe_runtime::value::ObjectKind::Function(f) => Some(f.arity),
-                                _ => None,
-                            }
+                                _ => None }
                         };
                         let is_noop_setter = {
                             let so = setter_obj.lock().unwrap();
@@ -1795,20 +1768,15 @@ fn register_access(vm: &mut VM) {
                                 ObjectKind::Array(_) => {
                                     match crate::array::shared_array_prototype() {
                                         Value::Object(p) => Some(p),
-                                        _ => None,
-                                    }
+                                        _ => None }
                                 }
                                 _ => match shared_object_prototype() {
                                     Value::Object(p) => Some(p),
-                                    _ => None,
-                                },
-                            },
-                        }
+                                    _ => None } } }
                     };
                     match next_proto {
                         Some(p) => current = p,
-                        None => break,
-                    }
+                        None => break }
                 }
                 return Value::Bool(false);
             }
@@ -1903,8 +1871,7 @@ fn register_access(vm: &mut VM) {
                         Value::I32(n) => Some(*n as usize),
                         Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                         Value::String(s) => s.parse::<usize>().ok(),
-                        _ => None,
-                    };
+                        _ => None };
                     if let Some(i) = idx {
                         if i < elems.len() {
                             elems[i] = Value::Undefined;
@@ -1940,8 +1907,7 @@ fn register_access(vm: &mut VM) {
                         Value::I32(n) if *n >= 0 => Some(*n as usize),
                         Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                         Value::String(s) => s.parse::<usize>().ok(),
-                        _ => None,
-                    };
+                        _ => None };
                     if matches!(idx, Some(i) if i < crate::typedarray::ta_live_length(ta)) {
                         drop(o);
                         _ctx.throw_value(crate::error::new_error(
@@ -1961,8 +1927,7 @@ fn register_access(vm: &mut VM) {
                 if let ObjectKind::Map(ref mut m) = o.kind {
                     let key_value = match &key_raw {
                         Value::Undefined | Value::Null => Value::String(Arc::from(key.as_str())),
-                        other => other.clone(),
-                    };
+                        other => other.clone() };
                     let removed = m.shift_remove(&key_value).is_some();
                     return Value::Bool(removed);
                 }
@@ -2054,8 +2019,7 @@ fn register_enumeration(vm: &mut VM) {
                                     Value::Symbol(sym) => {
                                         Some(crate::symbol::canonical_property_key(sym))
                                     }
-                                    _ => None,
-                                })
+                                    _ => None })
                                 .collect(),
                         )
                     } else {
@@ -2210,13 +2174,11 @@ fn register_enumeration(vm: &mut VM) {
                         }
                         match o.properties.get(PROTO_KEY).cloned() {
                             Some(Value::Object(p)) => Some(p),
-                            _ => None,
-                        }
+                            _ => None }
                     };
                     match next_proto {
                         Some(p) => current = p,
-                        None => break,
-                    }
+                        None => break }
                 }
                 return Value::Object(vybe_runtime::heap::alloc(Object::new_array(out)));
             }
@@ -2466,15 +2428,13 @@ fn register_enumeration(vm: &mut VM) {
                                 .iter()
                                 .filter_map(|e| match e {
                                     Value::Symbol(sym) => Some(Value::Symbol(sym.clone())),
-                                    _ => None,
-                                })
+                                    _ => None })
                                 .collect()
                         } else {
                             Vec::new()
                         }
                     }
-                    _ => Vec::new(),
-                };
+                    _ => Vec::new() };
                 return Value::Object(vybe_runtime::heap::alloc(Object::new_array(syms)));
             }
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
@@ -2601,8 +2561,7 @@ fn register_descriptors(vm: &mut VM) {
                                 .unwrap_or(false);
                             (val, get, set, e, w, c)
                         }
-                        _ => (None, None, None, false, None, false),
-                    };
+                        _ => (None, None, None, false, None, false) };
                 {
                     let mut o = define_obj.lock().unwrap();
                     if matches!(o.kind, ObjectKind::Array(_)) && key == "length" {
@@ -2844,8 +2803,7 @@ fn register_descriptors(vm: &mut VM) {
                 if let Some((target, handler)) = proxy_target_and_handler(&obj) {
                     let target_desc = match &target {
                         Value::Object(t) => own_property_descriptor(t, &key),
-                        _ => Value::Undefined,
-                    };
+                        _ => Value::Undefined };
                     if let Some(trap) = proxy_trap(&handler, "getOwnPropertyDescriptor") {
                         let key_value = args.get(1).cloned().unwrap_or(Value::Undefined);
                         let result = invoke_with_explicit_this(
@@ -2873,8 +2831,7 @@ fn register_descriptors(vm: &mut VM) {
                                         .get("value")
                                         .map(|rv| rv != tv)
                                         .unwrap_or(false),
-                                    _ => false,
-                                }
+                                    _ => false }
                         } else {
                             false
                         };
@@ -3146,23 +3103,179 @@ fn is_effectively_frozen(o: &Object) -> bool {
 }
 
 // ── Prototype ─────────────────────────────────────────────────────────
+//
+// `js_prototype_of` above answers the ORDINARY internal method (§10.1.1) and
+// is deliberately left untouched — it sits on the hot path of every
+// inherited-property read, `instanceof` and `isPrototypeOf`. Proxy dispatch
+// and the §10.5.1/§10.5.2 invariants layer ABOVE it, in the two functions
+// below, so `Object.getPrototypeOf`, `Reflect.getPrototypeOf`, the
+// `__proto__` accessor and the `ecma:proxy` entry points share ONE
+// implementation instead of four partial ones that disagree.
+
+/// `SameValue` restricted to what a `[[Prototype]]` can hold: an object
+/// (compared by identity) or null.
+fn same_prototype(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
+        (Value::Null, Value::Null) => true,
+        _ => false }
+}
+
+/// `IsExtensible(O)` — §7.2.5. Seal and freeze both imply
+/// `[[PreventExtensions]]` (§7.3.15), so they answer false too.
+pub fn value_is_extensible(value: &Value) -> bool {
+    match value {
+        Value::Object(obj) => {
+            let o = obj.lock().unwrap();
+            let sealed = o.properties.contains_key("__vybe_sealed")
+                || o.properties.contains_key("__vybe_frozen");
+            !sealed && !is_not_extensible(&o)
+        }
+        _ => false }
+}
+
+/// §10.1.1 / §10.5.1 `[[GetPrototypeOf]]` — proxy-aware and invariant
+/// enforcing. `None` means a TypeError has been thrown and the caller must
+/// return immediately.
+pub fn get_prototype_of(ctx: &mut HostContext, value: &Value) -> Option<Value> {
+    let Some(proxy) = crate::proxy::is_proxy(value) else {
+        return Some(js_prototype_of(value));
+    };
+    if crate::proxy::proxy_is_revoked(&proxy) {
+        throw_type_error(
+            ctx,
+            "Cannot perform 'getPrototypeOf' on a proxy that has been revoked",
+        );
+        return None;
+    }
+    let Some((target, handler)) = proxy_target_and_handler(&proxy) else {
+        return Some(js_prototype_of(value));
+    };
+    // No trap: forward to the target — which may itself be a proxy.
+    let Some(trap) = proxy_trap(&handler, "getPrototypeOf") else {
+        return get_prototype_of(ctx, &target);
+    };
+    let result = invoke_with_explicit_this(ctx, &trap, handler, &[target.clone()]);
+    if !matches!(result, Value::Object(_) | Value::Null) {
+        throw_type_error(
+            ctx,
+            "'getPrototypeOf' on proxy: trap returned neither object nor null",
+        );
+        return None;
+    }
+    // §10.5.1 step 7: an EXTENSIBLE target pins nothing — any object-or-null
+    // the trap returns is legal. Only a non-extensible target forces the
+    // trap to agree with the target's real prototype.
+    if value_is_extensible(&target) {
+        return Some(result);
+    }
+    let actual = get_prototype_of(ctx, &target)?;
+    if !same_prototype(&result, &actual) {
+        throw_type_error(
+            ctx,
+            "'getPrototypeOf' on proxy: proxy target is non-extensible but the trap did not return its actual prototype",
+        );
+        return None;
+    }
+    Some(result)
+}
+
+/// §10.1.2 / §10.5.2 `[[SetPrototypeOf]]` — answers the SUCCESS FLAG.
+/// `Object.setPrototypeOf` turns a `false` into a TypeError; `Reflect
+/// .setPrototypeOf` hands it back as-is. `None` means a TypeError has
+/// already been thrown.
+pub fn set_prototype_of(ctx: &mut HostContext, value: &Value, proto: &Value) -> Option<bool> {
+    let Value::Object(obj) = value else {
+        return Some(false);
+    };
+    if let Some(proxy) = crate::proxy::is_proxy(value) {
+        if crate::proxy::proxy_is_revoked(&proxy) {
+            throw_type_error(
+                ctx,
+                "Cannot perform 'setPrototypeOf' on a proxy that has been revoked",
+            );
+            return None;
+        }
+        if let Some((target, handler)) = proxy_target_and_handler(&proxy) {
+            let Some(trap) = proxy_trap(&handler, "setPrototypeOf") else {
+                // No trap: the TARGET's prototype changes, never the shell's.
+                return set_prototype_of(ctx, &target, proto);
+            };
+            let result =
+                invoke_with_explicit_this(ctx, &trap, handler, &[target.clone(), proto.clone()]);
+            if !crate::boolean::to_boolean(&result) {
+                return Some(false);
+            }
+            // §10.5.2 step 11: a trap may claim success on a non-extensible
+            // target only if it actually left the prototype where the caller
+            // asked for it.
+            if value_is_extensible(&target) {
+                return Some(true);
+            }
+            let actual = get_prototype_of(ctx, &target)?;
+            if !same_prototype(proto, &actual) {
+                throw_type_error(
+                    ctx,
+                    "'setPrototypeOf' on proxy: trap returned truish for a non-extensible target",
+                );
+                return None;
+            }
+            return Some(true);
+        }
+    }
+
+    // §10.1.2 OrdinarySetPrototypeOf.
+    let current = js_prototype_of(value);
+    if same_prototype(&current, proto) {
+        return Some(true);
+    }
+    if !value_is_extensible(value) {
+        return Some(false);
+    }
+    // Step 8: walk the new prototype's chain looking for `value` itself.
+    // The walk STOPS at a proxy — the spec deliberately refuses to run user
+    // trap code during the cycle check, so a proxy link ends the search
+    // rather than being followed through.
+    let mut p = proto.clone();
+    for _ in 0..1000 {
+        let Value::Object(p_obj) = &p else {
+            break;
+        };
+        if Arc::ptr_eq(p_obj, obj) {
+            return Some(false);
+        }
+        if crate::proxy::is_proxy(&p).is_some() {
+            break;
+        }
+        let next = js_prototype_of(&p);
+        // A root prototype can resolve to itself; that is the end of the
+        // chain, not a cycle in `value`.
+        if same_prototype(&next, &p) {
+            break;
+        }
+        p = next;
+    }
+
+    let mut o = obj.lock().unwrap();
+    o.properties.insert(PROTO_KEY.into(), proto.clone());
+    if matches!(proto, Value::Null) {
+        o.properties
+            .insert(NULL_PROTO_MARK.into(), Value::Bool(true));
+    } else {
+        o.properties.shift_remove(NULL_PROTO_MARK);
+    }
+    Some(true)
+}
 
 fn register_prototype(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "getPrototypeOf",
         Box::new(|ctx, args| {
-            if let Some(obj) = obj_of(args, 0) {
-                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
-                    if let Some(trap) = proxy_trap(&handler, "getPrototypeOf") {
-                        return invoke_with_explicit_this(ctx, &trap, handler, &[target]);
-                    }
-                    return js_prototype_of(&target);
-                }
-                return js_prototype_of(&Value::Object(obj));
-            }
-            // Primitive wrappers also have a [[Prototype]].
-            js_prototype_of(args.first().unwrap_or(&Value::Undefined))
+            // Primitives are coerced (§20.1.2.12 ToObject), not rejected —
+            // only `Reflect.getPrototypeOf` throws on a non-object.
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            get_prototype_of(ctx, &value).unwrap_or(Value::Undefined)
         }),
     );
 
@@ -3171,92 +3284,26 @@ fn register_prototype(vm: &mut VM) {
         "setPrototypeOf",
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                let value = Value::Object(obj);
                 let proto = args.get(1).cloned().unwrap_or(Value::Null);
                 if !matches!(proto, Value::Object(_) | Value::Null) {
-                    ctx.throw_value(crate::error::new_error(
-                        ctx,
-                        "TypeError",
-                        "Object prototype may only be an Object or null",
-                    ));
+                    throw_type_error(ctx, "Object prototype may only be an Object or null");
                     return Value::Undefined;
                 }
-                // §10.5.2: trap when present, otherwise the TARGET's
-                // [[Prototype]] changes — never the proxy shell's.
-                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
-                    if let Some(trap) = proxy_trap(&handler, "setPrototypeOf") {
-                        let result =
-                            invoke_with_explicit_this(ctx, &trap, handler, &[target, proto]);
-                        return Value::Bool(crate::boolean::to_boolean(&result));
-                    }
-                    if let Value::Object(t) = &target {
-                        let mut target_lock = t.lock().unwrap();
-                        target_lock
-                            .properties
-                            .insert(PROTO_KEY.into(), proto.clone());
-                        if matches!(proto, Value::Null) {
-                            target_lock
-                                .properties
-                                .insert(NULL_PROTO_MARK.into(), Value::Bool(true));
-                        } else {
-                            target_lock.properties.shift_remove(NULL_PROTO_MARK);
-                        }
-                        return Value::Object(t.clone());
-                    }
-                    return Value::Bool(false);
-                }
-                let mut o = obj.lock().unwrap();
-                let current_proto = if o.properties.contains_key(NULL_PROTO_MARK) {
-                    Value::Null
-                } else {
-                    o.properties
-                        .get(PROTO_KEY)
-                        .cloned()
-                        .unwrap_or_else(shared_object_prototype)
-                };
-                if let Value::Object(next_proto) = &proto {
-                    let mut current = next_proto.clone();
-                    for _ in 0..100 {
-                        if Arc::ptr_eq(&current, &obj) {
-                            drop(o);
-                            ctx.throw_value(crate::error::new_error(
-                                ctx,
-                                "TypeError",
-                                "Cyclic __proto__ value",
-                            ));
-                            return Value::Undefined;
-                        }
-                        let next = js_prototype_of(&Value::Object(current.clone()));
-                        match next {
-                            Value::Object(p) => current = p,
-                            _ => break,
-                        }
+                // §20.1.2.22 step 4: `Object.setPrototypeOf` is the caller
+                // that turns a false success flag into a TypeError.
+                // `Reflect.setPrototypeOf` returns it instead.
+                match set_prototype_of(ctx, &value, &proto) {
+                    None => Value::Undefined,
+                    Some(true) => value,
+                    Some(false) => {
+                        throw_type_error(ctx, "Cannot set prototype of this object");
+                        Value::Undefined
                     }
                 }
-                // §20.1.2.22: a non-extensible target rejects prototype
-                // changes — Object.setPrototypeOf surfaces TypeError
-                // (unless the prototype is unchanged, §10.1.2.1 step 5).
-                if is_not_extensible(&o) {
-                    let unchanged = current_proto == proto;
-                    if !unchanged {
-                        drop(o);
-                        ctx.throw_value(crate::error::new_error(
-                            ctx,
-                            "TypeError",
-                            "Object is not extensible",
-                        ));
-                        return Value::Undefined;
-                    }
-                }
-                o.properties.insert(PROTO_KEY.into(), proto.clone());
-                if matches!(proto, Value::Null) {
-                    o.properties
-                        .insert(NULL_PROTO_MARK.into(), Value::Bool(true));
-                } else {
-                    o.properties.shift_remove(NULL_PROTO_MARK);
-                }
-                return Value::Object(obj.clone());
+            } else {
+                Value::Bool(false)
             }
-            Value::Bool(false)
         }),
     );
 }
@@ -3480,8 +3527,7 @@ fn register_comparison(vm: &mut VM) {
                     }
                 }
                 (Some(x), Some(y)) => x.eq(y),
-                _ => false,
-            };
+                _ => false };
             // ECMA-262 §20.1.2.13: returns a Boolean.
             Value::Bool(same)
         }),
@@ -3518,8 +3564,7 @@ fn user_method_override(obj: &Arc<Mutex<Object>>, name: &str) -> Option<Value> {
         }
         current = match proto {
             Some(Value::Object(p)) => Some(p),
-            _ => None,
-        };
+            _ => None };
     }
     None
 }
@@ -3594,8 +3639,7 @@ fn register_prototype_methods(vm: &mut VM) {
                             }
                             current = Value::Object(p);
                         }
-                        _ => return Value::Bool(false),
-                    }
+                        _ => return Value::Bool(false) }
                 }
             }
             Value::Bool(false)
@@ -3665,8 +3709,7 @@ fn register_prototype_methods(vm: &mut VM) {
                 Some(Value::String(_)) => "String".to_string(),
                 Some(Value::Symbol(_)) => "Symbol".to_string(),
                 Some(Value::Object(obj)) => object_to_string_tag(ctx, obj),
-                _ => "Object".to_string(),
-            };
+                _ => "Object".to_string() };
             Value::String(Arc::from(format!("[object {}]", tag).as_str()))
         }),
     );
@@ -3710,8 +3753,7 @@ fn register_prototype_methods(vm: &mut VM) {
                 None | Some(Value::Undefined) => "Undefined".to_string(),
                 Some(Value::Null) => "Null".to_string(),
                 Some(Value::Object(obj)) => object_to_string_tag(ctx, obj),
-                _ => "Object".to_string(),
-            };
+                _ => "Object".to_string() };
             Value::String(Arc::from(format!("[object {}]", tag).as_str()))
         }),
     );
@@ -3750,8 +3792,7 @@ fn register_prototype_methods(vm: &mut VM) {
                             "Cannot convert a Symbol value to a property key",
                         );
                     }
-                    other => format!("{}", other),
-                };
+                    other => format!("{}", other) };
                 {
                     let needs_track = {
                         let out = result.lock().unwrap();
@@ -3772,8 +3813,7 @@ fn register_prototype_methods(vm: &mut VM) {
                     }
                     let len = match &group.kind {
                         ObjectKind::Array(v) => v.len(),
-                        _ => 0,
-                    };
+                        _ => 0 };
                     group
                         .properties
                         .insert("length".into(), Value::F64(len as f64));

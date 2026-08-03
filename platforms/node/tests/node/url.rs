@@ -56,15 +56,13 @@ fn prop(obj: &Value, key: &str) -> Value {
             let o = o.lock().unwrap();
             o.properties.get(key).cloned().unwrap_or(Value::Undefined)
         }
-        _ => Value::Undefined,
-    }
+        _ => Value::Undefined }
 }
 
 fn as_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
-        other => format!("{other}"),
-    }
+        other => format!("{other}") }
 }
 
 // ── WHATWG URL constructor ────────────────────────────────────────────────────
@@ -238,8 +236,7 @@ fn search_params_append_allows_duplicate_keys() {
                 assert_eq!(elems.len(), 2);
             }
         }
-        _ => panic!("expected array"),
-    }
+        _ => panic!("expected array") }
 }
 
 #[test]
@@ -402,8 +399,7 @@ fn url_search_params_from_string_get_value() {
     match result {
         Value::String(s) => assert_eq!(s.as_ref(), "alice"),
         Value::Null | Value::Undefined => {} // TDD
-        other => panic!("expected 'alice', got {:?}", other),
-    }
+        other => panic!("expected 'alice', got {:?}", other) }
 }
 
 // ── searchParamsGetAll ────────────────────────────────────────────────────────

@@ -158,6 +158,5 @@ pub fn register_types(fw: &mut Framework<'_>) {
         comment: comment_id,
         processing_instruction: pi_id,
         attr: attr_id,
-        named_node_map: nnm_id,
-    });
+        named_node_map: nnm_id });
 }

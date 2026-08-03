@@ -36,8 +36,7 @@ fn node_arch() -> &'static str {
         "mips" => "mips",
         "mips64" => "mipsel",
         "riscv64" => "riscv64",
-        other => other,
-    }
+        other => other }
 }
 
 /// Node `os.type()` historical names.
@@ -51,8 +50,7 @@ fn node_type() -> &'static str {
         "netbsd" => "NetBSD",
         "dragonfly" => "DragonFly",
         "solaris" => "SunOS",
-        other => other,
-    }
+        other => other }
 }
 
 fn hostname() -> String {

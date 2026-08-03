@@ -87,8 +87,7 @@ fn deep_clone(
         // dead weak reference per spec. Pass through.
         Value::WeakRef(_) => Ok(v.clone()),
 
-        Value::Object(obj) => clone_object(ctx, obj, seen, active),
-    }
+        Value::Object(obj) => clone_object(ctx, obj, seen, active) }
 }
 
 fn clone_object(
@@ -142,8 +141,7 @@ fn clone_object(
         // Module Namespace Objects are frozen spec-exotic objects;
         // structuredClone on them is not spec-defined. Futures/streams are
         // VM-internal. `null` is the conservative result for these.
-        KindTag::ModuleNamespace | KindTag::Future | KindTag::Stream => Ok(Value::Null),
-    };
+        KindTag::ModuleNamespace | KindTag::Future | KindTag::Stream => Ok(Value::Null) };
     active.remove(&id);
     result
 }
@@ -160,8 +158,7 @@ enum KindTag {
     Continuation,
     ModuleNamespace,
     Future,
-    Stream,
-}
+    Stream }
 
 fn kind_discriminant(k: &ObjectKind) -> KindTag {
     match k {
@@ -176,8 +173,7 @@ fn kind_discriminant(k: &ObjectKind) -> KindTag {
         ObjectKind::Continuation(_) => KindTag::Continuation,
         ObjectKind::ModuleNamespace => KindTag::ModuleNamespace,
         ObjectKind::Future { .. } => KindTag::Future,
-        ObjectKind::Stream { .. } => KindTag::Stream,
-    }
+        ObjectKind::Stream { .. } => KindTag::Stream }
 }
 
 fn clone_ordinary(
@@ -190,8 +186,7 @@ fn clone_ordinary(
     if let Some((target, _handler)) = crate::object::proxy_target_and_handler(src) {
         return match target {
             Value::Object(target_obj) => clone_object(ctx, &target_obj, seen, active),
-            other => deep_clone(ctx, &other, seen, active),
-        };
+            other => deep_clone(ctx, &other, seen, active) };
     }
     if let Some(cloned) = clone_builtin_object(src, id, seen) {
         return cloned;
@@ -299,12 +294,10 @@ fn clone_builtin_object(
             let (source, flags, last_index) = regexp_fields?;
             let source_text = match source {
                 Value::String(s) => s.to_string(),
-                other => format!("{}", other),
-            };
+                other => format!("{}", other) };
             let flags_text = match flags {
                 Value::String(s) => s.to_string(),
-                other => format!("{}", other),
-            };
+                other => format!("{}", other) };
             let mut obj = Object::new();
             obj.properties.insert(
                 "source".into(),
@@ -344,19 +337,16 @@ fn clone_builtin_object(
             Some(value) => {
                 crate::boolean::boxed_boolean(crate::boolean::to_boolean(&value))
             }
-            None => crate::boolean::boxed_boolean(false),
-        },
+            None => crate::boolean::boxed_boolean(false) },
         "Number" => crate::number::boxed_number(primitive.unwrap_or(Value::F64(f64::NAN))),
         "String" => {
             let text = match primitive {
                 Some(Value::String(s)) => s,
                 Some(value) => Arc::from(format!("{}", value).as_str()),
-                None => Arc::from(""),
-            };
+                None => Arc::from("") };
             crate::string::boxed_string(text)
         }
-        _ => return None,
-    };
+        _ => return None };
     seen.insert(id, out.clone());
     Some(Ok(out))
 }
@@ -533,8 +523,7 @@ fn clone_arraybuffer(
         max_byte_length,
         resizable,
         detached: false,
-        shared,
-    };
+        shared };
     let byte_len = state.bytes.lock().unwrap().len();
     let mut obj = Object::new();
     obj.kind = ObjectKind::ArrayBuffer(state);
@@ -588,8 +577,7 @@ fn clone_typedarray(
         } else {
             match clone_arraybuffer(&buffer_obj, buffer_id, seen)? {
                 Value::Object(obj) => obj,
-                _ => return Ok(Value::Null),
-            }
+                _ => return Ok(Value::Null) }
         };
         crate::typedarray::new_view_over_buffer(elem, cloned_buffer, 0, length)
     } else {
@@ -648,18 +636,15 @@ fn clone_dataview(
         let s = src.lock().unwrap();
         let buffer = match s.properties.get("buffer").cloned() {
             Some(Value::Object(buffer)) => buffer,
-            _ => return Ok(Value::Null),
-        };
+            _ => return Ok(Value::Null) };
         let byte_offset = match s.properties.get("byteOffset") {
             Some(Value::I32(n)) => (*n).max(0) as usize,
             Some(v) => v.as_i32().max(0) as usize,
-            _ => 0,
-        };
+            _ => 0 };
         let byte_length = match s.properties.get("byteLength") {
             Some(Value::I32(n)) => (*n).max(0) as usize,
             Some(v) => v.as_i32().max(0) as usize,
-            _ => 0,
-        };
+            _ => 0 };
         (buffer, byte_offset, byte_length)
     };
     let bytes = {
@@ -688,8 +673,7 @@ fn clone_dataview(
         max_byte_length: byte_length,
         resizable: false,
         detached: false,
-        shared: false,
-    };
+        shared: false };
     let mut obj = Object::new();
     obj.kind = ObjectKind::ArrayBuffer(state);
     obj.properties
@@ -824,23 +808,20 @@ fn error_ancestors(kind: &str) -> &'static [&'static str] {
         "EvalError" => &["EvalError", "Error"],
         "AggregateError" => &["AggregateError", "Error"],
         "SuppressedError" => &["SuppressedError", "Error"],
-        _ => &["Error"],
-    }
+        _ => &["Error"] }
 }
 
 fn string_prop(o: &Object, key: &str) -> Option<String> {
     match o.properties.get(key) {
         Some(Value::String(s)) => Some(s.to_string()),
         Some(v) => Some(format!("{}", v)),
-        None => None,
-    }
+        None => None }
 }
 
 fn proto_string_prop(o: &Object, key: &str) -> Option<String> {
     let mut current = match o.properties.get("__proto__") {
         Some(Value::Object(proto)) => Some(proto.clone()),
-        _ => None,
-    };
+        _ => None };
     let mut seen = HashSet::new();
     while let Some(obj) = current {
         let id = Arc::as_ptr(&obj) as usize;
@@ -853,8 +834,7 @@ fn proto_string_prop(o: &Object, key: &str) -> Option<String> {
         }
         current = match guard.properties.get("__proto__") {
             Some(Value::Object(next)) => Some(next.clone()),
-            _ => None,
-        };
+            _ => None };
     }
     None
 }
@@ -882,8 +862,7 @@ fn validate_transfer_options(
         Some(_) => Some(crate::error::new_error_flat(
             "TypeError",
             "structuredClone options must be an object",
-        )),
-    }
+        )) }
 }
 
 fn collect_transfer_list(
@@ -900,10 +879,8 @@ fn collect_transfer_list(
             let arity = match &getter {
                 Value::Object(getter_obj) => match &getter_obj.lock().unwrap().kind {
                     ObjectKind::Function(function) => function.arity,
-                    _ => 0,
-                },
-                _ => 0,
-            };
+                    _ => 0 },
+                _ => 0 };
             let receiver = Value::Object(options.clone());
             let saved_this = ctx.current_js_this();
             ctx.set_js_this(receiver.clone());
@@ -1055,8 +1032,7 @@ fn mark_transferred_views_inner(
         } else if o.properties.contains_key(crate::arraybuffer::DV_TAG) {
             let buffer_id = match o.properties.get("buffer") {
                 Some(Value::Object(buffer)) => Arc::as_ptr(buffer) as usize,
-                _ => 0,
-            };
+                _ => 0 };
             if transferred_ids.contains(&buffer_id) {
                 o.properties.insert("byteLength".into(), Value::I32(0));
             }
@@ -1076,8 +1052,7 @@ fn mark_transferred_views_inner(
                     .iter()
                     .filter(|(key, _)| !key.starts_with("__"))
                     .map(|(_, value)| value.clone()),
-            ),
-        }
+            ) }
         values
     };
     for child in children {

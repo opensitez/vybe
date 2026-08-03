@@ -1404,8 +1404,7 @@ fn roundtrip_multiple_functions() {
     main.local_count = 1;
     main.global_inits.push(GlobalInit {
         name: "__add".to_string(),
-        init: ConstExpr::RefFunc(1),
-    });
+        init: ConstExpr::RefFunc(1) });
     let fn_name = main.add_constant(Value::String(Arc::from("__add")));
     let a = main.add_constant(Value::I32(20));
     let b = main.add_constant(Value::I32(22));

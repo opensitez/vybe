@@ -48,15 +48,13 @@ fn is_error(value: &Value) -> bool {
             object.properties.contains_key("__wasi_error")
                 || object.properties.contains_key("code")
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn str_of(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => Some(s.to_string()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn sample_request() -> u32 {

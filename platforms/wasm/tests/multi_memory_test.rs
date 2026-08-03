@@ -817,7 +817,7 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     vm.wasm_tables = vec![vec![Value::I32(1), Value::I32(2), Value::I32(3)]];
 
     let mut grow = Chunk::new("<grow>");
-    grow.emit_op(Op::NULL, 0);
+    grow.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     let delta = grow.add_constant(Value::I64(2));
     grow.emit_op_u16(Op::CONST, delta, 0);
     grow.emit_op_u8(Op::TABLE_GROW, 0, 0);

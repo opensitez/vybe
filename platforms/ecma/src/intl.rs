@@ -175,8 +175,7 @@ fn obj_string_prop(obj: &Arc<Mutex<Object>>, key: &str) -> Option<String> {
     let lock = obj.lock().unwrap();
     match lock.properties.get(key)? {
         Value::String(s) => Some(s.to_string()),
-        other => Some(format!("{}", other)),
-    }
+        other => Some(format!("{}", other)) }
 }
 
 /// Resolve the locale arg from `args[0]` — accepts a string tag or an
@@ -194,8 +193,7 @@ fn resolve_locale(arg: Option<&Value>) -> String {
             }
             "en-US".into()
         }
-        _ => "en-US".into(),
-    }
+        _ => "en-US".into() }
 }
 
 fn resolve_options(arg: Option<&Value>) -> Arc<Mutex<Object>> {
@@ -213,8 +211,7 @@ fn resolve_date_ms(arg: Option<&Value>) -> Option<f64> {
             lock.properties.get("__time").map(|v| v.as_f64())
         }
         Some(value) => Some(value.as_f64()),
-        None => None,
-    }
+        None => None }
 }
 
 /// Parse a tag into a `unic_langid::LanguageIdentifier`. Falls back to
@@ -274,18 +271,15 @@ fn register_collator(vm: &mut VM) {
             use icu::collator::{options::CollatorOptions, Collator};
             let collator = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return Value::I32(0),
-            };
+                _ => return Value::I32(0) };
             let a = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => String::new(),
-            };
+                None => String::new() };
             let b = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => String::new(),
-            };
+                None => String::new() };
             let locale = obj_string_prop(&collator, "locale").unwrap_or_else(|| "en-US".into());
             let sensitivity =
                 obj_string_prop(&collator, "sensitivity").unwrap_or_else(|| "variant".into());
@@ -302,8 +296,7 @@ fn register_collator(vm: &mut VM) {
                 return Value::I32(match natural_compare(&a, &b) {
                     std::cmp::Ordering::Less => -1,
                     std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1,
-                });
+                    std::cmp::Ordering::Greater => 1 });
             }
             let icu_loc = parse_icu_locale(&locale);
             let prefs = (&icu_loc).into();
@@ -313,15 +306,13 @@ fn register_collator(vm: &mut VM) {
                     return Value::I32(match a.as_str().cmp(b.as_str()) {
                         std::cmp::Ordering::Less => -1,
                         std::cmp::Ordering::Equal => 0,
-                        std::cmp::Ordering::Greater => 1,
-                    });
+                        std::cmp::Ordering::Greater => 1 });
                 }
             };
             Value::I32(match coll.compare(&a, &b) {
                 std::cmp::Ordering::Less => -1,
                 std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1,
-            })
+                std::cmp::Ordering::Greater => 1 })
         }),
     );
 
@@ -416,8 +407,7 @@ fn register_collator(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -512,12 +502,10 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let nf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val(""),
-            };
+                _ => return s_val("") };
             let value = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => f64::NAN,
-            };
+                None => f64::NAN };
             s_val(&format_number_real(&nf, value))
         }),
     );
@@ -528,12 +516,10 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let nf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let value = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => f64::NAN,
-            };
+                None => f64::NAN };
             make_array(format_number_parts_real(&nf, value))
         }),
     );
@@ -548,8 +534,7 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let nf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val(""),
-            };
+                _ => return s_val("") };
             let start = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             let end = args.get(2).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             if start.is_nan() || end.is_nan() {
@@ -577,8 +562,7 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let nf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let start = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             let end = args.get(2).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             if start.is_nan() || end.is_nan() {
@@ -650,8 +634,7 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -733,8 +716,7 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     let icu_loc = parse_icu_locale(&locale);
     let formatter = match DecimalFormatter::try_new((&icu_loc).into(), Default::default()) {
         Ok(f) => f,
-        Err(_) => return value.to_string(),
-    };
+        Err(_) => return value.to_string() };
 
     // Build a Decimal from the f64 honoring style + max_frac. Scale
     // the value so we have an integer carrying max_frac decimal places,
@@ -798,8 +780,7 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
             format!("{}{}", symbol, formatted)
         }
         "percent" => format!("{}%", formatted),
-        _ => formatted,
-    }
+        _ => formatted }
 }
 
 /// ECMA-402 compact notation, short form ("en" CLDR patterns): 1.5K, 1M, 2.3B…
@@ -836,8 +817,7 @@ fn currency_symbol(code: &str) -> &'static str {
         "JPY" => "¥",
         "CHF" => "CHF ",
         "CAD" | "AUD" | "NZD" => "$",
-        _ => "¤",
-    }
+        _ => "¤" }
 }
 
 // ── Intl.DateTimeFormat (ECMA-402 §13) ───────────────────────────────
@@ -982,12 +962,10 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val(""),
-            };
+                _ => return s_val("") };
             let ms = match resolve_date_ms(args.get(1)) {
                 Some(ms) => ms,
-                None => return s_val(""),
-            };
+                None => return s_val("") };
             if !ms.is_finite() {
                 ctx.throw_value(crate::error::new_error(
                     ctx,
@@ -1006,12 +984,10 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let ms = match resolve_date_ms(args.get(1)) {
                 Some(ms) => ms,
-                None => return make_array(vec![]),
-            };
+                None => return make_array(vec![]) };
             if !ms.is_finite() {
                 ctx.throw_value(crate::error::new_error(
                     ctx,
@@ -1030,8 +1006,7 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val(""),
-            };
+                _ => return s_val("") };
             let start = resolve_date_ms(args.get(1)).unwrap_or(f64::NAN);
             let end = resolve_date_ms(args.get(2)).unwrap_or(f64::NAN);
             if !start.is_finite() || !end.is_finite() {
@@ -1052,8 +1027,7 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let start = resolve_date_ms(args.get(1)).unwrap_or(f64::NAN);
             let end = resolve_date_ms(args.get(2)).unwrap_or(f64::NAN);
             if !start.is_finite() || !end.is_finite() {
@@ -1099,8 +1073,7 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
     vm.register_host_fn(
         "ecma:intl",
@@ -1108,8 +1081,7 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -1201,8 +1173,7 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
             match weekday_opt.as_str() {
                 "short" => out.push_str(&name[..3]),
                 "narrow" => out.push_str(&name[..1]),
-                _ => out.push_str(name),
-            }
+                _ => out.push_str(name) }
         }
         if !month_opt.is_empty() {
             if !out.is_empty() {
@@ -1229,8 +1200,7 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
                 if hour12 {
                     let h12 = match h % 12 {
                         0 => 12,
-                        n => n,
-                    };
+                        n => n };
                     time.push_str(&h12.to_string());
                 } else if hour_opt == "numeric" && minute_opt.is_empty() && second_opt.is_empty() {
                     time.push_str(&h.to_string());
@@ -1281,12 +1251,10 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
 
     let date = match Date::try_new_iso(y, mo as u8, d as u8) {
         Ok(d) => d,
-        Err(_) => return String::new(),
-    };
+        Err(_) => return String::new() };
     let formatter = match DateTimeFormatter::try_new((&icu_loc).into(), fieldsets::YMD::medium()) {
         Ok(f) => f,
-        Err(_) => return format!("{}/{}/{}", mo, d, y),
-    };
+        Err(_) => return format!("{}/{}/{}", mo, d, y) };
     formatter.format(&date).to_string()
 }
 
@@ -1449,12 +1417,10 @@ fn register_list_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             use icu::list::{
                 options::{ListFormatterOptions, ListLength},
-                ListFormatter,
-            };
+                ListFormatter };
             let lf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val(""),
-            };
+                _ => return s_val("") };
             let items: Vec<String> = match args.get(1) {
                 Some(Value::Object(o)) => {
                     let lock = o.lock().unwrap();
@@ -1463,15 +1429,13 @@ fn register_list_format(vm: &mut VM) {
                             .iter()
                             .map(|v| match v {
                                 Value::String(s) => s.to_string(),
-                                o => format!("{}", o),
-                            })
+                                o => format!("{}", o) })
                             .collect()
                     } else {
                         Vec::new()
                     }
                 }
-                _ => Vec::new(),
-            };
+                _ => Vec::new() };
             let locale = obj_string_prop(&lf, "locale").unwrap_or_else(|| "en-US".into());
             let lf_type = obj_string_prop(&lf, "type").unwrap_or_else(|| "conjunction".into());
             let style = obj_string_prop(&lf, "style").unwrap_or_else(|| "long".into());
@@ -1480,8 +1444,7 @@ fn register_list_format(vm: &mut VM) {
             let length = match style.as_str() {
                 "short" => ListLength::Short,
                 "narrow" => ListLength::Narrow,
-                _ => ListLength::Wide,
-            };
+                _ => ListLength::Wide };
             let opts = ListFormatterOptions::default().with_length(length);
             // ICU 2.x uses separate constructors per list type rather than
             // a unified type-enum option.
@@ -1489,12 +1452,10 @@ fn register_list_format(vm: &mut VM) {
             let formatter = match lf_type.as_str() {
                 "disjunction" => ListFormatter::try_new_or(prefs, opts),
                 "unit" => ListFormatter::try_new_unit(prefs, opts),
-                _ => ListFormatter::try_new_and(prefs, opts),
-            };
+                _ => ListFormatter::try_new_and(prefs, opts) };
             let formatter = match formatter {
                 Ok(f) => f,
-                Err(_) => return s_val(&fallback_format_list(&items, &lf_type)),
-            };
+                Err(_) => return s_val(&fallback_format_list(&items, &lf_type)) };
             s_val(&formatter.format_to_string(items.iter()))
         }),
     );
@@ -1505,8 +1466,7 @@ fn register_list_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let lf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let items: Vec<String> = match args.get(1) {
                 Some(Value::Object(o)) => {
                     let lock = o.lock().unwrap();
@@ -1515,15 +1475,13 @@ fn register_list_format(vm: &mut VM) {
                             .iter()
                             .map(|v| match v {
                                 Value::String(s) => s.to_string(),
-                                o => format!("{}", o),
-                            })
+                                o => format!("{}", o) })
                             .collect()
                     } else {
                         Vec::new()
                     }
                 }
-                _ => Vec::new(),
-            };
+                _ => Vec::new() };
             let lf_type = obj_string_prop(&lf, "type").unwrap_or_else(|| "conjunction".into());
             // MVP: single literal part; full breakdown is a future enhancement.
             make_array(vec![make_object(vec![
@@ -1557,8 +1515,7 @@ fn register_list_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -1566,8 +1523,7 @@ fn fallback_format_list(items: &[String], lf_type: &str) -> String {
     let connector = match lf_type {
         "disjunction" => "or",
         "unit" => "",
-        _ => "and",
-    };
+        _ => "and" };
     match items.len() {
         0 => String::new(),
         1 => items[0].clone(),
@@ -1629,12 +1585,10 @@ fn register_plural_rules(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let pr = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("other"),
-            };
+                _ => return s_val("other") };
             let n = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => 0.0,
-            };
+                None => 0.0 };
             let locale = obj_string_prop(&pr, "locale").unwrap_or_else(|| "en-US".into());
             let pr_type = obj_string_prop(&pr, "type").unwrap_or_else(|| "cardinal".into());
             s_val(plural_select_real(&locale, &pr_type, n))
@@ -1647,8 +1601,7 @@ fn register_plural_rules(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let pr = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("other"),
-            };
+                _ => return s_val("other") };
             // ECMA-402 selectRange returns the plural category for the
             // formatted range. Without locale-specific range rules, return
             // the end value's category (good enough approximation).
@@ -1695,8 +1648,7 @@ fn register_plural_rules(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -1708,12 +1660,10 @@ fn plural_select_real(locale: &str, pr_type: &str, n: f64) -> &'static str {
     let langid = unic_langid::LanguageIdentifier::from_parts(parsed.language, None, None, &[]);
     let rule_type = match pr_type {
         "ordinal" => PluralRuleType::ORDINAL,
-        _ => PluralRuleType::CARDINAL,
-    };
+        _ => PluralRuleType::CARDINAL };
     let pr = match PluralRules::create(langid, rule_type) {
         Ok(p) => p,
-        Err(_) => return "other",
-    };
+        Err(_) => return "other" };
     // intl_pluralrules accepts integer + decimal. Integers go through
     // the typed path; non-integer values use the string form so 1.5
     // etc. categorize via the v/w/f operands per UTS #35.
@@ -1728,8 +1678,7 @@ fn plural_select_real(locale: &str, pr_type: &str, n: f64) -> &'static str {
         Ok(PluralCategory::TWO) => "two",
         Ok(PluralCategory::FEW) => "few",
         Ok(PluralCategory::MANY) => "many",
-        Ok(PluralCategory::OTHER) | Err(_) => "other",
-    }
+        Ok(PluralCategory::OTHER) | Err(_) => "other" }
 }
 
 // ── Intl.RelativeTimeFormat (ECMA-402 §17) ───────────────────────────
@@ -1781,16 +1730,13 @@ fn register_relative_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let rtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val(""),
-            };
+                _ => return s_val("") };
             let value = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => 0.0,
-            };
+                None => 0.0 };
             let unit = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => "second".into(),
-            };
+                _ => "second".into() };
             let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
             let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
             let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
@@ -1806,16 +1752,13 @@ fn register_relative_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let rtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let value = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => 0.0,
-            };
+                None => 0.0 };
             let unit = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => "second".into(),
-            };
+                _ => "second".into() };
             let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
             let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
             let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
@@ -1856,8 +1799,7 @@ fn register_relative_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -1887,12 +1829,10 @@ fn format_relative_time_real(
     // from icu 2.x's icu_locale_core. Bridge via the older crate.
     let icu_loc: icu_locid::Locale = match locale.parse() {
         Ok(l) => l,
-        Err(_) => return fallback_relative_time(value, unit),
-    };
+        Err(_) => return fallback_relative_time(value, unit) };
 
     let opts = RelativeTimeFormatterOptions {
-        numeric: Numeric::Always,
-    };
+        numeric: Numeric::Always };
     let unit_norm = unit.trim_end_matches('s'); // "days" → "day"
 
     let formatter_result = match (style, unit_norm) {
@@ -1923,13 +1863,11 @@ fn format_relative_time_real(
         (_, "month") => RelativeTimeFormatter::try_new_long_month(&icu_loc.into(), opts),
         (_, "quarter") => RelativeTimeFormatter::try_new_long_quarter(&icu_loc.into(), opts),
         (_, "year") => RelativeTimeFormatter::try_new_long_year(&icu_loc.into(), opts),
-        _ => return fallback_relative_time(value, unit),
-    };
+        _ => return fallback_relative_time(value, unit) };
 
     let formatter = match formatter_result {
         Ok(f) => f,
-        Err(_) => return fallback_relative_time(value, unit),
-    };
+        Err(_) => return fallback_relative_time(value, unit) };
 
     // FixedDecimal from f64 — round to integer for typical relative-time
     // use; the fractional part is rare in JS code.
@@ -1994,13 +1932,11 @@ fn register_segmenter(vm: &mut VM) {
             use unicode_segmentation::UnicodeSegmentation;
             let seg = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let input = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => String::new(),
-            };
+                None => String::new() };
             let granularity =
                 obj_string_prop(&seg, "granularity").unwrap_or_else(|| "grapheme".into());
 
@@ -2016,8 +1952,7 @@ fn register_segmenter(vm: &mut VM) {
                 _ => input
                     .grapheme_indices(true)
                     .map(|(i, s)| (s.to_string(), i))
-                    .collect(),
-            };
+                    .collect() };
 
             let elems: Vec<Value> = segments
                 .into_iter()
@@ -2045,20 +1980,17 @@ fn register_segmenter(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let segments = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             let index = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => 0.0,
-            };
+                None => 0.0 };
             if !index.is_finite() || index < 0.0 {
                 return Value::Undefined;
             }
             let target = index as usize;
             let guard = match segments.lock() {
                 Ok(g) => g,
-                Err(_) => return Value::Undefined,
-            };
+                Err(_) => return Value::Undefined };
             let ObjectKind::Array(elems) = &guard.kind else {
                 return Value::Undefined;
             };
@@ -2069,8 +2001,7 @@ fn register_segmenter(vm: &mut VM) {
                 let (start, len) = {
                     let p = match part.lock() {
                         Ok(p) => p,
-                        Err(_) => continue,
-                    };
+                        Err(_) => continue };
                     let start = p
                         .properties
                         .get("index")
@@ -2078,8 +2009,7 @@ fn register_segmenter(vm: &mut VM) {
                         .unwrap_or(0);
                     let len = match p.properties.get("segment") {
                         Some(Value::String(text)) => text.len(),
-                        _ => 0,
-                    };
+                        _ => 0 };
                     (start, len)
                 };
                 if target >= start && target < start + len {
@@ -2113,8 +2043,7 @@ fn register_segmenter(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -2151,8 +2080,7 @@ fn format_number_parts_real(nf: &Arc<Mutex<Object>>, value: f64) -> Vec<Value> {
             }
             '%' => "percentSign",
             '$' | '€' | '£' | '¥' | '¤' => "currency",
-            _ => "literal",
-        };
+            _ => "literal" };
         parts.push(make_object(vec![
             ("type", s_val(part_type)),
             ("value", s_val(&ch.to_string())),
@@ -2244,8 +2172,7 @@ fn format_month_part(month: i32, month_opt: &str) -> String {
         "2-digit" => format!("{:02}", month),
         "numeric" => month.to_string(),
         "short" => month_name(month, true).to_string(),
-        _ => month_name(month, false).to_string(),
-    }
+        _ => month_name(month, false).to_string() }
 }
 
 fn format_day_part(day: i32, day_opt: &str) -> String {
@@ -2282,8 +2209,7 @@ fn month_name(month: i32, short: bool) -> &'static str {
         (10, true) => "Oct",
         (11, true) => "Nov",
         (12, true) => "Dec",
-        _ => "",
-    }
+        _ => "" }
 }
 
 fn auto_relative_time_phrase(value: i64, unit: &str) -> Option<String> {
@@ -2300,8 +2226,7 @@ fn auto_relative_time_phrase(value: i64, unit: &str) -> Option<String> {
         (-1, "year") => Some("last year".into()),
         (0, "year") => Some("this year".into()),
         (1, "year") => Some("next year".into()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn segment_is_word_like(segment: &str) -> bool {
@@ -2321,8 +2246,7 @@ fn register_locale(vm: &mut VM) {
             let tag = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => "en".into(),
-            };
+                None => "en".into() };
             let langid = parse_langid(&tag);
             let language = langid.language.as_str().to_string();
             let region = langid
@@ -2342,8 +2266,7 @@ fn register_locale(vm: &mut VM) {
             let opt = |key: &str| -> Option<String> {
                 args.get(1).and_then(|v| match v {
                     Value::Object(o) => obj_string_prop(o, key),
-                    _ => None,
-                })
+                    _ => None })
             };
             let keyword = |kw: &str, opt_key: &str| -> String {
                 opt(opt_key)
@@ -2381,9 +2304,7 @@ fn register_locale(vm: &mut VM) {
                         "sun" => Value::F64(7.0),
                         other => match other.parse::<f64>() {
                             Ok(n) if (1.0..=7.0).contains(&n) => Value::F64(n),
-                            _ => Value::Undefined,
-                        },
-                    },
+                            _ => Value::Undefined } },
                 ),
                 // BCP-47 variant subtags, in canonical (lower-case, sorted)
                 // form; absent when the tag carries none.
@@ -2440,8 +2361,7 @@ fn register_locale(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let region = match args.first() {
                 Some(Value::Object(loc)) => obj_string_prop(loc, "region").unwrap_or_default(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             if region.is_empty() {
                 return Value::Undefined;
             }
@@ -2462,15 +2382,13 @@ fn register_locale(vm: &mut VM) {
             use icu::locale::{Direction, LanguageIdentifier, LocaleDirectionality};
             let tag = match args.first() {
                 Some(Value::Object(loc)) => obj_string_prop(loc, "baseName").unwrap_or_default(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             // NOTE: `parse_langid` here returns `unic_langid`'s type, which is a
             // DIFFERENT crate from ICU's — parse with ICU's own.
             let langid: LanguageIdentifier = tag.parse().unwrap_or(LanguageIdentifier::UNKNOWN);
             let direction = match LocaleDirectionality::new_common().get(&langid) {
                 Some(Direction::RightToLeft) => "rtl",
-                _ => "ltr",
-            };
+                _ => "ltr" };
             make_object(vec![("direction", s_val(direction))])
         }),
     );
@@ -2485,8 +2403,7 @@ fn register_locale(vm: &mut VM) {
             use icu::locale::Locale;
             let tag = match args.first() {
                 Some(Value::Object(loc)) => obj_string_prop(loc, "baseName").unwrap_or_default(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             let locale: Locale = tag.parse().unwrap_or_else(|_| Locale::UNKNOWN);
             let Ok(info) = WeekInformation::try_new(locale.into()) else {
                 return Value::Undefined;
@@ -2586,13 +2503,11 @@ fn register_display_names(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let dn = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             let code = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => return Value::Undefined,
-            };
+                None => return Value::Undefined };
             let locale = obj_string_prop(&dn, "locale").unwrap_or_else(|| "en-US".into());
             let dn_type = obj_string_prop(&dn, "type").unwrap_or_else(|| "language".into());
             s_val(&display_name_of(&locale, &dn_type, &code))
@@ -2624,8 +2539,7 @@ fn register_display_names(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -2637,13 +2551,11 @@ fn register_display_names(vm: &mut VM) {
 /// tag through that crate.
 fn display_name_of(locale: &str, dn_type: &str, code: &str) -> String {
     use icu_displaynames::{
-        DisplayNamesOptions, LanguageDisplayNames, RegionDisplayNames, ScriptDisplayNames,
-    };
+        DisplayNamesOptions, LanguageDisplayNames, RegionDisplayNames, ScriptDisplayNames };
 
     let icu_loc: icu_locid::Locale = match locale.parse() {
         Ok(l) => l,
-        Err(_) => return code.to_string(),
-    };
+        Err(_) => return code.to_string() };
 
     let opts = DisplayNamesOptions::default();
     match dn_type {
@@ -2677,8 +2589,7 @@ fn display_name_of(locale: &str, dn_type: &str, code: &str) -> String {
             }
             code.to_string()
         }
-        _ => code.to_string(),
-    }
+        _ => code.to_string() }
 }
 
 // ── Intl.DurationFormat (ECMA-402 §19, Stage 4 in 2024) ──────────────
@@ -2720,12 +2631,10 @@ fn register_duration_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let df = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val(""),
-            };
+                _ => return s_val("") };
             let dur = match args.get(1) {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val(""),
-            };
+                _ => return s_val("") };
             let style = obj_string_prop(&df, "style").unwrap_or_else(|| "short".into());
             let locale = obj_string_prop(&df, "locale").unwrap_or_else(|| "en-US".into());
             s_val(&format_duration(&dur, &style, &locale))
@@ -2738,12 +2647,10 @@ fn register_duration_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let df = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let dur = match args.get(1) {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             let style = obj_string_prop(&df, "style").unwrap_or_else(|| "short".into());
             let locale = obj_string_prop(&df, "locale").unwrap_or_else(|| "en-US".into());
             make_array(vec![make_object(vec![
@@ -2776,8 +2683,7 @@ fn register_duration_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]),
-        }),
+            _ => make_array(vec![]) }),
     );
 }
 
@@ -2802,8 +2708,7 @@ fn format_duration(dur: &Arc<Mutex<Object>>, style: &str, locale: &str) -> Strin
     let plural_for = |n: i64| -> PluralCategory {
         match PluralRules::create(langid.clone(), PluralRuleType::CARDINAL) {
             Ok(pr) => pr.select(n as isize).unwrap_or(PluralCategory::OTHER),
-            Err(_) => PluralCategory::OTHER,
-        }
+            Err(_) => PluralCategory::OTHER }
     };
 
     let lock = dur.lock().unwrap();
@@ -2902,8 +2807,7 @@ fn duration_unit_text(
         TWO => 2,
         FEW => 3,
         MANY => 4,
-        OTHER => 5,
-    };
+        OTHER => 5 };
     let forms = duration_forms(lang, unit, style)
         .or_else(|| duration_forms("en", unit, style))
         .unwrap_or(&["", "", "", "", "", ""]);
@@ -3251,8 +3155,7 @@ fn duration_forms(lang: &str, unit: &str, style: &str) -> Option<&'static [&'sta
         ("sv", "seconds", "long") => &["", "sekund", "", "", "", "sekunder"],
         ("sv", "milliseconds", "long") => &["", "millisekund", "", "", "", "millisekunder"],
 
-        _ => return None,
-    })
+        _ => return None })
 }
 
 // ── Intl static methods ──────────────────────────────────────────────
@@ -3271,15 +3174,13 @@ fn register_static(vm: &mut VM) {
                             .iter()
                             .map(|v| match v {
                                 Value::String(s) => s.to_string(),
-                                o => format!("{}", o),
-                            })
+                                o => format!("{}", o) })
                             .collect()
                     } else {
                         Vec::new()
                     }
                 }
-                _ => Vec::new(),
-            };
+                _ => Vec::new() };
             let canon: Vec<Value> = tags
                 .iter()
                 .map(|t| {
@@ -3297,8 +3198,7 @@ fn register_static(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let key = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return make_array(vec![]),
-            };
+                _ => return make_array(vec![]) };
             // Time zones come from tzdb, not a hand-written list. The previous
             // 15-entry list advertised zones that `Intl.DateTimeFormat` would
             // then reject, and tzdb ships 5–10 updates a year, so any literal
@@ -3381,8 +3281,7 @@ fn register_static(vm: &mut VM) {
                     "yard",
                     "year",
                 ],
-                _ => vec![],
-            };
+                _ => vec![] };
             make_array(values.into_iter().map(s_val).collect())
         }),
     );

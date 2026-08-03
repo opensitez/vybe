@@ -59,22 +59,19 @@ fn prop(v: &Value, key: &str) -> Value {
             .get(key)
             .cloned()
             .unwrap_or(Value::Undefined),
-        _ => Value::Undefined,
-    }
+        _ => Value::Undefined }
 }
 
 fn has_method(v: &Value, key: &str) -> bool {
     match v {
         Value::Object(o) => o.lock().unwrap().properties.contains_key(key),
-        _ => false,
-    }
+        _ => false }
 }
 
 fn as_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
-        other => format!("{other}"),
-    }
+        other => format!("{other}") }
 }
 
 // ── createSocket ──────────────────────────────────────────────────────────────
@@ -137,12 +134,10 @@ fn two_sockets_are_distinct_objects() {
     let s2 = call_dgram("createSocket", vec![s("udp4")]);
     let p1 = match &s1 {
         Value::Object(a) => std::sync::Arc::as_ptr(a) as usize,
-        _ => 0,
-    };
+        _ => 0 };
     let p2 = match &s2 {
         Value::Object(a) => std::sync::Arc::as_ptr(a) as usize,
-        _ => 1,
-    };
+        _ => 1 };
     assert_ne!(
         p1, p2,
         "two createSocket calls must return distinct objects"

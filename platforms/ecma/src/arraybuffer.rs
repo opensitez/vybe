@@ -45,8 +45,7 @@ fn new_arraybuffer(byte_length: i32, max_byte_length: i32, resizable: bool, shar
         max_byte_length: max,
         resizable,
         detached: false,
-        shared,
-    };
+        shared };
     let mut obj = Object::new();
     obj.kind = ObjectKind::ArrayBuffer(state);
     obj.properties
@@ -86,16 +85,13 @@ fn apply_arraybuffer_receiver_species(result: &Value, receiver: &Arc<Mutex<Objec
             let ctor_lock = ctor_obj.lock().unwrap();
             let name = match ctor_lock.properties.get("name") {
                 Some(Value::String(name)) if !name.is_empty() => Some(name.to_string()),
-                _ => None,
-            };
+                _ => None };
             let prototype = match ctor_lock.properties.get("prototype") {
                 Some(Value::Object(proto)) => Some(proto.clone()),
-                _ => None,
-            };
+                _ => None };
             (name, prototype)
         }
-        _ => (None, None),
-    };
+        _ => (None, None) };
     let Value::Object(result_obj) = result else {
         return;
     };
@@ -299,8 +295,7 @@ fn register_arraybuffer(vm: &mut VM) {
                         max_byte_length: slice_len,
                         resizable: false,
                         detached: false,
-                        shared: false,
-                    };
+                        shared: false };
                     let mut new_obj = Object::new();
                     new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                     new_obj
@@ -397,8 +392,7 @@ fn register_arraybuffer(vm: &mut VM) {
                     max_byte_length: target_len,
                     resizable: false,
                     detached: false,
-                    shared: false,
-                };
+                    shared: false };
                 let mut new_obj = Object::new();
                 new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                 new_obj
@@ -452,8 +446,7 @@ fn register_arraybuffer(vm: &mut VM) {
                     max_byte_length: target_len,
                     resizable: false,
                     detached: false,
-                    shared: false,
-                };
+                    shared: false };
                 let mut new_obj = Object::new();
                 new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                 new_obj
@@ -587,8 +580,7 @@ fn register_sharedarraybuffer(vm: &mut VM) {
                         max_byte_length: slice_len,
                         resizable: false,
                         detached: false,
-                        shared: true,
-                    };
+                        shared: true };
                     let mut new_obj = Object::new();
                     new_obj.kind = ObjectKind::ArrayBuffer(new_state);
                     new_obj
@@ -668,16 +660,13 @@ fn dv_resolve(dv: &Arc<Mutex<Object>>) -> Option<(Arc<Mutex<Vec<u8>>>, usize, us
     let o = dv.lock().unwrap();
     let base_offset = match o.properties.get(DV_OFFSET_PROP) {
         Some(Value::I32(n)) => *n as usize,
-        _ => 0,
-    };
+        _ => 0 };
     let view_len = match o.properties.get(DV_LENGTH_PROP) {
         Some(Value::I32(n)) => *n as usize,
-        _ => 0,
-    };
+        _ => 0 };
     let buffer_obj = match o.properties.get(DV_BUFFER_PROP).cloned() {
         Some(Value::Object(b)) => b,
-        _ => return None,
-    };
+        _ => return None };
     drop(o);
     let buf_o = buffer_obj.lock().unwrap();
     if let ObjectKind::ArrayBuffer(ref state) = buf_o.kind {
@@ -1027,8 +1016,7 @@ fn register_dataview(vm: &mut VM) {
             .map(|x| match x {
                 Value::BigInt(n) => n.to_i64_wrapping(),
                 Value::I64(n) => *n,
-                other => other.as_i32() as i64,
-            })
+                other => other.as_i32() as i64 })
             .unwrap_or(0),
         i64,
         to_le_bytes,
@@ -1041,8 +1029,7 @@ fn register_dataview(vm: &mut VM) {
             .map(|x| match x {
                 Value::BigInt(n) => n.to_u64_wrapping(),
                 Value::I64(n) => *n as u64,
-                other => other.as_i32() as u64,
-            })
+                other => other.as_i32() as u64 })
             .unwrap_or(0),
         u64,
         to_le_bytes,
@@ -1205,8 +1192,7 @@ fn register_dataview(vm: &mut VM) {
         |v: Option<&Value>| v
             .map(|x| match x {
                 Value::I64(n) => *n,
-                other => other.as_i32() as i64,
-            })
+                other => other.as_i32() as i64 })
             .unwrap_or(0),
         i64
     );
@@ -1216,8 +1202,7 @@ fn register_dataview(vm: &mut VM) {
         |v: Option<&Value>| v
             .map(|x| match x {
                 Value::I64(n) => *n as u64,
-                other => other.as_i32() as u64,
-            })
+                other => other.as_i32() as u64 })
             .unwrap_or(0),
         u64
     );
@@ -1361,8 +1346,7 @@ pub fn dispatch_arraybuffer_method(
                     max_byte_length: slice_len,
                     resizable: false,
                     detached: false,
-                    shared,
-                };
+                    shared };
                 let type_name = if shared {
                     "SharedArrayBuffer"
                 } else {
@@ -1465,8 +1449,7 @@ pub fn dispatch_arraybuffer_method(
                 max_byte_length: target_len,
                 resizable: false,
                 detached: false,
-                shared,
-            };
+                shared };
             let type_name = if shared {
                 "SharedArrayBuffer"
             } else {
@@ -1491,8 +1474,7 @@ pub fn dispatch_arraybuffer_method(
                 .insert("__type".into(), Value::String(Arc::from(type_name)));
             Some(Value::Object(vybe_runtime::heap::alloc(new_obj)))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Dispatches instance method calls on DataView objects.
@@ -1515,8 +1497,7 @@ pub fn dispatch_dataview_method(
         }
         "getFloat64" | "getBigInt64" | "getBigUint64" | "setFloat64" | "setBigInt64"
         | "setBigUint64" => Some(8),
-        _ => None,
-    };
+        _ => None };
     if let Some(size) = elem_size {
         let offset = args.first().map(|v| v.as_i32()).unwrap_or(0);
         if !dv_in_bounds(&obj, offset, size) {
@@ -1754,8 +1735,7 @@ pub fn dispatch_dataview_method(
                 .map(|x| match x {
                     Value::BigInt(n) => n.to_i64_wrapping(),
                     Value::I64(n) => *n,
-                    other => other.as_i32() as i64,
-                })
+                    other => other.as_i32() as i64 })
                 .unwrap_or(0);
             let le = args.get(2).map(|v| v.as_i32()).unwrap_or(0) != 0;
             let bytes = if le {
@@ -1766,6 +1746,5 @@ pub fn dispatch_dataview_method(
             dv_write_bytes(&obj, offset, &bytes);
             Some(Value::Undefined)
         }
-        _ => None,
-    }
+        _ => None }
 }

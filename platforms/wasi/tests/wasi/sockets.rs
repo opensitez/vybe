@@ -554,8 +554,7 @@ fn error_code(value: &Value) -> Option<String> {
     let object = object.lock().unwrap();
     match object.properties.get("__wasi_error") {
         Some(Value::String(code)) => Some(code.to_string()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn assert_ok(value: &Value, what: &str) {

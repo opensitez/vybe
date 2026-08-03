@@ -7,8 +7,7 @@
 
 use vybe_runtime::{Chunk, Op};
 use vybe_platform_wasm::writer::proposals::compilation_hints::{
-    COMPILATION_ORDER_SECTION_NAME, INLINING_SECTION_NAME,
-};
+    COMPILATION_ORDER_SECTION_NAME, INLINING_SECTION_NAME };
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -57,7 +56,7 @@ fn emit_wasm(chunks: Vec<Chunk>) -> Vec<u8> {
 
 fn script_chunk() -> Chunk {
     let mut s = Chunk::new("<script>");
-    s.emit_op(Op::NULL, 0);
+    s.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     s.emit_op(Op::RETURN, 0);
     s
 }
@@ -65,7 +64,7 @@ fn script_chunk() -> Chunk {
 fn leaf_chunk(name: &str) -> Chunk {
     let mut f = Chunk::new(name);
     f.arity = 0;
-    f.emit_op(Op::NULL, 0);
+    f.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     f.emit_op(Op::RETURN, 0);
     f
 }
@@ -93,7 +92,7 @@ fn compilation_order_section_marks_entry_as_priority_zero() {
 fn compilation_order_section_marks_main_chunk_hot() {
     let mut main_chunk = Chunk::new("main");
     main_chunk.arity = 0;
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::RETURN, 0);
 
     let wasm = emit_wasm(vec![script_chunk(), main_chunk]);
@@ -148,7 +147,7 @@ fn inlining_section_leaf_has_priority_zero() {
 fn inlining_section_absent_for_non_leaf() {
     let mut callee = Chunk::new("callee");
     callee.arity = 0;
-    callee.emit_op(Op::NULL, 0);
+    callee.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     callee.emit_op(Op::RETURN, 0);
 
     let mut caller = Chunk::new("caller");

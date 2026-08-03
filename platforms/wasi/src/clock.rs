@@ -184,8 +184,7 @@ pub fn register(vm: &mut VM) {
         "iana-id",
         Box::new(|_ctx: &mut HostContext, _args: &[Value]| match configured_zone_id() {
             Some(id) => Value::String(Arc::from(id.as_str())),
-            None => Value::Null,
-        }),
+            None => Value::Null }),
     );
 
     // `utc-offset: func(when: instant) -> option<s64>`.
@@ -202,8 +201,7 @@ pub fn register(vm: &mut VM) {
             let seconds = instant_seconds(args.first());
             match local_offset_seconds(seconds) {
                 Some(offset) => Value::F64(offset as f64 * 1_000_000_000.0),
-                None => Value::Null,
-            }
+                None => Value::Null }
         }),
     );
 
@@ -227,8 +225,7 @@ pub fn register(vm: &mut VM) {
                     let magnitude = offset.abs();
                     format!("{sign}{:02}:{:02}", magnitude / 3600, (magnitude % 3600) / 60)
                 }
-                None => "no timezone available".to_string(),
-            };
+                None => "no timezone available".to_string() };
             Value::String(Arc::from(text.as_str()))
         }),
     );
@@ -376,8 +373,7 @@ struct TzifBlock {
     transitions: Vec<i64>,
     transition_types: Vec<u8>,
     types: Vec<(i64, bool)>,
-    end: usize,
-}
+    end: usize }
 
 /// Parse one TZif header + data block starting at `start`, where each
 /// transition time occupies `time_size` bytes (4 for v1, 8 for v2+).
@@ -404,8 +400,7 @@ fn parse_tzif_block(bytes: &[u8], start: usize, time_size: usize) -> Option<Tzif
         let raw = bytes.get(at..at + time_size)?;
         transitions.push(match time_size {
             8 => i64::from_be_bytes(raw.try_into().ok()?),
-            _ => i32::from_be_bytes(raw.try_into().ok()?) as i64,
-        });
+            _ => i32::from_be_bytes(raw.try_into().ok()?) as i64 });
         at += time_size;
     }
 
@@ -427,6 +422,5 @@ fn parse_tzif_block(bytes: &[u8], start: usize, time_size: usize) -> Option<Tzif
         transitions,
         transition_types,
         types,
-        end: at,
-    })
+        end: at })
 }

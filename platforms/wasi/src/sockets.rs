@@ -6,12 +6,10 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{
-    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket,
-};
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket };
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+    atomic::{AtomicU64, Ordering} };
 use std::thread;
 use std::time::{Duration, Instant};
 use vybe_runtime::value::Object;
@@ -31,8 +29,7 @@ pub struct SocketState {
     /// `TcpStream::connect` each create AND commit the socket in one call. A
     /// socket lives here from `tcp-socket.create` until it commits, at which
     /// point it moves into `tcp_listeners` or `tcp_streams` under the same id.
-    raw_sockets: HashMap<u64, socket2::Socket>,
-}
+    raw_sockets: HashMap<u64, socket2::Socket> }
 
 pub fn get_state() -> Arc<Mutex<SocketState>> {
     use std::sync::OnceLock;
@@ -44,8 +41,7 @@ pub fn get_state() -> Arc<Mutex<SocketState>> {
                 tcp_listeners: HashMap::new(),
                 pending_accepts: HashMap::new(),
                 udp_sockets: HashMap::new(),
-                raw_sockets: HashMap::new(),
-            }))
+                raw_sockets: HashMap::new() }))
         })
         .clone()
 }
@@ -82,8 +78,7 @@ fn get_id(args: &[Value]) -> u64 {
             .map(|v| v.as_f64() as u64)
             .unwrap_or(0),
         Some(Value::F64(n)) => *n as u64,
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 fn tcp_listener_new(args: &[Value]) -> Value {
@@ -304,8 +299,7 @@ fn udp_receive(args: &[Value]) -> Value {
             Ok((n, _addr)) => {
                 return Value::String(Arc::from(String::from_utf8_lossy(&buf[..n]).as_ref()));
             }
-            Err(e) => eprintln!("UDP receive error: {}", e),
-        }
+            Err(e) => eprintln!("UDP receive error: {}", e) }
     }
     Value::Null
 }
@@ -374,8 +368,7 @@ fn socket_err_from(error: &std::io::Error) -> Value {
         TimedOut => "timeout",
         InvalidInput => "invalid-argument",
         Unsupported => "not-supported",
-        _ => "other",
-    })
+        _ => "other" })
 }
 
 /// The handle's `__socket_id`, or 0.
@@ -392,8 +385,7 @@ fn socket_id_of(handle: &Arc<Mutex<Object>>) -> u64 {
 fn handle_string(handle: &Arc<Mutex<Object>>, key: &str) -> Option<String> {
     match handle.lock().unwrap().properties.get(key) {
         Some(Value::String(text)) => Some(text.to_string()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn set_handle(handle: &Arc<Mutex<Object>>, key: &str, value: Value) {
@@ -430,8 +422,7 @@ fn new_socket_handle(kind: &str, family: &str) -> Value {
 fn family_arg(args: &[Value], index: usize) -> String {
     match args.get(index) {
         Some(Value::String(text)) if text.as_ref() == "ipv6" => "ipv6".to_string(),
-        _ => "ipv4".to_string(),
-    }
+        _ => "ipv4".to_string() }
 }
 
 fn socket2_domain(family: &str) -> socket2::Domain {
@@ -455,8 +446,7 @@ fn with_socket(args: &[Value], body: impl FnOnce(&Arc<Mutex<Object>>, u64) -> Va
             let id = socket_id_of(&handle);
             body(&handle, id)
         }
-        None => socket_err("invalid-state"),
-    }
+        None => socket_err("invalid-state") }
 }
 
 /// Apply `body` to the raw (created but uncommitted) socket for `id`.
@@ -465,8 +455,7 @@ fn with_raw_socket(id: u64, body: impl FnOnce(&socket2::Socket) -> Value) -> Val
     let guard = state.lock().unwrap();
     match guard.raw_sockets.get(&id) {
         Some(socket) => body(socket),
-        None => socket_err("invalid-state"),
-    }
+        None => socket_err("invalid-state") }
 }
 
 /// A socket option lives on the raw socket before it commits and on the
@@ -504,8 +493,7 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
                 Some(socket2::Protocol::TCP),
             ) {
                 Ok(socket) => socket,
-                Err(error) => return socket_err_from(&error),
-            };
+                Err(error) => return socket_err_from(&error) };
             let handle = new_socket_handle("tcp-socket", &family);
             if let Value::Object(object) = &handle {
                 let id = socket_id_of(object);
@@ -526,8 +514,7 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
                 };
                 let outcome = with_raw_socket(id, |socket| match socket.bind(&address.into()) {
                     Ok(()) => Value::Null,
-                    Err(error) => socket_err_from(&error),
-                });
+                    Err(error) => socket_err_from(&error) });
                 if matches!(outcome, Value::Null) {
                     // "If the port is zero the socket is bound to a random free
                     // port" — so the BOUND address is read back, never the
@@ -674,8 +661,7 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
             let handle = socket_arg(args);
             let bytes = match method_arg(args, 0) {
                 Some(value) => ctx.stream_drain(value),
-                None => Vec::new(),
-            };
+                None => Vec::new() };
             let outcome = match handle {
                 Some(handle) => {
                     let id = socket_id_of(&handle);
@@ -685,13 +671,10 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
                         Some(stream) => match stream.write_all(&bytes).and_then(|()| stream.flush())
                         {
                             Ok(()) => Value::Null,
-                            Err(error) => socket_err_from(&error),
-                        },
-                        None => socket_err("invalid-state"),
-                    }
+                            Err(error) => socket_err_from(&error) },
+                        None => socket_err("invalid-state") }
                 }
-                None => socket_err("invalid-state"),
-            };
+                None => socket_err("invalid-state") };
             let (future_val, future_id) = ctx.create_future();
             ctx.resolve_future(future_id, outcome);
             future_val
@@ -717,11 +700,9 @@ fn register_tcp_socket_0_3(vm: &mut VM) {
                             Err(error)
                                 if error.kind() == std::io::ErrorKind::WouldBlock
                                     || error.kind() == std::io::ErrorKind::TimedOut => {}
-                            Err(error) => failure = socket_err_from(&error),
-                        }
+                            Err(error) => failure = socket_err_from(&error) }
                     }
-                    None => failure = socket_err("invalid-state"),
-                }
+                    None => failure = socket_err("invalid-state") }
             } else {
                 failure = socket_err("invalid-state");
             }
@@ -791,8 +772,7 @@ fn register_socket_address_getters_0_3(vm: &mut VM, resource: &'static str) {
                 };
                 match handle.lock().unwrap().properties.get(key) {
                     Some(Value::Null) | None => socket_err("invalid-state"),
-                    Some(value) => value.clone(),
-                }
+                    Some(value) => value.clone() }
             }),
         );
     }
@@ -834,8 +814,7 @@ fn duration_value(duration: Duration) -> Value {
 fn io_result(result: std::io::Result<()>) -> Value {
     match result {
         Ok(()) => Value::Null,
-        Err(error) => socket_err_from(&error),
-    }
+        Err(error) => socket_err_from(&error) }
 }
 
 /// The `tcp-socket` options: keep-alive, hop limit and buffer sizes.
@@ -851,8 +830,7 @@ fn register_tcp_socket_options_0_3(vm: &mut VM) {
             with_socket(args, |_handle, id| {
                 with_socket2_view(id, |socket| match socket.keepalive() {
                     Ok(enabled) => Value::Bool(enabled),
-                    Err(error) => socket_err_from(&error),
-                })
+                    Err(error) => socket_err_from(&error) })
             })
         }),
     );
@@ -877,8 +855,7 @@ fn register_tcp_socket_options_0_3(vm: &mut VM) {
             with_socket(args, |_handle, id| {
                 with_socket2_view(id, |socket| match socket.keepalive_time() {
                     Ok(duration) => duration_value(duration),
-                    Err(error) => socket_err_from(&error),
-                })
+                    Err(error) => socket_err_from(&error) })
             })
         }),
     );
@@ -907,8 +884,7 @@ fn register_tcp_socket_options_0_3(vm: &mut VM) {
             with_socket(args, |_handle, id| {
                 with_socket2_view(id, |socket| match socket.keepalive_interval() {
                     Ok(duration) => duration_value(duration),
-                    Err(error) => socket_err_from(&error),
-                })
+                    Err(error) => socket_err_from(&error) })
             })
         }),
     );
@@ -939,8 +915,7 @@ fn register_tcp_socket_options_0_3(vm: &mut VM) {
             with_socket(args, |_handle, id| {
                 with_socket2_view(id, |socket| match socket.keepalive_retries() {
                     Ok(count) => Value::F64(count as f64),
-                    Err(error) => socket_err_from(&error),
-                })
+                    Err(error) => socket_err_from(&error) })
             })
         }),
     );
@@ -981,8 +956,7 @@ fn register_tcp_socket_options_0_3(vm: &mut VM) {
                     };
                     match hops {
                         Ok(value) => Value::F64(value as f64),
-                        Err(error) => socket_err_from(&error),
-                    }
+                        Err(error) => socket_err_from(&error) }
                 })
             })
         }),
@@ -1023,8 +997,7 @@ fn register_buffer_size_options_0_3(vm: &mut VM, resource: &'static str) {
             with_socket(args, |_handle, id| {
                 with_socket2_view(id, |socket| match socket.recv_buffer_size() {
                     Ok(size) => Value::F64(size as f64),
-                    Err(error) => socket_err_from(&error),
-                })
+                    Err(error) => socket_err_from(&error) })
             })
         }),
     );
@@ -1052,8 +1025,7 @@ fn register_buffer_size_options_0_3(vm: &mut VM, resource: &'static str) {
             with_socket(args, |_handle, id| {
                 with_socket2_view(id, |socket| match socket.send_buffer_size() {
                     Ok(size) => Value::F64(size as f64),
-                    Err(error) => socket_err_from(&error),
-                })
+                    Err(error) => socket_err_from(&error) })
             })
         }),
     );
@@ -1092,8 +1064,7 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                 Some(socket2::Protocol::UDP),
             ) {
                 Ok(socket) => socket,
-                Err(error) => return socket_err_from(&error),
-            };
+                Err(error) => return socket_err_from(&error) };
             let handle = new_socket_handle("udp-socket", &family);
             if let Value::Object(object) = &handle {
                 let id = socket_id_of(object);
@@ -1154,9 +1125,7 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                     Some(socket) => io_result(socket.connect(address)),
                     None => match guard.raw_sockets.get(&id) {
                         Some(socket) => io_result(socket.connect(&address.into())),
-                        None => socket_err("invalid-state"),
-                    },
-                };
+                        None => socket_err("invalid-state") } };
                 drop(guard);
                 if matches!(outcome, Value::Null) {
                     set_handle(handle, "__remote_address", socket_addr_to_value(address));
@@ -1194,8 +1163,7 @@ fn register_udp_socket_0_3(vm: &mut VM) {
             with_socket(args, |_handle, id| {
                 let bytes = match method_arg(args, 0) {
                     Some(value) => bytes_from_value(value),
-                    None => Vec::new(),
-                };
+                    None => Vec::new() };
                 let remote = method_arg(args, 1).and_then(resolve_socket_addr);
                 let state = get_state();
                 let guard = state.lock().unwrap();
@@ -1204,12 +1172,10 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                 };
                 let sent = match remote {
                     Some(address) => socket.send_to(&bytes, address),
-                    None => socket.send(&bytes),
-                };
+                    None => socket.send(&bytes) };
                 match sent {
                     Ok(_) => Value::Null,
-                    Err(error) => socket_err_from(&error),
-                }
+                    Err(error) => socket_err_from(&error) }
             })
         }),
     );
@@ -1237,8 +1203,7 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                             socket_addr_to_value(peer),
                         ])))
                     }
-                    Err(error) => socket_err_from(&error),
-                }
+                    Err(error) => socket_err_from(&error) }
             })
         }),
     );
@@ -1260,8 +1225,7 @@ fn register_udp_socket_0_3(vm: &mut VM) {
                     };
                     match hops {
                         Ok(value) => Value::F64(value as f64),
-                        Err(error) => socket_err_from(&error),
-                    }
+                        Err(error) => socket_err_from(&error) }
                 })
             })
         }),
@@ -1350,14 +1314,12 @@ fn register_buffer_size_options_udp_0_3(vm: &mut VM) {
             "get-receive-buffer-size",
             (|socket: &socket2::Socket, _size: Option<usize>| match socket.recv_buffer_size() {
                 Ok(size) => Value::F64(size as f64),
-                Err(error) => socket_err_from(&error),
-            }) as fn(&socket2::Socket, Option<usize>) -> Value,
+                Err(error) => socket_err_from(&error) }) as fn(&socket2::Socket, Option<usize>) -> Value,
         ),
         ("get-send-buffer-size", |socket, _size| {
             match socket.send_buffer_size() {
                 Ok(size) => Value::F64(size as f64),
-                Err(error) => socket_err_from(&error),
-            }
+                Err(error) => socket_err_from(&error) }
         }),
         ("set-receive-buffer-size", |socket, size| {
             io_result(socket.set_recv_buffer_size(size.unwrap_or(0)))
@@ -1409,8 +1371,7 @@ fn register_wasi_io(vm: &mut VM) {
             let len = method_arg(args, 0).map(value_len_arg).unwrap_or(0);
             match stream_kind(&stream).as_deref() {
                 Some("InputStream") => read_stream_bytes(&stream, len, false),
-                _ => Value::Null,
-            }
+                _ => Value::Null }
         }),
     );
 
@@ -1424,8 +1385,7 @@ fn register_wasi_io(vm: &mut VM) {
             let len = method_arg(args, 0).map(value_len_arg).unwrap_or(0);
             match stream_kind(&stream).as_deref() {
                 Some("InputStream") => read_stream_bytes(&stream, len, true),
-                _ => Value::Null,
-            }
+                _ => Value::Null }
         }),
     );
 
@@ -1439,8 +1399,7 @@ fn register_wasi_io(vm: &mut VM) {
             let len = method_arg(args, 0).map(value_len_arg).unwrap_or(0);
             match read_stream_bytes(&stream, len, false) {
                 Value::Object(bytes) => Value::I64(array_len(&bytes) as i64),
-                other => other,
-            }
+                other => other }
         }),
     );
 
@@ -1454,8 +1413,7 @@ fn register_wasi_io(vm: &mut VM) {
             let len = method_arg(args, 0).map(value_len_arg).unwrap_or(0);
             match read_stream_bytes(&stream, len, true) {
                 Value::Object(bytes) => Value::I64(array_len(&bytes) as i64),
-                other => other,
-            }
+                other => other }
         }),
     );
 
@@ -1479,8 +1437,7 @@ fn register_wasi_io(vm: &mut VM) {
             };
             match stream_kind(&stream).as_deref() {
                 Some("OutputStream") if stream_socket_id(&stream).is_some() => Value::I64(65536),
-                _ => Value::Null,
-            }
+                _ => Value::Null }
         }),
     );
 
@@ -1718,8 +1675,7 @@ fn register_wasi_sockets(vm: &mut VM) {
                         "__local_address".into(),
                         match bound {
                             Some(addr) => socket_addr_to_value(addr),
-                            None => make_ip_socket_address(&host, port, &family),
-                        },
+                            None => make_ip_socket_address(&host, port, &family) },
                     );
                     Value::Bool(true)
                 }
@@ -1823,8 +1779,7 @@ fn register_wasi_sockets(vm: &mut VM) {
                     make_input_stream(id as u64),
                     make_output_stream(id as u64),
                 ]),
-                _ => Value::Null,
-            }
+                _ => Value::Null }
         }),
     );
 
@@ -1927,8 +1882,7 @@ fn register_wasi_sockets(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "islistening") {
                 Value::Bool(value) => Value::Bool(value),
-                _ => Value::Bool(false),
-            }
+                _ => Value::Bool(false) }
         }),
     );
 
@@ -1990,8 +1944,7 @@ fn register_wasi_sockets(vm: &mut VM) {
                 let how = match shutdown_value.as_str() {
                     "receive" => Shutdown::Read,
                     "send" => Shutdown::Write,
-                    _ => Shutdown::Both,
-                };
+                    _ => Shutdown::Both };
                 let _ = stream.shutdown(how);
             }
             Value::Bool(true)
@@ -2045,8 +1998,7 @@ fn register_wasi_sockets(vm: &mut VM) {
                         "__local_address".into(),
                         match bound {
                             Some(addr) => socket_addr_to_value(addr),
-                            None => make_ip_socket_address(&host, port, &family),
-                        },
+                            None => make_ip_socket_address(&host, port, &family) },
                     );
                     Value::Bool(true)
                 }
@@ -2223,8 +2175,7 @@ fn resolve_name_strings(host: &str) -> Vec<String> {
 fn resolve_name_socket_addrs(host: &str) -> Vec<SocketAddr> {
     match std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:0", host)) {
         Ok(addrs) => addrs.collect(),
-        Err(_) => Vec::new(),
-    }
+        Err(_) => Vec::new() }
 }
 
 pub fn make_pollable(target: Arc<Mutex<Object>>) -> Value {
@@ -2449,8 +2400,7 @@ fn elems_len(lines_obj: &Arc<Mutex<Object>>) -> usize {
 fn socket_arg(args: &[Value]) -> Option<Arc<Mutex<Object>>> {
     match args.first() {
         Some(Value::Object(obj)) => Some(obj.clone()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn method_arg<'a>(args: &'a [Value], index: usize) -> Option<&'a Value> {
@@ -2467,8 +2417,7 @@ fn socket_property(args: &[Value], key: &str) -> Value {
             .get(key)
             .cloned()
             .unwrap_or(Value::Null),
-        _ => Value::Null,
-    }
+        _ => Value::Null }
 }
 
 fn stream_arg(args: &[Value]) -> Option<Arc<Mutex<Object>>> {
@@ -2482,15 +2431,13 @@ fn pollable_arg(args: &[Value]) -> Option<Arc<Mutex<Object>>> {
 fn as_object_value(value: &Value) -> Option<Arc<Mutex<Object>>> {
     match value {
         Value::Object(obj) => Some(obj.clone()),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn stream_kind(stream: &Arc<Mutex<Object>>) -> Option<String> {
     match stream.lock().unwrap().properties.get("__type") {
         Some(Value::String(kind)) => Some(kind.to_string()),
-        _ => None,
-    }
+        _ => None }
 }
 
 pub fn stream_socket_id(stream: &Arc<Mutex<Object>>) -> Option<u64> {
@@ -2498,8 +2445,7 @@ pub fn stream_socket_id(stream: &Arc<Mutex<Object>>) -> Option<u64> {
         Some(Value::F64(id)) => Some(*id as u64),
         Some(Value::I64(id)) => Some(*id as u64),
         Some(Value::I32(id)) => Some(*id as u64),
-        _ => None,
-    }
+        _ => None }
 }
 
 pub fn value_len_arg(value: &Value) -> usize {
@@ -2525,8 +2471,7 @@ pub fn bytes_from_value(value: &Value) -> Vec<u8> {
                 Vec::new()
             }
         }
-        _ => Vec::new(),
-    }
+        _ => Vec::new() }
 }
 
 pub fn read_stream_bytes(stream: &Arc<Mutex<Object>>, len: usize, blocking: bool) -> Value {
@@ -2637,8 +2582,7 @@ pub fn value_array_elements(value: &Value) -> Option<Vec<Value>> {
                 None
             }
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 pub fn array_len(array: &Arc<Mutex<Object>>) -> usize {
@@ -2702,8 +2646,7 @@ fn stream_or_socket_ready(resource: &Arc<Mutex<Object>>) -> bool {
                 .unwrap_or(0);
             start.elapsed().as_nanos() >= ready_at
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn input_stream_ready(stream: &Arc<Mutex<Object>>) -> bool {
@@ -2721,8 +2664,7 @@ fn input_stream_ready(stream: &Arc<Mutex<Object>>) -> bool {
     let ready = match tcp_stream.peek(&mut buf) {
         Ok(_) => true,
         Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => false,
-        Err(_) => true,
-    };
+        Err(_) => true };
     let _ = tcp_stream.set_nonblocking(false);
     ready
 }
@@ -2752,8 +2694,7 @@ fn tcp_socket_ready(socket: &Arc<Mutex<Object>>) -> bool {
         match listener.accept() {
             Ok((stream, _)) => Some(stream),
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => None,
-            Err(_) => None,
-        }
+            Err(_) => None }
     } else {
         None
     };
@@ -2794,8 +2735,7 @@ fn parse_ip_socket_address(value: &Value) -> Option<(String, u16, String)> {
             }
             parse_ip_socket_record(props, "ipv4")
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn parse_ip_socket_record(
@@ -2835,8 +2775,7 @@ fn parse_socket_addr_str(input: &str) -> Option<(String, u16, String)> {
     if let Ok(addr) = input.parse::<SocketAddr>() {
         let family = match addr.ip() {
             IpAddr::V4(_) => "ipv4",
-            IpAddr::V6(_) => "ipv6",
-        };
+            IpAddr::V6(_) => "ipv6" };
         return Some((addr.ip().to_string(), addr.port(), family.into()));
     }
     if let Some((host, port)) = input.rsplit_once(':') {
@@ -3043,8 +2982,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
                     make_input_stream(id as u64),
                     make_output_stream(id as u64),
                 ]),
-                _ => Value::Null,
-            }
+                _ => Value::Null }
         }),
     );
 
@@ -3138,8 +3076,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "islistening") {
                 Value::Bool(v) => Value::Bool(v),
-                _ => Value::Bool(false),
-            }
+                _ => Value::Bool(false) }
         }),
     );
     vm.register_host_fn(
@@ -3195,8 +3132,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
                 let _ = stream.shutdown(match how_str.as_str() {
                     "receive" => Shutdown::Read,
                     "send" => Shutdown::Write,
-                    _ => Shutdown::Both,
-                });
+                    _ => Shutdown::Both });
             }
             Value::Bool(true)
         }),
@@ -3209,8 +3145,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__keep_alive_enabled") {
                 Value::Bool(v) => Value::Bool(v),
-                _ => Value::Bool(false),
-            }
+                _ => Value::Bool(false) }
         }),
     );
     vm.register_host_fn(
@@ -3233,8 +3168,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__keep_alive_idle") {
                 v @ Value::I64(_) => v,
-                _ => Value::I64(0),
-            }
+                _ => Value::I64(0) }
         }),
     );
     vm.register_host_fn(
@@ -3257,8 +3191,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__keep_alive_interval") {
                 v @ Value::I64(_) => v,
-                _ => Value::I64(0),
-            }
+                _ => Value::I64(0) }
         }),
     );
     vm.register_host_fn(
@@ -3281,8 +3214,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__keep_alive_count") {
                 v @ Value::I32(_) => v,
-                _ => Value::I32(0),
-            }
+                _ => Value::I32(0) }
         }),
     );
     vm.register_host_fn(
@@ -3305,8 +3237,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__hop_limit") {
                 v @ Value::I32(_) => v,
-                _ => Value::I32(64),
-            }
+                _ => Value::I32(64) }
         }),
     );
     vm.register_host_fn(
@@ -3329,8 +3260,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__recv_buf") {
                 v @ Value::I64(_) => v,
-                _ => Value::I64(65536),
-            }
+                _ => Value::I64(65536) }
         }),
     );
     vm.register_host_fn(
@@ -3353,8 +3283,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__send_buf") {
                 v @ Value::I64(_) => v,
-                _ => Value::I64(65536),
-            }
+                _ => Value::I64(65536) }
         }),
     );
     vm.register_host_fn(
@@ -3477,8 +3406,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__hop_limit") {
                 v @ Value::I32(_) => v,
-                _ => Value::I32(64),
-            }
+                _ => Value::I32(64) }
         }),
     );
     vm.register_host_fn(
@@ -3501,8 +3429,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__recv_buf") {
                 v @ Value::I64(_) => v,
-                _ => Value::I64(65536),
-            }
+                _ => Value::I64(65536) }
         }),
     );
     vm.register_host_fn(
@@ -3525,8 +3452,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match socket_property(args, "__send_buf") {
                 v @ Value::I64(_) => v,
-                _ => Value::I64(65536),
-            }
+                _ => Value::I64(65536) }
         }),
     );
     vm.register_host_fn(
@@ -3593,8 +3519,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
                             );
                             datagrams.push(Value::Object(vybe_runtime::heap::alloc(dg)));
                         }
-                        Err(_) => break,
-                    }
+                        Err(_) => break }
                 }
                 let _ = udp.set_nonblocking(false);
             }
@@ -3608,8 +3533,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(
             |_ctx: &mut HostContext, args: &[Value]| match args.first() {
                 Some(Value::Object(obj)) => make_pollable(obj.clone()),
-                _ => Value::Null,
-            },
+                _ => Value::Null },
         ),
     );
 
@@ -3677,8 +3601,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
                         Vec::new()
                     }
                 }
-                _ => Vec::new(),
-            };
+                _ => Vec::new() };
             let state = get_state();
             let guard = state.lock().unwrap();
             let mut sent = 0i64;
@@ -3713,8 +3636,7 @@ fn register_wasi_sockets_method_forms(vm: &mut VM) {
         Box::new(
             |_ctx: &mut HostContext, args: &[Value]| match args.first() {
                 Some(Value::Object(obj)) => make_pollable(obj.clone()),
-                _ => Value::Null,
-            },
+                _ => Value::Null },
         ),
     );
 

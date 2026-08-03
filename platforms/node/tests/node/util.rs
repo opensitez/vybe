@@ -55,8 +55,7 @@ fn s(text: &str) -> Value {
 fn as_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        other => format!("{}", other),
-    }
+        other => format!("{}", other) }
 }
 
 fn new_array(elements: Vec<Value>) -> Value {

@@ -41,8 +41,7 @@ fn is_callable_value(value: &Value) -> bool {
                 ObjectKind::Function(_) | ObjectKind::HostFunction(_)
             ) || is_magic_callback_object(obj)
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn throw_type_error(ctx: &mut HostContext, message: &str) -> Value {
@@ -173,8 +172,7 @@ fn array_of<'a>(args: &'a [Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
                 None
             }
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 fn make_array(elements: Vec<Value>) -> Value {
@@ -204,8 +202,7 @@ fn property_length_as_usize(object: &Object) -> Option<usize> {
         Some(Value::I64(value)) if *value >= 0 => Some(*value as usize),
         Some(Value::F64(value)) if *value >= 0.0 => Some(*value as usize),
         Some(Value::String(text)) => text.parse::<usize>().ok(),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn hole_indices(object: &Object) -> BTreeSet<usize> {
@@ -221,8 +218,7 @@ fn hole_indices(object: &Object) -> BTreeSet<usize> {
         .filter_map(|value| match value {
             Value::I32(index) if *index >= 0 => Some(*index as usize),
             Value::I64(index) if *index >= 0 => Some(*index as usize),
-            _ => None,
-        })
+            _ => None })
         .collect()
 }
 
@@ -299,16 +295,14 @@ fn array_length(arr: &Arc<Mutex<Object>>) -> usize {
     let o = arr.lock().unwrap();
     match &o.kind {
         ObjectKind::Array(values) => values.len(),
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 fn array_value_at(arr: &Arc<Mutex<Object>>, index: usize) -> Value {
     let o = arr.lock().unwrap();
     match &o.kind {
         ObjectKind::Array(values) => values.get(index).cloned().unwrap_or(Value::Undefined),
-        _ => Value::Undefined,
-    }
+        _ => Value::Undefined }
 }
 
 fn array_present_value_at(arr: &Arc<Mutex<Object>>, index: usize) -> Option<Value> {
@@ -318,8 +312,7 @@ fn array_present_value_at(arr: &Arc<Mutex<Object>>, index: usize) -> Option<Valu
     }
     match &o.kind {
         ObjectKind::Array(values) => values.get(index).cloned(),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn array_like_length(value: &Value) -> usize {
@@ -332,8 +325,7 @@ fn array_like_length(value: &Value) -> usize {
         ObjectKind::TypedArray(ta) => ta_live_length(ta),
         ObjectKind::Ordinary => property_length_as_usize(&object).unwrap_or(0),
         ObjectKind::Map(map) => map.len(),
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 fn array_like_value_at(value: &Value, index: usize) -> Value {
@@ -356,8 +348,7 @@ fn array_like_value_at(value: &Value, index: usize) -> Value {
             .cloned()
             .unwrap_or(Value::Undefined),
         ObjectKind::Map(map) => map.values().nth(index).cloned().unwrap_or(Value::Undefined),
-        _ => Value::Undefined,
-    }
+        _ => Value::Undefined }
 }
 
 fn array_like_present_value_at(value: &Value, index: usize) -> Option<Value> {
@@ -382,8 +373,7 @@ fn array_like_present_value_at(value: &Value, index: usize) -> Option<Value> {
         }
         ObjectKind::Ordinary => object.properties.get(&index.to_string()).cloned(),
         ObjectKind::Map(map) => map.values().nth(index).cloned(),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn array_like_dense_values(value: &Value) -> Vec<Value> {
@@ -400,8 +390,7 @@ fn typed_array_elem(value: &Value) -> Option<TypedElemKind> {
     let object = obj.lock().unwrap();
     match &object.kind {
         ObjectKind::TypedArray(ta) => Some(ta.elem),
-        _ => None,
-    }
+        _ => None }
 }
 
 fn make_typed_array_from_values(elem: TypedElemKind, values: &[Value]) -> Value {
@@ -460,8 +449,7 @@ fn compare_sort_values(
     } else {
         match (default_sort_key(ctx, a), default_sort_key(ctx, b)) {
             (Some(a), Some(b)) => a.cmp(&b),
-            _ => std::cmp::Ordering::Equal,
-        }
+            _ => std::cmp::Ordering::Equal }
     }
 }
 
@@ -508,15 +496,13 @@ fn parse_js_array_length(value: &Value) -> Result<usize, &'static str> {
             .parse::<u32>()
             .map(|length| length as usize)
             .map_err(|_| "Invalid array length"),
-        _ => Err("Invalid array length"),
-    }
+        _ => Err("Invalid array length") }
 }
 
 pub fn set_array_length(object: &mut Object, new_len: usize) {
     let old_len = match &object.kind {
         ObjectKind::Array(values) => values.len(),
-        _ => return,
-    };
+        _ => return };
 
     if let ObjectKind::Array(ref mut values) = object.kind {
         if new_len < old_len {
@@ -538,8 +524,7 @@ pub fn set_array_length(object: &mut Object, new_len: usize) {
 pub fn apply_js_array_length(ctx: &mut HostContext, object: &mut Object, value: &Value) {
     match parse_js_array_length(value) {
         Ok(new_len) => set_array_length(object, new_len),
-        Err(message) => ctx.throw_value(crate::error::new_error(ctx, "RangeError", message)),
-    }
+        Err(message) => ctx.throw_value(crate::error::new_error(ctx, "RangeError", message)) }
 }
 
 /// Keep the array's cached `length` property in sync with the
@@ -812,10 +797,8 @@ fn register_constructors(vm: &mut VM) {
                         }
                     }
                 }
-                other => make_array(vec![other.clone()]),
-            },
-            _ => make_array(args.to_vec()),
-        }),
+                other => make_array(vec![other.clone()]) },
+            _ => make_array(args.to_vec()) }),
     );
 
     // newWithLength(n: i32) -> Array (n-element, null-filled).
@@ -982,8 +965,7 @@ fn register_constructors(vm: &mut VM) {
                 args.first().cloned().unwrap_or(Value::Undefined),
             ) {
                 Ok(value) => value,
-                Err(reason) => return crate::promise::make_promise("rejected", reason),
-            };
+                Err(reason) => return crate::promise::make_promise("rejected", reason) };
             let mapper = args.get(1).cloned();
             let collected =
                 crate::iterator::try_materialize_iterable_values(ctx, &source, true)
@@ -997,8 +979,7 @@ fn register_constructors(vm: &mut VM) {
                                 {
                                     ctx.try_invoke(mapper, &[awaited, Value::I32(index as i32)])?
                                 }
-                                _ => awaited,
-                            };
+                                _ => awaited };
                             mapped
                                 .push(crate::iterator::try_maybe_await_value(mapped_value)?);
                         }
@@ -1006,8 +987,7 @@ fn register_constructors(vm: &mut VM) {
                     });
             match collected {
                 Ok(array) => crate::promise::make_promise("fulfilled", array),
-                Err(reason) => crate::promise::make_promise("rejected", reason),
-            }
+                Err(reason) => crate::promise::make_promise("rejected", reason) }
         }),
     );
 
@@ -1021,8 +1001,7 @@ fn register_constructors(vm: &mut VM) {
             while let Value::Object(obj) = &v {
                 match crate::object::proxy_target_and_handler(obj) {
                     Some((target, _)) => v = target,
-                    None => break,
-                }
+                    None => break }
             }
             let probe = [v];
             Value::Bool(array_of(&probe, 0).is_some())
@@ -1097,8 +1076,7 @@ fn register_property_access(vm: &mut VM) {
                 // objects and by compiler_common's `has` / `in` emitter.
                 let key_str = match &key {
                     Value::String(s) => s.to_string(),
-                    other => format!("{}", other),
-                };
+                    other => format!("{}", other) };
                 if let Some(v) = o.properties.get(&key_str) {
                     return v.clone();
                 }
@@ -1139,8 +1117,7 @@ fn register_property_access(vm: &mut VM) {
                             Value::I64(n) if *n >= 0 => Some(*n as usize),
                             Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                             Value::String(s) => s.parse::<usize>().ok(),
-                            _ => None,
-                        };
+                            _ => None };
                         if let Some(idx) = numeric_idx {
                             let old_len = v.len();
                             // ECMA-262 §6.1.7.2 / §23.1.3 — holes from
@@ -1158,16 +1135,14 @@ fn register_property_access(vm: &mut VM) {
                         } else {
                             let key_str = match &key {
                                 Value::String(s) => s.to_string(),
-                                other => format!("{}", other),
-                            };
+                                other => format!("{}", other) };
                             o.properties.insert(key_str, val);
                         }
                     }
                     ObjectKind::Map(m) => {
                         let map_key = match &key {
                             Value::String(_) | Value::I32(_) | Value::I64(_) | Value::F64(_) => key.clone(),
-                            other => Value::String(std::sync::Arc::from(format!("{}", other).as_str())),
-                        };
+                            other => Value::String(std::sync::Arc::from(format!("{}", other).as_str())) };
                         m.insert(map_key, val);
                     }
                     ObjectKind::TypedArray(ta) => {
@@ -1176,8 +1151,7 @@ fn register_property_access(vm: &mut VM) {
                             Value::I64(n) if *n >= 0 => Some(*n as usize),
                             Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                             Value::String(s) => s.parse::<usize>().ok(),
-                            _ => None,
-                        };
+                            _ => None };
                         if let Some(idx) = numeric_idx {
                             write_element(ta, idx, &val);
                         }
@@ -1185,8 +1159,7 @@ fn register_property_access(vm: &mut VM) {
                     _ => {
                         let key_str = match &key {
                             Value::String(s) => s.to_string(),
-                            other => format!("{}", other),
-                        };
+                            other => format!("{}", other) };
                         o.properties.insert(key_str, val);
                     }
                 }
@@ -1214,8 +1187,7 @@ fn register_property_access(vm: &mut VM) {
                         .properties
                         .get("length")
                         .map(|v| Value::I32(v.as_i32()))
-                        .unwrap_or(Value::Null),
-                };
+                        .unwrap_or(Value::Null) };
             }
             Value::Null
         }),
@@ -1291,8 +1263,7 @@ fn register_mutators(vm: &mut VM) {
                 let mut o = arr.lock().unwrap();
                 let old_len = match &o.kind {
                     ObjectKind::Array(v) => v.len(),
-                    _ => 0,
-                };
+                    _ => 0 };
                 let len = if let ObjectKind::Array(ref mut v) = o.kind {
                     v.extend(values.iter().cloned());
                     v.len() as i32
@@ -1381,8 +1352,7 @@ fn register_mutators(vm: &mut VM) {
                         };
                         remap_array_holes(&mut o, |index| match index {
                             0 => None,
-                            other => Some(other - 1),
-                        });
+                            other => Some(other - 1) });
                         if was_hole { Value::Undefined } else { value }
                     }
                 } else {
@@ -1445,8 +1415,7 @@ fn register_mutators(vm: &mut VM) {
             // start to the end is removed (explicit undefined means 0).
             let del = match args.get(2) {
                 None => usize::MAX,
-                Some(v) => v.as_i32().max(0) as usize,
-            };
+                Some(v) => v.as_i32().max(0) as usize };
             let items: Vec<Value> = args.iter().skip(3).cloned().collect();
             let mut deleted = Vec::new();
             let mut deleted_holes = BTreeSet::new();
@@ -1798,8 +1767,7 @@ fn register_non_mutators(vm: &mut VM) {
                                 out.push(make_array(pair));
                             }
                         }
-                        _ => out.push(Value::Object(o.clone())),
-                    }
+                        _ => out.push(Value::Object(o.clone())) }
                 }
                 Some(Value::String(s)) => {
                     // Spreading a string yields its code-points (per
@@ -1943,8 +1911,7 @@ fn register_non_mutators(vm: &mut VM) {
                         // §7.1.17 ToString(BigInt) has no `n` suffix — that
                         // is console.log's inspection format only.
                         Value::BigInt(n) => n.to_string(),
-                        _ => format!("{}", e),
-                    };
+                        _ => format!("{}", e) };
                     match &inner.kind {
                         ObjectKind::Array(v) => v
                             .iter()
@@ -2024,11 +1991,9 @@ fn register_non_mutators(vm: &mut VM) {
                                 .map(|i| typed_array_join_element(read_element(ta, i)))
                                 .collect()
                         }
-                        _ => Vec::new(),
-                    }
+                        _ => Vec::new() }
                 }
-                _ => Vec::new(),
-            };
+                _ => Vec::new() };
             Value::String(Arc::from(parts.join(&sep).as_str()))
         }),
     );
@@ -2050,8 +2015,7 @@ fn register_non_mutators(vm: &mut VM) {
                             } else {
                                 match value {
                                     Value::Null | Value::Undefined => String::new(),
-                                    _ => format!("{}", value),
-                                }
+                                    _ => format!("{}", value) }
                             }
                         })
                         .collect();
@@ -2220,8 +2184,7 @@ fn register_non_mutators(vm: &mut VM) {
 fn typed_array_join_element(value: Value) -> String {
     match value {
         Value::BigInt(n) => format!("{}", n),
-        other => format!("{}", other),
-    }
+        other => format!("{}", other) }
 }
 
 // ── Iteration / higher-order callbacks ─────────────────────────────────
@@ -3024,8 +2987,7 @@ fn is_truthy(v: &Value) -> bool {
         | Value::Symbol(_)
         | Value::BigInt(_)
         | Value::V128(_)
-        | Value::WeakRef(_) => true,
-    }
+        | Value::WeakRef(_) => true }
 }
 
 fn obj_map_len(obj: &Object) -> usize {

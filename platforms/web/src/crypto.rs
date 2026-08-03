@@ -103,8 +103,7 @@ pub fn register(vm: &mut VM) {
                 "SHA-512" => Sha512::digest(&bytes).to_vec(),
                 "SHA-1" => sha1_digest(&bytes),
                 "MD5" => md5_digest(&bytes),
-                _ => Vec::new(),
-            };
+                _ => Vec::new() };
             let mut buf_obj = Object::new();
             buf_obj.kind = ObjectKind::ArrayBuffer(make_buffer_state(digest_bytes));
             let buffer = Value::Object(vybe_runtime::heap::alloc(buf_obj));
@@ -119,8 +118,7 @@ fn make_buffer_state(bytes: Vec<u8>) -> vybe_runtime::value::ArrayBufferState {
         max_byte_length: 0,
         resizable: false,
         detached: false,
-        shared: false,
-    }
+        shared: false }
 }
 
 fn bytes_from_arg(arg: Option<&Value>) -> Vec<u8> {
@@ -156,8 +154,7 @@ fn bytes_from_arg(arg: Option<&Value>) -> Vec<u8> {
                 }
             }
         }
-        _ => Vec::new(),
-    }
+        _ => Vec::new() }
 }
 
 // SHA-1 not currently in the dep tree (sha-1 crate would need to be added).

@@ -92,11 +92,9 @@ fn get_str_prop(args: &[Value], idx: usize, key: &str, default: &str) -> String 
             let o = opts.lock().unwrap();
             match o.properties.get(key) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => default.to_string(),
-            }
+                _ => default.to_string() }
         }
-        _ => default.to_string(),
-    }
+        _ => default.to_string() }
 }
 
 pub fn register(vm: &mut VM) {
@@ -247,8 +245,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let name = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Bool(false),
-            };
+                _ => return Value::Bool(false) };
             // Header names must only contain token characters (no space, no control chars)
             let valid = name
                 .chars()
@@ -349,11 +346,9 @@ pub fn register(vm: &mut VM) {
                     match o.properties.get("maxSockets") {
                         Some(Value::I32(n)) => *n,
                         Some(Value::F64(f)) => *f as i32,
-                        _ => 256,
-                    }
+                        _ => 256 }
                 }
-                _ => 256,
-            };
+                _ => 256 };
             make_agent(max_sockets)
         }),
     );

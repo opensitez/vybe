@@ -17,7 +17,7 @@ fn new_proxy(target: Value, handler: Value) -> Value {
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
-fn is_proxy(v: &Value) -> Option<Arc<Mutex<Object>>> {
+pub fn is_proxy(v: &Value) -> Option<Arc<Mutex<Object>>> {
     if let Value::Object(obj) = v {
         let o = obj.lock().unwrap();
         if o.properties.contains_key(PROXY_TAG)
@@ -30,7 +30,7 @@ fn is_proxy(v: &Value) -> Option<Arc<Mutex<Object>>> {
     None
 }
 
-fn proxy_is_revoked(proxy: &Arc<Mutex<Object>>) -> bool {
+pub fn proxy_is_revoked(proxy: &Arc<Mutex<Object>>) -> bool {
     matches!(
         proxy.lock().unwrap().properties.get(PROXY_REVOKED),
         Some(Value::Bool(true))
@@ -431,6 +431,16 @@ pub fn register(vm: &mut VM) {
                     return call_trap(ctx, &handler, &trap, &[target, key_value, receiver]);
                 }
             }
+            // With no `get` trap, [[Get]] forwards to the target with the
+            // PROXY as receiver. `__proto__` is an accessor on
+            // %Object.prototype% whose getter is [[GetPrototypeOf]](receiver)
+            // — so it lands back on the proxy and its `getPrototypeOf` trap.
+            // Reading the target's raw slot instead skips the trap entirely.
+            if key == "__proto__" {
+                let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+                return crate::object::get_prototype_of(ctx, &receiver)
+                    .unwrap_or(Value::Undefined);
+            }
             target_get(&target, &key)
         }),
     );
@@ -465,6 +475,17 @@ pub fn register(vm: &mut VM) {
                         call_trap(ctx, &handler, &trap, &[target, key_value, val, receiver]);
                     return Value::Bool(crate::boolean::to_boolean(&result));
                 }
+            }
+            // Mirror of the `get` path: with no `set` trap, assigning
+            // `__proto__` is %Object.prototype%'s setter, i.e.
+            // [[SetPrototypeOf]](receiver) — which is where a
+            // `setPrototypeOf` trap gets its chance to run.
+            if key == "__proto__" {
+                let receiver = args.first().cloned().unwrap_or(Value::Undefined);
+                return match crate::object::set_prototype_of(ctx, &receiver, &val) {
+                    None => Value::Undefined,
+                    Some(success) => Value::Bool(success),
+                };
             }
             target_set(&target, &key, val);
             Value::Bool(true)
@@ -540,33 +561,28 @@ pub fn register(vm: &mut VM) {
         }),
     );
 
+    // Both delegate to the one [[GetPrototypeOf]] / [[SetPrototypeOf]]
+    // implementation in `object.rs` — these used to answer a constant
+    // (`null` / `true`) regardless of target, trap or invariant.
     vm.register_host_fn(
         "ecma:proxy",
         "getPrototypeOf",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let proxy_obj = match args.first().and_then(is_proxy) {
-                Some(p) => p,
-                None => return Value::Null,
-            };
-            if proxy_is_revoked(&proxy_obj) {
-                return Value::Null;
-            }
-            Value::Null
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            crate::object::get_prototype_of(ctx, &value).unwrap_or(Value::Undefined)
         }),
     );
 
     vm.register_host_fn(
         "ecma:proxy",
         "setPrototypeOf",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let proxy_obj = match args.first().and_then(is_proxy) {
-                Some(p) => p,
-                None => return Value::Bool(false),
-            };
-            if proxy_is_revoked(&proxy_obj) {
-                return Value::Bool(false);
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let value = args.first().cloned().unwrap_or(Value::Undefined);
+            let proto = args.get(1).cloned().unwrap_or(Value::Null);
+            match crate::object::set_prototype_of(ctx, &value, &proto) {
+                None => Value::Undefined,
+                Some(success) => Value::Bool(success),
             }
-            Value::Bool(true)
         }),
     );
 

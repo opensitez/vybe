@@ -38,20 +38,17 @@ enum Tok {
     False,
     Null,
     Undefined,
-    Eof,
-}
+    Eof }
 
 struct Lexer<'a> {
     src: &'a [u8],
-    pos: usize,
-}
+    pos: usize }
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Self {
         Lexer {
             src: src.as_bytes(),
-            pos: 0,
-        }
+            pos: 0 }
     }
 
     fn skip_ws(&mut self) {
@@ -153,8 +150,7 @@ impl<'a> Lexer<'a> {
                     "false" => Tok::False,
                     "null" => Tok::Null,
                     "undefined" => Tok::Undefined,
-                    _ => Tok::Ident(word),
-                }
+                    _ => Tok::Ident(word) }
             }
             _ => {
                 self.pos += 1;
@@ -175,8 +171,7 @@ impl<'a> Lexer<'a> {
 
 struct Eval<'a> {
     lex: Lexer<'a>,
-    vars: HashMap<String, Value>,
-}
+    vars: HashMap<String, Value> }
 
 impl<'a> Eval<'a> {
     fn new(src: &'a str, sandbox: Option<&Value>) -> Self {
@@ -191,8 +186,7 @@ impl<'a> Eval<'a> {
         }
         Eval {
             lex: Lexer::new(src),
-            vars,
-        }
+            vars }
     }
 
     fn run(&mut self) -> Value {
@@ -248,8 +242,7 @@ impl<'a> Eval<'a> {
                     self.lex.next();
                     left = val_sub(left, self.mul());
                 }
-                _ => break,
-            }
+                _ => break }
         }
         left
     }
@@ -270,8 +263,7 @@ impl<'a> Eval<'a> {
                     self.lex.next();
                     left = val_rem(left, self.pow());
                 }
-                _ => break,
-            }
+                _ => break }
         }
         left
     }
@@ -298,8 +290,7 @@ impl<'a> Eval<'a> {
                 let v = self.unary();
                 s(typeof_str(&v))
             }
-            _ => self.primary(),
-        }
+            _ => self.primary() }
     }
 
     fn primary(&mut self) -> Value {
@@ -324,8 +315,7 @@ impl<'a> Eval<'a> {
                 }
                 v
             }
-            _ => Value::Undefined,
-        }
+            _ => Value::Undefined }
     }
 }
 
@@ -337,8 +327,7 @@ fn typeof_str(v: &Value) -> &'static str {
         Value::Null => "object",
         Value::Undefined => "undefined",
         Value::Object(_) => "object",
-        _ => "undefined",
-    }
+        _ => "undefined" }
 }
 
 fn to_f64(v: &Value) -> f64 {
@@ -346,8 +335,7 @@ fn to_f64(v: &Value) -> f64 {
         Value::I32(n) => *n as f64,
         Value::F64(f) => *f,
         Value::I64(n) => *n as f64,
-        _ => f64::NAN,
-    }
+        _ => f64::NAN }
 }
 
 fn num_result(f: f64) -> Value {
@@ -363,8 +351,7 @@ fn val_add(a: Value, b: Value) -> Value {
         (Value::String(s1), Value::String(s2)) => {
             Value::String(Arc::from(format!("{s1}{s2}").as_str()))
         }
-        _ => num_result(to_f64(&a) + to_f64(&b)),
-    }
+        _ => num_result(to_f64(&a) + to_f64(&b)) }
 }
 fn val_sub(a: Value, b: Value) -> Value {
     num_result(to_f64(&a) - to_f64(&b))
@@ -398,8 +385,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let code = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             let sandbox = args.get(1);
             eval_code(&code, sandbox)
         }),
@@ -411,8 +397,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let code = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             eval_code(&code, None)
         }),
     );
@@ -447,8 +432,7 @@ pub fn register(vm: &mut VM) {
                     Some(Value::Bool(true))
                 ))
             }
-            _ => Value::Bool(false),
-        }),
+            _ => Value::Bool(false) }),
     );
 
     vm.register_host_fn(
@@ -457,8 +441,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let code = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             let mut o = Object::new();
             o.properties
                 .insert("__code".into(), Value::String(Arc::from(code.as_str())));
@@ -476,11 +459,9 @@ pub fn register(vm: &mut VM) {
                     let o = obj.lock().unwrap();
                     match o.properties.get("__code") {
                         Some(Value::String(s)) => s.to_string(),
-                        _ => return Value::Undefined,
-                    }
+                        _ => return Value::Undefined }
                 }
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             let sandbox = args.get(1);
             eval_code(&code, sandbox)
         }),
@@ -495,11 +476,9 @@ pub fn register(vm: &mut VM) {
                     let o = obj.lock().unwrap();
                     match o.properties.get("__code") {
                         Some(Value::String(s)) => s.to_string(),
-                        _ => return Value::Undefined,
-                    }
+                        _ => return Value::Undefined }
                 }
-                _ => return Value::Undefined,
-            };
+                _ => return Value::Undefined };
             eval_code(&code, None)
         }),
     );
@@ -510,8 +489,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let code = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => String::new(),
-            };
+                _ => String::new() };
             let mut o = Object::new();
             o.properties
                 .insert("__code".into(), Value::String(Arc::from(code.as_str())));

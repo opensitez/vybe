@@ -52,8 +52,7 @@ fn s(text: &str) -> Value {
 fn as_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        other => format!("{}", other),
-    }
+        other => format!("{}", other) }
 }
 
 fn new_array(elements: Vec<Value>) -> Value {
@@ -1137,8 +1136,7 @@ fn supported_values_of_time_zone_is_the_real_identifier_set() {
         let lock = obj.lock().unwrap();
         match &lock.kind {
             ObjectKind::Array(elems) => elems.len(),
-            other => panic!("expected array, got {other:?}"),
-        }
+            other => panic!("expected array, got {other:?}") }
     };
     // The old hand-written list held 15 entries; tzdb has hundreds.
     assert!(count > 300, "expected full tzdb identifier set, got {count}");
@@ -1229,8 +1227,7 @@ fn number_format_format_range_to_parts_tags_each_source() {
                 .iter()
                 .map(|part| as_string(&obj_prop(part, "source")))
                 .collect(),
-            other => panic!("expected array, got {other:?}"),
-        }
+            other => panic!("expected array, got {other:?}") }
     };
     assert!(sources.contains(&"startRange".to_string()), "{sources:?}");
     assert!(sources.contains(&"endRange".to_string()), "{sources:?}");

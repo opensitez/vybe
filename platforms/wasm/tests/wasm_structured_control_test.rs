@@ -4,8 +4,7 @@ use vybe_runtime::{Chunk, Op, VM};
 fn run_chunk_expect_i32(chunk: Chunk, expected: i32) {
     match VM::new().run(vec![chunk]).expect("chunk should execute") {
         Value::I32(n) => assert_eq!(n, expected, "expected i32 {expected}"),
-        other => panic!("expected i32 {expected}, got {other:?}"),
-    }
+        other => panic!("expected i32 {expected}, got {other:?}") }
 }
 
 fn make_i32(chunk: &mut Chunk, v: i32) {
@@ -185,9 +184,9 @@ fn reader_preserves_br_table_vector_and_default_depths() {
 #[test]
 fn vm_rejects_non_numeric_if_condition() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_if(0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::END, 0);
     chunk.emit_op(Op::RETURN, 0);
 

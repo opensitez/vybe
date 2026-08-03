@@ -52,11 +52,12 @@ pub fn encode_import_section(
     chunks: &[Chunk],
     rt_imports: &[(&str, &str)],
     func_type_base: u32,
+    string_constants: &[String],
 ) -> Vec<u8> {
     let mut out = Vec::new();
     let host_imports = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let globals = rt_globals();
-    let total = host_imports + rt_imports.len() + globals.len();
+    let total = host_imports + rt_imports.len() + globals.len() + string_constants.len();
     write_leb128_u32(&mut out, total as u32);
 
     // Host imports from chunk 0
@@ -82,6 +83,18 @@ pub fn encode_import_section(
     for (module, name) in globals {
         write_name(&mut out, module);
         write_name(&mut out, name);
+        out.push(0x03); // global import
+        out.push(TYPE_EXTERNREF);
+        out.push(0x00); // immutable (mut = 0)
+    }
+
+    // js-string-builtins § String constants — one immutable externref global
+    // per constant, its VALUE being the import's field name. Order matches
+    // `collect_string_constants`, which is also what the `global.get`
+    // immediates index.
+    for text in string_constants {
+        write_name(&mut out, vybe_runtime::chunk::STRING_CONSTANTS_MODULE);
+        write_name(&mut out, text);
         out.push(0x03); // global import
         out.push(TYPE_EXTERNREF);
         out.push(0x00); // immutable (mut = 0)
@@ -162,10 +175,55 @@ pub fn encode_export_section(_chunks: &[Chunk], import_count: usize) -> Vec<u8> 
     out
 }
 
-/// Collect all unique global variable names from chunks and build name→index map.
-pub fn collect_globals(chunks: &[Chunk]) -> (Vec<String>, std::collections::HashMap<String, u32>) {
+/// Every string constant the module imports, in declaration order, deduped.
+///
+/// js-string-builtins § String constants: each becomes
+/// `(global (import "wasm:string-constants" "<text>") (ref extern))` and the
+/// import's field name IS the value. Collected over **all** chunks — each
+/// declares its own imports — and this exact order is what both the import
+/// section and the `global.get` immediates index into. If the two ever
+/// disagreed the module would still validate and read the *wrong string*.
+pub fn collect_string_constants(chunks: &[Chunk]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for chunk in chunks {
+        for import in &chunk.global_imports {
+            if import.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE
+                && !out.iter().any(|existing| existing == &import.name)
+            {
+                out.push(import.name.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Collect the module's globals.
+///
+/// Returns the **defined** globals (what the global section declares) and a
+/// name → **absolute WASM global index** map covering both kinds. WASM numbers
+/// imported globals first, so the low indices are the `rt_globals()` js-primitive
+/// singletons followed by one per string constant; defined globals follow.
+/// Imported globals are in the map under their `(module, name)` key, so
+/// `global.get` on a string constant and on a user variable resolve through one
+/// lookup — and a user global can never be assigned an imported global's index.
+pub fn collect_globals(
+    chunks: &[Chunk],
+    string_constants: &[String],
+) -> (Vec<String>, std::collections::HashMap<String, u32>) {
     let mut globals = Vec::new();
     let mut global_map = std::collections::HashMap::new();
+
+    let import_base = rt_globals().len() as u32;
+    for (i, text) in string_constants.iter().enumerate() {
+        global_map.insert(
+            vybe_runtime::chunk::imported_global_key(
+                vybe_runtime::chunk::STRING_CONSTANTS_MODULE,
+                text,
+            ),
+            import_base + i as u32,
+        );
+    }
+    let defined_base = import_base + string_constants.len() as u32;
 
     for chunk in chunks {
         let mut ip = 0;
@@ -182,8 +240,10 @@ pub fn collect_globals(chunks: &[Chunk]) -> (Vec<String>, std::collections::Hash
                         chunk.constants.get(name_idx as usize)
                     {
                         let name_str = name.to_string();
+                        // Already present = an imported global (or a repeat).
+                        // Either way it does not get a definition.
                         if !global_map.contains_key(&name_str) {
-                            let idx = globals.len() as u32;
+                            let idx = defined_base + globals.len() as u32;
                             global_map.insert(name_str.clone(), idx);
                             globals.push(name_str);
                         }

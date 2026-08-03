@@ -56,8 +56,7 @@ fn s(text: &str) -> Value {
 fn as_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        other => format!("{}", other),
-    }
+        other => format!("{}", other) }
 }
 
 fn array_strings(value: &Value) -> Vec<String> {
@@ -68,8 +67,7 @@ fn array_strings(value: &Value) -> Vec<String> {
                 .iter()
                 .map(|element| match element {
                     Value::String(text) => text.to_string(),
-                    other => format!("{}", other),
-                })
+                    other => format!("{}", other) })
                 .collect();
         }
     }

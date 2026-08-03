@@ -46,8 +46,7 @@ pub enum TypedElem {
     /// BigInt64Array — i64
     BigI64,
     /// BigUint64Array — i64 (unsigned)
-    BigU64,
-}
+    BigU64 }
 
 impl TypedElem {
     /// Returns (module_name, bytes_per_element, value_wasm_type).
@@ -63,8 +62,7 @@ impl TypedElem {
             TypedElem::F32 => ("ecma:float32array", 4, TYPE_F32),
             TypedElem::F64 => ("ecma:float64array", 8, TYPE_F64),
             TypedElem::BigI64 => ("wasm:js-bigint64array", 8, TYPE_I64),
-            TypedElem::BigU64 => ("ecma:biguint64array", 8, TYPE_I64),
-        }
+            TypedElem::BigU64 => ("ecma:biguint64array", 8, TYPE_I64) }
     }
 
     pub fn module(self) -> &'static str {
@@ -335,7 +333,6 @@ pub fn write_signature(out: &mut Vec<u8>, variant: TypedElem, name: &str) -> boo
             write_leb128_u32(out, 1);
             out.push(TYPE_EXTERNREF);
         }
-        _ => return false,
-    }
+        _ => return false }
     true
 }

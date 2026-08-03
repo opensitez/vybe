@@ -228,8 +228,7 @@ fn f64_comparison_lt() {
         Value::I32(v) => v != 0,
         Value::Bool(b) => b,
         Value::F64(f) => f != 0.0,
-        _ => false,
-    };
+        _ => false };
     assert!(truthy, "2.0 < 3.0 should be truthy");
 }
 
@@ -1086,7 +1085,7 @@ fn br_if_rejects_null_condition() {
     {
         let c = &mut chunk;
         let bp = c.emit_block(0);
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_br_if(0, 0);
         let i7 = c.add_constant(Value::F64(7.0));
         c.emit_op_u16(Op::CONST, i7, 0);
@@ -1667,7 +1666,7 @@ fn round_trip_three_functions_chained_calls() {
 #[test]
 fn round_trip_preserves_function_arity() {
     let mut script = Chunk::new("<script>");
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut f_two = Chunk::new("f_two");
@@ -1692,7 +1691,7 @@ fn round_trip_preserves_function_arity() {
 #[test]
 fn round_trip_preserves_chunk_name() {
     let mut script = Chunk::new("<script>");
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut named = Chunk::new("my_cool_function");
@@ -1763,7 +1762,7 @@ fn wasm_binary_sections_in_correct_order() {
 #[test]
 fn wasm_contains_vybe_custom_section() {
     let mut script = Chunk::new("<script>");
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let wasm = vybe_platform_wasm::write_wasm(&vec![script]);
@@ -2111,8 +2110,7 @@ fn every_proposal_module_exposes_uniform_surface() {
     use vybe_platform_wasm::writer::builtins::{js_primitive_builtins, js_string_builtins};
     use vybe_platform_wasm::writer::proposals::{
         bulk_memory, esm_integration, exception_handling, gc, multi_value, reference_types, simd,
-        tail_call, threads,
-    };
+        tail_call, threads };
 
     // Each of these must compile — the test is the shape check.
     let mut total_imports = 0usize;
@@ -2232,6 +2230,232 @@ fn emitted_wasm_has_compilation_hints_section() {
     assert!(count >= 1, "compilation_order section has no hints");
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// 24b. IMPORTED STRING CONSTANTS (js-string-builtins § String constants)
+// ──────────────────────────────────────────────────────────────────────
+
+/// A module whose script pushes two string constants and returns.
+fn emit_wasm_with_string_constants() -> Vec<u8> {
+    let mut script = Chunk::new("<script>");
+    script.emit_string_const("hello world", 0);
+    script.emit_string_const("hello world", 0); // same import, one global
+    script.emit_string_const("second", 0);
+    script.emit_op(Op::RETURN, 0);
+    vybe_platform_wasm::write_wasm(&vec![script])
+}
+
+/// Every import in the module as `(module, name, kind)`; kind is the spec's
+/// external-kind byte — 0x00 func, 0x01 table, 0x02 memory, 0x03 global.
+fn parse_imports(wasm: &[u8]) -> Vec<(String, String, u8)> {
+    let Some(payload) = section_bytes(wasm, 2) else {
+        return Vec::new();
+    };
+    let mut pos = 0usize;
+    let (count, r) = decode_leb128_u32(&payload[pos..]);
+    pos += r;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let module = read_wasm_name(payload, &mut pos);
+        let name = read_wasm_name(payload, &mut pos);
+        let kind = payload[pos];
+        pos += 1;
+        match kind {
+            0x00 => {
+                let (_, r) = decode_leb128_u32(&payload[pos..]);
+                pos += r;
+            }
+            0x01 => {
+                pos += 1; // reftype
+                let flags = payload[pos];
+                pos += 1;
+                let (_, r) = decode_leb128_u32(&payload[pos..]);
+                pos += r;
+                if flags & 0x01 != 0 {
+                    let (_, r) = decode_leb128_u32(&payload[pos..]);
+                    pos += r;
+                }
+            }
+            0x02 => {
+                let flags = payload[pos];
+                pos += 1;
+                let (_, r) = decode_leb128_u32(&payload[pos..]);
+                pos += r;
+                if flags & 0x01 != 0 {
+                    let (_, r) = decode_leb128_u32(&payload[pos..]);
+                    pos += r;
+                }
+            }
+            0x03 => {
+                pos += 2; // valtype + mutability
+            }
+            other => panic!("unknown import kind {}", other),
+        }
+        out.push((module, name, kind));
+    }
+    out
+}
+
+fn read_wasm_name(data: &[u8], pos: &mut usize) -> String {
+    let (len, r) = decode_leb128_u32(&data[*pos..]);
+    *pos += r;
+    let s = String::from_utf8_lossy(&data[*pos..*pos + len as usize]).to_string();
+    *pos += len as usize;
+    s
+}
+
+fn section_bytes(wasm: &[u8], id: u8) -> Option<&[u8]> {
+    let mut pos = 8;
+    while pos < wasm.len() {
+        let section_id = wasm[pos];
+        pos += 1;
+        let (size, r) = decode_leb128_u32(&wasm[pos..]);
+        pos += r;
+        let end = pos + size as usize;
+        if section_id == id {
+            return Some(&wasm[pos..end]);
+        }
+        pos = end;
+    }
+    None
+}
+
+/// js-string-builtins § String constants: a string constant reaches the
+/// module as an imported **global** whose field name IS its value. Never a
+/// function, and therefore never a call — which also keeps it out of the
+/// function index space that `CALL_IMPORT` operands are numbered in.
+#[test]
+fn string_constants_are_imported_globals_never_functions() {
+    let wasm = emit_wasm_with_string_constants();
+    let imports = parse_imports(&wasm);
+
+    let from_namespace: Vec<_> = imports
+        .iter()
+        .filter(|(module, _, _)| module == "wasm:string-constants")
+        .collect();
+
+    assert!(
+        !from_namespace.is_empty(),
+        "no imports from the string-constants namespace"
+    );
+    for (module, name, kind) in &from_namespace {
+        assert_eq!(
+            *kind, 0x03,
+            "`{}` `{}` is import kind {} — string constants must be globals",
+            module, name, kind
+        );
+    }
+
+    let names: Vec<&str> = from_namespace
+        .iter()
+        .map(|(_, name, _)| name.as_str())
+        .collect();
+    assert!(names.contains(&"hello world"), "constants: {:?}", names);
+    assert!(names.contains(&"second"), "constants: {:?}", names);
+    assert_eq!(
+        names.iter().filter(|n| **n == "hello world").count(),
+        1,
+        "one import per distinct constant — two references share one global"
+    );
+}
+
+/// The declared global type must be what the spec's own test vector accepts:
+/// `externref`, **immutable**. (`constants.tentative.any.js` lists mutable
+/// externref among the *bad* types — a mutable one is a CompileError.)
+#[test]
+fn string_constant_globals_are_immutable_externref() {
+    let wasm = emit_wasm_with_string_constants();
+    let payload = section_bytes(&wasm, 2).expect("import section");
+    let mut pos = 0usize;
+    let (count, r) = decode_leb128_u32(&payload[pos..]);
+    pos += r;
+    let mut checked = 0;
+    for _ in 0..count {
+        let module = read_wasm_name(payload, &mut pos);
+        let _name = read_wasm_name(payload, &mut pos);
+        let kind = payload[pos];
+        pos += 1;
+        if kind == 0x03 {
+            let valtype = payload[pos];
+            let mutability = payload[pos + 1];
+            pos += 2;
+            if module == "wasm:string-constants" {
+                assert_eq!(valtype, 0x6F, "string constant global is not externref");
+                assert_eq!(mutability, 0x00, "string constant global must be immutable");
+                checked += 1;
+            }
+        } else {
+            // Only globals appear after the function imports in our modules.
+            let (_, r) = decode_leb128_u32(&payload[pos..]);
+            pos += r;
+        }
+    }
+    assert!(checked >= 2, "expected both constants, checked {}", checked);
+}
+
+/// The real oracle: v8 validates the module *with* the namespace designated
+/// as `importedStringConstants`, which is when it enforces the global-type
+/// rule. Skipped when node is unavailable.
+#[test]
+fn string_constants_accepted_by_node_with_imported_string_constants() {
+    use std::io::Write;
+    use std::process::Command;
+
+    let node_ok = Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !node_ok {
+        eprintln!("skipping: `node` not available on PATH");
+        return;
+    }
+
+    let wasm = emit_wasm_with_string_constants();
+    let dir = std::env::temp_dir().join(format!("vybe_strconst_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp dir");
+    let wasm_path = dir.join("mod.wasm");
+    let driver_path = dir.join("driver.mjs");
+    std::fs::File::create(&wasm_path)
+        .expect("open wasm file")
+        .write_all(&wasm)
+        .expect("write wasm");
+
+    let driver = r#"
+import { readFile } from 'node:fs/promises';
+import { argv } from 'node:process';
+const bytes = await readFile(argv[2]);
+const mod = await WebAssembly.compile(bytes, {
+    importedStringConstants: "wasm:string-constants" });
+const found = WebAssembly.Module.imports(mod)
+    .filter(i => i.module === 'wasm:string-constants');
+if (!found.every(i => i.kind === 'global')) {
+    console.error('string constants imported as ' + found.map(i => i.kind).join(','));
+    process.exit(1);
+}
+console.log(JSON.stringify({ constants: found.length }));
+"#;
+    std::fs::File::create(&driver_path)
+        .expect("open driver file")
+        .write_all(driver.as_bytes())
+        .expect("write driver");
+
+    let out = Command::new("node")
+        .arg(&driver_path)
+        .arg(&wasm_path)
+        .output()
+        .expect("spawn node");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        out.status.success(),
+        "node rejected the string constants.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // ── Tiny LEB128 decoder + custom-section extractor for the tests. ─────
 
 fn decode_leb128_u32(bytes: &[u8]) -> (u32, usize) {
@@ -2335,7 +2559,7 @@ fn opt_in_multi_table_declares_externref_alongside_funcref() {
 fn multi_value_result_arity_round_trips() {
     // Build a chunk that claims 2 results, emit + re-read, verify result_arity preserved.
     let mut script = Chunk::new("<script>");
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut fun = Chunk::new("dual");
@@ -2395,7 +2619,7 @@ fn multi_value_block_emits_typeidx_blocktype() {
     // for that specific function-type signature in the type section
     // AND for a `0x02 <positive typeidx>` byte pair in the code.
     let mut script = Chunk::new("<script>");
-    script.emit_op(Op::NULL, 0);
+    script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut fun = Chunk::new("with_multi_block");
@@ -2408,7 +2632,7 @@ fn multi_value_block_emits_typeidx_blocktype() {
     fun.patch_block(bp);
     fun.emit_op(Op::DROP, 0);
     fun.emit_op(Op::DROP, 0);
-    fun.emit_op(Op::NULL, 0);
+    fun.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     fun.emit_op(Op::RETURN, 0);
 
     let wasm = vybe_platform_wasm::write_wasm(&vec![script, fun]);
@@ -2531,8 +2755,7 @@ fn ref_eq_matches_identical_objects() {
         properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
-        fields: Vec::new(),
-    }));
+        fields: Vec::new() }));
     let mut chunk = Chunk::new("<script>");
     let k1 = chunk.add_constant(Value::Object(obj.clone()));
     let k2 = chunk.add_constant(Value::Object(obj));
@@ -2550,14 +2773,12 @@ fn ref_eq_matches_identical_objects() {
         properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
-        fields: Vec::new(),
-    }));
+        fields: Vec::new() }));
     let b = Arc::new(Mutex::new(Object {
         properties: Default::default(),
         kind: ObjectKind::Ordinary,
         type_id: 0,
-        fields: Vec::new(),
-    }));
+        fields: Vec::new() }));
     let ka = chunk.add_constant(Value::Object(a));
     let kb = chunk.add_constant(Value::Object(b));
     chunk.emit_op_u16(Op::CONST, ka, 0);
@@ -2917,7 +3138,7 @@ fn ref_as_non_null_traps_on_null_passes_on_object() {
     assert!(matches!(r, Value::Object(_)));
 
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::REF_AS_NON_NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
@@ -2948,7 +3169,7 @@ fn ref_test_null_accepts_null() {
     // ref.test_null succeeds on null; ref.test (non-null variant)
     // rejects it. Verify the former by passing null and expecting 1.
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op_u16(Op::REF_TEST_NULL, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
@@ -2959,8 +3180,8 @@ fn ref_test_null_accepts_null() {
 fn ref_eq_emits_as_core_0xd3_byte_in_wasm() {
     // Verify spec byte emission: `ref.eq` is a single-byte core op.
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::REF_EQ, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -3186,7 +3407,7 @@ fn table_size_returns_current_size() {
 #[test]
 fn table_grow_returns_old_size_and_resizes() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     let three = chunk.add_constant(Value::I32(3));
     chunk.emit_op_u16(Op::CONST, three, 0);
     chunk.emit_op_u8(Op::TABLE_GROW, 0, 0); // table index 0
@@ -3201,7 +3422,7 @@ fn table_grow_returns_old_size_and_resizes() {
 #[test]
 fn table_fill_assigns_value_across_range() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     let five = chunk.add_constant(Value::I32(5));
     chunk.emit_op_u16(Op::CONST, five, 0);
     chunk.emit_op_u8(Op::TABLE_GROW, 0, 0);
@@ -3209,7 +3430,7 @@ fn table_fill_assigns_value_across_range() {
 
     let one = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, one, 0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     let three = chunk.add_constant(Value::I32(3));
     chunk.emit_op_u16(Op::CONST, three, 0);
     chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
@@ -3291,8 +3512,7 @@ console.log(JSON.stringify({
     exports: exports.length,
     has_js_undefined_value: imports.some(i => i.module === 'wasm:js-undefined' && i.name === 'value'),
     has_js_true: imports.some(i => i.module === 'wasm:js-boolean' && i.name === 'true'),
-    has_js_false: imports.some(i => i.module === 'wasm:js-boolean' && i.name === 'false'),
-}));
+    has_js_false: imports.some(i => i.module === 'wasm:js-boolean' && i.name === 'false') }));
 "#;
     {
         let mut f = std::fs::File::create(&driver_path).expect("open driver file");

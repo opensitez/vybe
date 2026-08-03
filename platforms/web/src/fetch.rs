@@ -100,8 +100,7 @@ pub fn register(vm: &mut VM) {
                         .or_else(|| o.properties.get("href").map(|v| format!("{}", v)))
                         .unwrap_or_default()
                 }
-                _ => return make_promise_rejected(Value::String(Arc::from("invalid url"))),
-            };
+                _ => return make_promise_rejected(Value::String(Arc::from("invalid url"))) };
             // MVP: only http:// goes over TCP. https:// returns 0/empty.
             if !url.starts_with("http://") {
                 return make_promise_fulfilled(make_response(0, "", String::new(), HashMap::new()));
@@ -110,8 +109,7 @@ pub fn register(vm: &mut VM) {
                 Ok((status, headers, body)) => {
                     make_promise_fulfilled(make_response(status, "OK", body, headers))
                 }
-                Err(e) => make_promise_rejected(Value::String(Arc::from(e.to_string().as_str()))),
-            }
+                Err(e) => make_promise_rejected(Value::String(Arc::from(e.to_string().as_str()))) }
         }),
     );
 
@@ -253,12 +251,10 @@ fn http_get_blocking(
     let url_no_scheme = url.trim_start_matches("http://");
     let (host_part, path) = match url_no_scheme.find('/') {
         Some(i) => (&url_no_scheme[..i], &url_no_scheme[i..]),
-        None => (url_no_scheme, "/"),
-    };
+        None => (url_no_scheme, "/") };
     let (host, port) = match host_part.rsplit_once(':') {
         Some((h, p)) => (h, p.parse::<u16>().unwrap_or(80)),
-        None => (host_part, 80),
-    };
+        None => (host_part, 80) };
     let mut stream = TcpStream::connect((host, port))?;
     let req = format!(
         "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
@@ -270,8 +266,7 @@ fn http_get_blocking(
     // Parse status line + headers + body.
     let (head, body) = match buf.find("\r\n\r\n") {
         Some(i) => (&buf[..i], buf[i + 4..].to_string()),
-        None => (buf.as_str(), String::new()),
-    };
+        None => (buf.as_str(), String::new()) };
     let mut lines = head.lines();
     let status_line = lines.next().unwrap_or("");
     let status: u16 = status_line

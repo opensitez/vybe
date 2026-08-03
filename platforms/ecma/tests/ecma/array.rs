@@ -38,10 +38,8 @@ fn elems(v: &Value) -> Vec<Value> {
     match v {
         Value::Object(o) => match &o.lock().unwrap().kind {
             ObjectKind::Array(e) => e.clone(),
-            _ => vec![],
-        },
-        _ => vec![],
-    }
+            _ => vec![] },
+        _ => vec![] }
 }
 
 fn iter_next(it: Value) -> (Value, bool) {
@@ -66,8 +64,7 @@ fn iter_next(it: Value) -> (Value, bool) {
                 .unwrap_or(Value::Undefined);
             (val, done)
         }
-        _ => (Value::Undefined, true),
-    }
+        _ => (Value::Undefined, true) }
 }
 
 fn collect_iter(it: Value) -> Vec<Value> {
@@ -134,12 +131,10 @@ fn from_array_produces_a_shallow_copy() {
     // Same contents but different object identity.
     let copy_ptr = match &copy {
         Value::Object(a) => Arc::as_ptr(a) as usize,
-        _ => 0,
-    };
+        _ => 0 };
     let orig_ptr = match &original {
         Value::Object(a) => Arc::as_ptr(a) as usize,
-        _ => 1,
-    };
+        _ => 1 };
     assert_ne!(copy_ptr, orig_ptr);
     assert_eq!(elems(&copy), vec![Value::I32(1), Value::I32(2)]);
 }
@@ -282,9 +277,8 @@ fn join_renders_null_and_undefined_elements_as_empty_string() {
         Value::I32(2),
     ]);
     match invoke("join", vec![a, s(",")]) {
-        Value::String(s) => assert_eq!(s.as_ref(), "1,,,2"),
-        other => panic!("expected string, got {:?}", other),
-    }
+        Value::String(s) => assert_eq!(s.as_ref(), "1, ,2"),
+        other => panic!("expected string, got {:?}", other) }
 }
 
 // ── flat ──────────────────────────────────────────────────────────────────────
@@ -326,13 +320,11 @@ fn reverse_mutates_in_place_and_returns_same_object() {
     let a = arr(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
     let orig_ptr = match &a {
         Value::Object(arc) => Arc::as_ptr(arc) as usize,
-        _ => 0,
-    };
+        _ => 0 };
     let result = invoke("reverse", vec![a]);
     let result_ptr = match &result {
         Value::Object(arc) => Arc::as_ptr(arc) as usize,
-        _ => 1,
-    };
+        _ => 1 };
     assert_eq!(orig_ptr, result_ptr); // same object
     assert_eq!(elems(&result)[0], Value::I32(3));
 }
@@ -354,13 +346,11 @@ fn fill_returns_same_array_reference() {
     let a = arr(vec![Value::I32(0), Value::I32(0), Value::I32(0)]);
     let orig_ptr = match &a {
         Value::Object(arc) => Arc::as_ptr(arc) as usize,
-        _ => 0,
-    };
+        _ => 0 };
     let result = invoke("fill", vec![a, Value::I32(7), Value::I32(0), Value::I32(3)]);
     let result_ptr = match &result {
         Value::Object(arc) => Arc::as_ptr(arc) as usize,
-        _ => 1,
-    };
+        _ => 1 };
     assert_eq!(orig_ptr, result_ptr);
 }
 

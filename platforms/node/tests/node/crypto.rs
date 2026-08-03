@@ -65,8 +65,7 @@ fn prop(v: &Value, key: &str) -> Value {
             .get(key)
             .cloned()
             .unwrap_or(Value::Undefined),
-        _ => Value::Undefined,
-    }
+        _ => Value::Undefined }
 }
 
 fn call_method(receiver: &Value, method: &str, args: Vec<Value>) -> Value {
@@ -99,8 +98,7 @@ fn array_len(v: &Value) -> usize {
                 0
             }
         }
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 fn array_strings(v: &Value) -> Vec<String> {
@@ -112,21 +110,18 @@ fn array_strings(v: &Value) -> Vec<String> {
                     .iter()
                     .map(|e| match e {
                         Value::String(s) => s.to_string(),
-                        other => format!("{other}"),
-                    })
+                        other => format!("{other}") })
                     .collect();
             }
             vec![]
         }
-        _ => vec![],
-    }
+        _ => vec![] }
 }
 
 fn as_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
-        other => format!("{other}"),
-    }
+        other => format!("{other}") }
 }
 
 // ── Legacy shorthands ─────────────────────────────────────────────────────────
@@ -598,8 +593,7 @@ fn random_int_in_range_returns_number() {
             f >= 0.0 && f < 100.0 && f.fract() == 0.0,
             "randomInt got {f}"
         ),
-        other => panic!("randomInt expected number, got {:?}", other),
-    }
+        other => panic!("randomInt expected number, got {:?}", other) }
 }
 
 #[test]
@@ -609,8 +603,7 @@ fn random_int_with_max_only_returns_in_range() {
         Value::I32(n) => assert!(n >= 0 && n < 10, "randomInt(10) must be in [0,10), got {n}"),
         Value::I64(n) => assert!(n >= 0 && n < 10, "randomInt(10) must be in [0,10), got {n}"),
         Value::F64(f) => assert!(f >= 0.0 && f < 10.0, "randomInt(10) got {f}"),
-        other => panic!("randomInt(10) expected number, got {:?}", other),
-    }
+        other => panic!("randomInt(10) expected number, got {:?}", other) }
 }
 
 // ── randomFillSync ────────────────────────────────────────────────────────────
@@ -823,8 +816,7 @@ fn get_random_values_fills_typed_array() {
         kind: ObjectKind::Array(vec![Value::I32(0); 8]),
         properties: Default::default(),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
     let result = call_crypto("getRandomValues", vec![typed]);
     assert!(
         matches!(result, Value::Object(_)),

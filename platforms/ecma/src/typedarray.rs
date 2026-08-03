@@ -40,8 +40,7 @@
 use std::sync::{Arc, Mutex};
 use vybe_runtime::VM;
 use vybe_runtime::value::{
-    ArrayBufferState, Object, ObjectKind, TypedArrayState, TypedElemKind, Value,
-};
+    ArrayBufferState, Object, ObjectKind, TypedArrayState, TypedElemKind, Value };
 
 // ── Variant wiring ────────────────────────────────────────────────────
 
@@ -73,23 +72,20 @@ pub fn typed_array_name(elem: TypedElemKind) -> &'static str {
         TypedElemKind::F32 => "Float32Array",
         TypedElemKind::F64 => "Float64Array",
         TypedElemKind::BigI64 => "BigInt64Array",
-        TypedElemKind::BigU64 => "BigUint64Array",
-    }
+        TypedElemKind::BigU64 => "BigUint64Array" }
 }
 
 pub fn zero_value(elem: TypedElemKind) -> Value {
     match elem {
         TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
         TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::bigint_i64(0),
-        _ => Value::I32(0),
-    }
+        _ => Value::I32(0) }
 }
 
 fn typed_array_element_to_string(value: Value) -> String {
     match value {
         Value::BigInt(n) => format!("{}", n),
-        other => format!("{}", other),
-    }
+        other => format!("{}", other) }
 }
 
 fn is_typed_of(args: &[Value], idx: usize, want: TypedElemKind) -> Option<Arc<Mutex<Object>>> {
@@ -262,8 +258,7 @@ pub fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
             let val = match v {
                 Value::BigInt(n) => n.to_i64_wrapping(),
                 Value::I64(n) => *n,
-                other => other.as_i32() as i64,
-            };
+                other => other.as_i32() as i64 };
             let bytes = val.to_le_bytes();
             buf[abs..abs + 8].copy_from_slice(&bytes);
         }
@@ -272,8 +267,7 @@ pub fn write_element(ta: &TypedArrayState, i: usize, v: &Value) {
             let val = match v {
                 Value::BigInt(n) => n.to_u64_wrapping(),
                 Value::I64(n) => *n as u64,
-                other => other.as_i32() as u64,
-            };
+                other => other.as_i32() as u64 };
             let bytes = val.to_le_bytes();
             buf[abs..abs + 8].copy_from_slice(&bytes);
         }
@@ -296,8 +290,7 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
         max_byte_length: byte_length,
         resizable: false,
         detached: false,
-        shared: false,
-    };
+        shared: false };
     let mut ab_obj = Object::new();
     ab_obj.kind = ObjectKind::ArrayBuffer(ab_state);
     ab_obj
@@ -313,8 +306,7 @@ pub fn new_typed_array(elem: TypedElemKind, length: usize) -> Value {
         buffer: bytes,
         buffer_obj: buffer_obj.clone(),
         byte_offset: 0,
-        length,
-    };
+        length };
     let mut obj = Object::new();
     obj.kind = ObjectKind::TypedArray(state);
     obj.properties
@@ -358,8 +350,7 @@ pub fn new_view_over_buffer(
         buffer: bytes,
         buffer_obj: buffer_obj.clone(),
         byte_offset,
-        length,
-    };
+        length };
     let mut obj = Object::new();
     obj.kind = ObjectKind::TypedArray(state);
     obj.properties
@@ -389,16 +380,13 @@ pub fn apply_constructor_species(result: &Value, ctor: Value) {
             let ctor_lock = ctor_obj.lock().unwrap();
             let name = match ctor_lock.properties.get("name") {
                 Some(Value::String(name)) if !name.is_empty() => Some(name.to_string()),
-                _ => None,
-            };
+                _ => None };
             let prototype = match ctor_lock.properties.get("prototype") {
                 Some(Value::Object(proto)) => Some(proto.clone()),
-                _ => None,
-            };
+                _ => None };
             (name, prototype)
         }
-        _ => (None, None),
-    };
+        _ => (None, None) };
     let Value::Object(result_obj) = result else {
         return;
     };
@@ -521,8 +509,7 @@ fn register_uint8_extras(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let text = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return new_typed_array(TypedElemKind::U8, 0),
-            };
+                _ => return new_typed_array(TypedElemKind::U8, 0) };
             let bytes = base64_decode(text.trim());
             let ta = new_typed_array(TypedElemKind::U8, bytes.len());
             if let Value::Object(ref obj) = ta {
@@ -567,8 +554,7 @@ fn register_uint8_extras(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let text = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return new_typed_array(TypedElemKind::U8, 0),
-            };
+                _ => return new_typed_array(TypedElemKind::U8, 0) };
             let s = text.trim();
             let len = s.len() / 2;
             let bytes: Vec<u8> = (0..len)
@@ -672,8 +658,7 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                             ObjectKind::ArrayBuffer(_) => 1,
                             ObjectKind::TypedArray(_) => 2,
                             ObjectKind::Array(_) => 3,
-                            _ => 0,
-                        }
+                            _ => 0 }
                     };
                     match kind_tag {
                         1 => {
@@ -757,11 +742,9 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                             }
                             out
                         }
-                        _ => new_typed_array(elem, 0),
-                    }
+                        _ => new_typed_array(elem, 0) }
                 }
-                _ => new_typed_array(elem, 0),
-            }
+                _ => new_typed_array(elem, 0) }
         }),
     );
 
@@ -784,8 +767,7 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
             // (buffer, byteOffset, length) — omit signalled by -1
             let buffer = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return new_typed_array(elem, 0),
-            };
+                _ => return new_typed_array(elem, 0) };
             let buffer_byte_len = {
                 let o = buffer.lock().unwrap();
                 if let ObjectKind::ArrayBuffer(ref state) = o.kind {
@@ -1111,11 +1093,9 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                             ObjectKind::TypedArray(src_ta) => (0..ta_live_length(src_ta))
                                 .map(|i| read_element(src_ta, i))
                                 .collect(),
-                            _ => Vec::new(),
-                        }
+                            _ => Vec::new() }
                     }
-                    _ => Vec::new(),
-                };
+                    _ => Vec::new() };
                 if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                     let o = ta_obj.lock().unwrap();
                     if let ObjectKind::TypedArray(ref ta) = o.kind {
@@ -1176,11 +1156,9 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                         ObjectKind::TypedArray(src_ta) => (0..ta_live_length(src_ta))
                             .map(|i| read_element(src_ta, i))
                             .collect(),
-                        _ => Vec::new(),
-                    }
+                        _ => Vec::new() }
                 }
-                _ => Vec::new(),
-            };
+                _ => Vec::new() };
             if let Some(ta_obj) = is_typed_of(args, 0, elem) {
                 let o = ta_obj.lock().unwrap();
                 if let ObjectKind::TypedArray(ref ta) = o.kind {
@@ -1775,9 +1753,7 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     Some(i) => i,
                     None => match iter.next() {
                         Some(x) => x,
-                        None => return Value::Undefined,
-                    },
-                };
+                        None => return Value::Undefined } };
                 for x in iter {
                     acc = ta_invoke_magic(&reducer, &[acc.clone(), x.clone()])
                         .unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));
@@ -1810,9 +1786,7 @@ fn register_variant(vm: &mut VM, elem: TypedElemKind, module: &'static str) {
                     Some(i) => i,
                     None => match iter.next() {
                         Some(x) => x,
-                        None => return Value::Undefined,
-                    },
-                };
+                        None => return Value::Undefined } };
                 for x in iter {
                     acc = ta_invoke_magic(&reducer, &[acc.clone(), x.clone()])
                         .unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));

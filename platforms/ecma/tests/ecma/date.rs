@@ -47,8 +47,7 @@ fn as_num(v: &Value) -> f64 {
         Value::I32(n) => *n as f64,
         Value::I64(n) => *n as f64,
         Value::F64(f) => *f,
-        _ => panic!("expected numeric, got {:?}", v),
-    }
+        _ => panic!("expected numeric, got {:?}", v) }
 }
 
 fn s(text: &str) -> Value {
@@ -132,8 +131,7 @@ fn to_iso_string_of_epoch_is_canonical_utc_format() {
     let d = epoch_date();
     match invoke("toISOString", vec![d]) {
         Value::String(s) => assert_eq!(s.as_ref(), "1970-01-01T00:00:00.000Z"),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 #[test]
@@ -141,8 +139,7 @@ fn to_iso_string_always_ends_with_z_for_utc() {
     let d = invoke("new", vec![Value::F64(1_700_000_000_000.0)]);
     match invoke("toISOString", vec![d]) {
         Value::String(s) => assert!(s.ends_with('Z'), "must end with Z: {s}"),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 #[test]
@@ -160,8 +157,7 @@ fn to_string_returns_a_non_empty_string() {
     let d = epoch_date();
     match invoke("toString", vec![d]) {
         Value::String(s) => assert!(!s.is_empty()),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 #[test]
@@ -170,8 +166,7 @@ fn to_date_string_does_not_include_time_component() {
     let d = epoch_date();
     match invoke("toDateString", vec![d]) {
         Value::String(s) => assert!(!s.contains(':'), "toDateString must not include time: {s}"),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 #[test]
@@ -179,8 +174,7 @@ fn value_invoke_method_locale_date_string_on_date_object() {
     let d = epoch_date();
     match invoke_value("invokeMethod", vec![d, s("toLocaleDateString")]) {
         Value::String(text) => assert!(!text.is_empty()),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 #[test]
@@ -191,8 +185,7 @@ fn to_utc_string_contains_gmt_or_utc_marker() {
             s.contains("GMT") || s.contains("UTC"),
             "toUTCString must reference UTC: {s}"
         ),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 // ── Date.UTC static ───────────────────────────────────────────────────────────
@@ -319,8 +312,7 @@ fn invalid_date_to_iso_string_is_nan_string() {
     match result {
         Value::String(s) => assert!(s.contains("Invalid") || s.contains("NaN")),
         Value::Undefined => {}
-        other => panic!("unexpected: {:?}", other),
-    }
+        other => panic!("unexpected: {:?}", other) }
 }
 
 // ── Missing Date setters ──────────────────────────────────────────────────────
@@ -380,8 +372,7 @@ fn to_time_string_contains_colon_separators() {
     let d = epoch_date();
     match invoke("toTimeString", vec![d]) {
         Value::String(s) => assert!(s.contains(':'), "toTimeString must contain ':': {s}"),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 #[test]
@@ -390,8 +381,7 @@ fn to_locale_string_returns_non_empty_string() {
     let d = invoke("new", vec![Value::F64(1_700_000_000_000.0)]);
     match invoke("toLocaleString", vec![d]) {
         Value::String(s) => assert!(!s.is_empty()),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 // ── toLocaleDateString / toLocaleTimeString ───────────────────────────────────
@@ -402,8 +392,7 @@ fn to_locale_date_string_returns_non_empty_string() {
     let d = invoke("new", vec![Value::F64(1_700_000_000_000.0)]);
     match invoke("toLocaleDateString", vec![d]) {
         Value::String(s) => assert!(!s.is_empty()),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 #[test]
@@ -412,8 +401,7 @@ fn to_locale_time_string_returns_non_empty_string() {
     let d = invoke("new", vec![Value::F64(1_700_000_000_000.0)]);
     match invoke("toLocaleTimeString", vec![d]) {
         Value::String(s) => assert!(!s.is_empty()),
-        other => panic!("expected string, got {:?}", other),
-    }
+        other => panic!("expected string, got {:?}", other) }
 }
 
 // ── UTC getter/setter methods (§21.4.4.x) ────────────────────────────────────

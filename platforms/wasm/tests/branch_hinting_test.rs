@@ -117,7 +117,7 @@ fn emit_wasm(chunks: Vec<Chunk>) -> Vec<u8> {
 
 fn script_chunk() -> Chunk {
     let mut s = Chunk::new("<script>");
-    s.emit_op(Op::NULL, 0);
+    s.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     s.emit_op(Op::RETURN, 0);
     s
 }

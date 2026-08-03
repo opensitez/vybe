@@ -215,7 +215,6 @@ pub fn write_signature(out: &mut Vec<u8>, name: &str) -> bool {
             write_leb128_u32(out, 1);
             out.push(TYPE_I32);
         }
-        _ => return false,
-    }
+        _ => return false }
     true
 }

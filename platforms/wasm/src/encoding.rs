@@ -59,19 +59,15 @@ pub const PACKED_I8: u8 = 0x78; // -0x08
 pub const PACKED_I16: u8 = 0x77; // -0x09
 
 // Abstract heap types (GC proposal). Used as the heaptype operand of
-// `ref.test`, `ref.cast`, `br_on_cast` — single-byte encodings when
-// the target is an abstract type (rather than a concrete typeidx).
+// `ref.null`, `ref.test`, `ref.cast`, `br_on_cast` — single-byte encodings
+// when the target is an abstract type (rather than a concrete typeidx).
 // See `proposals/gc/proposals/gc/MVP.md` §Reference types.
-pub const HT_NOFUNC: u8 = 0x73; // -0x0D
-pub const HT_NOEXTERN: u8 = 0x72; // -0x0E
-pub const HT_NONE: u8 = 0x71; // -0x0F (nullref)
-pub const HT_FUNC: u8 = 0x70; // -0x10 (funcref)
-pub const HT_EXTERN: u8 = 0x6F; // -0x11 (externref)
-pub const HT_ANY: u8 = 0x6E; // -0x12 (anyref)
-pub const HT_EQ: u8 = 0x6D; // -0x13 (eqref)
-pub const HT_I31: u8 = 0x6C; // -0x14 (i31ref)
-pub const HT_STRUCT: u8 = 0x6B; // -0x15 (structref)
-pub const HT_ARRAY: u8 = 0x6A; // -0x16 (arrayref)
+//
+// Defined in `vybe_runtime::opcode::heaptype`, beside the opcodes that take
+// them — `ref.null` cannot be emitted without one — and re-exported here so
+// the binary writer and the bytecode emitter cannot disagree about a byte.
+pub use vybe_runtime::opcode::heaptype::{
+    HT_ANY, HT_ARRAY, HT_EQ, HT_EXTERN, HT_FUNC, HT_I31, HT_NOEXTERN, HT_NOFUNC, HT_NONE, HT_STRUCT };
 
 // ── Section writing ─────────────────────────────────────────────────────
 
@@ -267,8 +263,7 @@ pub fn encode_value(out: &mut Vec<u8>, val: &Value) {
             write_leb128_u32(out, s.len() as u32);
             out.extend_from_slice(s.as_bytes());
         }
-        _ => out.push(0),
-    }
+        _ => out.push(0) }
 }
 
 pub fn decode_value(data: &[u8], pos: &mut usize) -> Value {
@@ -306,6 +301,5 @@ pub fn decode_value(data: &[u8], pos: &mut usize) -> Value {
             *pos += len as usize;
             Value::String(Arc::from(s))
         }
-        _ => Value::Null,
-    }
+        _ => Value::Null }
 }

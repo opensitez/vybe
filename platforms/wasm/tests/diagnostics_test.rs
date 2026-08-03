@@ -59,7 +59,7 @@ fn type_recorder_flags_polymorphic_slot() {
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -88,7 +88,7 @@ fn type_recorder_summary_reports_monomorphic_percentage() {
     let s = chunk.add_constant(Value::String(std::sync::Arc::from("x")));
     chunk.emit_op_u16(Op::CONST, s, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -111,7 +111,7 @@ fn type_recorder_off_means_zero_overhead() {
     let k = chunk.add_constant(Value::I32(42));
     chunk.emit_op_u16(Op::CONST, k, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -164,7 +164,7 @@ fn wat_indents_block_bodies() {
     let mut chunk = Chunk::new("main");
     chunk.arity = 0;
     let _bp = chunk.emit_block(0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::END, 0);
     chunk.patch_block(_bp);
     chunk.emit_op(Op::RETURN, 0);

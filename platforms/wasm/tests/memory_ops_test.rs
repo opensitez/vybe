@@ -374,8 +374,7 @@ fn decoded_standard_call_indirect_executes_vm_table_function() {
         name: Some("target".into()),
         arity: 0,
         chunk_index: 1,
-        upvalues: Vec::new(),
-    });
+        upvalues: Vec::new() });
 
     let mut vm = VM::new();
     // Populate WASM table 0 slot 0 with the target (an elem segment would do
@@ -410,8 +409,7 @@ fn decoded_standard_call_indirect_uses_encoded_table_index() {
         name: Some("target_table_1".into()),
         arity: 0,
         chunk_index: 1,
-        upvalues: Vec::new(),
-    });
+        upvalues: Vec::new() });
 
     let mut vm = VM::new();
     // Table 0 empty, table 1 holds the target (call_indirect selects table 1).

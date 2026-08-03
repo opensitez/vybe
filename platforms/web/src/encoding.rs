@@ -75,8 +75,7 @@ fn bytes_from_arg(arg: Option<&Value>) -> Vec<u8> {
                 }
             }
         }
-        _ => Vec::new(),
-    }
+        _ => Vec::new() }
 }
 
 fn option_bool(obj: Option<&Value>, name: &str) -> bool {
@@ -244,8 +243,7 @@ pub fn register(vm: &mut VM) {
                             .unwrap_or(false),
                     )
                 }
-                _ => (false, false),
-            };
+                _ => (false, false) };
             match decode_utf8(&bytes, fatal, ignore_bom) {
                 Ok(text) => Value::String(Arc::from(text.as_str())),
                 Err(()) => {

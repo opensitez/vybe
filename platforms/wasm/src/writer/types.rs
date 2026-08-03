@@ -61,8 +61,7 @@ pub struct WasmTypeContext {
     /// Whether any `CONT_NEW` / `SUSPEND` / `RESUME` / `SWITCH` op
     /// was observed in the bytecode. Drives whether we emit the
     /// continuation type, the suspend tag, and the tag-section entry.
-    pub uses_stack_switching: bool,
-}
+    pub uses_stack_switching: bool }
 
 pub(crate) fn continuation_tag_key(
     tag: &vybe_runtime::chunk::ContinuationTag,
@@ -80,8 +79,7 @@ pub(crate) fn continuation_tag_valtype(type_name: &str) -> u8 {
         "i64" => TYPE_I64,
         "f32" => TYPE_F32,
         "f64" | "number" => TYPE_F64,
-        _ => TYPE_EXTERNREF,
-    }
+        _ => TYPE_EXTERNREF }
 }
 
 fn collect_continuation_tags(chunks: &[Chunk]) -> Vec<vybe_runtime::chunk::ContinuationTag> {
@@ -143,8 +141,7 @@ pub fn build_type_context(
         continuation_type_idx: 0,
         continuation_tag_indices: std::collections::HashMap::new(),
         continuation_tag_type_indices: Vec::new(),
-        uses_stack_switching: false,
-    };
+        uses_stack_switching: false };
 
     // Collect TypeEntry definitions from chunk 0
     let type_entries: Vec<&vybe_runtime::chunk::TypeEntry> = chunks

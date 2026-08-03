@@ -48,8 +48,7 @@ fn type_entry(name: &str, fields: &[&str]) -> TypeEntry {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new(),
-    }
+        field_descriptors: std::collections::HashMap::new() }
 }
 
 #[test]
@@ -73,8 +72,8 @@ fn gc_emission_resolves_unique_struct_field_index() {
     chunk.types.push(type_entry("A", &["x"]));
     chunk.types.push(type_entry("B", &["y", "z"]));
     let field = chunk.add_constant(Value::String(Arc::from("z")));
-    chunk.emit_op(Op::NULL, 0);
-    chunk.emit_op_u16(Op::STRUCT_GET, field, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, field, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![chunk]);
@@ -91,9 +90,9 @@ fn gc_emission_struct_set_reorders_object_and_value_operands() {
     chunk.types.push(type_entry("B", &["y", "z"]));
     let field = chunk.add_constant(Value::String(Arc::from("z")));
     let value = chunk.add_constant(Value::I32(9));
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op_u16(Op::CONST, value, 0);
-    chunk.emit_op_u16(Op::STRUCT_SET, field, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, field, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&vec![chunk]);
@@ -128,7 +127,7 @@ fn br_on_null_branches_when_null() {
         let zero = c.add_constant(Value::I32(0));
         let one = c.add_constant(Value::I32(1));
 
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op_u16(Op::BR_ON_NULL, 10u16, 0); // offset=10: skip CONST(6)+RETURN(4)
         c.emit_op_u16(Op::CONST, zero, 0); // not reached
         c.emit_op(Op::RETURN, 0); // not reached
@@ -193,7 +192,7 @@ fn br_on_non_null_skips_on_null() {
         let fallback = c.add_constant(Value::I32(99));
         let other = c.add_constant(Value::I32(0));
 
-        c.emit_op(Op::NULL, 0); // [0-1]
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // [0-1]
         c.emit_op_u16(Op::BR_ON_NON_NULL, 4u16, 0); // [2-5] null → no branch, pop
         c.emit_op_u16(Op::CONST, fallback, 0); // [6-9]
         c.emit_op(Op::RETURN, 0); // [10-11]
@@ -219,7 +218,7 @@ fn ref_as_non_null_passes_through_non_null() {
 #[test]
 fn ref_as_non_null_traps_on_null() {
     let e = run_err(|c| {
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op(Op::REF_AS_NON_NULL, 0);
     });
     assert!(e.contains("null") || e.contains("trap"));
@@ -244,7 +243,7 @@ fn ref_cast_passes_on_null_input() {
     // REF_CAST_NULL always passes (null is a valid reference for any nullable type)
     let mut chunk = Chunk::new("<script>");
     let cast = chunk.add_constant(Value::String(Arc::from("anything")));
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op_u16(Op::REF_CAST_NULL, cast, 0);
     chunk.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![chunk]).expect("run failed");
@@ -334,7 +333,7 @@ fn run_locals(local_count: u16, emit: impl FnOnce(&mut Chunk)) -> Value {
 fn struct_new_creates_object() {
     // STRUCT_NEW 0: pops 0 key-value pairs, pushes one empty object
     let r = run(|c| {
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+        c.emit_struct_new(0, 0, 0);
         c.emit_op(Op::REF_IS_NULL, 0); // object is not null → 0
     });
     assert_eq!(r.as_i32(), 0);
@@ -347,17 +346,17 @@ fn struct_set_and_get_roundtrip() {
         let val = c.add_constant(Value::I32(42));
 
         // create empty struct, store in slot 0, drop stack copy
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0); // stack: [obj]
+        c.emit_struct_new(0, 0, 0); // stack: [obj]
         c.emit_op_u16(Op::LOCAL_SET, 0, 0); // stack: [obj] (peek)
 
         // obj.x = 42
         c.emit_op_u16(Op::LOCAL_GET, 0, 0); // stack: [obj]
         c.emit_op_u16(Op::CONST, val, 0); // stack: [obj, 42]
-        c.emit_op_u16(Op::STRUCT_SET, key, 0); // stack: []
+        c.emit_struct_field_op(Op::STRUCT_SET, 0, key, 0); // stack: []
 
         // read obj.x
         c.emit_op_u16(Op::LOCAL_GET, 0, 0); // stack: [obj]
-        c.emit_op_u16(Op::STRUCT_GET, key, 0); // stack: [42]
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, key, 0); // stack: [42]
     });
     assert_eq!(r.as_i32(), 42);
 }
@@ -369,19 +368,19 @@ fn struct_set_overwrites_field() {
         let v1 = c.add_constant(Value::I32(1));
         let v2 = c.add_constant(Value::I32(99));
 
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+        c.emit_struct_new(0, 0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, v1, 0);
-        c.emit_op_u16(Op::STRUCT_SET, key, 0);
+        c.emit_struct_field_op(Op::STRUCT_SET, 0, key, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
         c.emit_op_u16(Op::CONST, v2, 0);
-        c.emit_op_u16(Op::STRUCT_SET, key, 0);
+        c.emit_struct_field_op(Op::STRUCT_SET, 0, key, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::STRUCT_GET, key, 0);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, key, 0);
     });
     assert_eq!(r.as_i32(), 99);
 }
@@ -730,25 +729,43 @@ fn array_init_data_copies_into_array() {
     // Declare an `(array i8)` type and stamp the array with it; without an rtt
     // the VM must assume i32 (4-byte elements), and reading one element from
     // byte offset 2 of a 4-byte segment would legitimately trap.
-    let i8_array_type = {
+    {
         let mut td = vybe_runtime::typedef::TypeDef::new("<array i8>");
         td.add_field("i8");
-        vm.type_registry.register(td)
-    };
+        vm.type_registry.register(td);
+    }
 
     let mut c = Chunk::new("<test>");
     c.local_count = 1;
+    // `array.new_fixed $t` takes a 1-based index into THIS MODULE's type
+    // table, which the VM maps back to a name and resolves against the
+    // registry (`resolve_gc_rtt`) — it is NOT the registry id, because the
+    // host pre-registers its builtin types ahead of the module's own. So the
+    // module has to declare the type it names; entry 0 → immediate 1.
+    c.types.push(vybe_runtime::chunk::TypeEntry {
+        name: "<array i8>".to_string(),
+        kind: vybe_runtime::chunk::CompositeKind::Array,
+        parent: String::new(),
+        fields: vec!["i8".to_string()],
+        methods: Vec::new(),
+        is_interface: false,
+        implements: Vec::new(),
+        constructor_chunk: None,
+        field_descriptors: std::collections::HashMap::new(),
+    });
+    let i8_array_type = 1u16;
     {
         let one = c.add_constant(Value::I32(1));
         let two = c.add_constant(Value::I32(2));
         let null = c.add_constant(Value::Null);
-        let tid = c.add_constant(Value::I32(i8_array_type as i32));
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::CONST, null, 0);
         c.emit_op_u16(Op::CONST, null, 0);
-        c.emit_array_new_fixed(0, 3, 0);
-        c.emit_op_u16(Op::CONST, tid, 0);
-        c.emit_op(Op::SET_TYPE_ID, 0);
+        // `array.new_fixed $t 3` — the rtt comes from the TYPE INDEX immediate
+        // and is stamped at allocation, per spec. This used to allocate an
+        // untyped array and then re-stamp it with the custom `SET_TYPE_ID`
+        // opcode, which no longer exists.
+        c.emit_array_new_fixed(i8_array_type as u16, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -820,8 +837,8 @@ fn struct_get_s_reads_from_fields_array() {
     // struct.get_s/u read from obj.fields[field_idx]
     // For plain objects without a fields vec, returns Null
     let r = run(|c| {
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
-        c.emit_op_u16(Op::STRUCT_GET_S, 0, 0); // field 0 → Null
+        c.emit_struct_new(0, 0, 0);
+        c.emit_struct_field_op(Op::STRUCT_GET_S, 0, 0, 0); // field 0 → Null
         c.emit_op(Op::REF_IS_NULL, 0);
     });
     assert_eq!(r.as_i32(), 1); // fields[0] is null (empty)
@@ -830,8 +847,8 @@ fn struct_get_s_reads_from_fields_array() {
 #[test]
 fn struct_get_u_reads_from_fields_array() {
     let r = run(|c| {
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
-        c.emit_op_u16(Op::STRUCT_GET_U, 0, 0); // field 0 → Null
+        c.emit_struct_new(0, 0, 0);
+        c.emit_struct_field_op(Op::STRUCT_GET_U, 0, 0, 0); // field 0 → Null
         c.emit_op(Op::REF_IS_NULL, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -851,7 +868,7 @@ fn struct_new_desc_attaches_descriptor() {
         c.emit_op_u16(Op::CONST, desc_val, 0); // descriptor
         c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
         // read __descriptor back
-        c.emit_op_u16(Op::STRUCT_GET, desc_key, 0);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, desc_key, 0);
     });
     assert_eq!(r.as_str(), "my-type");
 }
@@ -863,7 +880,7 @@ fn struct_new_default_desc_attaches_descriptor() {
         let desc_key = c.add_constant(Value::String(Arc::from("__descriptor")));
         c.emit_op_u16(Op::CONST, desc_val, 0);
         c.emit_op_u16(Op::STRUCT_NEW_DEFAULT_DESC, 0, 0);
-        c.emit_op_u16(Op::STRUCT_GET, desc_key, 0);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, desc_key, 0);
     });
     assert_eq!(r.as_i32(), 42);
 }
@@ -883,7 +900,7 @@ fn ref_get_desc_retrieves_descriptor() {
 #[test]
 fn ref_get_desc_on_struct_without_desc_returns_null() {
     let r = run(|c| {
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+        c.emit_struct_new(0, 0, 0);
         c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
         c.emit_op(Op::REF_IS_NULL, 0);
     });
@@ -943,7 +960,7 @@ fn ref_cast_desc_eq_traps_on_a_null_descriptor_before_looking_at_the_reference()
         let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
         c.emit_op_u16(Op::CONST, desc, 0);
         c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
-        c.emit_op(Op::NULL, 0); // descriptor operand = null
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // descriptor operand = null
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
     assert!(
@@ -958,7 +975,7 @@ fn ref_cast_desc_eq_traps_on_a_reference_with_no_descriptor() {
     // never equal a real one.
     let err = run_err(|c| {
         let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
-        c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+        c.emit_struct_new(0, 0, 0);
         c.emit_op_u16(Op::CONST, desc, 0);
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
@@ -974,7 +991,7 @@ fn ref_cast_desc_eq_traps_on_a_null_reference_but_the_nullable_form_does_not() {
 
     let err = run_err(|c| {
         let desc = c.add_constant(Value::String(Arc::from(desc_text)));
-        c.emit_op(Op::NULL, 0); // the reference
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // the reference
         c.emit_op_u16(Op::CONST, desc, 0);
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
@@ -986,7 +1003,7 @@ fn ref_cast_desc_eq_traps_on_a_null_reference_but_the_nullable_form_does_not() {
     // The (ref null ht) form passes null straight through.
     let r = run(|c| {
         let desc = c.add_constant(Value::String(Arc::from(desc_text)));
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op_u16(Op::CONST, desc, 0);
         c.emit_op_u16(Op::REF_CAST_DESC_EQ_NULL, 0, 0);
         c.emit_op(Op::REF_IS_NULL, 0);
@@ -1085,7 +1102,7 @@ fn br_on_cast_desc_eq_fail_traps_on_a_null_descriptor() {
         let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
         c.emit_op_u16(Op::CONST, desc, 0);
         c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op(Op::BR_ON_CAST_DESC_EQ_FAIL, 0);
         c.emit((desc >> 8) as u8, 0);
         c.emit((desc & 0xFF) as u8, 0);
@@ -1109,7 +1126,7 @@ fn descriptor_instructions_do_not_desync_the_instructions_after_them() {
     chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
     chunk.emit_op_u16(Op::REF_GET_DESC, 0, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::NULL_NONE, 0); // the marker that must still decode
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, 0); // the marker that must still decode
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -1141,7 +1158,7 @@ fn descriptor_casts_round_trip_through_the_binary_format() {
     chunk.emit_op_u16(Op::CONST, desc, 0);
     chunk.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::NULL_NONE, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -1171,7 +1188,7 @@ fn br_on_cast_desc_eq_encodes_castflags_labelidx_and_two_heaptypes() {
     chunk.emit((desc & 0xFF) as u8, 0);
     chunk.emit(0u8, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::NULL_NONE, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -1200,7 +1217,7 @@ fn br_on_cast_desc_eq_encodes_castflags_labelidx_and_two_heaptypes() {
 #[test]
 fn typed_null_encodes_as_ref_null_none_and_roundtrips() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL_NONE, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -1213,7 +1230,7 @@ fn typed_null_encodes_as_ref_null_none_and_roundtrips() {
     );
 
     // Decode + re-encode: it must still be `ref.null none`, i.e. it decoded back
-    // to a typed null (Op::NULL_NONE), not collapsed to a plain null.
+    // to a typed null (`ref.null none`), not collapsed to a plain null.
     let chunks = read_wasm(&wasm).expect("read_wasm failed");
     let wasm2 = write_wasm(&chunks);
     assert!(
@@ -1225,7 +1242,7 @@ fn typed_null_encodes_as_ref_null_none_and_roundtrips() {
 #[test]
 fn plain_null_encodes_as_ref_null_extern() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -1277,8 +1294,7 @@ fn emit_three_element_array(c: &mut Chunk) {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new(),
-    });
+        field_descriptors: std::collections::HashMap::new() });
     let zero = c.add_constant(Value::I32(0));
     let three = c.add_constant(Value::I32(3));
     c.emit_op_u16(Op::CONST, zero, 0);   // fill value
@@ -1290,7 +1306,7 @@ fn emit_three_element_array(c: &mut Chunk) {
 #[test]
 fn array_len_traps_on_null_reference() {
     let err = run_locals_err(0, |c| {
-        c.emit_op(Op::NULL_NONE, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, 0);
         c.emit_op(Op::ARRAY_LENGTH, 0);
     });
     assert!(
@@ -1302,7 +1318,7 @@ fn array_len_traps_on_null_reference() {
 #[test]
 fn i31_get_s_traps_on_null_reference() {
     let err = run_locals_err(0, |c| {
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op(Op::I31_GET_S, 0);
     });
     assert!(
@@ -1314,7 +1330,7 @@ fn i31_get_s_traps_on_null_reference() {
 #[test]
 fn i31_get_u_traps_on_null_reference() {
     let err = run_locals_err(0, |c| {
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op(Op::I31_GET_U, 0);
     });
     assert!(
@@ -1489,4 +1505,179 @@ fn gc_struct_types_are_written_inside_a_rec_group() {
         has_bytes(&bytes, &[0x4E]) && has_bytes(&bytes, &[0x5F]),
         "expected a rec group containing a struct composite type"
     );
+}
+
+// ── array.new_fixed operand width ───────────────────────────────────────────
+
+#[test]
+fn array_new_fixed_inside_a_block_does_not_desync_the_scan() {
+    // `array.new_fixed` carries BOTH `$t` and `N` — four operand bytes. The
+    // VM's block-scanning pre-pass walks instructions by
+    // `operand_format().size_in()`, so declaring the op two bytes narrower
+    // than it is makes the scan resume INSIDE the following instruction and
+    // mismatch the enclosing block, which silently halts the program instead
+    // of trapping. Only code that builds a fixed array inside a block hits
+    // it — which is why it surfaced as one PHP branch (`array_fill(0, …)`)
+    // rather than as a broken opcode.
+    assert_eq!(
+        Op::ARRAY_NEW_FIXED.operand_format().fixed_size(),
+        4,
+        "array.new_fixed declares $t + N"
+    );
+
+    let r = run(|c| {
+        let sentinel = c.add_constant(Value::I32(7));
+        let _blk = c.emit_block_typed(0, 1);
+        c.emit_array_new_fixed(0, 0, 0); // empty array, in-block
+        c.emit_op(Op::ARRAY_LENGTH, 0);
+        c.emit_end(0);
+        // Reached only if the block closed where the scan thought it did.
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::CONST, sentinel, 0);
+    });
+    assert_eq!(
+        r.as_i32(),
+        7,
+        "execution must continue past the block that built the array"
+    );
+}
+
+// ── struct.new: dynamic vs typed ────────────────────────────────────────────
+
+#[test]
+fn struct_new_with_a_typeidx_stamps_rtt_and_fills_indexed_fields() {
+    // Spec `struct.new $t` takes its field count from $t, not from an
+    // immediate, lands the values in INDEXED storage, and stamps $t's rtt so
+    // `ref.test` answers from the type registry rather than a `__type`
+    // string. typeidx 0 stays the dynamic object-literal form.
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("Point", &["x", "y"]));
+    let a = chunk.add_constant(Value::I32(11));
+    let b = chunk.add_constant(Value::I32(22));
+    chunk.emit_op_u16(Op::CONST, a, 0);
+    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_struct_new(1, 0, 0); // typeidx 1 → chunk.types[0] = "Point"
+    chunk.emit_struct_field_op(Op::STRUCT_GET_U, 0, 1, 0); // indexed read of field 1
+    chunk.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![chunk]).expect("run failed");
+    assert_eq!(r.as_i32(), 22, "field 1 must come back from indexed storage");
+}
+
+#[test]
+fn struct_new_with_a_typeidx_answers_ref_test_from_the_registry() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("Point", &["x", "y"]));
+    let name = chunk.add_constant(Value::String(Arc::from("Point")));
+    let a = chunk.add_constant(Value::I32(1));
+    let b = chunk.add_constant(Value::I32(2));
+    chunk.emit_op_u16(Op::CONST, a, 0);
+    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_struct_new(1, 0, 0);
+    chunk.emit_op_u16(Op::REF_TEST, name, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![chunk]).expect("run failed");
+    assert_eq!(
+        r.as_i32(),
+        1,
+        "a typed struct.new must be recognised as its declared type"
+    );
+}
+
+#[test]
+fn struct_new_with_typeidx_zero_is_still_the_object_literal_form() {
+    // The ~258 rewritten emit sites all pass 0 — key/value pairs, named
+    // properties, no rtt. Breaking this breaks every object literal.
+    let r = run(|c| {
+        let k = c.add_constant(Value::String(Arc::from("a")));
+        let v = c.add_constant(Value::I32(5));
+        c.emit_op_u16(Op::CONST, k, 0);
+        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_struct_new(0, 1, 0);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, k, 0);
+    });
+    assert_eq!(r.as_i32(), 5);
+}
+
+#[test]
+fn struct_new_default_with_a_typeidx_allocates_the_declared_field_slots() {
+    // `struct.new_default $t` takes nothing off the stack: the instance is
+    // $t's fields at their defaults, with $t's rtt stamped.
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("Pair", &["a", "b"]));
+    let name = chunk.add_constant(Value::String(Arc::from("Pair")));
+    chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 1, 0);
+    chunk.emit_op_u16(Op::REF_TEST, name, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![chunk]).expect("run failed");
+    assert_eq!(r.as_i32(), 1, "the instance must carry its declared type");
+
+    // And the field slots exist — an indexed read of field 1 is defined
+    // (Null), not an out-of-range miss.
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("Pair", &["a", "b"]));
+    chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 1, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET_U, 0, 1, 0);
+    chunk.emit_op(Op::REF_IS_NULL, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![chunk]).expect("run failed");
+    assert_eq!(r.as_i32(), 1, "declared slots must be allocated and defaulted");
+}
+
+
+#[test]
+fn struct_set_has_an_indexed_form_that_struct_get_reads_back() {
+    // `struct.set $t i` did not exist — STRUCT_SET was name-keyed only, so
+    // nothing could write the indexed storage `struct.get_s`/`_u` read.
+    // Typed struct.set returns void, per spec.
+    let mut chunk = Chunk::new("<script>");
+    chunk.local_count = 1;
+    chunk.types.push(type_entry("Cell", &["v"]));
+    let v = chunk.add_constant(Value::I32(9));
+    chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 1, 0);
+    chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_op_u16(Op::CONST, v, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 1, 0, 0); // typed: fieldidx 0
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 1, 0, 0); // typed read
+    chunk.emit_op(Op::RETURN, 0);
+    let r = VM::new().run(vec![chunk]).expect("run failed");
+    assert_eq!(r.as_i32(), 9, "typed struct.set must write the indexed slot");
+}
+
+#[test]
+fn typed_struct_field_ops_trap_out_of_range_and_on_null() {
+    let mut chunk = Chunk::new("<script>");
+    chunk.types.push(type_entry("Cell", &["v"]));
+    chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 1, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 1, 7, 0); // no field 7
+    chunk.emit_op(Op::RETURN, 0);
+    let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
+    assert!(err.contains("out of range"), "got: {err}");
+
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 1, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
+    let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
+    assert!(err.contains("null reference"), "got: {err}");
+}
+
+#[test]
+fn struct_field_ops_with_typeidx_zero_stay_name_keyed() {
+    // The 1117 rewritten sites all pass 0 — this is every property access in
+    // every language.
+    let r = run_locals(1, |c| {
+        let k = c.add_constant(Value::String(Arc::from("a")));
+        let v = c.add_constant(Value::I32(3));
+        c.emit_struct_new(0, 0, 0);
+        c.emit_op_u16(Op::LOCAL_SET, 0, 0);
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_struct_field_op(Op::STRUCT_SET, 0, k, 0);
+        c.emit_op(Op::DROP, 0);
+        c.emit_op_u16(Op::LOCAL_GET, 0, 0);
+        c.emit_struct_field_op(Op::STRUCT_GET, 0, k, 0);
+    });
+    assert_eq!(r.as_i32(), 3);
 }

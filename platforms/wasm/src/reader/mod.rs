@@ -21,8 +21,7 @@ struct StandardSections {
     code_section: Vec<u8>,
     data_section: Vec<u8>,
     data_count_section: Vec<u8>,
-    tag_section: Vec<u8>,
-}
+    tag_section: Vec<u8> }
 
 pub fn read_wasm(data: &[u8]) -> Result<Vec<Chunk>, String> {
     if data.len() < 8 || &data[0..4] != &WASM_MAGIC {
@@ -138,8 +137,7 @@ fn section_order_rank(section_id: u8) -> u8 {
         12 => 11, // data_count is ordered before code
         SECTION_CODE => 12,
         11 => 13, // data
-        other => other,
-    }
+        other => other }
 }
 
 fn validate_standard_sections(sections: &StandardSections) -> Result<(), String> {
@@ -221,8 +219,7 @@ fn validate_standard_sections(sections: &StandardSections) -> Result<(), String>
 
 struct ImportDetail {
     kind: u8,
-    type_index: u32,
-}
+    type_index: u32 }
 
 /// Custom Descriptors adds `externtype ::= ... | 0x20 x:typeidx => func exact x`
 /// — the same payload as an ordinary function import (`0x00`), refined so a
@@ -540,8 +537,7 @@ fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegme
                 let offset = read_i32_const_expr_as_u64(data, &mut pos)?;
                 active_init = Some((memidx, offset));
             }
-            _ => return Err("Invalid WASM: unsupported data segment mode".into()),
-        }
+            _ => return Err("Invalid WASM: unsupported data segment mode".into()) }
         let (len, read) = read_leb128_u32(&data[pos..]);
         pos += read;
         let end = pos
@@ -555,8 +551,7 @@ fn parse_data_segments(data: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<ActiveDataSegme
             active.push(ActiveDataSegment {
                 memory_index,
                 offset,
-                data_index,
-            });
+                data_index });
         }
         pos = end;
     }
@@ -621,8 +616,7 @@ fn parse_element_segments(
                 skip_leb128(data, &mut pos); // reftype
                 true
             }
-            _ => return Err("Invalid WASM: unsupported element segment mode".into()),
-        };
+            _ => return Err("Invalid WASM: unsupported element segment mode".into()) };
         let (len, read) = read_leb128_u32(&data[pos..]);
         pos += read;
         let mut segment = Vec::with_capacity(len as usize);
@@ -639,8 +633,7 @@ fn parse_element_segments(
             active.push(ActiveElementSegment {
                 table_index,
                 offset,
-                elem_index,
-            });
+                elem_index });
         }
         segments.push(segment);
     }
@@ -728,13 +721,11 @@ struct CtrlFrame {
     param_arity: usize,
     result_arity: usize,
     is_loop: bool,
-    unreachable: bool,
-}
+    unreachable: bool }
 
 struct ArityStack {
     height: usize,
-    frames: Vec<CtrlFrame>,
-}
+    frames: Vec<CtrlFrame> }
 
 impl ArityStack {
     fn new(result_arity: usize) -> Self {
@@ -745,9 +736,7 @@ impl ArityStack {
                 param_arity: 0,
                 result_arity,
                 is_loop: false,
-                unreachable: false,
-            }],
-        }
+                unreachable: false }] }
     }
 
     fn push(&mut self, n: usize) {
@@ -791,8 +780,7 @@ impl ArityStack {
             param_arity,
             result_arity,
             is_loop,
-            unreachable: false,
-        });
+            unreachable: false });
         self.push(param_arity);
         Ok(())
     }
@@ -1614,8 +1602,7 @@ fn decode_standard_wasm(
 /// `end`) and the spec catch label `L` it branches to.
 struct EhClause {
     offset_pos: usize,
-    label: u32,
-}
+    label: u32 }
 
 /// Per-source-block bookkeeping for the translate pass. `emitted_span` is how
 /// many WASM blocks this one source block expands to in the emitted chunk: 1
@@ -1627,8 +1614,7 @@ struct LabelInfo {
     emitted_span: u32,
     /// Present while decoding a `try_table` body; drives trampoline emission
     /// at the matching `end`.
-    eh: Option<Vec<EhClause>>,
-}
+    eh: Option<Vec<EhClause>> }
 
 /// Translate a source `br N` (targets the label `n` levels out) into the
 /// emitted branch depth, accounting for `$skip` wrappers inserted around any
@@ -1733,8 +1719,7 @@ fn translate_wasm_to_chunk(
                     .collect();
                 label_stack.push(LabelInfo {
                     emitted_span: 2,
-                    eh: Some(clauses),
-                });
+                    eh: Some(clauses) });
             }
 
             // block blocktype — forward jump target
@@ -1743,8 +1728,7 @@ fn translate_wasm_to_chunk(
                 chunk.emit_block_typed(0, result_count);
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
-                    eh: None,
-                });
+                    eh: None });
             }
 
             // loop blocktype — backward jump target
@@ -1753,8 +1737,7 @@ fn translate_wasm_to_chunk(
                 chunk.emit_loop_typed(0, result_count);
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
-                    eh: None,
-                });
+                    eh: None });
             }
 
             // if blocktype — conditional block
@@ -1767,8 +1750,7 @@ fn translate_wasm_to_chunk(
                 }
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
-                    eh: None,
-                });
+                    eh: None });
             }
 
             // else
@@ -1807,8 +1789,7 @@ fn translate_wasm_to_chunk(
                         }
                         chunk.emit_end(0); // close $skip
                     }
-                    _ => chunk.emit_end(0),
-                }
+                    _ => chunk.emit_end(0) }
             }
 
             // br N — branch to Nth enclosing label (depth remapped for $skip)
@@ -1878,16 +1859,14 @@ fn translate_wasm_to_chunk(
             0x41 => {
                 let (val, read) = read_leb128_i32(&wasm[pos..]);
                 pos += read;
-                let ci = chunk.add_constant(Value::I32(val));
-                chunk.emit_op_u16(Op::CONST, ci, 0);
+                chunk.emit_i32_const(val, 0);
             }
 
             // i64.const
             0x42 => {
                 let (val, read) = read_leb128_i64(&wasm[pos..]);
                 pos += read;
-                let ci = chunk.add_constant(Value::I64(val));
-                chunk.emit_op_u16(Op::CONST, ci, 0);
+                chunk.emit_i64_const(val, 0);
             }
 
             // f64.const
@@ -1904,8 +1883,7 @@ fn translate_wasm_to_chunk(
                         wasm[pos + 7],
                     ]);
                     pos += 8;
-                    let ci = chunk.add_constant(Value::F64(val));
-                    chunk.emit_op_u16(Op::CONST, ci, 0);
+                    chunk.emit_f64_const(val, 0);
                 }
             }
 
@@ -1919,8 +1897,7 @@ fn translate_wasm_to_chunk(
                         wasm[pos + 3],
                     ]);
                     pos += 4;
-                    let ci = chunk.add_constant(Value::F64(val as f64));
-                    chunk.emit_op_u16(Op::CONST, ci, 0);
+                    chunk.emit_f32_const(val, 0);
                 }
             }
 
@@ -2176,18 +2153,16 @@ fn translate_wasm_to_chunk(
             0xC3 => chunk.emit_op(Op::I64_EXTEND16_S, 0),
             0xC4 => chunk.emit_op(Op::I64_EXTEND32_S, 0),
 
-            // Reference types. `ref.null <ht>`: an externref/funcref null is a
-            // plain null (lenient); a GC-heap null (none/any/eq/i31/struct/array
-            // or a concrete type index) is a WASM GC typed null that traps on the
-            // GC accessors — Op::NULL_NONE.
+            // Reference types. `ref.null <ht>` keeps its heaptype immediate
+            // rather than being collapsed onto two opcodes: an externref/funcref
+            // null is the lenient plain null, a GC-heap null traps on the GC
+            // accessors, and the VM tells them apart by reading the immediate
+            // (`heaptype::is_gc_heap`). Previously the byte was read and thrown
+            // away, and the GC case needed a custom opcode to survive.
             0xD0 => {
                 let ht = wasm.get(pos).copied().unwrap_or(0);
                 skip_leb128(wasm, &mut pos); // heaptype
-                if ht == 0x6F || ht == 0x70 {
-                    chunk.emit_op(Op::NULL, 0); // extern / func → plain null
-                } else {
-                    chunk.emit_op(Op::NULL_NONE, 0); // GC heap null → typed null
-                }
+                chunk.emit_ref_null(ht, 0);
             }
             0xD1 => chunk.emit_op(Op::REF_IS_NULL, 0),
 
@@ -2404,27 +2379,62 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
         return;
     };
     match op {
-        _ if op == Op::STRUCT_NEW
-            || op == Op::STRUCT_NEW_DEFAULT
-            || op == Op::STRUCT_GET
-            || op == Op::STRUCT_GET_S
-            || op == Op::STRUCT_GET_U
-            || op == Op::STRUCT_SET
+        // Spec `struct.new $t` carries only a typeidx; the field count comes
+        // from the type. Our bytecode is `(typeidx, count)` where count is
+        // used ONLY by the dynamic (typeidx 0) object-literal form, so a
+        // foreign module's typeidx goes in the first slot and the count is 0.
+        // It used to be written into the COUNT slot, where the VM read it as
+        // a key/value pair count and popped that many values off the stack.
+        _ if op == Op::STRUCT_NEW => {
+            let (type_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            chunk.emit_struct_new(type_idx as u16, 0, 0);
+        }
+        // `struct.get $t i` / `get_s` / `get_u` / `set $t i` carry TWO
+        // immediates (MVP.md §Instructions), not one. Reading a single leb
+        // left the fieldidx to be decoded as the next opcode.
+        //
+        // The read variants map to the INDEXED form (`o.fields[i]`), which is
+        // where a foreign `struct.new $t` now puts its values. `struct.set`
+        // has no indexed counterpart in this VM yet — it stays name-keyed, so
+        // a foreign struct.set does NOT write indexed storage. Consuming the
+        // right number of bytes is the part that matters here; the semantic
+        // half lands with the indexed-set work.
+        _ if op == Op::STRUCT_GET || op == Op::STRUCT_GET_S || op == Op::STRUCT_GET_U => {
+            skip_leb128(wasm, pos); // typeidx
+            let (field_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            chunk.emit_struct_field_op(Op::STRUCT_GET_U, 1, field_idx as u16, 0);
+        }
+        _ if op == Op::STRUCT_SET => {
+            skip_leb128(wasm, pos); // typeidx
+            let (field_idx, read) = read_leb128_u32(&wasm[*pos..]);
+            *pos += read;
+            // Indexed form now exists — a foreign `struct.set $t i` writes
+            // the same storage `struct.get $t i` reads. typeidx 1 is a
+            // non-zero marker: the VM only uses it to select the indexed
+            // path, the fieldidx is what addresses the slot.
+            chunk.emit_struct_field_op(Op::STRUCT_SET, 1, field_idx as u16, 0);
+        }
+        // `array.len` takes NO immediate — reading one consumed the first
+        // byte of the following instruction.
+        _ if op == Op::ARRAY_LENGTH => {
+            chunk.emit_op(Op::ARRAY_LENGTH, 0);
+        }
+        _ if op == Op::STRUCT_NEW_DEFAULT
             || op == Op::ARRAY_NEW
             || op == Op::ARRAY_NEW_DEFAULT
             || op == Op::ARRAY_GET
             || op == Op::ARRAY_GET_S
             || op == Op::ARRAY_GET_U
             || op == Op::ARRAY_SET
-            || op == Op::ARRAY_LENGTH
             || op == Op::ARRAY_FILL =>
         {
             let (idx, read) = read_leb128_u32(&wasm[*pos..]);
             *pos += read;
             match op.operand_format() {
                 vybe_runtime::opcode::OperandFormat::U16 => chunk.emit_op_u16(op, idx as u16, 0),
-                _ => chunk.emit_op(op, 0),
-            }
+                _ => chunk.emit_op(op, 0) }
         }
         _ if op == Op::ARRAY_NEW_FIXED => {
             // `array.new_fixed $t N` carries BOTH immediates, and our bytecode
@@ -2499,8 +2509,7 @@ fn emit_gc_prefixed(chunk: &mut Chunk, sub: u32, wasm: &[u8], pos: &mut usize) {
             let idx = chunk.add_constant(Value::String(Arc::from("__wasm_heaptype")));
             chunk.emit_op_u16(op, idx, 0);
         }
-        _ => chunk.emit_op(op, 0),
-    }
+        _ => chunk.emit_op(op, 0) }
 }
 
 fn emit_simd_prefixed(
@@ -2554,8 +2563,7 @@ fn emit_simd_prefixed(
             *pos += 1;
             chunk.emit_op_u8(op, lane, 0);
         }
-        _ => chunk.emit_op(op, 0),
-    }
+        _ => chunk.emit_op(op, 0) }
 }
 
 fn copy_simd_memarg(wasm: &[u8], pos: &mut usize, chunk: &mut Chunk, uses_memory64: bool) {
@@ -2774,8 +2782,7 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
             for _ in 0..param_count {
                 match read_value_type(data, pos) {
                     Some(byte) => params.push(byte),
-                    None => return false,
-                }
+                    None => return false }
             }
             let (result_count, read) = read_leb128_u32(&data[*pos..]);
             *pos += read;
@@ -2783,8 +2790,7 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
             for _ in 0..result_count {
                 match read_value_type(data, pos) {
                     Some(byte) => results.push(byte),
-                    None => return false,
-                }
+                    None => return false }
             }
             types.push((params, results));
             true
@@ -2810,8 +2816,7 @@ fn parse_comptype(data: &[u8], pos: &mut usize, types: &mut Vec<(Vec<u8>, Vec<u8
         }
         // An unknown composite tag means the encoding moved on without us;
         // stopping beats returning a table whose indices are quietly wrong.
-        _ => false,
-    }
+        _ => false }
 }
 
 /// `fieldtype = storagetype mutability`. Storage adds the packed types `i8`
@@ -2824,8 +2829,7 @@ fn skip_field_type(data: &[u8], pos: &mut usize) -> bool {
                 return false;
             }
         }
-        None => return false,
-    }
+        None => return false }
     // Mutability byte.
     if *pos >= data.len() {
         return false;
@@ -2968,8 +2972,7 @@ fn parse_imported_memory_min_pages(data: &[u8]) -> Vec<u64> {
                 skip_leb128(data, &mut pos); // valtype
                 pos = pos.saturating_add(1).min(data.len()); // mutability
             }
-            _ => break,
-        }
+            _ => break }
     }
     memories
 }
@@ -3006,8 +3009,7 @@ fn parse_imported_memory_max_pages(data: &[u8]) -> Vec<Option<u64>> {
                 skip_leb128(data, &mut pos);
                 pos = pos.saturating_add(1).min(data.len());
             }
-            _ => break,
-        }
+            _ => break }
     }
     memories
 }
@@ -3043,8 +3045,7 @@ fn parse_imported_table_min_sizes(data: &[u8]) -> Vec<u64> {
                 skip_leb128(data, &mut pos); // valtype
                 pos = pos.saturating_add(1).min(data.len()); // mutability
             }
-            _ => break,
-        }
+            _ => break }
     }
     tables
 }
@@ -3305,8 +3306,7 @@ fn read_stack_switch_handlers(data: &[u8], pos: &mut usize) -> Vec<StackSwitchHa
         handlers.push(StackSwitchHandler {
             kind,
             tag_index,
-            label_index,
-        });
+            label_index });
     }
     handlers
 }
@@ -3454,8 +3454,7 @@ fn simd_memory_opcode_name(sub: u32) -> &'static str {
     match sub {
         0x00 => "v128.load",
         0x0B => "v128.store",
-        _ => "SIMD memory operation",
-    }
+        _ => "SIMD memory operation" }
 }
 
 #[allow(dead_code)]
@@ -3463,8 +3462,7 @@ fn atomic_opcode_name(sub: u32) -> &'static str {
     match sub {
         0x10 => "i32.atomic.load",
         0x17 => "i32.atomic.store",
-        _ => "atomic memory operation",
-    }
+        _ => "atomic memory operation" }
 }
 
 fn skip_memarg(data: &[u8], pos: &mut usize) {
@@ -3574,8 +3572,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
             pos += nlen as usize;
             imports.push(vybe_runtime::chunk::Import {
                 module,
-                name: iname,
-            });
+                name: iname });
         }
 
         // Bytecode
@@ -3636,8 +3633,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     let descriptor = vybe_runtime::chunk::PropertyDescriptor {
                         writable: (flags & 0x01) != 0,
                         enumerable: (flags & 0x02) != 0,
-                        configurable: (flags & 0x04) != 0,
-                    };
+                        configurable: (flags & 0x04) != 0 };
                     field_descriptors.insert(field_name, descriptor);
                 }
 
@@ -3699,8 +3695,7 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                     is_interface,
                     implements,
                     constructor_chunk,
-                    field_descriptors,
-                });
+                    field_descriptors });
             }
         }
 
@@ -3794,6 +3789,45 @@ mod custom_descriptor_encoding_tests {
             (vec![], vec![0x7Fu8]),
             "the function type after the rec group must land at index 2"
         );
+    }
+
+    #[test]
+    fn gc_instructions_consume_exactly_their_spec_immediates() {
+        // MVP.md §Instructions. Each entry is (sub-opcode, immediate bytes
+        // that MUST be consumed). `struct.get`/`set` take typeidx + fieldidx;
+        // `array.len` takes none; `array.new_fixed` takes typeidx + N. Getting
+        // any of these wrong decodes the next instruction's first byte as an
+        // opcode, which is a silent halt rather than a trap.
+        let cases: &[(u32, &[u8])] = &[
+            (0x00, &[0x03]),             // struct.new $t
+            (0x01, &[0x03]),             // struct.new_default $t
+            (0x02, &[0x03, 0x01]),       // struct.get $t i
+            (0x03, &[0x03, 0x01]),       // struct.get_s $t i
+            (0x04, &[0x03, 0x01]),       // struct.get_u $t i
+            (0x05, &[0x03, 0x01]),       // struct.set $t i
+            (0x06, &[0x03]),             // array.new $t
+            (0x08, &[0x03, 0x02]),       // array.new_fixed $t N
+            (0x0B, &[0x03]),             // array.get $t
+            (0x0F, &[]),                 // array.len — NO immediate
+            (0x10, &[0x03]),             // array.fill $t
+            (0x11, &[0x03, 0x04]),       // array.copy $t1 $t2
+            (0x20, &[0x03]),             // struct.new_desc $t
+            (0x22, &[0x03]),             // ref.get_desc $t
+        ];
+        for (sub, immediates) in cases {
+            // A trailing sentinel byte that must NOT be consumed.
+            let mut bytes = immediates.to_vec();
+            bytes.push(0xEE);
+            let mut chunk = Chunk::new("<test>");
+            let mut pos = 0usize;
+            emit_gc_prefixed(&mut chunk, *sub, &bytes, &mut pos);
+            assert_eq!(
+                pos,
+                immediates.len(),
+                "0xFB {sub:#04x} must consume exactly {} immediate byte(s)",
+                immediates.len()
+            );
+        }
     }
 
     #[test]
