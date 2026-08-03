@@ -12,8 +12,7 @@ pub struct Rect {
     pub x: f32,
     pub y: f32,
     pub w: f32,
-    pub h: f32,
-}
+    pub h: f32 }
 impl Rect {
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
@@ -23,14 +22,12 @@ impl Rect {
 pub struct FormLayout {
     pub toolbox: Rect,
     pub content: Rect,
-    pub properties: Rect,
-}
+    pub properties: Rect }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlTool {
     Pointer,
-    Control(ControlType),
-}
+    Control(ControlType) }
 
 fn next_ctrl_name(ct: &ControlType, form: &Form) -> String {
     let prefix = format!("{:?}", ct);
@@ -80,8 +77,7 @@ pub enum MenuAction {
     AddResourceFile,
     ProjectProperties,
     RunProject,
-    StopProject,
-}
+    StopProject }
 
 const MENUS: &[&str] = &["File", "Edit", "Project", "Run"];
 
@@ -126,23 +122,20 @@ fn menu_items_for(idx: usize) -> &'static [(&'static str, MenuAction)] {
         1 => EDIT_ITEMS,
         2 => PROJECT_ITEMS,
         3 => RUN_ITEMS,
-        _ => &[],
-    }
+        _ => &[] }
 }
 
 pub struct MenuBarState {
     pub open_menu: Option<usize>,
     pub hover_item: Option<usize>,
-    pub hover_menu: Option<usize>,
-}
+    pub hover_menu: Option<usize> }
 
 impl MenuBarState {
     pub fn new() -> Self {
         Self {
             open_menu: None,
             hover_item: None,
-            hover_menu: None,
-        }
+            hover_menu: None }
     }
 
     pub fn handle_hover(&mut self, mx: f32, my: f32, rect: Rect) {
@@ -279,8 +272,7 @@ impl MenuBarState {
     ) {
         let idx = match self.open_menu {
             Some(i) => i,
-            None => return,
-        };
+            None => return };
         let items = menu_items_for(idx);
         let mut menu_x = rect.x + 6.0;
         for (i, label) in MENUS.iter().enumerate() {
@@ -344,66 +336,54 @@ pub enum ToolbarAction {
     ViewCode,
     AddForm,
     AddCode,
-    Save,
-}
+    Save }
 
 struct TButton {
     label: &'static str,
     action: Option<ToolbarAction>,
-    is_sep: bool,
-}
+    is_sep: bool }
 
 const TBUTTONS: &[TButton] = &[
     TButton {
         label: "\u{1F4BE} Save",
         action: Some(ToolbarAction::Save),
-        is_sep: false,
-    },
+        is_sep: false },
     TButton {
         label: "",
         action: None,
-        is_sep: true,
-    },
+        is_sep: true },
     TButton {
         label: "\u{25B6} Start",
         action: Some(ToolbarAction::Run),
-        is_sep: false,
-    },
+        is_sep: false },
     TButton {
         label: "\u{25A0} End",
         action: Some(ToolbarAction::Stop),
-        is_sep: false,
-    },
+        is_sep: false },
     TButton {
         label: "",
         action: None,
-        is_sep: true,
-    },
+        is_sep: true },
     TButton {
         label: "Designer",
         action: Some(ToolbarAction::ViewDesigner),
-        is_sep: false,
-    },
+        is_sep: false },
     TButton {
         label: "Code",
         action: Some(ToolbarAction::ViewCode),
-        is_sep: false,
-    },
+        is_sep: false },
     TButton {
         label: "",
         action: None,
-        is_sep: true,
-    },
+        is_sep: true },
     TButton {
         label: "+ Form",
         action: Some(ToolbarAction::AddForm),
-        is_sep: false,
-    },
+        is_sep: false },
     TButton {
         label: "+ Code",
         action: Some(ToolbarAction::AddCode),
-        is_sep: false,
-    },
+        is_sep: false },
 ];
 
 pub fn render_toolbar_pub(
@@ -490,8 +470,7 @@ pub enum ResizeHandle {
     Right,
     BottomLeft,
     Bottom,
-    BottomRight,
-}
+    BottomRight }
 
 pub struct FormDesignerState {
     pub form: Form,
@@ -514,8 +493,7 @@ pub struct FormDesignerState {
     /// `(control_name_or_form_name, event_name)`.
     pub pending_event_request: Option<(String, String)>,
     pub undo_stack: Vec<Form>,
-    pub redo_stack: Vec<Form>,
-}
+    pub redo_stack: Vec<Form> }
 
 impl FormDesignerState {
     pub fn new() -> Self {
@@ -540,8 +518,7 @@ impl FormDesignerState {
             prop_panel: PropertiesPanel::new(),
             pending_event_request: None,
             undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-        }
+            redo_stack: Vec::new() }
     }
 
     /// Snapshot the current form into the undo stack. Called before any
@@ -586,21 +563,17 @@ impl FormDesignerState {
                 x: rect.x,
                 y: rect.y,
                 w: toolbox_w,
-                h: rect.h,
-            },
+                h: rect.h },
             content: Rect {
                 x: rect.x + toolbox_w,
                 y: rect.y,
                 w: content_w,
-                h: rect.h,
-            },
+                h: rect.h },
             properties: Rect {
                 x: rect.x + rect.w - properties_w,
                 y: rect.y,
                 w: properties_w,
-                h: rect.h,
-            },
-        }
+                h: rect.h } }
     }
 
     fn form_client_origin(&self, content_rect: Rect) -> (f32, f32) {
@@ -757,8 +730,7 @@ impl FormDesignerState {
             pixmap: pix,
             font_system: fs,
             swash_cache: sc,
-            scale,
-        };
+            scale };
         self.prop_panel.draw(
             &mut ctx,
             properties_rect.x,
@@ -772,8 +744,7 @@ impl FormDesignerState {
     fn current_prop_items(&self) -> Vec<PropItem> {
         match self.prop_panel.tab {
             PropTab::Properties => self.collect_props(),
-            PropTab::Events => self.collect_events(),
-        }
+            PropTab::Events => self.collect_events() }
     }
 
     const TRAY_H: f32 = 48.0;
@@ -815,8 +786,7 @@ impl FormDesignerState {
             ControlType::PageSetupDialog => "\u{1F4D0}",        // 📐
             ControlType::SqlConnection => "\u{1F5C4}",          // 🗄
             ControlType::OleDbConnection => "\u{1F5C4}",        // 🗄
-            _ => "\u{2699}",
-        }
+            _ => "\u{2699}" }
     }
 
     fn render_tray(
@@ -1310,8 +1280,7 @@ impl FormDesignerState {
                     let bindable = match ctrl.control_type {
                         CheckBox | RadioButton => "Checked",
                         PictureBox => "ImageLocation",
-                        _ => "Text",
-                    };
+                        _ => "Text" };
                     items.push(PropItem::DropdownRow(
                         "DataBindings.Source".into(),
                         Self::get_prop(ctrl, "DataBindings.Source", ""),
@@ -1721,8 +1690,7 @@ impl FormDesignerState {
                 "MouseUp",
                 "GotFocus",
                 "LostFocus",
-            ],
-        };
+            ] };
 
         events
             .iter()
@@ -2724,8 +2692,7 @@ impl FormDesignerState {
     pub fn place_control(&mut self, mx: f32, my: f32, rect: Rect) -> bool {
         let ct = match self.toolbox.selected_tool() {
             ControlTool::Control(ct) => ct,
-            ControlTool::Pointer => return false,
-        };
+            ControlTool::Pointer => return false };
         self.push_undo_snapshot();
         let (cx0, cy0) = self.form_client_origin(rect);
         let parent_id = Self::find_container_at(&self.form, None, cx0, cy0, mx, my, 0);
@@ -3148,270 +3115,205 @@ impl FormDesignerState {
 // Toolbox
 struct ToolEntry {
     label: &'static str,
-    tool: ControlTool,
-}
+    tool: ControlTool }
 
 struct SectionHeader {
-    label: &'static str,
-}
+    label: &'static str }
 
 enum ToolItem {
     Entry(ToolEntry),
-    Header(SectionHeader),
-}
+    Header(SectionHeader) }
 
 fn build_items() -> Vec<ToolItem> {
     use ControlType::*;
     vec![
         ToolItem::Entry(ToolEntry {
             label: "Pointer",
-            tool: ControlTool::Pointer,
-        }),
+            tool: ControlTool::Pointer }),
         ToolItem::Entry(ToolEntry {
             label: "Button",
-            tool: ControlTool::Control(Button),
-        }),
+            tool: ControlTool::Control(Button) }),
         ToolItem::Entry(ToolEntry {
             label: "Label",
-            tool: ControlTool::Control(Label),
-        }),
+            tool: ControlTool::Control(Label) }),
         ToolItem::Entry(ToolEntry {
             label: "TextBox",
-            tool: ControlTool::Control(TextBox),
-        }),
+            tool: ControlTool::Control(TextBox) }),
         ToolItem::Entry(ToolEntry {
             label: "CheckBox",
-            tool: ControlTool::Control(CheckBox),
-        }),
+            tool: ControlTool::Control(CheckBox) }),
         ToolItem::Entry(ToolEntry {
             label: "RadioButton",
-            tool: ControlTool::Control(RadioButton),
-        }),
+            tool: ControlTool::Control(RadioButton) }),
         ToolItem::Entry(ToolEntry {
             label: "ComboBox",
-            tool: ControlTool::Control(ComboBox),
-        }),
+            tool: ControlTool::Control(ComboBox) }),
         ToolItem::Entry(ToolEntry {
             label: "ListBox",
-            tool: ControlTool::Control(ListBox),
-        }),
+            tool: ControlTool::Control(ListBox) }),
         ToolItem::Entry(ToolEntry {
             label: "GroupBox",
-            tool: ControlTool::Control(Frame),
-        }),
+            tool: ControlTool::Control(Frame) }),
         ToolItem::Entry(ToolEntry {
             label: "PictureBox",
-            tool: ControlTool::Control(PictureBox),
-        }),
+            tool: ControlTool::Control(PictureBox) }),
         ToolItem::Entry(ToolEntry {
             label: "RichTextBox",
-            tool: ControlTool::Control(RichTextBox),
-        }),
+            tool: ControlTool::Control(RichTextBox) }),
         ToolItem::Entry(ToolEntry {
             label: "WebBrowser",
-            tool: ControlTool::Control(WebBrowser),
-        }),
+            tool: ControlTool::Control(WebBrowser) }),
         ToolItem::Entry(ToolEntry {
             label: "TreeView",
-            tool: ControlTool::Control(TreeView),
-        }),
+            tool: ControlTool::Control(TreeView) }),
         ToolItem::Entry(ToolEntry {
             label: "DataGridView",
-            tool: ControlTool::Control(DataGridView),
-        }),
+            tool: ControlTool::Control(DataGridView) }),
         ToolItem::Entry(ToolEntry {
             label: "Panel",
-            tool: ControlTool::Control(Panel),
-        }),
+            tool: ControlTool::Control(Panel) }),
         ToolItem::Entry(ToolEntry {
             label: "ListView",
-            tool: ControlTool::Control(ListView),
-        }),
+            tool: ControlTool::Control(ListView) }),
         ToolItem::Entry(ToolEntry {
             label: "TabControl",
-            tool: ControlTool::Control(TabControl),
-        }),
+            tool: ControlTool::Control(TabControl) }),
         ToolItem::Entry(ToolEntry {
             label: "ProgressBar",
-            tool: ControlTool::Control(ProgressBar),
-        }),
+            tool: ControlTool::Control(ProgressBar) }),
         ToolItem::Entry(ToolEntry {
             label: "NumericUpDown",
-            tool: ControlTool::Control(NumericUpDown),
-        }),
+            tool: ControlTool::Control(NumericUpDown) }),
         ToolItem::Entry(ToolEntry {
             label: "MenuStrip",
-            tool: ControlTool::Control(MenuStrip),
-        }),
+            tool: ControlTool::Control(MenuStrip) }),
         ToolItem::Entry(ToolEntry {
             label: "ContextMenuStrip",
-            tool: ControlTool::Control(ContextMenuStrip),
-        }),
+            tool: ControlTool::Control(ContextMenuStrip) }),
         ToolItem::Entry(ToolEntry {
             label: "StatusStrip",
-            tool: ControlTool::Control(StatusStrip),
-        }),
+            tool: ControlTool::Control(StatusStrip) }),
         ToolItem::Entry(ToolEntry {
             label: "DateTimePicker",
-            tool: ControlTool::Control(DateTimePicker),
-        }),
+            tool: ControlTool::Control(DateTimePicker) }),
         ToolItem::Entry(ToolEntry {
             label: "LinkLabel",
-            tool: ControlTool::Control(LinkLabel),
-        }),
+            tool: ControlTool::Control(LinkLabel) }),
         ToolItem::Entry(ToolEntry {
             label: "ToolStrip",
-            tool: ControlTool::Control(ToolStrip),
-        }),
+            tool: ControlTool::Control(ToolStrip) }),
         ToolItem::Entry(ToolEntry {
             label: "TrackBar",
-            tool: ControlTool::Control(TrackBar),
-        }),
+            tool: ControlTool::Control(TrackBar) }),
         ToolItem::Entry(ToolEntry {
             label: "MaskedTextBox",
-            tool: ControlTool::Control(MaskedTextBox),
-        }),
+            tool: ControlTool::Control(MaskedTextBox) }),
         ToolItem::Entry(ToolEntry {
             label: "SplitContainer",
-            tool: ControlTool::Control(SplitContainer),
-        }),
+            tool: ControlTool::Control(SplitContainer) }),
         ToolItem::Entry(ToolEntry {
             label: "FlowLayoutPanel",
-            tool: ControlTool::Control(FlowLayoutPanel),
-        }),
+            tool: ControlTool::Control(FlowLayoutPanel) }),
         ToolItem::Entry(ToolEntry {
             label: "TableLayoutPanel",
-            tool: ControlTool::Control(TableLayoutPanel),
-        }),
+            tool: ControlTool::Control(TableLayoutPanel) }),
         ToolItem::Entry(ToolEntry {
             label: "MonthCalendar",
-            tool: ControlTool::Control(MonthCalendar),
-        }),
+            tool: ControlTool::Control(MonthCalendar) }),
         ToolItem::Entry(ToolEntry {
             label: "HScrollBar",
-            tool: ControlTool::Control(HScrollBar),
-        }),
+            tool: ControlTool::Control(HScrollBar) }),
         ToolItem::Entry(ToolEntry {
             label: "VScrollBar",
-            tool: ControlTool::Control(VScrollBar),
-        }),
+            tool: ControlTool::Control(VScrollBar) }),
         ToolItem::Entry(ToolEntry {
             label: "CheckedListBox",
-            tool: ControlTool::Control(CheckedListBox),
-        }),
+            tool: ControlTool::Control(CheckedListBox) }),
         ToolItem::Entry(ToolEntry {
             label: "DomainUpDown",
-            tool: ControlTool::Control(DomainUpDown),
-        }),
+            tool: ControlTool::Control(DomainUpDown) }),
         ToolItem::Entry(ToolEntry {
             label: "PropertyGrid",
-            tool: ControlTool::Control(PropertyGrid),
-        }),
+            tool: ControlTool::Control(PropertyGrid) }),
         ToolItem::Entry(ToolEntry {
             label: "Splitter",
-            tool: ControlTool::Control(Splitter),
-        }),
+            tool: ControlTool::Control(Splitter) }),
         ToolItem::Header(SectionHeader { label: "DATA" }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F517} BindingSource",
-            tool: ControlTool::Control(BindingSourceComponent),
-        }),
+            tool: ControlTool::Control(BindingSourceComponent) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F9ED} BindingNavigator",
-            tool: ControlTool::Control(BindingNavigator),
-        }),
+            tool: ControlTool::Control(BindingNavigator) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F5C4} DataSet",
-            tool: ControlTool::Control(DataSetComponent),
-        }),
+            tool: ControlTool::Control(DataSetComponent) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F4CB} DataTable",
-            tool: ControlTool::Control(DataTableComponent),
-        }),
+            tool: ControlTool::Control(DataTableComponent) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F50C} DataAdapter",
-            tool: ControlTool::Control(DataAdapterComponent),
-        }),
+            tool: ControlTool::Control(DataAdapterComponent) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F440} DataView",
-            tool: ControlTool::Control(DataView),
-        }),
+            tool: ControlTool::Control(DataView) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F5C4} SqlConnection",
-            tool: ControlTool::Control(SqlConnection),
-        }),
+            tool: ControlTool::Control(SqlConnection) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F5C4} OleDbConnection",
-            tool: ControlTool::Control(OleDbConnection),
-        }),
+            tool: ControlTool::Control(OleDbConnection) }),
         ToolItem::Header(SectionHeader {
-            label: "COMPONENTS",
-        }),
+            label: "COMPONENTS" }),
         ToolItem::Entry(ToolEntry {
             label: "\u{23F1} Timer",
-            tool: ControlTool::Control(Timer),
-        }),
+            tool: ControlTool::Control(Timer) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F5BC} ImageList",
-            tool: ControlTool::Control(ImageList),
-        }),
+            tool: ControlTool::Control(ImageList) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{26A0} ErrorProvider",
-            tool: ControlTool::Control(ErrorProvider),
-        }),
+            tool: ControlTool::Control(ErrorProvider) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F4AC} ToolTip",
-            tool: ControlTool::Control(ToolTip),
-        }),
+            tool: ControlTool::Control(ToolTip) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F4E2} NotifyIcon",
-            tool: ControlTool::Control(NotifyIcon),
-        }),
+            tool: ControlTool::Control(NotifyIcon) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{2753} HelpProvider",
-            tool: ControlTool::Control(HelpProvider),
-        }),
+            tool: ControlTool::Control(HelpProvider) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{2699} BackgroundWorker",
-            tool: ControlTool::Control(BackgroundWorker),
-        }),
+            tool: ControlTool::Control(BackgroundWorker) }),
         ToolItem::Header(SectionHeader { label: "DIALOGS" }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F4C2} OpenFileDialog",
-            tool: ControlTool::Control(OpenFileDialog),
-        }),
+            tool: ControlTool::Control(OpenFileDialog) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F4BE} SaveFileDialog",
-            tool: ControlTool::Control(SaveFileDialog),
-        }),
+            tool: ControlTool::Control(SaveFileDialog) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F4C1} FolderBrowserDialog",
-            tool: ControlTool::Control(FolderBrowserDialog),
-        }),
+            tool: ControlTool::Control(FolderBrowserDialog) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F520} FontDialog",
-            tool: ControlTool::Control(FontDialog),
-        }),
+            tool: ControlTool::Control(FontDialog) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F3A8} ColorDialog",
-            tool: ControlTool::Control(ColorDialog),
-        }),
+            tool: ControlTool::Control(ColorDialog) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F5A8} PrintDialog",
-            tool: ControlTool::Control(PrintDialog),
-        }),
+            tool: ControlTool::Control(PrintDialog) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F4C4} PrintDocument",
-            tool: ControlTool::Control(PrintDocument),
-        }),
+            tool: ControlTool::Control(PrintDocument) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F50D} PrintPreviewDialog",
-            tool: ControlTool::Control(PrintPreviewDialog),
-        }),
+            tool: ControlTool::Control(PrintPreviewDialog) }),
         ToolItem::Entry(ToolEntry {
             label: "\u{1F4D0} PageSetupDialog",
-            tool: ControlTool::Control(PageSetupDialog),
-        }),
+            tool: ControlTool::Control(PageSetupDialog) }),
     ]
 }
 
@@ -3422,15 +3324,13 @@ const SCROLLBAR_W: f32 = 10.0;
 
 pub struct ToolboxState {
     pub selected_idx: Option<usize>,
-    pub scroll_y: f32,
-}
+    pub scroll_y: f32 }
 
 impl ToolboxState {
     pub fn new() -> Self {
         Self {
             selected_idx: Some(0),
-            scroll_y: 0.0,
-        }
+            scroll_y: 0.0 }
     }
 
     pub fn selected_tool(&self) -> ControlTool {
@@ -3461,8 +3361,7 @@ impl ToolboxState {
         for item in &items {
             match item {
                 ToolItem::Entry(_) => h += ITEM_H,
-                ToolItem::Header(_) => h += SECTION_H,
-            }
+                ToolItem::Header(_) => h += SECTION_H }
         }
         h
     }
@@ -3623,8 +3522,7 @@ fn parse_bool(s: &str) -> Result<bool, ()> {
     match s.trim() {
         t if t.eq_ignore_ascii_case("true") || t == "1" => Ok(true),
         t if t.eq_ignore_ascii_case("false") || t == "0" => Ok(false),
-        _ => Err(()),
-    }
+        _ => Err(()) }
 }
 
 fn stroke_rect(pix: &mut Pixmap, paint: &Paint, x: f32, y: f32, w: f32, h: f32, s: f32) {

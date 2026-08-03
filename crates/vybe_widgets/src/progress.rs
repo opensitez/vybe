@@ -2,8 +2,7 @@
 
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetId,
-};
+    WidgetId };
 use super::{WidgetColors, rounded_rect_path};
 use tiny_skia::*;
 
@@ -14,8 +13,7 @@ pub struct ProgressBar {
     pub colors: WidgetColors,
     pub id: WidgetId,
     pub name: String,
-    rect: LayoutRect,
-}
+    rect: LayoutRect }
 
 impl ProgressBar {
     pub fn new() -> Self {
@@ -26,8 +24,7 @@ impl ProgressBar {
             colors: WidgetColors::default(),
             id: WidgetId::next(),
             name: String::new(),
-            rect: LayoutRect::zero(),
-        }
+            rect: LayoutRect::zero() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -108,7 +105,6 @@ impl PanelWidget for ProgressBar {
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Number(self.value as f64),
-            _ => CommandValue::None,
-        }
+            _ => CommandValue::None }
     }
 }

@@ -284,8 +284,7 @@ impl VM {
         };
         let mut current = match val {
             Value::Object(o) => o.lock().unwrap().properties.get("__proto__").cloned(),
-            _ => return false,
-        };
+            _ => return false };
         // Bounded walk — a corrupt cyclic chain must not spin forever.
         for _ in 0..1024 {
             let Some(Value::Object(proto)) = current else {
@@ -325,8 +324,7 @@ impl VM {
                             | crate::value::ObjectKind::HostFunction(_)
                     )
                 }
-                _ => false,
-            };
+                _ => false };
         }
         // `i31`: unboxed 31-bit integers.
         if target_name == "i31" {
@@ -343,8 +341,7 @@ impl VM {
                             | crate::value::ObjectKind::HostFunction(_)
                     )
                 }
-                _ => false,
-            };
+                _ => false };
         }
         // `struct`: top of struct hierarchy — all non-array, non-func objects.
         if target_name == "struct" {
@@ -358,8 +355,7 @@ impl VM {
                             | crate::value::ObjectKind::HostFunction(_)
                     )
                 }
-                _ => false,
-            };
+                _ => false };
         }
         // `array`: top of array hierarchy.
         if target_name == "array" {
@@ -368,8 +364,7 @@ impl VM {
                     let ob = o.lock().unwrap();
                     matches!(ob.kind, crate::value::ObjectKind::Array(_))
                 }
-                _ => false,
-            };
+                _ => false };
         }
 
         // ── Named / user-defined types ────────────────────────────
@@ -446,8 +441,7 @@ impl VM {
                 }
             }
             Value::Null | Value::TypedNull(_) | Value::Undefined => false,
-            Value::Symbol(_) | Value::BigInt(_) => target_name.eq_ignore_ascii_case(val.type_tag()),
-        }
+            Value::Symbol(_) | Value::BigInt(_) => target_name.eq_ignore_ascii_case(val.type_tag()) }
     }
 
     // -- Execute --

@@ -68,19 +68,19 @@ fn js_can_read_python_dict_fields() {
     chunk.local_count = 3;
 
     // Create dict like Python does (struct_new + struct_set)
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    chunk.emit_struct_new(0, 0, 0);
     chunk.emit_dup(0);
     let name_val = chunk.add_constant(Value::String(Arc::from("Rex")));
     chunk.emit_op_u16(Op::CONST, name_val, 0);
     let name_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, name_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Read like JS does (struct_get)
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let get_name = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_GET, get_name, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, get_name, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -97,19 +97,19 @@ fn python_can_read_js_object_fields() {
     chunk.local_count = 3;
 
     // JS-style object creation
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    chunk.emit_struct_new(0, 0, 0);
     chunk.emit_dup(0);
     let val = chunk.add_constant(Value::String(Arc::from("hello")));
     chunk.emit_op_u16(Op::CONST, val, 0);
     let key = chunk.add_constant(Value::String(Arc::from("msg")));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Python-style dict access
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let get_key = chunk.add_constant(Value::String(Arc::from("msg")));
-    chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, get_key, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -137,7 +137,7 @@ fn cls_case_resolution_at_link_time() {
     // C# component defines Dog with PascalCase field "Name"
     let mut cs_script = Chunk::new("<script>");
     cs_script.local_count = 1;
-    cs_script.emit_op(Op::NULL, 0);
+    cs_script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     cs_script.emit_op(Op::HALT, 0);
     cs_script.types.push(TypeEntry {
         name: "Dog".to_string(),
@@ -166,7 +166,7 @@ fn cls_case_resolution_at_link_time() {
     // VB component accesses Dog with lowercase "name" (VB convention)
     let mut vb_script = Chunk::new("<script>");
     vb_script.local_count = 1;
-    vb_script.emit_op(Op::NULL, 0);
+    vb_script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     vb_script.emit_op(Op::HALT, 0);
     // VB's constant pool has lowercased "name" from VB compiler
     let _name_idx = vb_script.add_constant(Value::String(Arc::from("name")));
@@ -220,7 +220,7 @@ fn cls_case_preserves_case_sensitive_languages() {
     // JS component with camelCase "firstName"
     let mut js_script = Chunk::new("<script>");
     js_script.local_count = 1;
-    js_script.emit_op(Op::NULL, 0);
+    js_script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     js_script.emit_op(Op::HALT, 0);
     js_script.add_constant(Value::String(Arc::from("firstName")));
 
@@ -237,7 +237,7 @@ fn cls_case_preserves_case_sensitive_languages() {
     // Python component with snake_case "first_name"
     let mut py_script = Chunk::new("<script>");
     py_script.local_count = 1;
-    py_script.emit_op(Op::NULL, 0);
+    py_script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     py_script.emit_op(Op::HALT, 0);
     py_script.add_constant(Value::String(Arc::from("first_name")));
 

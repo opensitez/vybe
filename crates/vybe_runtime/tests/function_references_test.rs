@@ -74,7 +74,7 @@ fn ref_func_opcode_registers_in_func_table() {
     script.emit(0u8, 0); // 0 upvalues
 
     // STRUCT_GET __table_idx — should be a non-negative integer
-    script.emit_op_u16(opcode::Op::STRUCT_GET, tidx_key, 0);
+    script.emit_struct_field_op(opcode::Op::STRUCT_GET, 0, tidx_key, 0);
     script.emit_op(opcode::Op::HALT, 0);
 
     let mut func_chunk = Chunk::new("g");

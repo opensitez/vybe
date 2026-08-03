@@ -14,8 +14,7 @@ pub enum ProblemSeverity {
     Error,
     Warning,
     Info,
-    Hint,
-}
+    Hint }
 
 /// A single problem entry.
 #[derive(Clone, Debug)]
@@ -23,15 +22,13 @@ pub struct ProblemEntry {
     pub file: String,
     pub line: usize,
     pub severity: ProblemSeverity,
-    pub message: String,
-}
+    pub message: String }
 
 /// Which tab is active in the output panel.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum OutputTab {
     Output,
-    Problems,
-}
+    Problems }
 
 /// Events emitted by the OutputPanel.
 #[derive(Clone, Debug)]
@@ -43,8 +40,7 @@ pub enum OutputPanelEvent {
     /// User switched tab
     TabChanged(OutputTab),
     /// User clicked a problem at the given index
-    ProblemClicked(usize),
-}
+    ProblemClicked(usize) }
 
 pub struct OutputPanel {
     pub id: WidgetId,
@@ -57,8 +53,7 @@ pub struct OutputPanel {
     bg_color: (u8, u8, u8, u8),
     header_bg: (u8, u8, u8, u8),
     accent_color: (u8, u8, u8, u8),
-    visible: bool,
-}
+    visible: bool }
 
 impl OutputPanel {
     pub fn new() -> Self {
@@ -73,8 +68,7 @@ impl OutputPanel {
             bg_color: (25, 25, 30, 255),
             header_bg: (35, 35, 42, 255),
             accent_color: (0, 122, 204, 255),
-            visible: true,
-        }
+            visible: true }
     }
 
     pub fn set_output_lines(&mut self, lines: &[String]) {
@@ -120,8 +114,7 @@ impl OutputPanel {
     pub fn scroll_to_bottom(&mut self) {
         let total = match self.active_tab {
             OutputTab::Output => self.output_lines.len(),
-            OutputTab::Problems => self.problems.len(),
-        };
+            OutputTab::Problems => self.problems.len() };
         self.scroll_y = (total as f32 * Self::LINE_H - (self.rect.h - Self::HEADER_H)).max(0.0);
     }
 
@@ -517,8 +510,7 @@ impl PanelWidget for OutputPanel {
         self.scroll_y = (self.scroll_y - delta).max(0.0);
         let total_lines = match self.active_tab {
             OutputTab::Output => self.output_lines.len(),
-            OutputTab::Problems => self.problems.len(),
-        };
+            OutputTab::Problems => self.problems.len() };
         let max_scroll =
             (total_lines as f32 * Self::LINE_H - (self.rect.h - Self::HEADER_H)).max(0.0);
         self.scroll_y = self.scroll_y.min(max_scroll);

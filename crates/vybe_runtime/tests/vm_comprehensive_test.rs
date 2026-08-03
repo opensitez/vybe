@@ -39,15 +39,13 @@ fn assert_f64(val: &Value, expected: f64) {
             expected,
             v
         ),
-        _ => panic!("Expected F64({}), got {:?}", expected, val),
-    }
+        _ => panic!("Expected F64({}), got {:?}", expected, val) }
 }
 
 fn assert_i32(val: &Value, expected: i32) {
     match val {
         Value::I32(v) => assert_eq!(*v, expected, "Expected I32({}), got I32({})", expected, v),
-        _ => panic!("Expected I32({}), got {:?}", expected, val),
-    }
+        _ => panic!("Expected I32({}), got {:?}", expected, val) }
 }
 
 fn assert_bool(val: &Value, expected: bool) {
@@ -60,8 +58,7 @@ fn assert_bool(val: &Value, expected: bool) {
             expected as i32,
             v
         ),
-        _ => panic!("Expected Bool/i32({}), got {:?}", expected, val),
-    }
+        _ => panic!("Expected Bool/i32({}), got {:?}", expected, val) }
 }
 
 fn assert_string(val: &Value, expected: &str) {
@@ -73,8 +70,7 @@ fn assert_string(val: &Value, expected: &str) {
             expected,
             s.as_ref()
         ),
-        _ => panic!("Expected String({:?}), got {:?}", expected, val),
-    }
+        _ => panic!("Expected String({:?}), got {:?}", expected, val) }
 }
 
 // ============================================================
@@ -535,8 +531,7 @@ fn f64_div_by_zero_infinity() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) => assert!(v.is_infinite() && v > 0.0, "Expected +Infinity, got {}", v),
-        _ => panic!("Expected F64(Infinity), got {:?}", result),
-    }
+        _ => panic!("Expected F64(Infinity), got {:?}", result) }
 }
 
 #[test]
@@ -552,8 +547,7 @@ fn f64_div_negative_by_zero() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) => assert!(v.is_infinite() && v < 0.0, "Expected -Infinity, got {}", v),
-        _ => panic!("Expected F64(-Infinity), got {:?}", result),
-    }
+        _ => panic!("Expected F64(-Infinity), got {:?}", result) }
 }
 
 #[test]
@@ -606,8 +600,8 @@ fn dyn_eq_different_numbers() {
 fn dyn_eq_null_null() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op(Op::NULL, 0);
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::EQ, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_bool(&run_chunks(vec![chunk]), true);
@@ -742,8 +736,7 @@ fn conv_i64_extend_i32() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I64(-5) => {}
-        _ => panic!("Expected I64(-5), got {:?}", result),
-    }
+        _ => panic!("Expected I64(-5), got {:?}", result) }
 }
 
 #[test]
@@ -774,7 +767,7 @@ fn dyn_to_bool_null() {
     // null is falsy: REF_IS_NULL(null) = i32(1), then invert = i32(0)
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::REF_IS_NULL, 0);
     chunk.emit_op(Op::I32_EQZ, 0);
     chunk.emit_op(Op::HALT, 0);
@@ -851,8 +844,7 @@ fn array_get_out_of_bounds() {
     // Out-of-bounds dynamic array access follows JS-like missing-value semantics.
     match result {
         Value::Undefined => {}
-        _ => panic!("Expected Undefined for out-of-bounds, got {:?}", result),
-    }
+        _ => panic!("Expected Undefined for out-of-bounds, got {:?}", result) }
 }
 
 #[test]
@@ -936,10 +928,10 @@ fn struct_new_and_get() {
     chunk.emit_op_u16(Op::CONST, v1, 0);
     chunk.emit_op_u16(Op::CONST, k2, 0);
     chunk.emit_op_u16(Op::CONST, v2, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 2, 0);
+    chunk.emit_struct_new(0, 2, 0);
     // struct_get "name"
     let name_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_GET, name_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_key, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_string(&run_chunks(vec![chunk]), "Alice");
 }
@@ -952,15 +944,14 @@ fn struct_get_missing_prop() {
     let v1 = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, k1, 0);
     chunk.emit_op_u16(Op::CONST, v1, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    chunk.emit_struct_new(0, 1, 0);
     let missing = chunk.add_constant(Value::String(Arc::from("y")));
-    chunk.emit_op_u16(Op::STRUCT_GET, missing, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, missing, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::Undefined => {}
-        _ => panic!("Expected Undefined for missing prop, got {:?}", result),
-    }
+        _ => panic!("Expected Undefined for missing prop, got {:?}", result) }
 }
 
 #[test]
@@ -971,19 +962,19 @@ fn struct_set_property() {
     let v1 = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, k1, 0);
     chunk.emit_op_u16(Op::CONST, v1, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    chunk.emit_struct_new(0, 1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     // struct_set: stack [obj, val] with operand prop name
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let new_val = chunk.add_constant(Value::I32(99));
     chunk.emit_op_u16(Op::CONST, new_val, 0);
     let x_key = chunk.add_constant(Value::String(Arc::from("x")));
-    chunk.emit_op_u16(Op::STRUCT_SET, x_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, x_key, 0);
     chunk.emit_op(Op::DROP, 0);
     // Read back
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let x_key2 = chunk.add_constant(Value::String(Arc::from("x")));
-    chunk.emit_op_u16(Op::STRUCT_GET, x_key2, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, x_key2, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_i32(&run_chunks(vec![chunk]), 99);
 }
@@ -1018,7 +1009,7 @@ fn struct_getter_auto_dispatch() {
     // Now struct_get "foo" should auto-invoke __get_foo
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let foo_key = main.add_constant(Value::String(Arc::from("foo")));
-    main.emit_op_u16(Op::STRUCT_GET, foo_key, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, foo_key, 0);
     main.emit_op(Op::HALT, 0);
 
     let mut getter = Chunk::new("getter");
@@ -1037,7 +1028,7 @@ fn chunk_emit_key_func_struct(chunk: &mut Chunk, key_const_idx: u16, func_chunk_
     chunk.emit_op_u16(Op::CONST, key_const_idx, 0);
     chunk.emit_op_u16(Op::REF_FUNC, func_chunk_idx, 0);
     chunk.emit(0, 0); // 0 upvalues
-    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    chunk.emit_struct_new(0, 1, 0);
 }
 
 #[test]
@@ -1054,7 +1045,7 @@ fn struct_setter_auto_dispatch() {
     let val = main.add_constant(Value::I32(5));
     main.emit_op_u16(Op::CONST, val, 0);
     let bar_key = main.add_constant(Value::String(Arc::from("bar")));
-    main.emit_op_u16(Op::STRUCT_SET, bar_key, 0);
+    main.emit_struct_field_op(Op::STRUCT_SET, 0, bar_key, 0);
     // setter return is discarded, val (5) is pushed
     main.emit_op(Op::HALT, 0);
 
@@ -1068,7 +1059,7 @@ fn struct_setter_auto_dispatch() {
     setter.emit_op_u16(Op::CONST, c2, 0);
     setter.emit_op(Op::I32_MUL, 0);
     let bar_key2 = setter.add_constant(Value::String(Arc::from("_bar")));
-    setter.emit_op_u16(Op::STRUCT_SET, bar_key2, 0);
+    setter.emit_struct_field_op(Op::STRUCT_SET, 0, bar_key2, 0);
     setter.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, setter]);
@@ -1211,7 +1202,7 @@ fn function_return_value() {
 fn ref_is_null_on_null() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::REF_IS_NULL, 0);
     chunk.emit_op(Op::HALT, 0);
     assert_eq!(run_chunks(vec![chunk]), Value::I32(1));

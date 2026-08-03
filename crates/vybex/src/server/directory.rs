@@ -17,14 +17,12 @@ use super::config::ServeConfig;
 pub enum Resolution {
     File(PathBuf),
     NotFound,
-    Forbidden,
-}
+    Forbidden }
 
 pub fn resolve(url_path: &str, config: &ServeConfig) -> Resolution {
     let decoded = match percent_encoding::percent_decode_str(url_path).decode_utf8() {
         Ok(s) => s.into_owned(),
-        Err(_) => return Resolution::Forbidden,
-    };
+        Err(_) => return Resolution::Forbidden };
 
     // Reject encoded / and parent traversal segments before canonicalize.
     if url_path.contains("%2f") || url_path.contains("%2F") {
@@ -41,12 +39,10 @@ pub fn resolve(url_path: &str, config: &ServeConfig) -> Resolution {
 
     let canonical = match candidate.canonicalize() {
         Ok(p) => p,
-        Err(_) => return Resolution::NotFound,
-    };
+        Err(_) => return Resolution::NotFound };
     let canonical_root = match config.root.canonicalize() {
         Ok(p) => p,
-        Err(_) => return Resolution::NotFound,
-    };
+        Err(_) => return Resolution::NotFound };
 
     if !canonical.starts_with(&canonical_root) {
         return Resolution::Forbidden;

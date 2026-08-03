@@ -150,7 +150,7 @@ pub fn emit_sample(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 0);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     // idx = floor(next_unit() * len); arr[idx]
     emit_next_unit(chunks, current, line);

@@ -6,6 +6,75 @@
 use super::*;
 
 impl Compiler {
+    /// Terminate the program with `status`, from any depth.
+    ///
+    /// THE exit primitive — every language's spelling lowers here: PHP
+    /// `exit`/`die`, Python `sys.exit`, Ruby `exit`/`exit!`, Lua `os.exit`, Go
+    /// `os.Exit`, Java `System.exit`, Pascal `Halt`, COBOL `STOP RUN`, JS
+    /// `process.exit`, C `exit`. It belongs beside `Return`/`Break`/`Throw`
+    /// because it is the same kind of thing: a non-local transfer that unwinds
+    /// every frame. Before this it was expressed three different ways — a
+    /// profile builtin bound straight to the host, a hardcoded arm behind a
+    /// language-name check, and a walker rewriting it to a plain `Return` —
+    /// and only one of the three flushed output buffers.
+    ///
+    /// WASI does the terminating: `wasi:cli/exit.exit-with-code` ends the guest
+    /// instance and hands the status back to the embedder, which is what the
+    /// component model requires. The VM never calls `process::exit` itself —
+    /// that would tear down a test binary or a server on the first `exit`.
+    ///
+    /// Two things every language needs and none should reimplement:
+    ///   * open output buffers are FLUSHED first. Ending the run skips the
+    ///     module epilogue, which is where `emit_ob_flush_all` normally runs, so
+    ///     `ob_start(); echo 'x'; exit(0);` printed nothing until this moved
+    ///     here.
+    ///   * a missing status is 0.
+    ///
+    /// What DIFFERS per language is only how the argument is spelled — Lua's
+    /// `os.exit(true)` means success, PHP's string argument is a message
+    /// printed with status 0, Python's goes to stderr with status 1. That is
+    /// normalization, and it belongs in each walker, not here.
+    ///
+    /// Stack: [status?] → [] (never returns at runtime).
+    pub(super) fn emit_exit_from_stack(&mut self, argc: u8) -> Result<(), String> {
+        let line = self.line;
+        if argc == 0 {
+            self.emit_const(Value::F64(0.0));
+        } else {
+            // Trailing arguments are not part of the status (Lua's
+            // `os.exit(code, close)`); the status is the FIRST, so drop back
+            // down to it.
+            for _ in 1..argc {
+                self.emit(Op::DROP);
+            }
+        }
+        let status_slot = self.define_local("__exit_status");
+        self.emit_u16(Op::LOCAL_SET, status_slot);
+
+        let current = self.current;
+        common::io::emit_ob_flush_all(&mut self.chunks, current, line);
+
+        let exit_idx = self.import("wasi:cli/exit", "exit-with-code");
+        self.emit_u16(Op::LOCAL_GET, status_slot);
+        self.emit_host_call(exit_idx, 1);
+
+        // Unreachable once the host call takes effect, but the chunk still has
+        // to be well formed for the paths that validate it.
+        self.emit_null();
+        self.emit_return_through_finally(1)?;
+        Ok(())
+    }
+
+    /// `StmtKind::Exit` — the statement form. A missing status is 0.
+    pub(super) fn compile_exit_stmt(&mut self, status: Option<&Expression>) -> Result<(), String> {
+        match status {
+            Some(expr) => {
+                self.compile_expr(expr)?;
+                self.emit_exit_from_stack(1)
+            }
+            None => self.emit_exit_from_stack(0) }
+    }
+
     /// Emit a `for v in gen():` loop that drives the generator via
     ///   block $exit
     ///     loop $loop
@@ -49,7 +118,7 @@ impl Compiler {
         // "iterator" (the walker-normalized [Symbol.iterator]).
         self.emit_u16(Op::LOCAL_GET, iter_slot);
         let iterator_key = self.str_const("iterator");
-        self.emit_u16(Op::STRUCT_GET, iterator_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, iterator_key);
         let iter_fn_slot = self.define_local("__cit_iter_fn");
         self.emit_u16(Op::LOCAL_SET, iter_fn_slot);
 
@@ -68,7 +137,7 @@ impl Compiler {
         // next_method = it.next via STRUCT_GET
         self.emit_u16(Op::LOCAL_GET, it_slot);
         let next_key_c = self.str_const("next");
-        self.emit_u16(Op::STRUCT_GET, next_key_c);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, next_key_c);
         self.emit_u16(Op::LOCAL_SET, next_method_slot);
 
         // Call next() with __js_this = it
@@ -94,7 +163,7 @@ impl Compiler {
 
         // step.done check
         self.emit_u16(Op::LOCAL_GET, step_slot);
-        self.emit_u16(Op::STRUCT_GET, done_key_c);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key_c);
         self.emit_u16(Op::LOCAL_SET, done_slot);
         self.emit_u16(Op::LOCAL_GET, done_slot);
         {
@@ -105,7 +174,7 @@ impl Compiler {
 
         // var = step.value
         self.emit_u16(Op::LOCAL_GET, step_slot);
-        self.emit_u16(Op::STRUCT_GET, value_key_c);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, value_key_c);
         let var_slot = self.define_local(var);
         self.emit_u16(Op::LOCAL_SET, var_slot);
 
@@ -121,8 +190,7 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             iterator_close_slot: Some(it_slot),
             is_continuable: true,
-            finally_depth: self.active_finally_blocks.len(),
-        });
+            finally_depth: self.active_finally_blocks.len() });
         for s in body {
             self.compile_stmt(s)?;
         }
@@ -172,8 +240,7 @@ impl Compiler {
         // Compile and stash the continuation.
         let (callee, args) = match &iter.kind {
             ExprKind::Call { callee, args, .. } => (callee, args),
-            _ => unreachable!("compile_generator_for_in expects Call"),
-        };
+            _ => unreachable!("compile_generator_for_in expects Call") };
         self.compile_call(callee, args)?;
         let cont_slot = self.define_local("__gen_cont");
         self.emit_u16(Op::LOCAL_SET, cont_slot);
@@ -229,7 +296,7 @@ impl Compiler {
             if self.profile.buffered_iterator_methods {
                 self.emit_buffered_generator_key_binding(key_slot, value_slot, key_index_slot);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
                 self.emit_u16(Op::LOCAL_SET, key_slot);
             }
         }
@@ -265,8 +332,7 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             iterator_close_slot: None,
             is_continuable: true,
-            finally_depth: self.active_finally_blocks.len(),
-        });
+            finally_depth: self.active_finally_blocks.len() });
         for s in body {
             self.compile_stmt(s)?;
         }
@@ -315,7 +381,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         inst!(self, core_wasm::bool_const, true);
         let returned_key = self.str_const("__vybe_gen_returned");
-        self.emit_u16(Op::STRUCT_SET, returned_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, returned_key);
         self.emit(Op::DROP);
         self.chunk().emit_end(line);
 
@@ -364,8 +430,7 @@ impl Compiler {
 
                 self.multi_return_functions.get(&self.canon(field)).copied()
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     /// Emit the CALL for a multi-value receive context *without* the
@@ -415,22 +480,26 @@ impl Compiler {
         if self.profile.tuple_literals_tagged {
             common::tuples::emit_tag(&mut self.chunks, self.current, line);
         }
-        if self.profile.name == "lua" {
-            let row_slot = self.define_local("__lua_mv_pack_row");
+        if !self.profile.multi_value_row_marker.is_empty() {
+            let row_slot = self.define_local("__mv_pack_row");
             self.emit_u16(Op::LOCAL_SET, row_slot);
-            self.stamp_lua_multi_row_slot(row_slot);
+            self.stamp_multi_value_row_slot(row_slot);
             self.emit_u16(Op::LOCAL_GET, row_slot);
         }
     }
 
-    pub(super) fn stamp_lua_multi_row_slot(&mut self, row_slot: u16) {
-        if self.profile.name != "lua" {
+    /// Stamp the profile's multi-value row marker on `row_slot`. A profile that
+    /// declares no marker does not distinguish rows from arrays — nothing is
+    /// emitted, so every call site can be unconditional.
+    pub(super) fn stamp_multi_value_row_slot(&mut self, row_slot: u16) {
+        let marker = self.profile.multi_value_row_marker.clone();
+        if marker.is_empty() {
             return;
         }
         self.emit_u16(Op::LOCAL_GET, row_slot);
         self.emit_const(Value::Bool(true));
-        let marker_key = self.str_const("__lua_multi_row");
-        self.emit_u16(Op::STRUCT_SET, marker_key);
+        let marker_key = self.str_const(&marker);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
         self.emit(Op::DROP);
     }
 
@@ -457,20 +526,17 @@ impl Compiler {
                         ArrayPatternElem::Pattern(BindingPattern::Ident(n), _) => {
                             names.push(n.clone());
                         }
-                        _ => return None,
-                    }
+                        _ => return None }
                 }
                 names
             }
-            _ => return None,
-        };
+            _ => return None };
         let multi_n = match &value.kind {
             ExprKind::Call { callee, args, .. } => {
                 let _ = args;
                 self.multi_return_arity_for_callee(callee)?
             }
-            _ => return None,
-        };
+            _ => return None };
         if multi_n as usize != idents.len() {
             return None;
         }
@@ -541,8 +607,7 @@ impl Compiler {
                     body,
                     catches,
                     else_body,
-                    finally,
-                } => {
+                    finally } => {
                     self.collect_multi_return_functions(body);
                     for catch in catches {
                         self.collect_multi_return_functions(&catch.body);
@@ -588,13 +653,29 @@ impl Compiler {
 
     pub(super) fn binding_uses_pointer_cell(&self, name: &str) -> bool {
         let key = self.pointer_binding_key(name);
-        self.pointer_cell_bindings
+        if self
+            .pointer_cell_bindings
             .get(&self.current)
             .is_some_and(|bindings| bindings.contains(&key))
-            || self
-                .pointer_cell_bindings
-                .values()
-                .any(|bindings| bindings.contains(&key))
+        {
+            return true;
+        }
+        // The map is keyed by chunk, and the module-wide fallback below exists
+        // for a name this chunk does NOT bind itself — a closure body reading a
+        // cell created in its enclosing chunk, or a promoted global.
+        //
+        // A name this chunk DOES bind (parameter or local) shadows every
+        // same-named binding elsewhere, so the fallback must not answer for it.
+        // Without this, Go's `c.Bump()` promoting `main`'s local `c` to a cell
+        // made every other chunk with a parameter named `c` — such as the
+        // receiver of `func (c Counter) Peek() int { return c.n }` — read
+        // through a cell that isn't there, yielding `undefined`.
+        if self.resolve_named_local_slot(name).is_some() {
+            return false;
+        }
+        self.pointer_cell_bindings
+            .values()
+            .any(|bindings| bindings.contains(&key))
     }
 
     pub(super) fn mark_pointer_cell_binding(&mut self, name: &str) {
@@ -606,13 +687,7 @@ impl Compiler {
     }
 
     pub(super) fn resolve_named_local_slot(&self, name: &str) -> Option<u16> {
-        self.scope().resolve(name).or_else(|| {
-            if self.case_sensitive {
-                None
-            } else {
-                self.scope().resolve_ci(name)
-            }
-        })
+        self.scope().resolve(name)
     }
 
     pub(super) fn promote_local_binding_to_pointer_cell(&mut self, name: &str) -> Option<u16> {
@@ -632,7 +707,7 @@ impl Compiler {
 
     pub(super) fn promote_global_binding_to_pointer_cell(&mut self, name: &str) -> bool {
         let canon_name = self.canon(name);
-        if self.profile.name != "c" && !self.defined_globals.contains(&canon_name) {
+        if !self.profile.globals_may_be_undeclared && !self.defined_globals.contains(&canon_name) {
             return false;
         }
 
@@ -709,7 +784,7 @@ impl Compiler {
         let kind_key = self.str_const("__ref_kind");
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::STRUCT_GET, kind_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
         self.emit_string_eq_literal("cell");
         let cell_line = self.line;
         self.chunk().emit_if(cell_line);
@@ -718,7 +793,7 @@ impl Compiler {
         self.chunk().emit_else(cell_line);
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::STRUCT_GET, kind_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
         self.emit_string_eq_literal("carray");
         let carray_line = self.line;
         self.chunk().emit_if(carray_line);
@@ -728,7 +803,7 @@ impl Compiler {
         let base_slot = self.define_local("__ref_carray_base");
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::STRUCT_GET, base_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, base_key);
         self.emit_u16(Op::LOCAL_SET, base_slot);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
@@ -737,7 +812,7 @@ impl Compiler {
         self.chunk().emit_if(base_obj_line);
 
         self.emit_u16(Op::LOCAL_GET, base_slot);
-        self.emit_u16(Op::STRUCT_GET, kind_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
         self.emit_string_eq_literal("cell");
         let base_cell_line = self.line;
         self.chunk().emit_if(base_cell_line);
@@ -746,14 +821,14 @@ impl Compiler {
         self.chunk().emit_else(base_cell_line);
         self.emit_u16(Op::LOCAL_GET, base_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::STRUCT_GET, idx_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx_key);
         common::collections::emit_get(&mut self.chunks, self.current, self.line);
         self.chunk().emit_end(base_cell_line);
 
         self.chunk().emit_else(base_obj_line);
         self.emit_u16(Op::LOCAL_GET, base_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
-        self.emit_u16(Op::STRUCT_GET, idx_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx_key);
         common::collections::emit_get(&mut self.chunks, self.current, self.line);
         self.chunk().emit_end(base_obj_line);
 
@@ -788,8 +863,7 @@ impl Compiler {
             }
             ExprKind::Unary {
                 op: UnaryOp::Deref,
-                expr,
-            } => {
+                expr } => {
                 self.compile_expr(expr)?;
                 return Ok(());
             }
@@ -1238,11 +1312,38 @@ impl Compiler {
         let l = self.line;
         self.chunks[self.current].emit_op(op, l);
     }
+    /// `ref.null extern` — the lenient null every dynamic language's
+    /// `null`/`NULL`/`None`/`nil` compiles to. `ref.null` takes a heaptype
+    /// immediate per spec; the GC-heap heaptypes give a typed null that traps
+    /// on the GC accessors, which is NOT what these sites want.
+    pub(crate) fn emit_null(&mut self) {
+        let l = self.line;
+        self.chunks[self.current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, l);
+    }
     pub(crate) fn emit_u16(&mut self, op: Op, v: u16) {
         let l = self.line;
         self.chunks[self.current].emit_op_u16(op, v, l);
     }
     /// `array.new_fixed $t N`. Type index `0` = dynamic-language array literal.
+    /// `struct.get`/`get_s`/`get_u`/`set` — `(typeidx, idx)`; typeidx 0 keeps
+    /// `idx` a field-NAME constant index.
+    pub(crate) fn emit_struct_field_op(
+        &mut self,
+        op: vybe_runtime::opcode::Op,
+        typeidx: u16,
+        idx: u16,
+    ) {
+        let l = self.line;
+        self.chunks[self.current].emit_struct_field_op(op, typeidx, idx, l);
+    }
+
+    /// `struct.new` — typeidx 0 is the dynamic object-literal form; `count`
+    /// is then the number of key/value pairs on the stack.
+    pub(crate) fn emit_struct_new(&mut self, typeidx: u16, count: u16) {
+        let l = self.line;
+        self.chunks[self.current].emit_struct_new(typeidx, count, l);
+    }
+
     pub(crate) fn emit_array_new_fixed(&mut self, typeidx: u16, count: u16) {
         let l = self.line;
         self.chunks[self.current].emit_array_new_fixed(typeidx, count, l);
@@ -1251,38 +1352,12 @@ impl Compiler {
         let l = self.line;
         self.chunks[self.current].emit_op_u8(op, v, l);
     }
+    /// Constant encoding lives in ONE place — `primitives::datetime::push_const`
+    /// — so this method and the 1432 adapter call sites that use the free
+    /// function cannot encode the same literal two different ways.
     pub(crate) fn emit_const(&mut self, val: Value) {
         let l = self.line;
-        let c = &mut self.chunks[self.current];
-        match val {
-            Value::I32(v) => c.emit_i32_const(v, l),
-            Value::I64(v) => c.emit_i64_const(v, l),
-            Value::F64(v) => c.emit_f64_const(v, l),
-            Value::Bool(v) => c.emit_bool_const(v, l),
-            Value::Null => c.emit_op(Op::NULL, l),
-            Value::Undefined => {
-                let idx = c.add_constant(Value::String(Arc::from("undefined")));
-                c.emit_op_u16(Op::GLOBAL_GET, idx, l);
-            }
-            Value::String(ref s) => c.emit_string_const(s, l),
-            Value::BigInt(v) => {
-                // AST BigInt literals always fit i64 (oversize literals
-                // are normalized to BigInt("…") by the walker), so the
-                // ToBigInt64 wrap here is lossless.
-                c.emit_i64_const(v.to_i64_wrapping(), l);
-                let idx = c.add_import("wasm:js-bigint", "fromI64");
-                c.emit_call(idx, 1, l);
-            }
-            Value::V128(v) => {
-                c.emit_op(Op::V128_CONST, l);
-                for b in v {
-                    c.emit(b, l);
-                }
-            }
-            other => {
-                panic!("emit_const: no WASM-compliant encoding for {:?}", other);
-            }
-        }
+        crate::primitives::datetime::push_const(&mut self.chunks[self.current], val, l);
     }
 
     /// Compute WASM `br` depth for `break`.
@@ -1321,7 +1396,7 @@ impl Compiler {
         let return_fn_slot = self.define_local("__iterator_close_return");
 
         self.emit_u16(Op::LOCAL_GET, iterator_slot);
-        self.emit_u16(Op::STRUCT_GET, return_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, return_key);
         self.emit_u16(Op::LOCAL_SET, return_fn_slot);
 
         self.emit_u16(Op::LOCAL_GET, return_fn_slot);

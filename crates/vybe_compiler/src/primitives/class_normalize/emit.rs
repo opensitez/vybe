@@ -128,8 +128,7 @@ pub fn emit_class_from_ast(
             members,
             modifiers,
             is_value_type,
-        )?,
-    };
+        )? };
     // Set centrally, like `bases`: every path lands here — the stored
     // declaration-pass copy and each per-language normalizer alike — so no
     // language has to remember to carry it.
@@ -183,8 +182,7 @@ fn normalize_from_ast_legacy(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: access_from_visibility(modifiers.visibility),
-                    readonly: modifiers.is_readonly,
-                };
+                    readonly: modifiers.is_readonly };
                 if modifiers.is_shared {
                     static_fields.push(field);
                 } else {
@@ -214,8 +212,7 @@ fn normalize_from_ast_legacy(
                     raw_extra_members.push(member.clone());
                 }
             }
-            _ => raw_extra_members.push(member.clone()),
-        }
+            _ => raw_extra_members.push(member.clone()) }
     }
 
     NormalClass {

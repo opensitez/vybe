@@ -421,7 +421,7 @@ pub fn emit_throw_if_unresolved(chunk: &mut Chunk, exception_name: &str, message
     chunk.emit_op_u16(Op::LOCAL_GET, symbol_slot, line);
     emit_undefined_test(chunk, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     push_str(chunk, message, line);
     crate::primitives::errors::emit_exception_new_finalize(chunk, exception_name, line);
@@ -462,7 +462,7 @@ pub fn emit_receiver_missing_symbol_get(
     let argc = if include_receiver_arg { 2 } else { 1 };
     chunks[current].emit_op_u8(Op::CALL_REF, argc, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 }
 

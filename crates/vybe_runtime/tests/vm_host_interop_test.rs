@@ -319,7 +319,7 @@ fn host_receives_object_args() {
     main.emit_op_u16(Op::CONST, key, 0);
     let val = main.add_constant(Value::I32(42));
     main.emit_op_u16(Op::CONST, val, 0);
-    main.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    main.emit_struct_new(0, 1, 0);
     emit_call_import(&mut main, imp, 1);
     main.emit_op(Op::HALT, 0);
 
@@ -373,7 +373,7 @@ fn vm_object_to_host_read_properties() {
     main.emit_op_u16(Op::CONST, v1, 0);
     main.emit_op_u16(Op::CONST, k2, 0);
     main.emit_op_u16(Op::CONST, v2, 0);
-    main.emit_op_u16(Op::STRUCT_NEW, 2, 0);
+    main.emit_struct_new(0, 2, 0);
     emit_call_import(&mut main, imp, 1);
     main.emit_op(Op::HALT, 0);
 
@@ -401,7 +401,7 @@ fn host_creates_object_vm_reads() {
     let imp = main.add_import("test", "make_obj");
     emit_call_import(&mut main, imp, 0);
     let prop = main.add_constant(Value::String(Arc::from("color")));
-    main.emit_op_u16(Op::STRUCT_GET, prop, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, prop, 0);
     main.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![main]).unwrap();
@@ -432,9 +432,9 @@ fn host_nested_object_vm_navigates() {
     let imp = main.add_import("test", "nested");
     emit_call_import(&mut main, imp, 0);
     let prop_child = main.add_constant(Value::String(Arc::from("child")));
-    main.emit_op_u16(Op::STRUCT_GET, prop_child, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, prop_child, 0);
     let prop_value = main.add_constant(Value::String(Arc::from("value")));
-    main.emit_op_u16(Op::STRUCT_GET, prop_value, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, prop_value, 0);
     main.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![main]).unwrap();
@@ -468,7 +468,7 @@ fn vm_modifies_object_host_sees() {
     let v1 = main.add_constant(Value::I32(1));
     main.emit_op_u16(Op::CONST, kx, 0);
     main.emit_op_u16(Op::CONST, v1, 0);
-    main.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    main.emit_struct_new(0, 1, 0);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Modify: obj.x = 99
@@ -476,7 +476,7 @@ fn vm_modifies_object_host_sees() {
     let v99 = main.add_constant(Value::I32(99));
     main.emit_op_u16(Op::CONST, v99, 0);
     let kx2 = main.add_constant(Value::String(Arc::from("x")));
-    main.emit_op_u16(Op::STRUCT_SET, kx2, 0);
+    main.emit_struct_field_op(Op::STRUCT_SET, 0, kx2, 0);
     main.emit_op(Op::DROP, 0); // drop struct_set result
 
     // Pass to host
@@ -519,7 +519,7 @@ fn host_modifies_object_vm_sees() {
     let v1 = main.add_constant(Value::I32(1));
     main.emit_op_u16(Op::CONST, kx, 0);
     main.emit_op_u16(Op::CONST, v1, 0);
-    main.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    main.emit_struct_new(0, 1, 0);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Pass to host fn which adds y=999
@@ -530,7 +530,7 @@ fn host_modifies_object_vm_sees() {
     // Read y from object
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     let ky = main.add_constant(Value::String(Arc::from("y")));
-    main.emit_op_u16(Op::STRUCT_GET, ky, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, ky, 0);
     main.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![main]).unwrap();
@@ -576,7 +576,7 @@ fn object_with_array_property_host_reads() {
     main.emit_op_u16(Op::LOCAL_SET, 0, 0); // temp store
     main.emit_op_u16(Op::CONST, k_items, 0);
     main.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    main.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    main.emit_struct_new(0, 1, 0);
 
     emit_call_import(&mut main, imp, 1);
     main.emit_op(Op::HALT, 0);
@@ -782,14 +782,14 @@ fn roundtrip_object_through_host() {
     let vd = main.add_constant(Value::I32(12345));
     main.emit_op_u16(Op::CONST, kd, 0);
     main.emit_op_u16(Op::CONST, vd, 0);
-    main.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    main.emit_struct_new(0, 1, 0);
     emit_call_import(&mut main, imp_store, 1);
     main.emit_op(Op::DROP, 0); // drop null
 
     // Load it back and read property
     emit_call_import(&mut main, imp_load, 0);
     let kd2 = main.add_constant(Value::String(Arc::from("data")));
-    main.emit_op_u16(Op::STRUCT_GET, kd2, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, kd2, 0);
     main.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![main]).unwrap();
@@ -808,7 +808,7 @@ fn invoke_chunk_function_returns_value() {
     // chunk 0: dummy main (needed for run to load chunks)
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: function that returns 42
@@ -845,7 +845,7 @@ fn invoke_with_args_as_locals() {
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: (a, b) => a + b
@@ -884,7 +884,7 @@ fn invoke_clears_stack_between_calls() {
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: (x) => x * 2
@@ -930,7 +930,7 @@ fn invoke_preserves_globals() {
     main_chunk.emit_op_u16(Op::CONST, c0, 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("counter")));
     main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: reads global "counter", adds 1, sets it, returns it
@@ -988,7 +988,7 @@ fn invoke_function_calls_host() {
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
     let _imp = main_chunk.add_import("test", "square");
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: (x) => host_square(x) + 1
@@ -1032,7 +1032,7 @@ fn invoke_modifies_global() {
     main_chunk.emit_op_u16(Op::CONST, c_init, 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("status")));
     main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: sets global "status" = "done", returns Null
@@ -1101,7 +1101,7 @@ fn invoke_host_function_object() {
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     vm.run(vec![main_chunk]).unwrap();
@@ -1132,7 +1132,7 @@ fn invoke_twice_globals_updated() {
     main_chunk.emit_op_u16(Op::CONST, c0, 0);
     let g = main_chunk.add_constant(Value::String(Arc::from("acc")));
     main_chunk.emit_op_u16(Op::GLOBAL_SET, g, 0);
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: (n) => acc = acc + n; return acc
@@ -1178,7 +1178,7 @@ fn invoke_function_calls_another_vm_function() {
 
     let mut main_chunk = Chunk::new("main");
     main_chunk.local_count = 1;
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: outer(x) => calls inner(x) + 1
@@ -1254,7 +1254,7 @@ fn callback_store_and_invoke() {
     main_chunk.emit(0, 0); // 0 upvalues
     emit_call_import(&mut main_chunk, imp, 1);
     main_chunk.emit_op(Op::DROP, 0);
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: (x) => x + 100
@@ -1307,7 +1307,7 @@ fn callback_method_with_me_arg() {
     main_chunk.emit(0, 0); // 0 upvalues
     emit_call_import(&mut main_chunk, imp, 1);
     main_chunk.emit_op(Op::DROP, 0);
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: method(me) => me.value * 2
@@ -1317,7 +1317,7 @@ fn callback_method_with_me_arg() {
     method.local_count = 1;
     method.emit_op_u16(Op::LOCAL_GET, 0, 0); // me
     let prop_val = method.add_constant(Value::String(Arc::from("value")));
-    method.emit_op_u16(Op::STRUCT_GET, prop_val, 0);
+    method.emit_struct_field_op(Op::STRUCT_GET, 0, prop_val, 0);
     let c2 = method.add_constant(Value::I32(2));
     method.emit_op_u16(Op::CONST, c2, 0);
     method.emit_op(Op::I32_MUL, 0);
@@ -1373,7 +1373,7 @@ fn multiple_callbacks_invoke_correct() {
     emit_call_import(&mut main_chunk, imp, 1);
     main_chunk.emit_op(Op::DROP, 0);
 
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: () => 111
@@ -1437,7 +1437,7 @@ fn callback_modifies_global_subsequent_reads() {
     main_chunk.emit(0, 0);
     emit_call_import(&mut main_chunk, imp, 1);
     main_chunk.emit_op(Op::DROP, 0);
-    main_chunk.emit_op(Op::NULL, 0);
+    main_chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main_chunk.emit_op(Op::HALT, 0);
 
     // chunk 1: sets global "state" = "updated"
@@ -1556,7 +1556,7 @@ fn call_value_on_null_errors() {
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op(Op::NULL, 0);
+    main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main.emit_op_u8(Op::CALL, 0, 0);
     main.emit_op(Op::HALT, 0);
 
@@ -1601,7 +1601,7 @@ fn invoke_on_non_function_errors() {
 
     let mut main = Chunk::new("main");
     main.local_count = 1;
-    main.emit_op(Op::NULL, 0);
+    main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     main.emit_op(Op::HALT, 0);
 
     vm.run(vec![main]).unwrap();

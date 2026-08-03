@@ -6,16 +6,14 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetEvent, WidgetId, command_color, command_number,
-};
+    WidgetEvent, WidgetId, command_color, command_number };
 use tiny_skia::*;
 
 /// Flow direction for child arrangement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlowDirection {
     LeftToRight,
-    TopDown,
-}
+    TopDown }
 
 pub struct FlowLayoutPanel {
     pub width: f32,
@@ -37,8 +35,7 @@ pub struct FlowLayoutPanel {
     /// `flex == 0`. Default ~a toolbar height.
     pub fixed_main: f32,
     rect: LayoutRect,
-    children: Vec<Box<dyn PanelWidget>>,
-}
+    children: Vec<Box<dyn PanelWidget>> }
 
 impl FlowLayoutPanel {
     pub fn new() -> Self {
@@ -59,8 +56,7 @@ impl FlowLayoutPanel {
             flex: 1.0,
             fixed_main: 44.0,
             rect: LayoutRect::zero(),
-            children: Vec::new(),
-        }
+            children: Vec::new() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -116,8 +112,7 @@ impl FlowLayoutPanel {
 
         match self.flow_direction {
             FlowDirection::LeftToRight => self.layout_left_to_right(),
-            FlowDirection::TopDown => self.layout_top_down(),
-        }
+            FlowDirection::TopDown => self.layout_top_down() }
     }
 
     // Flutter Row: children side by side. Fixed-flex children keep their
@@ -379,9 +374,7 @@ impl PanelWidget for FlowLayoutPanel {
                     }
                     CommandValue::None
                 }
-                _ => CommandValue::None,
-            },
-            _ => CommandValue::None,
-        }
+                _ => CommandValue::None },
+            _ => CommandValue::None }
     }
 }

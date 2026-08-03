@@ -33,8 +33,7 @@ pub struct PlatformBaseSpec {
     pub ancestry: Vec<String>,
     pub control_fn: Option<String>,
     pub field_gui: Vec<PlatformFieldGui>,
-    pub value_equality: bool,
-}
+    pub value_equality: bool }
 
 /// How a platform constructor arg maps onto a GUI/control-backed field.
 #[derive(Debug, Clone)]
@@ -42,8 +41,7 @@ pub enum PlatformFieldGui {
     NestOrProp(String),
     Children,
     Event(String),
-    Caption,
-}
+    Caption }
 
 impl Default for PlatformFieldGui {
     fn default() -> Self {
@@ -184,8 +182,7 @@ pub struct NormalClass {
     /// `Some` means: this class gains the spec's fields, constructs its backing
     /// control through `control_fn`, and stamps the spec's `ancestry` — the
     /// same contribution a mixin makes, from a source that is already data.
-    pub platform_base: Option<PlatformBaseSpec>,
-}
+    pub platform_base: Option<PlatformBaseSpec> }
 
 /// The member buckets a normalizer fills while walking a class body.
 ///
@@ -212,8 +209,7 @@ pub struct NormalMembers {
     pub auto_init_methods: Vec<String>,
     pub special_methods: Vec<SpecialMethod>,
     pub raw_extra_members: Vec<crate::ClassMember>,
-    pub augmentations: Vec<Augmentation>,
-}
+    pub augmentations: Vec<Augmentation> }
 
 impl NormalMembers {
     /// Route a field to the static or instance bucket. The caller decides
@@ -262,8 +258,7 @@ impl NormalMembers {
             None => true,
             // An unnamed constructor displaces a named one already in the
             // slot; it never displaces another unnamed one (first wins).
-            Some(held) => held.named_name.is_some() && ctor.named_name.is_none(),
-        };
+            Some(held) => held.named_name.is_some() && ctor.named_name.is_none() };
         if takes_primary_slot {
             self.constructor = Some(ctor.clone());
         }
@@ -477,8 +472,7 @@ impl Default for NormalClass {
             // Filled only by the compiler's augmentation pass; a normalizer
             // declares augmentations, never their lowering.
             synthesized_bases: Vec::new(),
-            platform_base: None,
-        }
+            platform_base: None }
     }
 }
 
@@ -487,8 +481,7 @@ pub enum Access {
     Public,
     Protected,
     Internal, // package / assembly visibility
-    Private,
-}
+    Private }
 
 /// The AST's declared visibility IS the normalized access level — the two
 /// vocabularies match one-for-one, and every language that has visibility maps
@@ -506,8 +499,7 @@ impl From<crate::Visibility> for Access {
             crate::Visibility::Public => Access::Public,
             crate::Visibility::Protected => Access::Protected,
             crate::Visibility::Private => Access::Private,
-            crate::Visibility::Internal => Access::Internal,
-        }
+            crate::Visibility::Internal => Access::Internal }
     }
 }
 
@@ -519,8 +511,7 @@ pub struct NormalField {
     pub init: Option<Expression>,
     pub array_bounds: Option<Vec<Expression>>,
     pub access: Access,
-    pub readonly: bool,
-}
+    pub readonly: bool }
 
 #[derive(Debug, Clone)]
 pub struct NormalMethod {
@@ -558,8 +549,7 @@ pub struct NormalMethod {
     /// that aren't first-class in `NormalMethod`. The canonical
     /// fields (`is_virtual`, `is_override`, `is_abstract`, `access`)
     /// remain authoritative; `raw_modifiers` is just a carrier.
-    pub raw_modifiers: Modifiers,
-}
+    pub raw_modifiers: Modifiers }
 
 impl NormalMethod {
     /// The same implementation, bound under a DIFFERENT name.
@@ -601,8 +591,7 @@ pub struct NormalConstructor {
     /// Dart named constructors: `ClassName.named(args)` — carry the
     /// name suffix so `emit_class` can emit it as a named factory.
     /// `None` for the unnamed / primary ctor.
-    pub named_name: Option<String>,
-}
+    pub named_name: Option<String> }
 
 #[derive(Debug, Clone)]
 pub enum BaseCall {
@@ -616,8 +605,7 @@ pub enum BaseCall {
     /// compiler emits `super()` preamble.
     Auto,
     /// JS root class (no `extends`) or explicit no-op.
-    None,
-}
+    None }
 
 #[derive(Debug, Clone)]
 pub struct NormalProperty {
@@ -629,8 +617,7 @@ pub struct NormalProperty {
     pub setter: Option<NormalMethod>,
     /// For C# `{ get; set; }` auto-properties: the backing field name.
     /// `None` for fully-implemented properties.
-    pub auto_field: Option<String>,
-}
+    pub auto_field: Option<String> }
 
 #[derive(Debug, Clone)]
 pub struct SpecialMethod {
@@ -638,8 +625,7 @@ pub struct SpecialMethod {
     /// Matches the `canonical_name` of a method in the same class.
     pub canonical_name: String,
     /// Original name in source (for diagnostics).
-    pub source_name: String,
-}
+    pub source_name: String }
 
 
 // ── Class augmentation ──────────────────────────────────────────────────
@@ -668,8 +654,7 @@ pub enum AugmentationMode {
     /// it. Go field promotion — and Go's own spec word, chosen because
     /// "delegate" already means a first-class function type in this codebase
     /// (C# `delegate_declaration`, `vybe_compiler::emitter/src/delegates.rs`).
-    Promote,
-}
+    Promote }
 
 /// Where the augmenting type sits relative to the class's own members.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -677,8 +662,7 @@ pub enum AugmentationPosition {
     /// The class's own members win. PHP traits, Dart mixins, Ruby `include`.
     AfterOwn,
     /// The augmenting type wins over the class's own members. Ruby `prepend`.
-    BeforeOwn,
-}
+    BeforeOwn }
 
 /// What happens when two augmenting types supply the same member name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -701,8 +685,7 @@ pub enum AugmentationConflict {
     Ambiguous,
     /// An error unless the class explicitly resolves it (PHP `insteadof`,
     /// Java overriding the diamond, `X.super.m()`).
-    RequireExplicit,
-}
+    RequireExplicit }
 
 /// What `super` means inside an augmenting type's member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -711,8 +694,7 @@ pub enum AugmentationSuper {
     OwnParent,
     /// The next entry in the resolution order — NOT the augmenting type's
     /// own parent. Dart mixins, Ruby modules.
-    NextInOrder,
-}
+    NextInOrder }
 
 /// A per-member adjustment applied while augmenting: PHP `as` (rename and/or
 /// change visibility) and `insteadof` (exclude).
@@ -727,8 +709,7 @@ pub struct AugmentationAdjustment {
     /// stays in the same vocabulary as `NormalMethod.access`.
     pub visibility: Option<Access>,
     /// Drop this member from THIS augmentation (PHP `insteadof`).
-    pub exclude: bool,
-}
+    pub exclude: bool }
 
 /// Which member kinds may cross from the augmenting type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -740,8 +721,7 @@ pub struct AugmentationContributes {
     pub statics: bool,
     /// Dart mixins declare no constructors.
     pub constructors: bool,
-    pub abstract_members: bool,
-}
+    pub abstract_members: bool }
 
 impl Default for AugmentationContributes {
     fn default() -> Self {
@@ -750,8 +730,7 @@ impl Default for AugmentationContributes {
             fields: true,
             statics: false,
             constructors: false,
-            abstract_members: true,
-        }
+            abstract_members: true }
     }
 }
 
@@ -771,8 +750,7 @@ pub struct AugmentationPolicy {
     pub position: AugmentationPosition,
     pub conflict: AugmentationConflict,
     pub super_target: AugmentationSuper,
-    pub contributes: AugmentationContributes,
-}
+    pub contributes: AugmentationContributes }
 
 impl AugmentationPolicy {
     /// Combine this language's rules with one source clause.
@@ -794,12 +772,10 @@ impl AugmentationPolicy {
                     // speaks `Access`, so the conversion happens once, here,
                     // rather than in each language.
                     visibility: adj.visibility.map(Access::from),
-                    exclude: adj.exclude,
-                })
+                    exclude: adj.exclude })
                 .collect(),
             contributes: self.contributes,
-            depth: 0,
-        }
+            depth: 0 }
     }
 }
 
@@ -820,5 +796,4 @@ pub struct Augmentation {
     pub contributes: AugmentationContributes,
     /// `Promote` only: promotion depth. Shallower wins; EQUAL depth with the
     /// same name is an `Error` (Go).
-    pub depth: u8,
-}
+    pub depth: u8 }

@@ -89,21 +89,44 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
             // without the name.
             let label = match chunk.imports.get(fn_idx as usize) {
                 Some(imp) => format!(" ({}:{})", imp.module, imp.name),
-                None => " (OUT-OF-RANGE)".to_string(),
-            };
+                None => " (OUT-OF-RANGE)".to_string() };
             (
                 format!("CallHost fn={} argc={}{}", fn_idx, argc, label),
                 operand_start + 3,
             )
         }
         OperandFormat::U16_U16 => {
-            // try_start: u16 catch, u16 finally
+            // Every U16_U16 op is a WASM GC instruction carrying a type
+            // immediate plus a second one. (This arm used to hardcode the
+            // retired `try_start`'s "catch/finally" text, which mislabelled
+            // all of them once the struct ops widened to two immediates —
+            // `try_table` is 0x00 0x1F and does not use this format.)
             let a = chunk.read_u16(operand_start);
             let b = chunk.read_u16(operand_start + 2);
-            (
-                format!("TryStart catch={} finally={}", a, b),
-                operand_start + 4,
-            )
+            let text = match op {
+                // `(typeidx, fieldidx)`. typeidx 0 is the dynamic form, where
+                // the second immediate is a constant-pool property NAME —
+                // resolving it is what makes property access readable
+                // (`struct.get 3 (whoami)`), as documented in
+                // `documentation/debugging.md`. A non-zero typeidx makes it a
+                // spec fieldidx into indexed storage, which has no name.
+                Op::STRUCT_GET | Op::STRUCT_GET_S | Op::STRUCT_GET_U | Op::STRUCT_SET => {
+                    if a == 0 {
+                        let named = (b as usize) < chunk.constants.len();
+                        if named {
+                            format!("{} {} ({})", name, b, chunk.constants[b as usize])
+                        } else {
+                            format!("{} {}", name, b)
+                        }
+                    } else {
+                        format!("{} type={} field={}", name, a, b)
+                    }
+                }
+                // `(typeidx, count)` — typeidx 0 builds a dynamic object from
+                // `count` key/value pairs; non-zero is the spec `struct.new $t`.
+                Op::STRUCT_NEW => format!("{} type={} count={}", name, a, b),
+                _ => format!("{} type={} {}", name, a, b) };
+            (text, operand_start + 4)
         }
         OperandFormat::U16_I16 => {
             // br_on_cast: u16 type_name + i16 offset
@@ -200,8 +223,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
                     1 => format!("catch_ref tag={tag}"),
                     2 => "catch_all".to_string(),
                     3 => "catch_all_ref".to_string(),
-                    k => format!("kind{k}?"),
-                };
+                    k => format!("kind{k}?") };
                 clauses.push(name);
             }
             (

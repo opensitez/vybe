@@ -37,8 +37,7 @@ pub struct PercentOptions {
     /// Escape `~`. RFC 3986 lists it unreserved; php `urlencode` predates that.
     pub escape_tilde: bool,
     /// Left unescaped beyond the unreserved set — py `quote` defaults to `"/"`.
-    pub safe: &'static str,
-}
+    pub safe: &'static str }
 
 impl PercentOptions {
     /// php `urlencode`
@@ -46,32 +45,28 @@ impl PercentOptions {
         PercentOptions {
             space_as_plus: true,
             escape_tilde: true,
-            safe: "",
-        }
+            safe: "" }
     }
     /// php `rawurlencode` — RFC 3986
     pub const fn rfc3986() -> PercentOptions {
         PercentOptions {
             space_as_plus: false,
             escape_tilde: false,
-            safe: "",
-        }
+            safe: "" }
     }
     /// py `quote_plus`
     pub const fn form_rfc3986() -> PercentOptions {
         PercentOptions {
             space_as_plus: true,
             escape_tilde: false,
-            safe: "",
-        }
+            safe: "" }
     }
     /// py `quote` — path-safe
     pub const fn path() -> PercentOptions {
         PercentOptions {
             space_as_plus: false,
             escape_tilde: false,
-            safe: "/",
-        }
+            safe: "/" }
     }
 }
 
@@ -91,7 +86,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),
@@ -221,8 +216,7 @@ pub enum UrlField {
     Netloc,
     Path,
     Query,
-    Fragment,
-}
+    Fragment }
 
 /// Per-language parse rules over ONE parser.
 ///
@@ -242,8 +236,7 @@ pub enum UrlField {
 pub struct ParseOptions {
     pub mode: ParseMode,
     /// Lowercase the scheme — python `urlsplit` does, php `parse_url` does not.
-    pub lowercase_scheme: bool,
-}
+    pub lowercase_scheme: bool }
 
 impl ParseOptions {
     /// python `urlsplit` / `urlparse`.
@@ -266,8 +259,7 @@ pub enum ParseMode {
     /// php `parse_url`, python `urlsplit` — split only, change nothing.
     Syntactic,
     /// js `new URL(...)` — WHATWG normalization.
-    Whatwg,
-}
+    Whatwg }
 
 /// The WHATWG property backing a component, and whether a prefix/suffix
 /// character has to come off. `None` means the component is composite and is
@@ -282,8 +274,7 @@ fn whatwg_property(field: UrlField) -> Option<(&'static str, Trim)> {
         UrlField::Path => Some(("pathname", Trim::None)),
         UrlField::Query => Some(("search", Trim::LeadingChar)),
         UrlField::Fragment => Some(("hash", Trim::LeadingChar)),
-        UrlField::Netloc => None,
-    }
+        UrlField::Netloc => None }
 }
 
 enum Trim {
@@ -292,8 +283,7 @@ enum Trim {
     /// `substring(1)` of `""` is `""`, so no guard is needed.
     LeadingChar,
     /// Drop the `:` that WHATWG's `protocol` carries.
-    TrailingColon,
-}
+    TrailingColon }
 
 /// Read one canonical component from a parsed URL in `url_slot`.
 /// Stack: `-> [string]`.
@@ -377,8 +367,7 @@ fn emit_netloc(chunks: &mut [Chunk], current: usize, url_slot: u16, line: u32) {
 pub fn emit_parse(chunks: &mut [Chunk], current: usize, opts: ParseOptions, line: u32) {
     match opts.mode {
         ParseMode::Whatwg => call_import(chunks, current, "web:url", "new", 1, line),
-        ParseMode::Syntactic => emit_parse_syntactic(chunks, current, opts, line),
-    }
+        ParseMode::Syntactic => emit_parse_syntactic(chunks, current, opts, line) }
 }
 
 fn lget_at(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
@@ -391,7 +380,7 @@ fn lset_at(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
 
 fn struct_get(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
     let k = chunks[current].add_constant(Value::String(Arc::from(key)));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
 }
 
 /// RFC 3986 §B — the reference regex for splitting a URI, extended with the
@@ -443,7 +432,7 @@ fn emit_parse_syntactic(chunks: &mut [Chunk], current: usize, opts: ParseOptions
     call_import(chunks, current, "ecma:regexp", "exec", 2, line);
     lset_at(chunks, current, m, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     lset_at(chunks, current, out, line);
 
     for (group, prop, prefix, suffix) in SYNTACTIC_FIELDS {
@@ -483,7 +472,7 @@ fn emit_parse_syntactic(chunks: &mut [Chunk], current: usize, opts: ParseOptions
         lset_at(chunks, current, v, line);
         lget_at(chunks, current, out, line);
         lget_at(chunks, current, v, line);
-        chunks[current].emit_op_u16(Op::STRUCT_SET, k, line);
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
         chunks[current].emit_op(Op::DROP, line);
     }
 
@@ -515,7 +504,7 @@ fn emit_host_composite(chunks: &mut [Chunk], current: usize, out: u16, line: u32
     chunks[current].emit_end(line);
     call_import(chunks, current, "wasm:js-string", "concat", 2, line);
     let k = chunks[current].add_constant(Value::String(Arc::from("host")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, k, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 

@@ -27,16 +27,14 @@ pub enum ExecResult {
     /// Execution completed with a value.
     Done(Value),
     /// Execution suspended — waiting for host/runtime resolution.
-    Suspended { kind: SuspensionKind, id: u64 },
-}
+    Suspended { kind: SuspensionKind, id: u64 } }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuspensionKind {
     Await,
     Jspi,
     Future,
-    StreamRead,
-}
+    StreamRead }
 
 /// Restricted context passed to host functions.
 /// Provides only the capabilities a host function needs:
@@ -61,6 +59,9 @@ pub struct HostContext<'a> {
     /// Raw pointer to VM.pending_exit — set by `wasi:cli/exit` to end the run.
     /// Null when no VM is attached (HostContext::empty()).
     exit_slot: *mut bool,
+    /// Raw pointer to VM.pending_exit_code — the status `wasi:cli/exit` was
+    /// given. Null when no VM is attached (`HostContext::empty()`).
+    exit_code_slot: *mut i32,
     /// Raw pointer to VM globals for host-managed JS receiver binding.
     /// Null when no VM is attached (HostContext::empty()).
     globals_slot: *mut HashMap<String, Value>,
@@ -72,8 +73,7 @@ pub struct HostContext<'a> {
     /// canon `stream<u8>` / `future<T>` i32 handle (CanonicalABI lowering)
     /// can resolve it to the EventLoop stream/future id.
     /// Null when no VM is attached (HostContext::empty()).
-    handle_table_slot: *const crate::handle_table::HandleTable,
-}
+    handle_table_slot: *const crate::handle_table::HandleTable }
 
 // SAFETY: HostContext is always created and used on the VM's owning thread.
 // The raw pointer to last_exception_slot is valid for the duration of the host
@@ -124,6 +124,17 @@ impl<'a> HostContext<'a> {
     /// Request clean termination of the current run (WASI `cli/exit`). The VM
     /// ends `run()` at the next host-call return, unwinding all frames and
     /// handing control back to the embedder — not `std::process::exit`.
+    /// End the run with `code` as the process status. Sibling of
+    /// [`Self::request_exit`], which is the same thing with status 0.
+    pub fn request_exit_with_code(&mut self, code: i32) {
+        unsafe {
+            if !self.exit_code_slot.is_null() {
+                *self.exit_code_slot = code;
+            }
+        }
+        self.request_exit();
+    }
+
     pub fn request_exit(&mut self) {
         unsafe {
             if !self.exit_slot.is_null() {
@@ -255,8 +266,7 @@ impl<'a> HostContext<'a> {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Future { id },
                 type_id: 0,
-                fields: Vec::new(),
-            };
+                fields: Vec::new() };
             let val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)));
             (val, id)
         } else {
@@ -297,8 +307,7 @@ impl<'a> HostContext<'a> {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Stream { id },
                 type_id: 0,
-                fields: Vec::new(),
-            };
+                fields: Vec::new() };
             let val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)));
             (val, id)
         } else {
@@ -350,8 +359,7 @@ impl<'a> HostContext<'a> {
             // work when called from guest bytecode.
             match self.resolve_readable_stream_handle(*handle as u32) {
                 Some(id) => id,
-                None => return Vec::new(),
-            }
+                None => return Vec::new() }
         } else {
             return Vec::new();
         };
@@ -391,8 +399,7 @@ impl<'a> HostContext<'a> {
             }
             match (*self.handle_table_slot).get(handle) {
                 Some(crate::handle_table::HandleEntry::ReadableStreamEnd(id)) => Some(*id),
-                _ => None,
-            }
+                _ => None }
         }
     }
 
@@ -404,10 +411,10 @@ impl<'a> HostContext<'a> {
             event_loop: None,
             last_exception_slot: std::ptr::null_mut(),
             exit_slot: std::ptr::null_mut(),
+            exit_code_slot: std::ptr::null_mut(),
             globals_slot: std::ptr::null_mut(),
             stack_slot: std::ptr::null(),
-            handle_table_slot: std::ptr::null(),
-        }
+            handle_table_slot: std::ptr::null() }
     }
 }
 
@@ -435,8 +442,7 @@ pub enum ImportTarget {
     /// the engine) implements the suspension itself rather than dispatching to a
     /// host fn — fulfilled → unwrap, rejected → throw, pending → suspend the
     /// fiber on the event loop until the Promise settles.
-    JspiSuspend,
-}
+    JspiSuspend }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallFrame {
@@ -444,8 +450,7 @@ pub(crate) struct CallFrame {
     pub(crate) ip: usize,
     pub(crate) base: usize,
     pub(crate) label_base: usize,
-    pub(crate) upvalues: Vec<Arc<Mutex<Upvalue>>>,
-}
+    pub(crate) upvalues: Vec<Arc<Mutex<Upvalue>>> }
 
 /// Record of a live continuation on the VM's active-continuation
 /// stack. Each entry owns the continuation `Value` plus the caller's
@@ -461,8 +466,7 @@ pub struct ActiveContinuation {
     pub cont: crate::value::Value,
     pub caller_fiber: crate::fiber::Fiber,
     pub mode: ResumeMode,
-    pub handlers: Vec<crate::chunk::StackSwitchHandler>,
-}
+    pub handlers: Vec<crate::chunk::StackSwitchHandler> }
 
 /// Order-insensitive equality of two import tables (compile emits imports in
 /// HashMap order, which varies run to run). A genuine edit changes the SET.
@@ -492,8 +496,7 @@ pub enum ResumeMode {
     /// Bare `RESUME` — push only the yielded value on caller's stack.
     Raw,
     /// `GEN_NEXT` iterator protocol — push `(value, has_more_i32)`.
-    Iterator,
-}
+    Iterator }
 
 /// Spec EH catch-clause kinds (exception-handling proposal `try_table`).
 pub(crate) const CATCH_KIND_CATCH: u8 = 0;
@@ -508,8 +511,7 @@ pub(crate) const CATCH_KIND_CATCH_ALL_REF: u8 = 3;
 #[derive(Debug, Clone)]
 pub(crate) struct TagEntity {
     pub(crate) debug_name: String,
-    pub(crate) arity: u8,
-}
+    pub(crate) arity: u8 }
 
 /// Exception handler entry — pushed per catch clause by `try_table`,
 /// popped (as a group) by TRY_END or on catch.
@@ -537,8 +539,7 @@ pub(crate) struct ExceptionHandler {
     pub(crate) tag_entity: usize,
     /// All clauses of one `try_table` share a group id, so a catch or
     /// TRY_END removes the whole table's clauses together.
-    pub(crate) group: u64,
-}
+    pub(crate) group: u64 }
 
 /// A language-agnostic bytecode virtual machine.
 ///
@@ -589,11 +590,15 @@ pub struct VM {
     /// WASM GC-style type definitions with vtable method dispatch.
     pub type_registry: crate::typedef::TypeRegistry,
     /// Names of the running module's own defined types, in `chunk.types` order.
-    /// `array.new`'s 1-based immediate indexes this to recover the type name,
-    /// which resolves to a registry id by name — necessary because the host
-    /// pre-registers builtin types ahead of the module's, so a compile-time
-    /// table position is not the registry id.
+    /// Diagnostics only — nothing resolves a type by name at run time; see
+    /// `module_type_ids`.
     pub(crate) module_type_names: Vec<String>,
+    /// The module's type index space: slot `i` holds the **registry id** of
+    /// the module's `i`-th defined type, so a `struct.new` / `array.new`
+    /// immediate resolves by INDEX, as the spec addresses types. Names are
+    /// bound once here at load; the running instruction never sees one.
+    /// (Kept 1-based at the instruction — `0` means "no GC type", rtt `0`.)
+    pub(crate) module_type_ids: Vec<usize>,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
     /// This is memory index 0 for backward compatibility.
     pub memory: SharedMemory,
@@ -708,6 +713,11 @@ pub struct VM {
     /// `run()` by returning control to the embedder from any frame depth — NOT a
     /// `std::process::exit`, so it never tears down the host process.
     pub pending_exit: bool,
+    /// Status the guest asked to exit with — `sys.exit(3)`, `System.exit(3)`,
+    /// `halt(2)`, `STOP RUN`, `exit(255)`. Every one of those accepted a status
+    /// and produced 0, because `request_exit` had nowhere to put it: the slot
+    /// was a `*mut bool`. Read by the embedder after `run()` returns.
+    pub pending_exit_code: i32,
     /// When true, enforce strict WASM isolation:
     /// - Module-scoped globals (prefixed by module name)
     /// - Per-module memory (separate linear memory per component)
@@ -774,8 +784,7 @@ pub struct VM {
     /// Waitable set registry.
     pub waitable_sets: crate::waitable::WaitableRegistry,
     /// CM3 context slots (canon context.get/set).
-    pub context_slots: Vec<Value>,
-}
+    pub context_slots: Vec<Value> }
 
 /// A restorable post-boot baseline for [`VM::snapshot`] / [`VM::reset_to`].
 ///
@@ -828,12 +837,12 @@ pub struct VmSnapshot {
     data_segments: Vec<Vec<u8>>,
     elem_segments: Vec<Vec<Value>>,
     module_type_names: Vec<String>,
+    module_type_ids: Vec<usize>,
     module_prefix: Option<String>,
     // Coupled with `tag_entities` (maps imported-tag name → index into it). Must
     // restore together: truncating tag_entities without this would leave a
     // dangling index a later lookup could read out of bounds.
-    imported_tag_registry: HashMap<String, usize>,
-}
+    imported_tag_registry: HashMap<String, usize> }
 
 /// A registered finalizer for an object.
 #[derive(Clone)]
@@ -841,8 +850,7 @@ pub(crate) struct FinalizerEntry {
     /// Weak reference to the target object.
     pub(crate) target: ArcWeak<Mutex<crate::value::Object>>,
     /// Callback to invoke when the object is about to be collected.
-    pub(crate) callback: Value,
-}
+    pub(crate) callback: Value }
 
 /// Entry in the structured control flow label stack.
 #[derive(Debug, Clone, Copy)]
@@ -858,8 +866,7 @@ pub struct LabelEntry {
     pub result_arity: u8,
     /// Value-stack height at label entry. Branches restore this height while
     /// preserving the top `result_arity` values.
-    pub stack_height: usize,
-}
+    pub stack_height: usize }
 
 /// Pre-scanned jump targets for one BLOCK / LOOP / IF / ELSE opcode.
 /// Keyed by the opcode's position (first prefix byte) in chunk.code.
@@ -870,8 +877,7 @@ pub struct BlockTargets {
     /// For BLOCK/LOOP: None.
     pub else_ip: Option<usize>,
     /// Position of the matching END opcode.
-    pub end_ip: usize,
-}
+    pub end_ip: usize }
 
 impl VM {
     /// Immutable borrow of the table at `tableidx`. Index 0 maps to
@@ -919,14 +925,14 @@ impl VM {
             exception_handlers: Vec::new(),
             tag_entities: vec![TagEntity {
                 debug_name: "vybe:exception".into(),
-                arity: 1,
-            }],
+                arity: 1 }],
             chunk_tag_maps: Vec::new(),
             try_group_counter: 0,
             imported_tag_registry: HashMap::from([("vybe:exception".to_string(), 0usize)]),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             type_registry: crate::typedef::TypeRegistry::new(),
             module_type_names: Vec::new(),
+            module_type_ids: Vec::new(),
             memory: SharedMemory::default(),
             extra_memories: Vec::new(),
             extra_memory_max_pages: Vec::new(),
@@ -956,6 +962,7 @@ impl VM {
             callback_invoker: None,
             last_exception: None,
             pending_exit: false,
+            pending_exit_code: 0,
             strict_isolation: false,
             module_prefix: None,
             case_aliases: HashMap::new(),
@@ -973,8 +980,7 @@ impl VM {
             cm_tasks: Vec::new(),
             next_cm_task_id: 1,
             waitable_sets: crate::waitable::WaitableRegistry::new(),
-            context_slots: Vec::new(),
-        }
+            context_slots: Vec::new() }
     }
 
     /// Capture the current state as a restorable warm baseline (VM hot-reset,
@@ -1010,9 +1016,9 @@ impl VM {
             data_segments: self.data_segments.clone(),
             elem_segments: self.elem_segments.clone(),
             module_type_names: self.module_type_names.clone(),
+            module_type_ids: self.module_type_ids.clone(),
             module_prefix: self.module_prefix.clone(),
-            imported_tag_registry: self.imported_tag_registry.clone(),
-        }
+            imported_tag_registry: self.imported_tag_registry.clone() }
     }
 
     /// Restore the VM to a [`snapshot`](VM::snapshot) baseline: free the whole
@@ -1064,6 +1070,7 @@ impl VM {
         self.data_segments = snap.data_segments.clone();
         self.elem_segments = snap.elem_segments.clone();
         self.module_type_names = snap.module_type_names.clone();
+        self.module_type_ids = snap.module_type_ids.clone();
         self.module_prefix = snap.module_prefix.clone();
         self.imported_tag_registry = snap.imported_tag_registry.clone();
         // 5. Transient execution state — always empty between top-level runs.
@@ -1093,6 +1100,7 @@ impl VM {
         self.last_fiber_completion = None;
         self.last_exception = None;
         self.pending_exit = false;
+        self.pending_exit_code = 0;
         self.dbg_last_import = None;
         // 8. A stale callback invoker can root Values across a reset — drop it
         //    (re-installed on demand by the next host callback).
@@ -1152,8 +1160,7 @@ impl VM {
         let mut hook = self.eval_hook.take();
         let result = match hook.as_mut() {
             Some(h) => h(self, expr, locals),
-            None => Err("expression eval unavailable (no compiler hook attached)".to_string()),
-        };
+            None => Err("expression eval unavailable (no compiler hook attached)".to_string()) };
         self.eval_hook = hook;
         result
     }
@@ -1177,8 +1184,7 @@ impl VM {
         let mut hook = self.event_fire_hook.take();
         let result = match hook.as_mut() {
             Some(h) => h(self, control, event),
-            None => Err("event simulation unavailable (no gui hook attached)".to_string()),
-        };
+            None => Err("event simulation unavailable (no gui hook attached)".to_string()) };
         self.event_fire_hook = hook;
         result
     }
@@ -1199,8 +1205,7 @@ impl VM {
         let mut hook = self.reload_hook.take();
         let compiled = match hook.as_mut() {
             Some(h) => h(self),
-            None => Err("hot reload unavailable (no compiler hook attached)".to_string()),
-        };
+            None => Err("hot reload unavailable (no compiler hook attached)".to_string()) };
         self.reload_hook = hook;
         let new_chunks = compiled?;
         self.apply_reload(new_chunks)
@@ -1310,6 +1315,12 @@ impl VM {
             // new body. (The relocated old index builds its own lazily.)
             self.block_tables.remove(&i);
         }
+        // A reloaded body may reference string constants the old one never
+        // did, and chunks arrive here by SWAP rather than by the paths that
+        // bind on entry. Without this, a literal added by the edit reads
+        // `undefined` instead of its text.
+        self.bind_imported_globals();
+
         // 5. Drop cached funcref values whose chunk bodies changed.
         self.funcref_cache.clear();
         let relocated = changed.iter().any(|i| current_live.contains(i));
@@ -1429,8 +1440,7 @@ impl VM {
                 crate::error::StackFrame {
                     chunk_name: chunk.name.clone(),
                     offset: f.ip,
-                    line,
-                }
+                    line }
             })
             .collect()
     }
@@ -1470,8 +1480,7 @@ impl VM {
                     (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_add(*b)),
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_add(*b)),
                     (Value::F64(a), Value::F64(b)) => Value::F64(a + b),
-                    _ => Value::F64(l.as_f64() + r.as_f64()),
-                }
+                    _ => Value::F64(l.as_f64() + r.as_f64()) }
             }
             ConstExpr::Mul(left, right) => {
                 let l = self.eval_const_expr(left);
@@ -1480,8 +1489,7 @@ impl VM {
                     (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_mul(*b)),
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_mul(*b)),
                     (Value::F64(a), Value::F64(b)) => Value::F64(a * b),
-                    _ => Value::F64(l.as_f64() * r.as_f64()),
-                }
+                    _ => Value::F64(l.as_f64() * r.as_f64()) }
             }
             ConstExpr::RefFunc(chunk_idx) => {
                 if *chunk_idx < self.chunks.len() {
@@ -1490,8 +1498,7 @@ impl VM {
                         name: Some(chunk.name.clone()),
                         arity: chunk.arity,
                         chunk_index: *chunk_idx,
-                        upvalues: Vec::new(),
-                    };
+                        upvalues: Vec::new() };
                     let mut obj = Object::new();
                     obj.kind = ObjectKind::Function(func);
                     Value::Object(crate::heap::alloc(obj))
@@ -1829,8 +1836,7 @@ impl VM {
         let mut visited = Vec::new();
         match self.resolve_host_export(module, name, &mut visited)? {
             ExportEntry::Function { idx } => Some(*idx),
-            _ => None,
-        }
+            _ => None }
     }
 
     /// Resolve host type exports (Class / ResourceType) through Module Records.
@@ -1888,10 +1894,8 @@ impl VM {
         match record.exports.get(name)? {
             ExportEntry::Indirect {
                 from,
-                name: target_name,
-            } => self.resolve_host_export(from, target_name, visited),
-            export => Some(export),
-        }
+                name: target_name } => self.resolve_host_export(from, target_name, visited),
+            export => Some(export) }
     }
 
     fn resolve_host_type_export(&self, module: &str, name: &str) -> Option<crate::TypeDef> {
@@ -1900,8 +1904,7 @@ impl VM {
             ExportEntry::Class { type_id } | ExportEntry::ResourceType { type_id } => {
                 self.type_registry.get(*type_id).cloned()
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     /// Create a HostContext with callback capability for host functions.
@@ -1916,6 +1919,7 @@ impl VM {
         // Raw pointer to last_exception — safe: valid for host call duration.
         let exc_ptr = &mut self.last_exception as *mut Option<Value>;
         let exit_ptr = &mut self.pending_exit as *mut bool;
+        let exit_code_ptr = &mut self.pending_exit_code as *mut i32;
         let globals_ptr = &mut self.globals as *mut HashMap<String, Value>;
         HostContext {
             invoker: Some(unsafe {
@@ -1927,10 +1931,10 @@ impl VM {
             event_loop: Some(el),
             last_exception_slot: exc_ptr,
             exit_slot: exit_ptr,
+            exit_code_slot: exit_code_ptr,
             globals_slot: globals_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
-            handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable,
-        }
+            handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable }
     }
 
     /// Close open upvalues in a lambda value that escapes the current stack frame.
@@ -2059,6 +2063,7 @@ impl VM {
         // Load all chunks
         let base_offset = self.chunks.len();
         self.chunks.extend(link_result.chunks.clone());
+        self.bind_imported_globals();
 
         // Load shared type table (read-only cross-module)
         for ((_, type_name), typedef) in &link_result.type_exports {
@@ -2066,12 +2071,13 @@ impl VM {
             let _ = (type_name, typedef);
         }
 
-        // Load type tables from all chunks
+        // Load type tables from all chunks. Ids are bound AFTER registration —
+        // that is the whole point: the name is consumed once, here, and the
+        // index space is what instructions carry.
         for chunk in &link_result.chunks {
             if !chunk.types.is_empty() {
                 self.type_registry.load_type_table(&chunk.types);
-                self.module_type_names
-                    .extend(chunk.types.iter().map(|t| t.name.clone()));
+                self.bind_module_type_ids(&chunk.types);
             }
         }
 
@@ -2098,14 +2104,12 @@ impl VM {
                                 name: Some(func_name.clone()),
                                 arity: chunk.arity,
                                 chunk_index: adjusted_ci,
-                                upvalues: Vec::new(),
-                            };
+                                upvalues: Vec::new() };
                             let obj = crate::value::Object {
                                 properties: indexmap::IndexMap::new(),
                                 kind: crate::value::ObjectKind::Function(func),
                                 type_id: 0,
-                                fields: Vec::new(),
-                            };
+                                fields: Vec::new() };
                             Value::Object(crate::heap::alloc(obj))
                         }
                         crate::component::ExportImpl::HostFn(idx) => {
@@ -2148,14 +2152,12 @@ impl VM {
                                 name: Some(func_name.clone()),
                                 arity: chunk.arity,
                                 chunk_index: adjusted_ci,
-                                upvalues: Vec::new(),
-                            };
+                                upvalues: Vec::new() };
                             let obj = crate::value::Object {
                                 properties: indexmap::IndexMap::new(),
                                 kind: crate::value::ObjectKind::Function(func),
                                 type_id: 0,
-                                fields: Vec::new(),
-                            };
+                                fields: Vec::new() };
                             Value::Object(crate::heap::alloc(obj))
                         }
                         crate::component::ExportImpl::HostFn(idx) => {
@@ -2267,6 +2269,7 @@ impl VM {
             }
         }
         self.chunks.extend(adjusted);
+        self.bind_imported_globals();
 
         // Use pre-resolved import table, adjusting ChunkFn indices by offset.
         // Nested dynamic runs temporarily replace this table; restore the
@@ -2282,8 +2285,7 @@ impl VM {
                 ImportTarget::ChunkFn { chunk_index, arity } => {
                     self.import_table.push(ImportTarget::ChunkFn {
                         chunk_index: chunk_index + script_idx,
-                        arity,
-                    });
+                        arity });
                 }
                 ImportTarget::Host(idx) => {
                     self.import_table.push(ImportTarget::Host(idx));
@@ -2347,8 +2349,7 @@ impl VM {
             ip: 0,
             base: self.stack.len(),
             label_base: self.label_stack.len(),
-            upvalues: Vec::new(),
-        });
+            upvalues: Vec::new() });
         self.stack.resize(
             self.stack.len() + self.chunks[script_idx].local_count as usize,
             Value::Null,
@@ -2419,6 +2420,7 @@ impl VM {
             }
         }
         self.chunks.extend(adjusted);
+        self.bind_imported_globals();
 
         let declared_memories = self.chunks[script_idx].memory_min_pages.clone();
         let declared_memory_maxes = self.chunks[script_idx].memory_max_pages.clone();
@@ -2461,8 +2463,7 @@ impl VM {
                                         name: Some(chunk.name.clone()),
                                         arity: chunk.arity,
                                         chunk_index: chunk_idx,
-                                        upvalues: Vec::new(),
-                                    };
+                                        upvalues: Vec::new() };
                                     let mut obj = Object::new();
                                     obj.kind = ObjectKind::Function(func);
                                     Value::Object(crate::heap::alloc(obj))
@@ -2470,8 +2471,7 @@ impl VM {
                                     Value::Null
                                 }
                             }
-                            other => other,
-                        })
+                            other => other })
                         .collect()
                 })
                 .collect();
@@ -2637,8 +2637,7 @@ impl VM {
             ip: 0,
             base: 0,
             label_base: self.label_stack.len(),
-            upvalues: Vec::new(),
-        });
+            upvalues: Vec::new() });
 
         let local_count = self.chunks[script_idx].local_count as usize;
         for _ in 0..local_count {
@@ -2656,8 +2655,7 @@ impl VM {
             }
             ExecResult::Suspended {
                 kind: SuspensionKind::Jspi,
-                id,
-            } => {
+                id } => {
                 self.run_event_loop()?;
                 if self.has_pending_jspi() {
                     Err(VMError::new(format!("__jspi__:{}", id)))
@@ -2846,8 +2844,7 @@ impl VM {
                     } else {
                         self.tag_entities.push(TagEntity {
                             debug_name: decl.debug_name.clone(),
-                            arity: decl.arity,
-                        });
+                            arity: decl.arity });
                         let id = self.tag_entities.len() - 1;
                         self.imported_tag_registry.insert(decl.debug_name, id);
                         id
@@ -2855,13 +2852,42 @@ impl VM {
                 } else {
                     self.tag_entities.push(TagEntity {
                         debug_name: decl.debug_name,
-                        arity: decl.arity,
-                    });
+                        arity: decl.arity });
                     self.tag_entities.len() - 1
                 };
                 map.push(entity);
             }
             self.chunk_tag_maps.push(map);
+        }
+    }
+
+    /// Create the globals declared by the module's **global imports**.
+    ///
+    /// js-string-builtins § String constants: when a namespace is designated
+    /// for string constants, *"every import that refers to this namespace has
+    /// a global created to hold the string constant specified in the import
+    /// field"*. Creating it is the host's job, and here the VM is the host.
+    ///
+    /// This runs wherever chunks enter the VM rather than in the load-once
+    /// path, because that path only sees the script chunk while every chunk
+    /// declares its own imports. A chunk that is never bound fails silently —
+    /// `GLOBAL_GET` yields `Undefined`, so every string literal in it would
+    /// read as `undefined` rather than trap.
+    pub(crate) fn bind_imported_globals(&mut self) {
+        let bindings: Vec<(String, Arc<str>)> = self
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.global_imports.iter())
+            .filter(|import| import.module == crate::chunk::STRING_CONSTANTS_MODULE)
+            .map(|import| {
+                (
+                    crate::chunk::imported_global_key(&import.module, &import.name),
+                    Arc::from(import.name.as_str()),
+                )
+            })
+            .collect();
+        for (key, value) in bindings {
+            self.globals.insert(key, Value::String(value));
         }
     }
 
@@ -2924,8 +2950,7 @@ impl VM {
     pub(crate) fn constant_str(&self, index: u16) -> String {
         match &self.get_constant(index) {
             Value::String(s) => s.to_string(),
-            v => format!("{}", v),
-        }
+            v => format!("{}", v) }
     }
 
     // -- SIMD helpers --
@@ -2937,32 +2962,27 @@ impl VM {
                 let id: u64 = e.message["__await__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended {
                     kind: SuspensionKind::Await,
-                    id,
-                })
+                    id })
             }
             Err(e) if e.message.starts_with("__jspi__:") => {
                 let id: u64 = e.message["__jspi__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended {
                     kind: SuspensionKind::Jspi,
-                    id,
-                })
+                    id })
             }
             Err(e) if e.message.starts_with("__future__:") => {
                 let id: u64 = e.message["__future__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended {
                     kind: SuspensionKind::Future,
-                    id,
-                })
+                    id })
             }
             Err(e) if e.message.starts_with("__stream_read__:") => {
                 let id: u64 = e.message["__stream_read__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended {
                     kind: SuspensionKind::StreamRead,
-                    id,
-                })
+                    id })
             }
-            Err(e) => Err(e),
-        }
+            Err(e) => Err(e) }
     }
 
     pub(crate) fn execute(&mut self) -> Result<Value, VMError> {

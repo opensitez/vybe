@@ -5,8 +5,7 @@
 
 use super::*;
 use crate::primitives::calls::{
-    extract_generic_type_name, resolve_receiver_type_hint, strip_generic_suffix, terminal_type_name,
-};
+    extract_generic_type_name, resolve_receiver_type_hint, strip_generic_suffix, terminal_type_name };
 
 impl Compiler {
     pub(super) fn canonical_enum_type_from_runtime_type(
@@ -43,8 +42,7 @@ impl Compiler {
                 self.resolve_known_enum_type(strip_generic_suffix(&enum_type))
             }
             _ => resolve_receiver_type_hint(self, expr)
-                .and_then(|hint| self.resolve_known_enum_type(strip_generic_suffix(&hint))),
-        }
+                .and_then(|hint| self.resolve_known_enum_type(strip_generic_suffix(&hint))) }
     }
 
     pub(super) fn console_enum_type_from_expr(&self, expr: &Expression) -> Option<String> {
@@ -53,8 +51,7 @@ impl Compiler {
             ExprKind::Member { object, .. } if !matches!(&object.kind, ExprKind::Ident(_)) => {
                 self.canonical_enum_type_from_expr(expr)
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     pub(super) fn resolve_known_enum_type(&self, name: &str) -> Option<String> {
@@ -128,8 +125,7 @@ impl Compiler {
                     key: None,
                     value: Expression::string(value),
                     spread: false,
-                    by_ref: false,
-                })
+                    by_ref: false })
                 .collect(),
         ));
         self.compile_expr(&expr)
@@ -142,7 +138,7 @@ impl Compiler {
         ignore_case: bool,
     ) -> Result<(), String> {
         let Some(entries) = self.enum_entries_sorted(enum_type) else {
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(());
         };
 
@@ -173,7 +169,7 @@ impl Compiler {
 
         let result_slot = self.define_local("__enum_name_result");
         let matched_slot = self.define_local("__enum_name_matched");
-        self.emit(Op::NULL);
+        self.emit_null();
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -236,7 +232,7 @@ impl Compiler {
 
         let result_slot = self.define_local("__enum_tostring_result");
         let matched_slot = self.define_local("__enum_tostring_matched");
-        self.emit(Op::NULL);
+        self.emit_null();
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -423,8 +419,7 @@ impl Compiler {
                     return Ok(false);
                 }
             }
-            _ => return Ok(false),
-        };
+            _ => return Ok(false) };
         let field_name = strip_generic_suffix(field);
 
         if static_enum_call {
@@ -482,12 +477,10 @@ impl Compiler {
                     let expr = Expression::new(ExprKind::Object(vec![
                         ObjectProperty::KeyValue {
                             key: Expression::string("Name"),
-                            value: Expression::string("Int32"),
-                        },
+                            value: Expression::string("Int32") },
                         ObjectProperty::KeyValue {
                             key: Expression::string("FullName"),
-                            value: Expression::string("System.Int32"),
-                        },
+                            value: Expression::string("System.Int32") },
                     ]));
                     self.compile_expr(&expr)?;
                     return Ok(true);
@@ -536,7 +529,7 @@ impl Compiler {
                     self.emit(Op::REF_IS_NULL);
                     let line = self.line;
                     self.chunk().emit_if_value(line);
-                    self.emit(Op::NULL);
+                    self.emit_null();
                     self.compile_assign_target(out_arg)?;
                     inst!(self, core_wasm::bool_const, false);
                     self.chunk().emit_else(line);
@@ -571,7 +564,6 @@ impl Compiler {
                 self.emit_enum_value_to_string(&enum_type, object)?;
                 Ok(true)
             }
-            _ => Ok(false),
-        }
+            _ => Ok(false) }
     }
 }

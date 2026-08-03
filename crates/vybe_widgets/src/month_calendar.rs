@@ -2,8 +2,7 @@
 
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
-};
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
 use super::{WidgetColors, circle_path, rounded_rect_path};
 use tiny_skia::*;
 
@@ -18,8 +17,7 @@ pub struct MonthCalendar {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    pending_events: Vec<WidgetEvent>,
-}
+    pending_events: Vec<WidgetEvent> }
 
 impl MonthCalendar {
     pub fn new() -> Self {
@@ -34,8 +32,7 @@ impl MonthCalendar {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            pending_events: Vec::new(),
-        }
+            pending_events: Vec::new() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -73,8 +70,7 @@ impl MonthCalendar {
                     28
                 }
             }
-            _ => 30,
-        }
+            _ => 30 }
     }
 
     /// Day of week for the 1st of the month (0=Sunday).
@@ -414,8 +410,7 @@ impl PanelWidget for MonthCalendar {
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Number(self.selected_day as f64),
-            _ => CommandValue::None,
-        }
+            _ => CommandValue::None }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

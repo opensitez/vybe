@@ -48,7 +48,7 @@ pub fn emit_tag(chunks: &mut [Chunk], current: usize, line: u32) {
     c.emit_dup(line); // [arr, arr]
     core_wasm::bool_const(c, line, true); // [arr, arr, true]
     let k = c.add_constant(Value::String(Arc::from(TUPLE_TAG)));
-    c.emit_op_u16(Op::STRUCT_SET, k, line); // [arr, true]
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, true]
     c.emit_op(Op::DROP, line); // [arr]
 }
 
@@ -69,7 +69,7 @@ pub fn emit_tuple(chunks: &mut [Chunk], current: usize, n: u16, line: u32) {
 pub fn emit_is_tuple(chunks: &mut [Chunk], current: usize, line: u32) {
     let c = &mut chunks[current];
     let k = c.add_constant(Value::String(Arc::from(TUPLE_TAG)));
-    c.emit_op_u16(Op::STRUCT_GET, k, line);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_op(Op::I32_EQZ, line); // 1 when tag present (non-null)
 }
@@ -221,8 +221,7 @@ pub fn emit_list_string_to_tuple(chunk: &mut Chunk, line: u32) {
 pub fn build_named_tuple(fields: Vec<(Option<String>, Expression)>) -> ExprKind {
     ExprKind::NamedTuple {
         fields,
-        type_name: None,
-    }
+        type_name: None }
 }
 
 /// Positional arity of a named-tuple literal (the field count), or `None` if
@@ -230,8 +229,7 @@ pub fn build_named_tuple(fields: Vec<(Option<String>, Expression)>) -> ExprKind 
 pub fn named_tuple_arity(expr: &Expression) -> Option<usize> {
     match &expr.kind {
         ExprKind::NamedTuple { fields, .. } => Some(fields.len()),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// The positional read off a named-tuple value: `object[index]`. The canonical
@@ -241,8 +239,7 @@ pub fn positional_read(object: Expression, index: usize) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(object),
         index: Box::new(Expression::int(index as i64)),
-        null_safe: false,
-    })
+        null_safe: false })
 }
 
 // ── Named-tuple runtime metadata ────────────────────────────────────────
@@ -283,7 +280,7 @@ pub fn emit_named_tuple(
         core_wasm::i32_const(c, line, i as i32); // [arr, arr, arr, i]
         c.emit_op(Op::ARRAY_GET, line); // [arr, arr, arr[i]]
         let k = c.add_constant(Value::String(Arc::from(name.as_str())));
-        c.emit_op_u16(Op::STRUCT_SET, k, line); // [arr, arr[i]]
+        c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, arr[i]]
         c.emit_op(Op::DROP, line); // [arr]
     }
 
@@ -296,7 +293,7 @@ pub fn emit_named_tuple(
         }
         c.emit_array_new_fixed(0, field_names.len() as u16, line); // [arr, fields]
         let k = c.add_constant(Value::String(Arc::from(FIELDS_TAG)));
-        c.emit_op_u16(Op::STRUCT_SET, k, line); // [arr, fields]
+        c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, fields]
         c.emit_op(Op::DROP, line); // [arr]
     }
 
@@ -306,7 +303,7 @@ pub fn emit_named_tuple(
         c.emit_dup(line);
         core_wasm::string_const(c, line, tn);
         let k = c.add_constant(Value::String(Arc::from(TYPENAME_TAG)));
-        c.emit_op_u16(Op::STRUCT_SET, k, line);
+        c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
         c.emit_op(Op::DROP, line);
     }
 }

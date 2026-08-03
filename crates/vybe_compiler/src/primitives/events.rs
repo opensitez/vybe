@@ -71,8 +71,7 @@ impl Compiler {
                     None
                 }
             }
-            _ => None,
-        };
+            _ => None };
         if let Some(k) = key {
             self.emit_const(Value::String(Arc::from(k.as_str())));
         } else {
@@ -85,16 +84,14 @@ impl Compiler {
     fn build_event_binding_target(&self, control: &Expression, event: &str) -> Expression {
         let control = match &control.kind {
             ExprKind::Cast { expr, .. } => expr.as_ref(),
-            _ => control,
-        };
+            _ => control };
         if event.is_empty() {
             control.clone()
         } else {
             Expression::new(ExprKind::Member {
                 object: Box::new(control.clone()),
                 field: event.to_string(),
-                null_safe: false,
-            })
+                null_safe: false })
         }
     }
 
@@ -107,8 +104,7 @@ impl Compiler {
         match &control.kind {
             ExprKind::This | ExprKind::Super => self.current_class.clone(),
             ExprKind::Ident(name) if is_self_ident(self, name) => self.current_class.clone(),
-            _ => self.infer_expr_type_hint(control),
-        }
+            _ => self.infer_expr_type_hint(control) }
     }
 
     fn type_uses_winforms_event_host(&self, candidate_type: &str) -> bool {
@@ -260,8 +256,7 @@ impl Compiler {
                 Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(class_name)),
                     field: event_field,
-                    null_safe: false,
-                })
+                    null_safe: false })
             } else {
                 Expression::ident(&event_field)
             }
@@ -269,8 +264,7 @@ impl Compiler {
             Expression::new(ExprKind::Member {
                 object: Box::new(Expression::new(ExprKind::This)),
                 field: event_field,
-                null_safe: false,
-            })
+                null_safe: false })
         } else {
             Expression::ident(&event_field)
         };
@@ -300,8 +294,7 @@ pub fn add_handler_stmt(
     StmtKind::AddHandler {
         control,
         event: event.into(),
-        handler,
-    }
+        handler }
 }
 
 pub fn remove_handler_stmt(
@@ -312,8 +305,7 @@ pub fn remove_handler_stmt(
     StmtKind::RemoveHandler {
         control,
         event: event.into(),
-        handler,
-    }
+        handler }
 }
 
 pub fn lower_event_compound_assignment(expr: &Expression) -> Option<StmtKind> {
@@ -347,8 +339,7 @@ pub fn lower_event_compound_assignment(expr: &Expression) -> Option<StmtKind> {
     Some(match op {
         BinOp::Add => add_handler_stmt(control, event_name, handler.clone()),
         BinOp::Sub => remove_handler_stmt(control, event_name, handler.clone()),
-        _ => return None,
-    })
+        _ => return None })
 }
 
 fn unwrap_event_handler(expr: &Expression) -> Option<&Expression> {
@@ -365,8 +356,7 @@ fn unwrap_event_handler(expr: &Expression) -> Option<&Expression> {
                 None
             }
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 pub fn is_event_handler_expr(expr: &Expression) -> bool {
@@ -430,6 +420,5 @@ fn member_eq(obj_a: &Expression, field_a: &str, obj_b: &Expression, field_b: &st
                 ..
             },
         ) => member_eq(inner_a, inner_field_a, inner_b, inner_field_b),
-        _ => false,
-    }
+        _ => false }
 }

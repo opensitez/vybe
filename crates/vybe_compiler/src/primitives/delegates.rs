@@ -85,7 +85,7 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, delegate_slot, line);
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     emit_slot_is_nullish(chunks, current, delegate_slot, line);
@@ -121,7 +121,7 @@ pub fn emit_invoke(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, handler_slot, line);
     emit_slot_is_nullish(chunks, current, handler_slot, line);
     chunks[current].emit_if(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
@@ -199,7 +199,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
 
     emit_slot_is_nullish(chunks, current, cur_slot, line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
@@ -277,7 +277,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_slot, line);
@@ -299,7 +299,7 @@ pub fn emit_remove(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_slot, line);
 

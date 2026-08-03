@@ -36,8 +36,7 @@ pub struct LoopState {
     /// If set, there's an inner body block for continue-to-increment pattern.
     /// continue = `br 0` (body block), break = `br 2` (outer block)
     /// If None, continue = `br 0` (loop), break = `br 1` (outer block)
-    pub body_block_patch: Option<usize>,
-}
+    pub body_block_patch: Option<usize> }
 
 impl LoopState {
     /// Depth for `continue` (restart loop or skip to increment)
@@ -76,8 +75,7 @@ pub fn emit_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> LoopS
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None,
-    }
+        body_block_patch: None }
 }
 
 /// After condition is on stack: convert to bool, branch out of block if false.
@@ -112,8 +110,7 @@ pub fn emit_do_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> Lo
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: Some(body_block_patch),
-    }
+        body_block_patch: Some(body_block_patch) }
 }
 
 /// Close the do-loop's body block. Call after the body and BEFORE compiling the
@@ -194,8 +191,7 @@ pub fn emit_for_in_start(
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: Some(body_block_patch),
-    }
+        body_block_patch: Some(body_block_patch) }
 }
 
 /// Emit the end of a for-in loop: increment index, continue loop, close block+loop.
@@ -336,7 +332,7 @@ pub fn emit_foreach(
 
     emit_for_in_end(chunks, current, idx_slot, state, line);
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// Emit `reduce(fn, arr)` → fn(fn(arr[0], arr[1]), arr[2]), ...

@@ -72,15 +72,13 @@ struct ServerEvent {
     ctx: Arc<RequestContext>,
     // Signal back to the tokio side that the handler returned. Response
     // bytes stream separately via the RequestContext's response channel.
-    done_tx: tokio::sync::oneshot::Sender<()>,
-}
+    done_tx: tokio::sync::oneshot::Sender<()> }
 
 fn listen_host_fn(ctx: &mut HostContext, args: &[Value]) -> Value {
     let addr_raw = match args.first() {
         Some(Value::String(s)) => s.to_string(),
         Some(other) => format!("{}", other),
-        None => return Value::Null,
-    };
+        None => return Value::Null };
     let addr_normalized: String = addr_raw
         .strip_prefix(':')
         .map(|p| format!("127.0.0.1:{p}"))
@@ -171,8 +169,7 @@ fn listen_host_fn(ctx: &mut HostContext, args: &[Value]) -> Value {
     while let Ok(event) = event_rx.recv() {
         let ServerEvent {
             ctx: req_ctx,
-            done_tx,
-        } = event;
+            done_tx } = event;
         {
             let _guard = install_context(Arc::clone(&req_ctx));
             ctx.invoke(&handler, &[]);
@@ -225,8 +222,7 @@ async fn handle_request(
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
     let event = ServerEvent {
         ctx: Arc::clone(&built.ctx),
-        done_tx,
-    };
+        done_tx };
     if event_tx.send(event).is_err() {
         return super::response_stream::bytes_response(
             503,

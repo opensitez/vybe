@@ -25,7 +25,7 @@ pub fn emit_tag(chunks: &mut [Chunk], current: usize, line: u32) {
     let tag = chunks[current].add_constant(Value::String(Arc::from(MULTI_VALUE_TAG)));
     chunks[current].emit_dup(line);
     chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_op_u16(Op::STRUCT_SET, tag, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, tag, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
@@ -41,7 +41,7 @@ pub fn emit_from_stack(chunks: &mut [Chunk], current: usize, n: u16, line: u32) 
 pub fn emit_is_multi_value_slot(chunk: &mut Chunk, slot: u16, line: u32) {
     load(chunk, slot, line);
     let tag = chunk.add_constant(Value::String(Arc::from(MULTI_VALUE_TAG)));
-    chunk.emit_op_u16(Op::STRUCT_GET, tag, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, tag, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
 }

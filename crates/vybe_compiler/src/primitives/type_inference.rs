@@ -23,6 +23,10 @@ impl Compiler {
         None
     }
 
+    /// Unused since case folding became a scope policy: its only caller
+    /// refined the fold-only half of a local-vs-type decision, which a folding
+    /// scope cannot distinguish. Kept because the predicate itself is sound.
+    #[allow(dead_code)]
     pub(super) fn prefers_type_qualified_member_lookup(
         &self,
         type_name: &str,
@@ -64,8 +68,7 @@ impl Compiler {
         match &expr.kind {
             ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
             ExprKind::Member { field, .. } => Some(field.clone()),
-            _ => None,
-        }
+            _ => None }
     }
 
     pub(super) fn infer_namespace_tree_factory_return_type(
@@ -138,8 +141,7 @@ impl Compiler {
                 }
                 self.function_return_types.get(&self.canon(field)).cloned()
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     pub(super) fn infer_array_element_type_hint<'a>(
@@ -172,8 +174,7 @@ impl Compiler {
                 let prefix = Self::member_access_path(object)?;
                 Some(format!("{prefix}.{field}"))
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     pub(super) fn infer_vb_runtime_member_type_hint(&self, expr: &Expression) -> Option<String> {
@@ -197,8 +198,7 @@ impl Compiler {
             | "system.environment.tickcount"
             | "screen.width"
             | "screen.height" => Some("integer".into()),
-            _ => None,
-        }
+            _ => None }
     }
 
     /// The receiver's declared type is a class that defines an index
@@ -238,29 +238,24 @@ impl Compiler {
             ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
             ExprKind::Unary {
                 op: UnaryOp::Neg | UnaryOp::Pos,
-                expr,
-            } => self.infer_expr_type_hint(expr),
+                expr } => self.infer_expr_type_hint(expr),
             ExprKind::RefOf(place) => {
                 let pointee_type = match place.as_ref() {
                     PlaceExpr::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
                     PlaceExpr::Member {
                         object,
                         field,
-                        null_safe,
-                    } => self.infer_expr_type_hint(&Expression::new(ExprKind::Member {
+                        null_safe } => self.infer_expr_type_hint(&Expression::new(ExprKind::Member {
                         object: object.clone(),
                         field: field.clone(),
-                        null_safe: *null_safe,
-                    })),
+                        null_safe: *null_safe })),
                     PlaceExpr::Index {
                         object,
                         index,
-                        null_safe,
-                    } => self.infer_expr_type_hint(&Expression::new(ExprKind::Index {
+                        null_safe } => self.infer_expr_type_hint(&Expression::new(ExprKind::Index {
                         object: object.clone(),
                         index: index.clone(),
-                        null_safe: *null_safe,
-                    })),
+                        null_safe: *null_safe })),
                     PlaceExpr::Deref(expr) => self.infer_expr_type_hint(expr).map(|type_hint| {
                         type_hint
                             .trim()
@@ -270,20 +265,17 @@ impl Compiler {
                             .trim_start_matches('^')
                             .trim()
                             .to_string()
-                    }),
-                }?;
+                    }) }?;
                 Some(format!("*{}", pointee_type.trim()))
             }
             ExprKind::Unary {
                 op: UnaryOp::AddrOf,
-                expr,
-            } => self
+                expr } => self
                 .infer_expr_type_hint(expr)
                 .map(|type_hint| format!("*{}", type_hint.trim().trim_end_matches('?').trim())),
             ExprKind::Unary {
                 op: UnaryOp::Deref,
-                expr,
-            }
+                expr }
             | ExprKind::RefLoad(expr) => self.infer_expr_type_hint(expr).map(|type_hint| {
                 type_hint
                     .trim()
@@ -450,8 +442,7 @@ impl Compiler {
                     None
                 }
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     pub(super) fn user_value_type_name_from_hint(&self, type_hint: &str) -> Option<String> {
@@ -504,8 +495,13 @@ impl Compiler {
         None
     }
 
-    pub(super) fn pascal_expr_is_integer_like(&self, expr: &Expression) -> bool {
-        if self.profile.name != "pascal" {
+    /// Is `expr` statically an INTEGER, for languages whose `and`/`or`/`not`
+    /// are bitwise on integers and logical on booleans?
+    ///
+    /// Gated on `logical_ops_bitwise_for_integers`, so the six shared call
+    /// sites need no per-language condition of their own.
+    pub(super) fn expr_is_integer_like(&self, expr: &Expression) -> bool {
+        if !self.profile.logical_ops_bitwise_for_integers {
             return false;
         }
         match &expr.kind {
@@ -513,7 +509,7 @@ impl Compiler {
             ExprKind::Lit(Literal::Float(_) | Literal::Bool(_) | Literal::Str(_)) => return false,
             ExprKind::Unary { op, expr } => {
                 return matches!(op, UnaryOp::Not | UnaryOp::BitNot)
-                    && self.pascal_expr_is_integer_like(expr);
+                    && self.expr_is_integer_like(expr);
             }
             ExprKind::Binary { op, left, right } => {
                 return matches!(
@@ -525,8 +521,8 @@ impl Compiler {
                         | BinOp::Shr
                         | BinOp::And
                         | BinOp::Or
-                ) && self.pascal_expr_is_integer_like(left)
-                    && self.pascal_expr_is_integer_like(right);
+                ) && self.expr_is_integer_like(left)
+                    && self.expr_is_integer_like(right);
             }
             _ => {}
         }
@@ -556,8 +552,7 @@ impl Compiler {
                 .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint)),
             _ => self
                 .infer_expr_type_hint(expr)
-                .and_then(|type_hint| self.user_value_type_name_from_hint(&type_hint)),
-        }
+                .and_then(|type_hint| self.user_value_type_name_from_hint(&type_hint)) }
     }
 
     pub(super) fn expr_is_array_like(&self, expr: &Expression) -> bool {
@@ -590,8 +585,7 @@ impl Compiler {
             {
                 self.expr_is_array_like(left) || self.expr_is_array_like(right)
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     pub(super) fn vb_generic_type_display_name(&self, type_hint: &str) -> Option<String> {
@@ -670,8 +664,7 @@ impl Compiler {
             "string" | "system.string" => Some("String"),
             "datetime" | "date" | "system.datetime" => Some("Date"),
             "object" | "system.object" => Some("Object"),
-            _ => None,
-        };
+            _ => None };
         if let Some(name) = primitive {
             return Some(name.into());
         }
@@ -718,8 +711,7 @@ impl Compiler {
             ExprKind::Lit(Literal::Null | Literal::Undefined) => Some("Nothing".into()),
             _ => self
                 .infer_expr_type_hint(expr)
-                .and_then(|type_hint| self.vb_typename_from_type_hint(&type_hint)),
-        }
+                .and_then(|type_hint| self.vb_typename_from_type_hint(&type_hint)) }
     }
 
     pub(super) fn vb_is_reference_type_hint(&self, type_hint: &str) -> bool {
@@ -739,8 +731,7 @@ impl Compiler {
             Some("String" | "Object") => true,
             Some(name) if name.ends_with("()") => true,
             Some(_) => true,
-            None => false,
-        }
+            None => false }
     }
 
     pub(super) fn vb_is_object_type_hint(&self, type_hint: &str) -> bool {
@@ -760,8 +751,7 @@ impl Compiler {
             ) => false,
             Some(name) if name.ends_with("()") => true,
             Some(_) => true,
-            None => false,
-        }
+            None => false }
     }
 
     pub(super) fn vb_is_reference_expr(&self, expr: &Expression) -> Option<bool> {
@@ -774,8 +764,7 @@ impl Compiler {
             ExprKind::Lit(Literal::Str(_)) => Some(true),
             _ => self
                 .infer_expr_type_hint(expr)
-                .map(|type_hint| self.vb_is_reference_type_hint(&type_hint)),
-        }
+                .map(|type_hint| self.vb_is_reference_type_hint(&type_hint)) }
     }
 
     pub(super) fn vb_is_object_expr(&self, expr: &Expression) -> Option<bool> {
@@ -788,8 +777,7 @@ impl Compiler {
             | ExprKind::Lit(Literal::Null | Literal::Undefined) => Some(false),
             _ => self
                 .infer_expr_type_hint(expr)
-                .map(|type_hint| self.vb_is_object_type_hint(&type_hint)),
-        }
+                .map(|type_hint| self.vb_is_object_type_hint(&type_hint)) }
     }
 
     pub(super) fn compile_expr_with_value_copy(&mut self, expr: &Expression) -> Result<(), String> {
@@ -850,10 +838,21 @@ impl Compiler {
         self.chunk().emit_else(line);
 
         let clone_slot = self.define_local("__value_type_clone");
+        // The clone must carry the SAME rtt as its source, so it allocates
+        // through `struct.new_default $T` like every other instance. The type
+        // is already registered by the time a value-type copy is emitted, so
+        // its 1-based table index is just its position.
+        let type_slot = self.chunks[0]
+            .types
+            .iter()
+            .position(|t| t.name == type_name)
+            .map(|i| i as u16 + 1)
+            .unwrap_or(0);
         crate::primitives::classes::emit_new_typed_object(
             self.chunk(),
             clone_slot,
             type_name,
+            type_slot,
             line,
         );
 
@@ -861,8 +860,8 @@ impl Compiler {
             let member_key = self.str_const(member_name);
             self.emit_u16(Op::LOCAL_GET, clone_slot);
             self.emit_u16(Op::LOCAL_GET, source_slot);
-            self.emit_u16(Op::STRUCT_GET, member_key);
-            self.emit_u16(Op::STRUCT_SET, member_key);
+            self.emit_struct_field_op(Op::STRUCT_GET, 0, member_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, member_key);
             self.emit(Op::DROP);
         }
 
@@ -877,7 +876,6 @@ impl Compiler {
             ExprKind::Ident(name) => self
                 .lookup_var_type_hint(name)
                 .is_some_and(Self::is_string_type_hint),
-            _ => false,
-        }
+            _ => false }
     }
 }

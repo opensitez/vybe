@@ -26,15 +26,13 @@ static NEXT_JS_DYNAMIC_ID: AtomicU64 = AtomicU64::new(1);
 pub struct DynamicCompilation {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
-    pub entry_path: Option<PathBuf>,
-}
+    pub entry_path: Option<PathBuf> }
 
 pub struct RuntimeCompilerService<'vm> {
     vm: &'vm mut VM,
     caps: Capabilities,
     php_runtime: PhpIncludeRuntime,
-    js_runtime: JsDynamicRuntime,
-}
+    js_runtime: JsDynamicRuntime }
 
 pub fn run_with_js_dynamic_runtime(
     vm: &mut VM,
@@ -58,29 +56,24 @@ struct PhpIncludeRuntime {
     current_paths: Vec<PathBuf>,
     included_once: HashSet<PathBuf>,
     active_imports: Vec<Import>,
-    active_resolved_imports: Vec<ImportTarget>,
-}
+    active_resolved_imports: Vec<ImportTarget> }
 
 struct ActivePhpRuntimeGuard {
-    previous: Option<*mut PhpIncludeRuntime>,
-}
+    previous: Option<*mut PhpIncludeRuntime> }
 
 struct JsDynamicRuntime {
     caps: Capabilities,
     vm: *mut VM,
     active_imports: Vec<Import>,
-    active_resolved_imports: Vec<ImportTarget>,
-}
+    active_resolved_imports: Vec<ImportTarget> }
 
 struct ConstructedJsFunction {
     caps: Capabilities,
     vm: VM,
-    function: Value,
-}
+    function: Value }
 
 struct ActiveJsRuntimeGuard {
-    previous: Option<*mut JsDynamicRuntime>,
-}
+    previous: Option<*mut JsDynamicRuntime> }
 
 impl<'vm> RuntimeCompilerService<'vm> {
     pub fn new(vm: &'vm mut VM) -> Self {
@@ -92,8 +85,7 @@ impl<'vm> RuntimeCompilerService<'vm> {
             vm,
             caps: caps.clone(),
             php_runtime: PhpIncludeRuntime::new(caps.clone()),
-            js_runtime: JsDynamicRuntime::new(caps),
-        }
+            js_runtime: JsDynamicRuntime::new(caps) }
     }
 
     pub fn vm(&mut self) -> &mut VM {
@@ -107,8 +99,7 @@ impl<'vm> RuntimeCompilerService<'vm> {
         Ok(DynamicCompilation {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
-            entry_path: bundle.sources.first().map(|source| source.path.clone()),
-        })
+            entry_path: bundle.sources.first().map(|source| source.path.clone()) })
     }
 
     pub fn compile_path(&mut self, path: &Path) -> Result<DynamicCompilation, String> {
@@ -249,8 +240,7 @@ pub fn bundle_from_source(
         language,
         sources: vec![SourceFile { path, code }],
         wasm_files: Vec::new(),
-        entry_point: EntryPoint::Auto,
-    }
+        entry_point: EntryPoint::Auto }
 }
 
 pub fn language_for_path(path: &Path) -> Option<Language> {
@@ -318,8 +308,7 @@ pub fn debug_eval_expression(
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false,
-        })
+            is_nullable: false })
         .collect();
     module.body.push(crate::ast::Statement::new(
         crate::ast::StmtKind::FunctionDecl {
@@ -333,8 +322,7 @@ pub fn debug_eval_expression(
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: false,
-        },
+            is_sub: false },
     ));
 
     // 3. Set up the isolated mini-VM (runtime registration + host functions).
@@ -453,8 +441,7 @@ fn eval_scaffold(language_name: &str, expr: &str) -> Option<String> {
         "vb" => format!(
             "Module __VbFrag\n  Function __vybe_frag() As Object\n    Return ({expr})\n  End Function\nEnd Module\n"
         ),
-        _ => return None,
-    };
+        _ => return None };
     Some(src)
 }
 
@@ -468,8 +455,7 @@ fn frag_return_expression(module: &crate::ast::Module) -> Option<crate::ast::Exp
         }
         body.iter().find_map(|bs| match &bs.kind {
             StmtKind::Return(Some(e)) => Some(e.clone()),
-            _ => None,
-        })
+            _ => None })
     }
     for s in &module.body {
         match &s.kind {
@@ -519,8 +505,7 @@ pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: us
             name: Some(chunk.name.clone()),
             arity: chunk.arity,
             chunk_index: base_chunk_index + idx,
-            upvalues: vec![],
-        };
+            upvalues: vec![] };
         let mut obj = Object::new();
         obj.kind = ObjectKind::Function(func);
         let val = Value::Object(vybe_runtime::heap::alloc(obj));
@@ -556,8 +541,7 @@ fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &s
         SingleQuoted,
         DoubleQuoted,
         LineComment,
-        BlockComment,
-    }
+        BlockComment }
 
     let bytes = source.as_bytes();
     // Accumulate raw bytes so multibyte UTF-8 sequences survive verbatim; the
@@ -686,8 +670,7 @@ pub fn into_dynamic_compilation(compiled: CompiledBundle) -> DynamicCompilation 
     DynamicCompilation {
         chunks: compiled.chunks,
         host_imports: compiled.host_imports,
-        entry_path: None,
-    }
+        entry_path: None }
 }
 
 impl PhpIncludeRuntime {
@@ -698,8 +681,7 @@ impl PhpIncludeRuntime {
             current_paths: Vec::new(),
             included_once: HashSet::new(),
             active_imports: Vec::new(),
-            active_resolved_imports: Vec::new(),
-        }
+            active_resolved_imports: Vec::new() }
     }
 
     fn activate(
@@ -756,8 +738,7 @@ impl PhpIncludeRuntime {
 
         let source = match fs::read_to_string(&resolved_path) {
             Ok(source) => source,
-            Err(_) => return Ok(Value::Bool(false)),
-        };
+            Err(_) => return Ok(Value::Bool(false)) };
 
         let language = languages::find_by_name("php")
             .ok_or_else(|| "php language profile missing".to_string())?;
@@ -802,8 +783,7 @@ impl PhpIncludeRuntime {
                 }
                 Ok(value)
             }
-            Err(_) => Ok(Value::Bool(false)),
-        }
+            Err(_) => Ok(Value::Bool(false)) }
     }
 
     fn compile_dynamic_php(
@@ -817,8 +797,7 @@ impl PhpIncludeRuntime {
         Ok(DynamicCompilation {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
-            entry_path: bundle.sources.first().map(|source| source.path.clone()),
-        })
+            entry_path: bundle.sources.first().map(|source| source.path.clone()) })
     }
 }
 
@@ -839,8 +818,7 @@ impl JsDynamicRuntime {
         let vm = unsafe { &mut *self.vm };
         let compiled = match bundle.compile_full_with_modules(&vm.modules) {
             Ok(compiled) => compiled,
-            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
-        };
+            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e) };
 
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
@@ -853,8 +831,7 @@ impl JsDynamicRuntime {
             .unwrap_or_default();
         let child_active_resolved_imports = match resolve_imports(vm, &child_active_imports) {
             Ok(resolved) => resolved,
-            Err(e) => return throw_eval_error(ctx, "EvalError", &e.to_string()),
-        };
+            Err(e) => return throw_eval_error(ctx, "EvalError", &e.to_string()) };
         let saved_active_imports =
             std::mem::replace(&mut self.active_imports, child_active_imports);
         let saved_active_resolved_imports = std::mem::replace(
@@ -869,8 +846,7 @@ impl JsDynamicRuntime {
 
         let run_value = match result {
             Ok(value) => value,
-            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e.to_string()),
-        };
+            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e.to_string()) };
 
         // An uncaught throw inside eval'd code propagates to the caller.
         if let Some(exc) = vm.last_exception.take() {
@@ -882,8 +858,7 @@ impl JsDynamicRuntime {
         // and drop it so it does not linger as a caller global.
         match completion_capture {
             Some(name) => vm.globals.remove(name).unwrap_or(Value::Undefined),
-            None => run_value,
-        }
+            None => run_value }
     }
 
     fn new(caps: Capabilities) -> Self {
@@ -891,8 +866,7 @@ impl JsDynamicRuntime {
             caps,
             vm: std::ptr::null_mut(),
             active_imports: Vec::new(),
-            active_resolved_imports: Vec::new(),
-        }
+            active_resolved_imports: Vec::new() }
     }
 
     fn activate(
@@ -917,8 +891,7 @@ impl JsDynamicRuntime {
         let source = match args.first() {
             Some(Value::String(s)) => s.to_string(),
             Some(other) => return other.clone(),
-            None => return Value::Undefined,
-        };
+            None => return Value::Undefined };
 
         if !self.can_dynamic_compile() {
             return Value::Undefined;
@@ -941,12 +914,10 @@ impl JsDynamicRuntime {
         // through the registry so this crate never names the JS language crate.
         let parse_eval = match vybe_runtime::registry::hooks("js").parse_eval {
             Some(f) => f,
-            None => return throw_eval_error(ctx, "EvalError", "js eval hook not registered"),
-        };
+            None => return throw_eval_error(ctx, "EvalError", "js eval hook not registered") };
         let module = match parse_eval(trimmed) {
             Ok(module) => module,
-            Err(err) => return throw_eval_error(ctx, "SyntaxError", &err),
-        };
+            Err(err) => return throw_eval_error(ctx, "SyntaxError", &err) };
 
         // Directive prologue (§11.2.1): a leading "use strict" turns on the
         // early errors the (sloppy-mode) parser doesn't enforce.
@@ -972,8 +943,7 @@ impl JsDynamicRuntime {
             for s in &module.body {
                 if let crate::ast::StmtKind::VarDecl {
                     kind: crate::ast::VarDeclKind::Var,
-                    declarations,
-                } = &s.kind
+                    declarations } = &s.kind
                 {
                     for d in declarations {
                         let mut names = std::collections::HashSet::new();
@@ -1013,8 +983,7 @@ impl JsDynamicRuntime {
                 let tail = tail.trim_end().trim_end_matches(';');
                 format!("function {fn_name}() {{ {head}\nreturn ({tail}); }}\n")
             }
-            None => format!("function {fn_name}() {{ {source_text}\n}}\n"),
-        };
+            None => format!("function {fn_name}() {{ {source_text}\n}}\n") };
 
         let Some(language) = languages::find_by_name("js") else {
             return Value::Undefined;
@@ -1039,8 +1008,7 @@ impl JsDynamicRuntime {
                             ObjectKind::Function(_) | ObjectKind::HostFunction(_)
                         )
                     }
-                    _ => true,
-                };
+                    _ => true };
                 if copy {
                     eval_vm.globals.insert(k.clone(), v.clone());
                 }
@@ -1098,8 +1066,7 @@ impl JsDynamicRuntime {
                         }
                         Some(names)
                     }
-                    _ => None,
-                })
+                    _ => None })
                 .flatten()
                 .collect();
             for (k, v) in &eval_vm.globals {
@@ -1133,12 +1100,10 @@ impl JsDynamicRuntime {
         let source = match args.first() {
             Some(Value::String(s)) => s.to_string(),
             Some(other) => return other.clone(),
-            None => return Value::Undefined,
-        };
+            None => return Value::Undefined };
         let language_name = match args.get(1) {
             Some(Value::String(s)) => s.to_string(),
-            _ => return throw_eval_error(ctx, "EvalError", "eval: missing source language"),
-        };
+            _ => return throw_eval_error(ctx, "EvalError", "eval: missing source language") };
 
         if !self.can_dynamic_compile() || self.vm.is_null() {
             return Value::Undefined;
@@ -1179,8 +1144,7 @@ impl JsDynamicRuntime {
                     source.clone()
                 }
             }
-            _ => source.clone(),
-        };
+            _ => source.clone() };
 
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
@@ -1223,8 +1187,7 @@ impl JsDynamicRuntime {
             .and_then(|a| object_get_prop(a, "namespace"))
             .and_then(|v| match v {
                 Value::Object(ns) => Some(ns),
-                _ => None,
-            });
+                _ => None });
         // Original keys of the namespace dict — used at write-back to tell the
         // caller's bindings apart from host builtins seeded by register_all.
         let ns_keys: HashSet<String> = namespace
@@ -1256,8 +1219,7 @@ impl JsDynamicRuntime {
                             ObjectKind::Function(_) | ObjectKind::HostFunction(_)
                         )
                     }
-                    _ => true,
-                };
+                    _ => true };
                 if copy {
                     eval_vm.globals.insert(k.clone(), v.clone());
                 }
@@ -1273,8 +1235,7 @@ impl JsDynamicRuntime {
                 RuntimeCompilerService::with_capabilities(&mut eval_vm, self.caps.clone());
             match service.compile_and_run_bundle(&bundle) {
                 Ok(value) => value,
-                Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
-            }
+                Err(e) => return throw_eval_error(ctx, "SyntaxError", &e) }
         };
 
         // Propagate an uncaught throw from eval'd code to the caller.
@@ -1292,8 +1253,7 @@ impl JsDynamicRuntime {
                 .get(name)
                 .cloned()
                 .unwrap_or(Value::Undefined),
-            None => run_result,
-        };
+            None => run_result };
 
         // Definitions/assignments escape: into the explicit namespace dict if
         // one was given, otherwise the caller's globals. (Skip the completion
@@ -1383,8 +1343,7 @@ impl JsDynamicRuntime {
         let state = Box::new(ConstructedJsFunction {
             caps: self.caps.clone(),
             vm: function_vm,
-            function,
-        });
+            function });
         let state_ptr = Box::into_raw(state);
         CONSTRUCTED_JS_FUNCTIONS.with(|slot| {
             slot.borrow_mut().insert(id, state_ptr);
@@ -1425,8 +1384,7 @@ impl JsDynamicRuntime {
                     let _guard = nested_runtime.activate(&mut state.vm, Vec::new(), Vec::new());
                     let result = match state.vm.invoke(&state.function, args) {
                         Ok(value) => value,
-                        Err(err) => throw_dynamic_compile_error(ctx, err.to_string()),
-                    };
+                        Err(err) => throw_dynamic_compile_error(ctx, err.to_string()) };
 
                     if let Some(saved_this) = saved_this {
                         state.vm.globals.insert("__js_this".into(), saved_this);
@@ -1505,8 +1463,7 @@ fn object_bool_prop(v: &Value, key: &str) -> bool {
         let o = obj.lock().unwrap();
         let found = match &o.kind {
             ObjectKind::Map(m) => m.get(&Value::String(key.into())).cloned(),
-            _ => o.properties.get(key).cloned(),
-        };
+            _ => o.properties.get(key).cloned() };
         return matches!(found, Some(Value::Bool(true)));
     }
     false
@@ -1518,8 +1475,7 @@ fn object_get_prop(v: &Value, key: &str) -> Option<Value> {
         let o = obj.lock().unwrap();
         return match &o.kind {
             ObjectKind::Map(m) => m.get(&Value::String(key.into())).cloned(),
-            _ => o.properties.get(key).cloned(),
-        };
+            _ => o.properties.get(key).cloned() };
     }
     None
 }
@@ -1532,15 +1488,13 @@ fn ns_string_entries(obj: &Object) -> Vec<(String, Value)> {
             .iter()
             .filter_map(|(k, v)| match k {
                 Value::String(s) => Some((s.to_string(), v.clone())),
-                _ => None,
-            })
+                _ => None })
             .collect(),
         _ => obj
             .properties
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    }
+            .collect() }
 }
 
 /// Insert a string-keyed binding into a namespace object, matching its shape.
@@ -1673,8 +1627,7 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
                 let runtime = unsafe { &mut *runtime_ptr };
                 match runtime.handle_function_constructor(args) {
                     Ok(value) => value,
-                    Err(err) => throw_dynamic_compile_error(ctx, err),
-                }
+                    Err(err) => throw_dynamic_compile_error(ctx, err) }
             })
         }),
     );
@@ -1763,8 +1716,7 @@ fn is_explicit_relative_php_include(path: &Path) -> bool {
 fn value_to_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        _ => format!("{value}"),
-    }
+        _ => format!("{value}") }
 }
 
 fn global_constructor_prototype(vm: &VM, name: &str) -> Option<Value> {
@@ -1785,8 +1737,7 @@ fn dynamic_function_length(value: &Value) -> f64 {
     }
     match &function_obj.kind {
         ObjectKind::Function(function) => function.arity as f64,
-        _ => 0.0,
-    }
+        _ => 0.0 }
 }
 
 fn dynamic_host_function_value(
@@ -1863,8 +1814,7 @@ fn is_shared_dynamic_global(name: &str, value: &Value) -> bool {
                 ObjectKind::Function(_) | ObjectKind::HostFunction(_)
             )
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn resolve_imports(vm: &VM, imports: &[Import]) -> Result<Vec<ImportTarget>, String> {
@@ -1926,8 +1876,7 @@ mod tests {
     struct DynamicSmokeCase {
         language: &'static str,
         virtual_path: &'static str,
-        source: &'static str,
-    }
+        source: &'static str }
 
     fn configured_vm() -> VM {
         let mut vm = VM::new();
@@ -1940,8 +1889,7 @@ mod tests {
             Value::I32(n) => assert_eq!(n as f64, expected),
             Value::I64(n) => assert_eq!(n as f64, expected),
             Value::F64(n) => assert_eq!(n, expected),
-            other => panic!("expected numeric value, got {other:?}"),
-        }
+            other => panic!("expected numeric value, got {other:?}") }
     }
 
     #[test]
@@ -1984,53 +1932,43 @@ mod tests {
             DynamicSmokeCase {
                 language: "js",
                 virtual_path: "dynamic/matrix.js",
-                source: "let x = 7;",
-            },
+                source: "let x = 7;" },
             DynamicSmokeCase {
                 language: "php",
                 virtual_path: "dynamic/matrix.php",
-                source: "<?php $x = 7;",
-            },
+                source: "<?php $x = 7;" },
             DynamicSmokeCase {
                 language: "python",
                 virtual_path: "dynamic/matrix.py",
-                source: "x = 7",
-            },
+                source: "x = 7" },
             DynamicSmokeCase {
                 language: "ruby",
                 virtual_path: "dynamic/matrix.rb",
-                source: "x = 7",
-            },
+                source: "x = 7" },
             DynamicSmokeCase {
                 language: "dart",
                 virtual_path: "dynamic/matrix.dart",
-                source: "var x = 7;",
-            },
+                source: "var x = 7;" },
             DynamicSmokeCase {
                 language: "vb",
                 virtual_path: "dynamic/matrix.vb",
-                source: "Dim x As Integer = 7",
-            },
+                source: "Dim x As Integer = 7" },
             DynamicSmokeCase {
                 language: "csharp",
                 virtual_path: "dynamic/matrix.cs",
-                source: "int x = 7;",
-            },
+                source: "int x = 7;" },
             DynamicSmokeCase {
                 language: "pascal",
                 virtual_path: "dynamic/matrix.pas",
-                source: "program T; var x: Integer; begin x := 7; end.",
-            },
+                source: "program T; var x: Integer; begin x := 7; end." },
             DynamicSmokeCase {
                 language: "cobol",
                 virtual_path: "dynamic/matrix.cob",
-                source: "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 X PIC 9 VALUE 7.\nPROCEDURE DIVISION.\n    STOP RUN.",
-            },
+                source: "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 X PIC 9 VALUE 7.\nPROCEDURE DIVISION.\n    STOP RUN." },
             DynamicSmokeCase {
                 language: "fortran",
                 virtual_path: "dynamic/matrix.f90",
-                source: "program test\n  integer :: x\n  x = 7\nend program test",
-            },
+                source: "program test\n  integer :: x\n  x = 7\nend program test" },
         ];
 
         for case in cases {
@@ -2088,8 +2026,7 @@ mod tests {
             Ok(Value::I64(value)) => assert_eq!(value, 5),
             Ok(Value::F64(value)) => assert_eq!(value, 5.0),
             Ok(other) => panic!("expected numeric result, got {other:?}"),
-            Err(err) => panic!("expected callable dynamic function, got {err}"),
-        }
+            Err(err) => panic!("expected callable dynamic function, got {err}") }
     }
 
     #[test]
@@ -2102,18 +2039,17 @@ mod tests {
             .expect("vybe:js:function_constructor host fn");
 
         let mut chunk = vybe_runtime::chunk::Chunk::new("<script>");
-        let arg_a = chunk.add_constant(Value::String("a".into()));
-        let arg_b = chunk.add_constant(Value::String("b".into()));
-        let body = chunk.add_constant(Value::String("return a + b;".into()));
         let result_name = chunk.add_constant(Value::String("__test_result".into()));
         let import_idx = chunk.add_import("vybe:js", "function_constructor");
-        chunk.emit_op_u16(vybe_runtime::opcode::Op::CONST, arg_a, 0);
-        chunk.emit_op_u16(vybe_runtime::opcode::Op::CONST, arg_b, 0);
-        chunk.emit_op_u16(vybe_runtime::opcode::Op::CONST, body, 0);
+        // String constants go through `wasm:string-constants`, the same route
+        // the compiler's `push_const` uses — not the custom `CONST` opcode.
+        chunk.emit_string_const("a", 0);
+        chunk.emit_string_const("b", 0);
+        chunk.emit_string_const("return a + b;", 0);
         chunk.emit_op_u16(vybe_runtime::opcode::Op::CALL_IMPORT, import_idx, 0);
         chunk.emit(3, 0);
         chunk.emit_op_u16(vybe_runtime::opcode::Op::GLOBAL_SET, result_name, 0);
-        chunk.emit_op(vybe_runtime::opcode::Op::NULL, 0);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         chunk.emit_op(vybe_runtime::opcode::Op::HALT, 0);
 
         {
@@ -2135,16 +2071,14 @@ mod tests {
 
         match &value {
             Value::Object(_) => {}
-            other => panic!("expected object result from CALL_IMPORT, got {other:?}"),
-        }
+            other => panic!("expected object result from CALL_IMPORT, got {other:?}") }
 
         match vm.invoke(&value, &[Value::I32(2), Value::I32(3)]) {
             Ok(Value::I32(value)) => assert_eq!(value, 5),
             Ok(Value::I64(value)) => assert_eq!(value, 5),
             Ok(Value::F64(value)) => assert_eq!(value, 5.0),
             Ok(other) => panic!("expected numeric result, got {other:?}"),
-            Err(err) => panic!("expected callable import result, got {err}"),
-        }
+            Err(err) => panic!("expected callable import result, got {err}") }
     }
 
     #[test]
@@ -2180,8 +2114,7 @@ mod tests {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected $result global, got {other:?}"),
-        }
+            other => panic!("expected $result global, got {other:?}") }
     }
 
     #[test]
@@ -2223,8 +2156,7 @@ mod tests {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected nested $result global, got {other:?}"),
-        }
+            other => panic!("expected nested $result global, got {other:?}") }
     }
 
     #[test]
@@ -2260,15 +2192,13 @@ mod tests {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected include $result global, got {other:?}"),
-        }
+            other => panic!("expected include $result global, got {other:?}") }
 
         match vm.globals.get("$call_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected include $call_result global, got {other:?}"),
-        }
+            other => panic!("expected include $call_result global, got {other:?}") }
     }
 
     #[test]
@@ -2309,8 +2239,7 @@ mod tests {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected nested entry-relative $result global, got {other:?}"),
-        }
+            other => panic!("expected nested entry-relative $result global, got {other:?}") }
     }
 
     #[test]
@@ -2357,8 +2286,7 @@ mod tests {
                 for arg in args {
                     match arg {
                         Value::String(text) => out.push_str(text.as_ref()),
-                        other => out.push_str(&format!("{}", other)),
-                    }
+                        other => out.push_str(&format!("{}", other)) }
                 }
                 Value::Null
             }),

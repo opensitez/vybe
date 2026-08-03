@@ -11,9 +11,7 @@ use crate::{
     Checkbox, Dropdown, DropdownEvent, FontSystem, KeyEvent, PanelWidget, ScrollBar, SwashCache,
     TextColor as CosmicColor, TextInput,
     layout::{
-        CheckState, LayoutRect, MouseButton, MouseEvent, MouseEventKind, RenderContext, WidgetEvent,
-    },
-};
+        CheckState, LayoutRect, MouseButton, MouseEvent, MouseEventKind, RenderContext, WidgetEvent } };
 use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 use winit::keyboard::{Key, NamedKey};
 
@@ -25,28 +23,24 @@ pub enum PropItem {
     DropdownRow(String, String, Vec<String>),
     /// Multi-line list editor (e.g. `Items`). Opens an overlay on click.
     /// Stored value is `\n`-separated.
-    MultilineRow(String, String),
-}
+    MultilineRow(String, String) }
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum PropTab {
     Properties,
-    Events,
-}
+    Events }
 
 /// In-progress inline edit: the property key plus the focused TextInput.
 pub struct EditingProp {
     pub key: String,
-    pub input: TextInput,
-}
+    pub input: TextInput }
 
 /// Popped-open dropdown: key, anchor x/y, and the `Dropdown` widget.
 pub struct OpenDropdown {
     pub key: String,
     pub x: f32,
     pub y: f32,
-    pub dropdown: Dropdown,
-}
+    pub dropdown: Dropdown }
 
 /// Event produced by panel interactions.
 pub enum PropEvent {
@@ -54,33 +48,26 @@ pub enum PropEvent {
     TabChanged(PropTab),
     ColorPickerChanged {
         prop_name: String,
-        hex: String,
-    },
+        hex: String },
     ColorPickerClosed {
         prop_name: String,
-        hex: String,
-    },
+        hex: String },
     /// User pressed Enter (or clicked away) after editing a value.
     ValueCommitted {
         key: String,
-        value: String,
-    },
+        value: String },
     /// Checkbox clicked — caller should flip the backing property.
     ValueToggled {
         key: String,
-        value: bool,
-    },
+        value: bool },
     /// Dropdown item selected — caller should persist the new value.
     ValueSelected {
         key: String,
-        value: String,
-    },
+        value: String },
     /// User clicked an event row in the Events tab. Caller should insert /
     /// navigate to the matching handler in code-behind.
     EventHandlerRequested {
-        event: String,
-    },
-}
+        event: String } }
 
 pub const PROP_HEADER_H: f32 = 28.0;
 pub const PROP_TAB_H: f32 = 26.0;
@@ -95,8 +82,7 @@ pub struct PropertiesPanel {
     pub color_picker_prop: Option<String>,
     pub editing: Option<EditingProp>,
     pub dropdown: Option<OpenDropdown>,
-    pub scrollbar: ScrollBar,
-}
+    pub scrollbar: ScrollBar }
 
 impl Default for PropertiesPanel {
     fn default() -> Self {
@@ -107,8 +93,7 @@ impl Default for PropertiesPanel {
             color_picker_prop: None,
             editing: None,
             dropdown: None,
-            scrollbar: ScrollBar::new(true),
-        }
+            scrollbar: ScrollBar::new(true) }
     }
 }
 
@@ -125,8 +110,7 @@ impl PropertiesPanel {
                 PropItem::Row(..)
                 | PropItem::CheckboxRow(..)
                 | PropItem::DropdownRow(..)
-                | PropItem::MultilineRow(..) => PROP_ROW_H,
-            })
+                | PropItem::MultilineRow(..) => PROP_ROW_H })
             .sum()
     }
 
@@ -139,8 +123,7 @@ impl PropertiesPanel {
         if let Some(edit) = self.editing.take() {
             PropEvent::ValueCommitted {
                 key: edit.key,
-                value: edit.input.value,
-            }
+                value: edit.input.value }
         } else {
             PropEvent::None
         }
@@ -163,13 +146,11 @@ impl PropertiesPanel {
             x: val_x,
             y: row_y,
             w: val_w,
-            h: PROP_ROW_H,
-        });
+            h: PROP_ROW_H });
         input.set_focused(true);
         self.editing = Some(EditingProp {
             key: key.to_string(),
-            input,
-        });
+            input });
     }
 
     /// Draw the panel. Call this once per frame.
@@ -620,8 +601,7 @@ impl PropertiesPanel {
                 x: x + w - PROP_SCROLLBAR_W,
                 y: content_top,
                 w: PROP_SCROLLBAR_W,
-                h: content_h,
-            });
+                h: content_h });
             self.scrollbar
                 .paint(ctx.pixmap, x + w - PROP_SCROLLBAR_W, content_top, s);
         }
@@ -637,8 +617,7 @@ impl PropertiesPanel {
                 x: val_x,
                 y: ry,
                 w: val_w,
-                h: PROP_ROW_H,
-            });
+                h: PROP_ROW_H });
             edit.input.render(ctx);
         }
 
@@ -693,8 +672,7 @@ impl PropertiesPanel {
                     let value = open.dropdown.items.get(idx).cloned().unwrap_or_default();
                     return PropEvent::ValueSelected {
                         key: open.key,
-                        value,
-                    };
+                        value };
                 }
                 DropdownEvent::Closed | DropdownEvent::None => {
                     // Closed — fall through so the click also counts normally.
@@ -712,8 +690,7 @@ impl PropertiesPanel {
                     kind: MouseEventKind::Press(MouseButton::Left),
                     cmd: false,
                     shift: false,
-                    alt: false,
-                };
+                    alt: false };
                 edit.input.handle_mouse(&me);
                 edit.input.set_focused(true);
                 return PropEvent::None;
@@ -761,8 +738,7 @@ impl PropertiesPanel {
                     }
                     return committed;
                 }
-                ColorPickerEvent::None => return committed,
-            }
+                ColorPickerEvent::None => return committed }
         }
 
         // Tab switch
@@ -788,8 +764,7 @@ impl PropertiesPanel {
             for item in items {
                 let row_h = match item {
                     PropItem::Section(_) => PROP_SECTION_H,
-                    _ => PROP_ROW_H,
-                };
+                    _ => PROP_ROW_H };
                 if let PropItem::Row(key, _) = item {
                     if my >= row_y && my < row_y + PROP_ROW_H {
                         return PropEvent::EventHandlerRequested { event: key.clone() };
@@ -837,14 +812,12 @@ impl PropertiesPanel {
                                 if cb.click(mx - cb_x, my - cb_y) {
                                     return PropEvent::ValueToggled {
                                         key: key.clone(),
-                                        value: !*checked,
-                                    };
+                                        value: !*checked };
                                 }
                                 // Click on the row but outside the checkbox — still flip.
                                 return PropEvent::ValueToggled {
                                     key: key.clone(),
-                                    value: !*checked,
-                                };
+                                    value: !*checked };
                             }
                             row_y += PROP_ROW_H;
                         }
@@ -863,8 +836,7 @@ impl PropertiesPanel {
                                     key: key.clone(),
                                     x: anchor_x,
                                     y: anchor_y,
-                                    dropdown: dd,
-                                });
+                                    dropdown: dd });
                                 return committed;
                             }
                             row_y += PROP_ROW_H;
@@ -937,8 +909,7 @@ impl PropertiesPanel {
                 let taken = self.editing.take().unwrap();
                 return PropEvent::ValueCommitted {
                     key: taken.key,
-                    value: taken.input.value,
-                };
+                    value: taken.input.value };
             }
             Key::Named(NamedKey::Escape) => {
                 self.editing = None;

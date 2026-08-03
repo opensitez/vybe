@@ -3,8 +3,7 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
-};
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
 use cosmic_text::Color as CosmicColor;
 
 pub struct TextInput {
@@ -28,8 +27,7 @@ pub struct TextInput {
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
     /// Whether a mouse drag selection is in progress.
-    dragging: bool,
-}
+    dragging: bool }
 
 impl TextInput {
     pub fn new() -> Self {
@@ -52,8 +50,7 @@ impl TextInput {
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
-            dragging: false,
-        }
+            dragging: false }
     }
 
     pub fn with_placeholder(mut self, p: &str) -> Self {
@@ -694,8 +691,7 @@ impl PanelWidget for TextInput {
                 self.disabled = !e;
                 CommandValue::None
             }
-            _ => CommandValue::None,
-        }
+            _ => CommandValue::None }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

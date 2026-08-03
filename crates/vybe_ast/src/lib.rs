@@ -30,8 +30,7 @@ pub struct Module {
     pub name: String,
     pub language: Lang,
     pub body: Vec<Statement>,
-    pub imports: Vec<Import>,
-}
+    pub imports: Vec<Import> }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
@@ -49,14 +48,12 @@ pub enum Lang {
     Lua,
     Java,
     Kotlin,
-    Unknown,
-}
+    Unknown }
 
 #[derive(Debug, Clone)]
 pub struct Import {
     pub kind: ImportKind,
-    pub span: Span,
-}
+    pub span: Span }
 
 #[derive(Debug, Clone)]
 pub enum ImportKind {
@@ -67,27 +64,23 @@ pub enum ImportKind {
     Named {
         path: String,
         names: Vec<ImportName>,
-        level: usize,
-    },
+        level: usize },
     /// `import * as ns from "mod"` / `from os import *`
     Wildcard { path: String, alias: Option<String> },
     /// `import defaultExport from "mod"` (JS)
-    Default { path: String, local: String },
-}
+    Default { path: String, local: String } }
 
 #[derive(Debug, Clone)]
 pub struct ImportName {
     pub name: String,
-    pub alias: Option<String>,
-}
+    pub alias: Option<String> }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Span {
     pub start_line: u32,
     pub start_col: u32,
     pub end_line: u32,
-    pub end_col: u32,
-}
+    pub end_col: u32 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Types and generics
@@ -95,8 +88,7 @@ pub struct Span {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypePath {
-    pub segments: Vec<String>,
-}
+    pub segments: Vec<String> }
 
 impl TypePath {
     pub fn new(segments: Vec<String>) -> Self {
@@ -110,8 +102,7 @@ impl TypePath {
                 .map(str::trim)
                 .filter(|segment| !segment.is_empty())
                 .map(str::to_string)
-                .collect(),
-        }
+                .collect() }
     }
 
     pub fn display_name(&self) -> String {
@@ -121,23 +112,19 @@ impl TypePath {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeRef {
-    pub kind: TypeRefKind,
-}
+    pub kind: TypeRefKind }
 
 impl TypeRef {
     pub fn named(path: impl Into<String>) -> Self {
         Self {
             kind: TypeRefKind::Named {
                 path: TypePath::from_dotted(&path.into()),
-                args: Vec::new(),
-            },
-        }
+                args: Vec::new() } }
     }
 
     pub fn generic_param(name: impl Into<String>) -> Self {
         Self {
-            kind: TypeRefKind::GenericParam { name: name.into() },
-        }
+            kind: TypeRefKind::GenericParam { name: name.into() } }
     }
 }
 
@@ -145,61 +132,46 @@ impl TypeRef {
 pub enum TypeRefKind {
     Named {
         path: TypePath,
-        args: Vec<GenericArg>,
-    },
+        args: Vec<GenericArg> },
     GenericParam {
-        name: String,
-    },
+        name: String },
     Array {
         element: Box<TypeRef>,
-        rank: usize,
-    },
+        rank: usize },
     Tuple {
-        elements: Vec<TypeRef>,
-    },
+        elements: Vec<TypeRef> },
     Function {
         params: Vec<TypeRef>,
-        result: Box<TypeRef>,
-    },
+        result: Box<TypeRef> },
     Union {
-        members: Vec<TypeRef>,
-    },
+        members: Vec<TypeRef> },
     Intersection {
-        members: Vec<TypeRef>,
-    },
+        members: Vec<TypeRef> },
     Nullable {
-        inner: Box<TypeRef>,
-    },
+        inner: Box<TypeRef> },
     Pointer {
-        inner: Box<TypeRef>,
-    },
+        inner: Box<TypeRef> },
     Reference {
-        inner: Box<TypeRef>,
-    },
+        inner: Box<TypeRef> },
     Wildcard {
-        bound: Option<GenericBound>,
-    },
+        bound: Option<GenericBound> },
     SelfType,
     Infer,
-    Error,
-}
+    Error }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GenericArg {
     Type(TypeRef),
-    Const(String),
-}
+    Const(String) }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GenericBound {
     Extends(Box<TypeRef>),
-    Super(Box<TypeRef>),
-}
+    Super(Box<TypeRef>) }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct GenericDecl {
-    pub params: Vec<GenericParam>,
-}
+    pub params: Vec<GenericParam> }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GenericParam {
@@ -207,8 +179,7 @@ pub struct GenericParam {
     pub constraints: Vec<GenericConstraint>,
     pub variance: GenericVariance,
     pub default: Option<TypeRef>,
-    pub runtime: GenericRuntimeMode,
-}
+    pub runtime: GenericRuntimeMode }
 
 impl GenericParam {
     pub fn new(name: impl Into<String>) -> Self {
@@ -217,8 +188,7 @@ impl GenericParam {
             constraints: Vec::new(),
             variance: GenericVariance::Invariant,
             default: None,
-            runtime: GenericRuntimeMode::Erased,
-        }
+            runtime: GenericRuntimeMode::Erased }
     }
 }
 
@@ -227,8 +197,7 @@ pub enum GenericVariance {
     #[default]
     Invariant,
     Covariant,
-    Contravariant,
-}
+    Contravariant }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GenericRuntimeMode {
@@ -236,8 +205,7 @@ pub enum GenericRuntimeMode {
     Erased,
     Reified,
     Specialized,
-    Shared,
-}
+    Shared }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GenericConstraint {
@@ -258,8 +226,7 @@ pub enum GenericConstraint {
     NonNull,
     Nullable,
     Unmanaged,
-    CopyLike,
-}
+    CopyLike }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Statements
@@ -268,20 +235,17 @@ pub enum GenericConstraint {
 #[derive(Debug, Clone)]
 pub struct Statement {
     pub kind: StmtKind,
-    pub span: Span,
-}
+    pub span: Span }
 
 #[derive(Debug, Clone)]
 pub struct RecordFieldFormat {
-    pub decimal_places: usize,
-}
+    pub decimal_places: usize }
 
 impl Statement {
     pub fn new(kind: StmtKind) -> Self {
         Self {
             kind,
-            span: Span::default(),
-        }
+            span: Span::default() }
     }
     pub fn with_span(kind: StmtKind, span: Span) -> Self {
         Self { kind, span }
@@ -299,8 +263,7 @@ pub enum StmtKind {
     // ── Variable declarations ────────────────────────────────────────────
     VarDecl {
         declarations: Vec<VarDeclarator>,
-        kind: VarDeclKind,
-    },
+        kind: VarDeclKind },
 
     // ── Functions (compiler_common::functions) ───────────────────────────
     FunctionDecl {
@@ -313,8 +276,7 @@ pub enum StmtKind {
         is_async: bool,
         /// Dart: `sync*`/`async*` generator functions
         is_generator: bool,
-        is_sub: bool,
-    },
+        is_sub: bool },
 
     // ── Classes (compiler_common::classes) ───────────────────────────────
     ClassDecl {
@@ -324,15 +286,13 @@ pub enum StmtKind {
         interfaces: Vec<String>,
         members: Vec<ClassMember>,
         modifiers: ClassModifiers,
-        decorators: Vec<Expression>,
-    },
+        decorators: Vec<Expression> },
 
     InterfaceDecl {
         name: String,
         parents: Vec<String>,
         members: Vec<InterfaceMember>,
-        decorators: Vec<Expression>,
-    },
+        decorators: Vec<Expression> },
 
     EnumDecl {
         name: String,
@@ -342,50 +302,43 @@ pub enum StmtKind {
         backing_type: Option<String>,
         interfaces: Vec<String>,
         body_members: Vec<ClassMember>,
-        decorators: Vec<Expression>,
-    },
+        decorators: Vec<Expression> },
 
     StructDecl {
         name: String,
         interfaces: Vec<String>,
         members: Vec<ClassMember>,
         visibility: Visibility,
-        decorators: Vec<Expression>,
-    },
+        decorators: Vec<Expression> },
 
     ModuleDecl {
         name: String,
         members: Vec<ClassMember>,
-        visibility: Visibility,
-    },
+        visibility: Visibility },
 
     NamespaceDecl {
         name: String,
-        body: Vec<Statement>,
-    },
+        body: Vec<Statement> },
 
     DelegateDecl {
         name: String,
         params: Vec<Param>,
         return_type: Option<String>,
         is_sub: bool,
-        visibility: Visibility,
-    },
+        visibility: Visibility },
 
     // ── Control flow (br_if, br, loop opcodes) ──────────────────────────
     If {
         cond: Expression,
         then_body: Vec<Statement>,
         elifs: Vec<(Expression, Vec<Statement>)>,
-        else_body: Option<Vec<Statement>>,
-    },
+        else_body: Option<Vec<Statement>> },
 
     For {
         init: Option<Box<Statement>>,
         cond: Option<Expression>,
         update: Option<Expression>,
-        body: Vec<Statement>,
-    },
+        body: Vec<Statement> },
 
     /// compiler_common::loops::emit_for_in
     ForIn {
@@ -399,21 +352,18 @@ pub enum StmtKind {
         /// Python: `for x in items: ... else: ...`
         else_body: Option<Vec<Statement>>,
         /// Python: `async for`
-        is_async: bool,
-    },
+        is_async: bool },
 
     While {
         cond: Expression,
         body: Vec<Statement>,
         /// Python: `while cond: ... else: ...`
-        else_body: Option<Vec<Statement>>,
-    },
+        else_body: Option<Vec<Statement>> },
 
     DoWhile {
         body: Vec<Statement>,
         cond: Expression,
-        until: bool,
-    },
+        until: bool },
 
     /// Switch / Select Case. Cases are in source order. A case with
     /// empty `conditions` is the default arm. The separate `default`
@@ -422,16 +372,14 @@ pub enum StmtKind {
     Switch {
         expr: Expression,
         cases: Vec<SwitchCase>,
-        default: Option<Vec<Statement>>,
-    },
+        default: Option<Vec<Statement>> },
 
     // ── Exception handling (compiler_common::errors) ─────────────────────
     Try {
         body: Vec<Statement>,
         catches: Vec<CatchClause>,
         else_body: Option<Vec<Statement>>,
-        finally: Option<Vec<Statement>>,
-    },
+        finally: Option<Vec<Statement>> },
 
     // ── With / Using / Lock ─────────────────────────────────────────────
     /// Python: `with a() as x, b() as y:` — multiple items
@@ -439,19 +387,16 @@ pub enum StmtKind {
     With {
         items: Vec<WithItem>,
         body: Vec<Statement>,
-        is_async: bool,
-    },
+        is_async: bool },
 
     Using {
         var: String,
         resource: Expression,
-        body: Vec<Statement>,
-    },
+        body: Vec<Statement> },
 
     Lock {
         expr: Expression,
-        body: Vec<Statement>,
-    },
+        body: Vec<Statement> },
 
     // ── Jumps ────────────────────────────────────────────────────────────
     Return(Option<Expression>),
@@ -460,32 +405,39 @@ pub enum StmtKind {
     /// Python: `raise X from Y` — cause is the chained exception
     Throw {
         expr: Option<Expression>,
-        cause: Option<Expression>,
-    },
+        cause: Option<Expression> },
 
     // ── Assignment ───────────────────────────────────────────────────────
     /// Python: `a = b = c = 5` — multiple targets
     Assign {
         targets: Vec<Expression>,
         value: Expression,
-    },
+        /// The target is bound BY REFERENCE — it aliases the value's storage,
+        /// so later writes through either name are seen by both
+        /// (php `$b = &$a`).
+        ///
+        /// Completes a vocabulary the AST already had everywhere else:
+        /// `Param.pass_by`, `Argument.by_ref` and `ArrayElement.by_ref`.
+        /// Assignment was the one binding form missing it, which is why the
+        /// compiler had to ask `profile.name == "php"` to tell an ALIAS from a
+        /// stored pointer VALUE — `p = &v` in c/go/c#/pascal keeps assigning a
+        /// pointer and leaves this false, so rebinding `p` still rebinds rather
+        /// than writing through.
+        by_ref: bool },
 
     CompoundAssign {
         target: Expression,
         op: CompoundOp,
-        value: Expression,
-    },
+        value: Expression },
 
     // ── Array operations ─────────────────────────────────────────────────
     ReDim {
         preserve: bool,
         array: String,
-        bounds: Vec<Expression>,
-    },
+        bounds: Vec<Expression> },
 
     Erase {
-        array: String,
-    },
+        array: String },
 
     // ── Events ───────────────────────────────────────────────────────────
     //
@@ -506,19 +458,16 @@ pub enum StmtKind {
         event: String,
         /// Handler — any expression that evaluates to a function reference
         /// (a global function, a method on `me`, a lambda, etc.).
-        handler: Expression,
-    },
+        handler: Expression },
 
     RemoveHandler {
         control: Expression,
         event: String,
-        handler: Expression,
-    },
+        handler: Expression },
 
     RaiseEvent {
         event_name: String,
-        args: Vec<Expression>,
-    },
+        args: Vec<Expression> },
 
     // ── Error handling (VB6 legacy) ──────────────────────────────────────
     OnErrorResumeNext,
@@ -530,42 +479,34 @@ pub enum StmtKind {
     OpenFile {
         path: Expression,
         mode: FileMode,
-        file_number: Expression,
-    },
+        file_number: Expression },
     CloseFile(Option<Expression>),
     PrintFile {
         file_number: Expression,
-        items: Vec<Expression>,
-    },
+        items: Vec<Expression> },
     WriteFile {
         file_number: Expression,
-        items: Vec<Expression>,
-    },
+        items: Vec<Expression> },
     InputFile {
         file_number: Expression,
-        variables: Vec<Expression>,
-    },
+        variables: Vec<Expression> },
     LineInput {
         file_number: Expression,
-        variable: String,
-    },
+        variable: String },
     StartFile {
         file_number: Expression,
         key_index: usize,
         key_value: Expression,
-        relation: FileKeyRelation,
-    },
+        relation: FileKeyRelation },
     InputRecordFile {
         file_number: Expression,
         variables: Vec<String>,
         key_index: Option<usize>,
-        key_value: Option<Expression>,
-    },
+        key_value: Option<Expression> },
     RewriteRecordFile {
         file_number: Expression,
         items: Vec<Expression>,
-        field_formats: Vec<Option<RecordFieldFormat>>,
-    },
+        field_formats: Vec<Option<RecordFieldFormat>> },
 
     // ── Module system (JS) ───────────────────────────────────────────────
     Export {
@@ -579,34 +520,41 @@ pub enum StmtKind {
         from: Option<String>,
         /// `true` for `export * from "m"` (all re-exported under source
         /// names). `false` for named re-exports or local exports.
-        star: bool,
-    },
+        star: bool },
 
     // ── Labeled statement (JS) ──────────────────────────────────────────
     /// `myLabel: for (...) {}` — wraps a statement with a label for break/continue
     Labeled {
         label: String,
-        body: Box<Statement>,
-    },
+        body: Box<Statement> },
 
     // ── Other ────────────────────────────────────────────────────────────
     Empty,
+    /// Terminate the program with a status, from any depth — PHP `exit`/`die`,
+    /// Ruby `exit`, Lua `os.exit`, Go `os.Exit`, Pascal `Halt`, COBOL
+    /// `STOP RUN`, Python `sys.exit`, JS `process.exit`, C `exit`.
+    ///
+    /// A non-local transfer like `Return`/`Break`/`Throw`, which is why it is a
+    /// statement rather than a call: it unwinds every frame and never returns.
+    /// `None` means status 0. Lowered once by
+    /// `primitives/control_flow.rs::compile_exit_stmt`; per-language argument
+    /// quirks (Lua's inverted boolean, PHP's string message) are normalized by
+    /// the walker before they get here.
+    Exit {
+        status: Option<Expression> },
     ScopeDecl {
         kind: ScopeDeclKind,
-        names: Vec<String>,
-    },
+        names: Vec<String> },
     Delete(Vec<Expression>),
     Assert {
         test: Expression,
-        msg: Option<Expression>,
-    },
+        msg: Option<Expression> },
     Echo(Vec<Expression>),
 
     /// Python `match subject: case pattern: ...` — statement-level with full patterns
     MatchStatement {
         subject: Expression,
-        cases: Vec<MatchCase>,
-    },
+        cases: Vec<MatchCase> },
 
     // ── WASM module structure (linear memory / data segments) ────────────
     //
@@ -622,8 +570,7 @@ pub enum StmtKind {
         /// Minimum size in 64 KiB pages.
         min_pages: u64,
         /// Maximum size in pages; `None` = unbounded.
-        max_pages: Option<u64>,
-    },
+        max_pages: Option<u64> },
 
     /// `(table $id? min max? funcref)` — a reference-table declaration.
     /// Declaration order is the table index.
@@ -631,8 +578,7 @@ pub enum StmtKind {
         /// Minimum element count.
         min_size: u64,
         /// Maximum element count; `None` = unbounded.
-        max_size: Option<u64>,
-    },
+        max_size: Option<u64> },
 
     /// `(data (offset) "bytes")` (active) or `(data "bytes")` (passive). Active
     /// segments are copied into linear memory at instantiation; passive ones
@@ -644,8 +590,7 @@ pub enum StmtKind {
         /// `None` marks a passive segment.
         offset: Option<Expression>,
         /// Initializer bytes, with WAT string escapes already decoded.
-        bytes: Vec<u8>,
-    },
+        bytes: Vec<u8> },
 
     // ── WASM exception handling (canonical `try_table`) ──────────────────────
     // The WASM text format declares exception *tags* and matches catch clauses
@@ -661,8 +606,7 @@ pub enum StmtKind {
         /// Tag name (the `$id`), used to key the imported tag entity.
         name: String,
         /// Payload arity (number of `param` values the tag carries).
-        arity: u8,
-    },
+        arity: u8 },
 
     /// `throw $tag` — raise the WASM exception `$tag` with `args` as its
     /// payload (already popped off the stack machine in push order). Lowers to
@@ -671,8 +615,7 @@ pub enum StmtKind {
         /// Tag name to raise (resolves to the same entity as `WasmTagDecl`).
         tag: String,
         /// Payload values, bottom-to-top.
-        args: Vec<Expression>,
-    },
+        args: Vec<Expression> },
 
     /// A WASM exception-handling block — canonical `try_table`, or the legacy
     /// `try/catch/catch_all/delegate` sugar the wast walker folds into it.
@@ -682,17 +625,14 @@ pub enum StmtKind {
     /// handler), the body, a structural `end`, then the handlers.
     WasmTryTable {
         body: Vec<Statement>,
-        catches: Vec<WasmCatch>,
-    },
+        catches: Vec<WasmCatch> },
 
     /// `rethrow N` (legacy) — re-raise the exception caught by the `N`th
     /// enclosing catch, whose `exnref` the handler captured (`capture_ref`).
     /// Lowers to `THROW_REF` of that captured reference.
     WasmRethrow {
         /// The `exnref` local name captured by the target catch handler.
-        exnref_local: String,
-    },
-}
+        exnref_local: String } }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Class members (compiler_common::classes)
@@ -706,8 +646,7 @@ pub enum ClassMember {
         init: Option<Expression>,
         modifiers: Modifiers,
         with_events: bool,
-        array_bounds: Option<Vec<Expression>>,
-    },
+        array_bounds: Option<Vec<Expression>> },
 
     Method(Box<Statement>),
 
@@ -721,8 +660,7 @@ pub enum ClassMember {
         body: Vec<Statement>,
         base_args: Option<Vec<Expression>>,
         initializer_target: ConstructorInitializerTarget,
-        visibility: Visibility,
-    },
+        visibility: Visibility },
 
     /// __get_ / __set_ closures on the struct
     Property {
@@ -731,22 +669,19 @@ pub enum ClassMember {
         getter: Option<Vec<Statement>>,
         setter: Option<PropertySetter>,
         is_auto: bool,
-        modifiers: Modifiers,
-    },
+        modifiers: Modifiers },
 
     Event {
         name: String,
         type_hint: Option<String>,
         params: Vec<Param>,
-        visibility: Visibility,
-    },
+        visibility: Visibility },
 
     Const {
         name: String,
         type_hint: Option<String>,
         value: Expression,
-        visibility: Visibility,
-    },
+        visibility: Visibility },
 
     NestedType(Box<Statement>),
 
@@ -764,8 +699,7 @@ pub enum ClassMember {
     /// The walker records what the source said; `normalize_class` turns it into
     /// an `Augmentation`; the shared `class_augmentation` pass applies it once.
     /// See flexclassplan.md §4c-R.
-    Augment(AugmentDecl),
-}
+    Augment(AugmentDecl) }
 
 /// One augmentation clause as the source wrote it.
 #[derive(Debug, Clone, Default)]
@@ -778,8 +712,7 @@ pub struct AugmentDecl {
     pub via_field: Option<String>,
     /// Per-member adjustments (PHP `as` / `insteadof`). Empty for every other
     /// language's mechanism.
-    pub adjustments: Vec<AugmentAdjustment>,
-}
+    pub adjustments: Vec<AugmentAdjustment> }
 
 /// A per-member adjustment on an augmentation clause: PHP `A::run as protected
 /// go;` (rename and/or change visibility) and `A::run insteadof B;` (exclude).
@@ -796,8 +729,7 @@ pub struct AugmentAdjustment {
     /// Override the member's visibility (PHP `as protected run`).
     pub visibility: Option<Visibility>,
     /// Drop this member from THIS augmentation (PHP `insteadof`).
-    pub exclude: bool,
-}
+    pub exclude: bool }
 
 /// What kind of type a `ClassDecl` actually declares.
 ///
@@ -830,20 +762,17 @@ pub enum ClassKind {
     /// collapses: the shape is derived from `constructors[0].params`, which is
     /// the same computation in every language, and it belongs in normalization
     /// where the bindings can be `ProtocolSlot`s rather than spellings (§2a).
-    Record,
-}
+    Record }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstructorInitializerTarget {
     Base,
-    This,
-}
+    This }
 
 #[derive(Debug, Clone)]
 pub struct PropertySetter {
     pub param: Param,
-    pub body: Vec<Statement>,
-}
+    pub body: Vec<Statement> }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Interface members
@@ -856,19 +785,15 @@ pub enum InterfaceMember {
         params: Vec<Param>,
         return_type: Option<String>,
         is_sub: bool,
-        signature_source: Option<String>,
-    },
+        signature_source: Option<String> },
     Property {
         name: String,
         type_hint: Option<String>,
         is_readonly: bool,
-        is_writeonly: bool,
-    },
+        is_writeonly: bool },
     Event {
         name: String,
-        type_hint: Option<String>,
-    },
-}
+        type_hint: Option<String> } }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Expressions
@@ -877,13 +802,11 @@ pub enum InterfaceMember {
 #[derive(Debug, Clone)]
 pub struct Expression {
     pub kind: ExprKind,
-    pub span: Span,
-}
+    pub span: Span }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArrayIndexSemantics {
-    pub first_index: i64,
-}
+    pub first_index: i64 }
 
 impl ArrayIndexSemantics {
     pub const ZERO_BASED: Self = Self { first_index: 0 };
@@ -894,8 +817,7 @@ impl Expression {
     pub fn new(kind: ExprKind) -> Self {
         Self {
             kind,
-            span: Span::default(),
-        }
+            span: Span::default() }
     }
     pub fn with_span(kind: ExprKind, span: Span) -> Self {
         Self { kind, span }
@@ -926,22 +848,18 @@ pub enum PlaceExpr {
     Member {
         object: Box<Expression>,
         field: String,
-        null_safe: bool,
-    },
+        null_safe: bool },
     Index {
         object: Box<Expression>,
         index: Box<Expression>,
-        null_safe: bool,
-    },
-    Deref(Box<Expression>),
-}
+        null_safe: bool },
+    Deref(Box<Expression>) }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZipMode {
     First,
     Shortest,
-    Longest,
-}
+    Longest }
 
 #[derive(Debug, Clone)]
 pub enum ExprKind {
@@ -954,50 +872,42 @@ pub enum ExprKind {
     Binary {
         op: BinOp,
         left: Box<Expression>,
-        right: Box<Expression>,
-    },
+        right: Box<Expression> },
     Unary {
         op: UnaryOp,
-        expr: Box<Expression>,
-    },
+        expr: Box<Expression> },
     RefOf(Box<PlaceExpr>),
     RefLoad(Box<Expression>),
     Ternary {
         cond: Box<Expression>,
         then: Box<Expression>,
-        else_: Box<Expression>,
-    },
+        else_: Box<Expression> },
 
     // ── Access (struct_get / struct_set) ─────────────────────────────────
     Member {
         object: Box<Expression>,
         field: String,
-        null_safe: bool,
-    },
+        null_safe: bool },
     Index {
         object: Box<Expression>,
         index: Box<Expression>,
-        null_safe: bool,
-    },
+        null_safe: bool },
 
     // ── Calls (call opcode) ─────────────────────────────────────────────
     Call {
         callee: Box<Expression>,
         args: Vec<Argument>,
-        optional: bool,
-    },
+        optional: bool },
 
     // ── Object creation (compiler_common::classes) ──────────────────────
     New {
         class: Box<Expression>,
-        args: Vec<Argument>,
-    },
+        args: Vec<Argument> },
 
     // ── Assignment as expression ─────────────────────────────────────────
     Assign {
         target: Box<Expression>,
-        value: Box<Expression>,
-    },
+        value: Box<Expression> },
 
     // ── Functions as values (ref_func) ──────────────────────────────────
     Lambda {
@@ -1005,8 +915,7 @@ pub enum ExprKind {
         body: LambdaBody,
         is_async: bool,
         /// PHP: `function() use ($x, $y) { }` — explicitly captured variables
-        captures: Vec<String>,
-    },
+        captures: Vec<String> },
 
     // ── Collections (compiler_common::collections, dict) ────────────────
     Array(Vec<ArrayElement>),
@@ -1020,8 +929,7 @@ pub enum ExprKind {
     /// See `vybe_compiler::primitives::tuples`.
     NamedTuple {
         fields: Vec<(Option<String>, Expression)>,
-        type_name: Option<String>,
-    },
+        type_name: Option<String> },
     /// Python `{1, 2, 3}` — unordered unique collection
     Set(Vec<Expression>),
     Object(Vec<ObjectProperty>),
@@ -1032,8 +940,7 @@ pub enum ExprKind {
     Zip {
         iterables: Vec<Expression>,
         mode: ZipMode,
-        strict: bool,
-    },
+        strict: bool },
 
     // ── String interpolation ─────────────────────────────────────────────
     Interpolation(Vec<InterpolPart>),
@@ -1041,20 +948,17 @@ pub enum ExprKind {
     // ── Type operations ──────────────────────────────────────────────────
     IsType {
         expr: Box<Expression>,
-        type_name: String,
-    },
+        type_name: String },
     Cast {
         expr: Box<Expression>,
-        type_name: String,
-    },
+        type_name: String },
     TypeOf(Box<Expression>),
     DefaultOf(String),
 
     // ── Null handling (compiler_common::expressions) ─────────────────────
     NullCoalesce {
         left: Box<Expression>,
-        right: Box<Expression>,
-    },
+        right: Box<Expression> },
 
     // ── Spread / rest ────────────────────────────────────────────────────
     Spread(Box<Expression>),
@@ -1068,24 +972,20 @@ pub enum ExprKind {
     AddressOf(String),
     SuperCall {
         method: Option<String>,
-        args: Vec<Argument>,
-    },
+        args: Vec<Argument> },
 
     // ── Python ───────────────────────────────────────────────────────────
     Comprehension {
         kind: ComprehensionKind,
         element: Box<Expression>,
-        generators: Vec<ComprehensionGen>,
-    },
+        generators: Vec<ComprehensionGen> },
     Slice {
         lower: Option<Box<Expression>>,
         upper: Option<Box<Expression>>,
-        step: Option<Box<Expression>>,
-    },
+        step: Option<Box<Expression>> },
     Walrus {
         target: Box<Expression>,
-        value: Box<Expression>,
-    },
+        value: Box<Expression> },
 
     // ── JS ───────────────────────────────────────────────────────────────
     Void(Box<Expression>),
@@ -1101,8 +1001,7 @@ pub enum ExprKind {
         /// this today (`new class implements I {}`); other languages leave it
         /// empty, matching the previous hardcoded `&[]`.
         interfaces: Vec<String>,
-        members: Vec<ClassMember>,
-    },
+        members: Vec<ClassMember> },
     /// `function(...) { }` as an expression: `let f = function() { ... }`
     FunctionExpr(Box<Statement>), // always StmtKind::FunctionDecl
 
@@ -1110,21 +1009,17 @@ pub enum ExprKind {
     Range {
         start: Box<Expression>,
         end: Box<Expression>,
-        inclusive: bool,
-    },
+        inclusive: bool },
 
     // ── PHP ──────────────────────────────────────────────────────────────
     StaticAccess {
         class: Box<Expression>,
-        member: Box<Expression>,
-    },
+        member: Box<Expression> },
 
     // ── Match expression (PHP/Python) ────────────────────────────────────
     Match {
         subject: Box<Expression>,
-        arms: Vec<MatchArm>,
-    },
-}
+        arms: Vec<MatchArm> } }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Supporting types
@@ -1149,8 +1044,7 @@ pub enum Literal {
     /// resolve, which `builtin_slots.rs` records as the reason `Bytes` is
     /// unbound today. Deliberately NOT `Utf8Str`/`Utf16Str` — encoding is a
     /// property of a conversion, not of a literal.
-    Bytes(Vec<u8>),
-}
+    Bytes(Vec<u8>) }
 
 // ── Variables ───────────────────────────────────────────────────────────────
 
@@ -1160,8 +1054,7 @@ pub struct VarDeclarator {
     pub type_hint: Option<String>,
     pub init: Option<Expression>,
     pub array_bounds: Option<Vec<Expression>>,
-    pub with_events: bool,
-}
+    pub with_events: bool }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VarDeclKind {
@@ -1169,30 +1062,26 @@ pub enum VarDeclKind {
     Let,
     Const,
     Var,
-    Static,
-}
+    Static }
 
 #[derive(Debug, Clone)]
 pub enum BindingPattern {
     Ident(String),
     Object(Vec<ObjectPatternProp>),
-    Array(Vec<ArrayPatternElem>),
-}
+    Array(Vec<ArrayPatternElem>) }
 
 #[derive(Debug, Clone)]
 pub struct ObjectPatternProp {
     pub key: String,
     pub value: Option<BindingPattern>,
     pub default: Option<Expression>,
-    pub is_rest: bool,
-}
+    pub is_rest: bool }
 
 #[derive(Debug, Clone)]
 pub enum ArrayPatternElem {
     Pattern(BindingPattern, Option<Expression>),
     Rest(String),
-    Hole,
-}
+    Hole }
 
 // ── Parameters ──────────────────────────────────────────────────────────────
 
@@ -1205,16 +1094,14 @@ pub struct Param {
     pub is_rest: bool,
     pub is_kwargs: bool,
     pub is_optional: bool,
-    pub is_nullable: bool,
-}
+    pub is_nullable: bool }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PassBy {
     Value,
     Ref,
     Out,
-    Const,
-}
+    Const }
 
 // ── Arguments ───────────────────────────────────────────────────────────────
 
@@ -1223,8 +1110,7 @@ pub struct Argument {
     pub value: Expression,
     pub name: Option<String>,
     pub by_ref: bool,
-    pub spread: bool,
-}
+    pub spread: bool }
 
 impl Argument {
     pub fn positional(value: Expression) -> Self {
@@ -1232,8 +1118,7 @@ impl Argument {
             value,
             name: None,
             by_ref: false,
-            spread: false,
-        }
+            spread: false }
     }
 }
 
@@ -1242,8 +1127,7 @@ impl Argument {
 #[derive(Debug, Clone)]
 pub enum LambdaBody {
     Expr(Box<Expression>),
-    Block(Vec<Statement>),
-}
+    Block(Vec<Statement>) }
 
 // ── Array/Object literals ───────────────────────────────────────────────────
 
@@ -1254,37 +1138,30 @@ pub struct ArrayElement {
     pub value: Expression,
     pub spread: bool,
     /// PHP: `&$var` — by-reference element
-    pub by_ref: bool,
-}
+    pub by_ref: bool }
 
 #[derive(Debug, Clone)]
 pub enum ObjectProperty {
     KeyValue {
         key: Expression,
-        value: Expression,
-    },
+        value: Expression },
     Shorthand(String),
     Spread(Expression),
     Method {
         key: String,
-        value: Box<Statement>,
-    },
+        value: Box<Statement> },
     Accessor {
         kind: AccessorKind,
         key: String,
-        value: Box<Statement>,
-    },
+        value: Box<Statement> },
     Computed {
         key: Expression,
-        value: Expression,
-    },
-}
+        value: Expression } }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AccessorKind {
     Get,
-    Set,
-}
+    Set }
 
 // ── Interpolation ───────────────────────────────────────────────────────────
 
@@ -1292,23 +1169,20 @@ pub enum AccessorKind {
 pub enum InterpolPart {
     Text(String),
     Expr(Expression),
-    Formatted(Expression, String),
-}
+    Formatted(Expression, String) }
 
 // ── Switch / Case ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct SwitchCase {
     pub conditions: Vec<CaseCondition>,
-    pub body: Vec<Statement>,
-}
+    pub body: Vec<Statement> }
 
 #[derive(Debug, Clone)]
 pub enum CaseCondition {
     Value(Expression),
     Range { from: Expression, to: Expression },
-    Comparison { op: ComparisonOp, expr: Expression },
-}
+    Comparison { op: ComparisonOp, expr: Expression } }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ComparisonOp {
@@ -1317,8 +1191,7 @@ pub enum ComparisonOp {
     Lt,
     LtEq,
     Gt,
-    GtEq,
-}
+    GtEq }
 
 // ── Catch ───────────────────────────────────────────────────────────────────
 
@@ -1329,8 +1202,7 @@ pub struct CatchClause {
     /// Dart: `catch (e, stackTrace)` — second variable for stack trace
     pub stack_var: Option<String>,
     pub body: Vec<Statement>,
-    pub when_clause: Option<Expression>,
-}
+    pub when_clause: Option<Expression> }
 
 // ── WASM catch clause (tag-identity, for `StmtKind::WasmTryTable`) ────────────
 
@@ -1351,8 +1223,7 @@ pub struct WasmCatch {
     /// Local the captured `exnref` is bound to when `capture_ref` is set.
     pub exnref_bind: Option<String>,
     /// Handler statements, run with the payload bound.
-    pub body: Vec<Statement>,
-}
+    pub body: Vec<Statement> }
 
 // ── Match (PHP expression-level) ─────────────────────────────────────────────
 
@@ -1361,8 +1232,7 @@ pub struct WasmCatch {
 pub struct MatchArm {
     /// None = default arm
     pub conditions: Option<Vec<Expression>>,
-    pub body: Expression,
-}
+    pub body: Expression }
 
 // ── Match (Python statement-level with patterns) ─────────────────────────────
 
@@ -1370,8 +1240,7 @@ pub struct MatchArm {
 pub struct MatchCase {
     pub pattern: Pattern,
     pub guard: Option<Expression>,
-    pub body: Vec<Statement>,
-}
+    pub body: Vec<Statement> }
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
@@ -1387,28 +1256,24 @@ pub enum Pattern {
     Class {
         cls: Expression,
         patterns: Vec<Pattern>,
-        kw_patterns: Vec<(String, Pattern)>,
-    },
+        kw_patterns: Vec<(String, Pattern)> },
     /// `case [first, *rest]:`
     Star(Option<String>),
     /// `case pattern as name:`
     As {
         pattern: Option<Box<Pattern>>,
-        name: Option<String>,
-    },
+        name: Option<String> },
     /// `case a | b | c:`
     Or(Vec<Pattern>),
     /// `case _:`
-    Wildcard,
-}
+    Wildcard }
 
 // ── With items ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct WithItem {
     pub expr: Expression,
-    pub var: Option<String>,
-}
+    pub var: Option<String> }
 
 // ── Comprehension ───────────────────────────────────────────────────────────
 
@@ -1417,16 +1282,14 @@ pub enum ComprehensionKind {
     List,
     Set,
     Dict,
-    Generator,
-}
+    Generator }
 
 #[derive(Debug, Clone)]
 pub struct ComprehensionGen {
     pub target: Expression,
     pub iter: Expression,
     pub conditions: Vec<Expression>,
-    pub is_async: bool,
-}
+    pub is_async: bool }
 
 /// True when a statement list contains `yield` / `yield from` in the current
 /// function scope. Nested functions, lambdas, and class expressions are scope
@@ -1456,8 +1319,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             expr_contains_yield_outside_nested_scopes(cond)
                 || statements_contain_yield_outside_nested_scopes(then_body)
                 || elifs.iter().any(|(cond, body)| {
@@ -1471,8 +1333,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             expr_contains_yield_outside_nested_scopes(cond)
                 || statements_contain_yield_outside_nested_scopes(body)
                 || else_body
@@ -1487,8 +1348,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             init.as_ref()
                 .is_some_and(|stmt| stmt_contains_yield_outside_nested_scopes(stmt))
                 || cond
@@ -1514,8 +1374,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             expr_contains_yield_outside_nested_scopes(expr)
                 || cases
                     .iter()
@@ -1528,8 +1387,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             statements_contain_yield_outside_nested_scopes(body)
                 || catches
                     .iter()
@@ -1544,7 +1402,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
         StmtKind::With { body, .. }
         | StmtKind::Using { body, .. }
         | StmtKind::Lock { body, .. } => statements_contain_yield_outside_nested_scopes(body),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             targets
                 .iter()
                 .any(expr_contains_yield_outside_nested_scopes)
@@ -1585,8 +1443,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
                     .iter()
                     .any(|catch| statements_contain_yield_outside_nested_scopes(&catch.body))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
@@ -1600,8 +1457,7 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
                 expr_contains_yield_outside_nested_scopes(object)
                     || expr_contains_yield_outside_nested_scopes(index)
             }
-            PlaceExpr::Deref(expr) => expr_contains_yield_outside_nested_scopes(expr),
-        },
+            PlaceExpr::Deref(expr) => expr_contains_yield_outside_nested_scopes(expr) },
         ExprKind::Unary { expr, .. }
         | ExprKind::RefLoad(expr)
         | ExprKind::IsType { expr, .. }
@@ -1615,12 +1471,10 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right,
-        }
+            value: right }
         | ExprKind::Walrus {
             target: left,
-            value: right,
-        }
+            value: right }
         | ExprKind::Range {
             start: left,
             end: right,
@@ -1628,8 +1482,7 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
         }
         | ExprKind::StaticAccess {
             class: left,
-            member: right,
-        }
+            member: right }
         | ExprKind::Index {
             object: left,
             index: right,
@@ -1685,14 +1538,12 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
             ObjectProperty::Spread(expr) => expr_contains_yield_outside_nested_scopes(expr),
             ObjectProperty::Shorthand(_)
             | ObjectProperty::Method { .. }
-            | ObjectProperty::Accessor { .. } => false,
-        }),
+            | ObjectProperty::Accessor { .. } => false }),
         ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
             InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
                 expr_contains_yield_outside_nested_scopes(expr)
             }
-            InterpolPart::Text(_) => false,
-        }),
+            InterpolPart::Text(_) => false }),
         ExprKind::Match { subject, arms } => {
             expr_contains_yield_outside_nested_scopes(subject)
                 || arms.iter().any(|arm| {
@@ -1721,8 +1572,7 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
             expr.as_ref()
                 .is_some_and(|expr| expr_contains_yield_outside_nested_scopes(expr))
         }),
-        _ => false,
-    }
+        _ => false }
 }
 
 // ── Destructuring ───────────────────────────────────────────────────────────
@@ -1730,8 +1580,7 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
 #[derive(Debug, Clone)]
 pub enum DestructurePattern {
     Object(Vec<ObjectPatternProp>),
-    Array(Vec<ArrayPatternElem>),
-}
+    Array(Vec<ArrayPatternElem>) }
 
 // ── Break/Continue targets ──────────────────────────────────────────────────
 
@@ -1742,8 +1591,7 @@ pub enum BreakTarget {
     Kind(ExitKind),
     Value(Expression),
     /// PHP: `break 2;` — skip N levels
-    Level(u32),
-}
+    Level(u32) }
 
 #[derive(Debug, Clone)]
 pub enum ContinueTarget {
@@ -1751,8 +1599,7 @@ pub enum ContinueTarget {
     Label(String),
     Kind(ContinueKind),
     /// PHP: `continue 2;` — skip N levels
-    Level(u32),
-}
+    Level(u32) }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExitKind {
@@ -1763,23 +1610,37 @@ pub enum ExitKind {
     While,
     Select,
     Try,
-    Property,
-}
+    Property }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ContinueKind {
     Do,
     For,
-    While,
-}
+    While }
 
 // ── Misc enums ──────────────────────────────────────────────────────────────
 
+/// How a scope resolves a name that is not one of its own locals.
+///
+/// All three are statements about resolution, which is why they share a node:
+/// `Closed` sets the scope's policy, `Global` and `Nonlocal` re-open individual
+/// names within it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScopeDeclKind {
+    /// This scope does NOT chain outward: a name that misses its locals
+    /// resolves to nothing — it reads null and an assignment creates a local
+    /// here — instead of falling through to the module globals. PHP function
+    /// bodies, where a module `$x` is invisible without `global $x;`.
+    ///
+    /// `names` seeds the exceptions: names that stay open regardless of the
+    /// policy. PHP's superglobals (`$_SERVER`, `$_GET`, …) are visible in every
+    /// scope without being imported, and that list is PHP's to supply.
+    Closed,
+    /// Re-open these names to the module scope for the rest of this scope.
+    /// PHP `global $x;`, Python `global x`.
     Global,
-    Nonlocal,
-}
+    /// Re-open these names to the enclosing function scope. Python `nonlocal`.
+    Nonlocal }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileMode {
@@ -1787,8 +1648,7 @@ pub enum FileMode {
     Output,
     Append,
     Binary,
-    Random,
-}
+    Random }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileKeyRelation {
@@ -1796,14 +1656,12 @@ pub enum FileKeyRelation {
     Greater,
     GreaterOrEqual,
     Less,
-    LessOrEqual,
-}
+    LessOrEqual }
 
 #[derive(Debug, Clone)]
 pub struct ExportName {
     pub name: String,
-    pub alias: Option<String>,
-}
+    pub alias: Option<String> }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Operators
@@ -1847,8 +1705,7 @@ pub enum BinOp {
     FloorDiv,
     Like,
     Is,
-    IsNot,
-}
+    IsNot }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
@@ -1865,8 +1722,7 @@ pub enum UnaryOp {
     Delete,
     Deref,
     AddrOf,
-    Await,
-}
+    Await }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CompoundOp {
@@ -1886,8 +1742,7 @@ pub enum CompoundOp {
     UShr,
     And,
     Or,
-    NullCoalesce,
-}
+    NullCoalesce }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Modifiers
@@ -2058,8 +1913,7 @@ pub enum ProtocolSlot {
     ROr,
     RXor,
     RLShift,
-    RRShift,
-}
+    RRShift }
 
 /// The reserved property holding a class's protocol slot table.
 ///
@@ -2301,8 +2155,7 @@ impl ProtocolSlot {
             RXor => "r_xor",
             RLShift => "r_l_shift",
             RRShift => "r_r_shift",
-            CallMissing => "call_missing",
-        }
+            CallMissing => "call_missing" }
     }
 
     /// The slot a profile's `slot = "..."` names, or `None` if unrecognised.
@@ -2406,8 +2259,7 @@ impl ProtocolSlot {
             "r_l_shift" => RLShift,
             "r_r_shift" => RRShift,
             "call_missing" => CallMissing,
-            _ => return None,
-        })
+            _ => return None })
     }
 
     pub fn slot_id(self) -> u16 {
@@ -2506,8 +2358,7 @@ impl ProtocolSlot {
             RXor => 89,
             RLShift => 90,
             RRShift => 91,
-            CallMissing => 92,
-        }
+            CallMissing => 92 }
     }
 }
 
@@ -2576,8 +2427,7 @@ pub struct Modifiers {
     /// `add` or a PHP `tostring` is an ordinary member unless its language
     /// says otherwise.
     pub protocol_slot: Option<ProtocolSlot>,
-    pub decorators: Vec<Expression>,
-}
+    pub decorators: Vec<Expression> }
 
 #[derive(Debug, Clone, Default)]
 pub struct ClassModifiers {
@@ -2589,8 +2439,7 @@ pub struct ClassModifiers {
     /// `class` / `interface` / `trait` / `mixin` / `module` / `struct` — all of
     /// which parse to `StmtKind::ClassDecl`. Defaults to `Class`, so a walker
     /// that does not set it is unchanged.
-    pub kind: ClassKind,
-}
+    pub kind: ClassKind }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Visibility {
@@ -2598,8 +2447,7 @@ pub enum Visibility {
     Public,
     Private,
     Protected,
-    Internal,
-}
+    Internal }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Enum members
@@ -2609,8 +2457,7 @@ pub enum Visibility {
 pub struct EnumMember {
     pub name: String,
     pub value: Option<Expression>,
-    pub constructor_args: Vec<Expression>,
-}
+    pub constructor_args: Vec<Expression> }
 
 pub fn body_has_yield(stmts: &[Statement]) -> bool {
     stmts.iter().any(statement_has_yield)
@@ -2635,8 +2482,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             expr_has_yield(cond)
                 || body_has_yield(then_body)
                 || elifs
@@ -2650,8 +2496,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             init.as_ref()
                 .map_or(false, |stmt| statement_has_yield(stmt))
                 || cond.as_ref().map_or(false, expr_has_yield)
@@ -2673,8 +2518,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             expr_has_yield(cond)
                 || body_has_yield(body)
                 || else_body
@@ -2685,8 +2529,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             expr_has_yield(expr)
                 || cases.iter().any(|case| {
                     case.conditions.iter().any(case_condition_has_yield)
@@ -2698,8 +2541,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             body_has_yield(body)
                 || catches.iter().any(|catch| {
                     catch.when_clause.as_ref().map_or(false, expr_has_yield)
@@ -2720,7 +2562,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             expr.as_ref().map_or(false, expr_has_yield)
                 || cause.as_ref().map_or(false, expr_has_yield)
         }
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             targets.iter().any(expr_has_yield) || expr_has_yield(value)
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -2776,8 +2618,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
                     case.guard.as_ref().map_or(false, expr_has_yield) || body_has_yield(&case.body)
                 })
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn expr_has_yield(expr: &Expression) -> bool {
@@ -2796,12 +2637,10 @@ fn expr_has_yield(expr: &Expression) -> bool {
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right,
-        }
+            value: right }
         | ExprKind::Walrus {
             target: left,
-            value: right,
-        }
+            value: right }
         | ExprKind::Range {
             start: left,
             end: right,
@@ -2839,12 +2678,10 @@ fn expr_has_yield(expr: &Expression) -> bool {
                 expr_has_yield(key) || expr_has_yield(value)
             }
             ObjectProperty::Spread(expr) => expr_has_yield(expr),
-            _ => false,
-        }),
+            _ => false }),
         ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
             InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => expr_has_yield(expr),
-            InterpolPart::Text(_) => false,
-        }),
+            InterpolPart::Text(_) => false }),
         ExprKind::Match { subject, arms } => {
             expr_has_yield(subject)
                 || arms.iter().any(|arm| {
@@ -2871,15 +2708,13 @@ fn expr_has_yield(expr: &Expression) -> bool {
                 || upper.as_ref().map_or(false, |expr| expr_has_yield(expr))
                 || step.as_ref().map_or(false, |expr| expr_has_yield(expr))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn case_condition_has_yield(condition: &CaseCondition) -> bool {
     match condition {
         CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => expr_has_yield(expr),
-        CaseCondition::Range { from, to } => expr_has_yield(from) || expr_has_yield(to),
-    }
+        CaseCondition::Range { from, to } => expr_has_yield(from) || expr_has_yield(to) }
 }
 
 // ── Rest-parameter arity collection ──────────────────────────────────────────
@@ -2940,8 +2775,7 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
             cond,
             then_body,
             elifs,
-            else_body,
-        } => {
+            else_body } => {
             collect_rest_in_expr(cond, out);
             collect_rest_param_arities(then_body, out);
             for (econd, ebody) in elifs {
@@ -2956,8 +2790,7 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
             init,
             cond,
             update,
-            body,
-        } => {
+            body } => {
             if let Some(init) = init {
                 collect_rest_in_stmt(init, out);
             }
@@ -2984,8 +2817,7 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
         StmtKind::While {
             cond,
             body,
-            else_body,
-        } => {
+            else_body } => {
             collect_rest_in_expr(cond, out);
             collect_rest_param_arities(body, out);
             if let Some(eb) = else_body {
@@ -2999,8 +2831,7 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
         StmtKind::Switch {
             expr,
             cases,
-            default,
-        } => {
+            default } => {
             collect_rest_in_expr(expr, out);
             for case in cases {
                 collect_rest_param_arities(&case.body, out);
@@ -3013,8 +2844,7 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
             body,
             catches,
             else_body,
-            finally,
-        } => {
+            finally } => {
             collect_rest_param_arities(body, out);
             for catch in catches {
                 collect_rest_param_arities(&catch.body, out);
@@ -3055,7 +2885,7 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
         }
         StmtKind::Expr(expr) => collect_rest_in_expr(expr, out),
         StmtKind::Block(body) => collect_rest_param_arities(body, out),
-        StmtKind::Assign { targets, value } => {
+        StmtKind::Assign { targets, value , ..} => {
             for t in targets {
                 collect_rest_in_expr(t, out);
             }
@@ -3121,8 +2951,7 @@ fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
             push_rest_arity(params, out);
             match body {
                 LambdaBody::Expr(e) => collect_rest_in_expr(e, out),
-                LambdaBody::Block(stmts) => collect_rest_param_arities(stmts, out),
-            }
+                LambdaBody::Block(stmts) => collect_rest_param_arities(stmts, out) }
         }
         ExprKind::FunctionExpr(stmt) => collect_rest_in_stmt(stmt, out),
         ExprKind::ClassExpr { members, .. } => {
@@ -3150,12 +2979,10 @@ fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right,
-        }
+            value: right }
         | ExprKind::Walrus {
             target: left,
-            value: right,
-        }
+            value: right }
         | ExprKind::Range {
             start: left,
             end: right,
@@ -3284,12 +3111,10 @@ pub fn normalize_array_index_operand(
             ExprKind::Slice {
                 lower: lower.map(|expr| Box::new(normalize_array_subscript(*expr, semantics))),
                 upper,
-                step,
-            },
+                step },
             index.span,
         ),
-        other => normalize_array_subscript(Expression::with_span(other, index.span), semantics),
-    }
+        other => normalize_array_subscript(Expression::with_span(other, index.span), semantics) }
 }
 
 fn normalize_array_subscript(index: Expression, semantics: ArrayIndexSemantics) -> Expression {
@@ -3302,8 +3127,7 @@ fn normalize_array_subscript(index: Expression, semantics: ArrayIndexSemantics) 
         ExprKind::Binary {
             left: Box::new(index),
             op: BinOp::Sub,
-            right: Box::new(Expression::int(semantics.first_index)),
-        },
+            right: Box::new(Expression::int(semantics.first_index)) },
         span,
     )
 }

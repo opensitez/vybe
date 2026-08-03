@@ -36,8 +36,7 @@ impl Compiler {
             _ => self
                 .infer_expr_type_hint(expr)
                 .as_deref()
-                .is_some_and(Self::is_case_insensitive_string_key_type_hint),
-        }
+                .is_some_and(Self::is_case_insensitive_string_key_type_hint) }
     }
 
     pub(super) fn compile_collection_key(
@@ -98,19 +97,9 @@ impl Compiler {
         if let Some(type_hint) = self.scope().resolve_type(name) {
             return Some(type_hint);
         }
-        if !self.case_sensitive {
-            if let Some(type_hint) = self.scope().resolve_type_ci(name) {
-                return Some(type_hint);
-            }
-        }
         for scope in self.scopes.iter().rev().skip(1) {
             if let Some(type_hint) = scope.resolve_type(name) {
                 return Some(type_hint);
-            }
-            if !self.case_sensitive {
-                if let Some(type_hint) = scope.resolve_type_ci(name) {
-                    return Some(type_hint);
-                }
             }
         }
         if let Some(type_hint) = self.lookup_implicit_self_field_type_hint(name) {
@@ -126,7 +115,6 @@ impl Compiler {
         }
         self.scopes.iter().rev().any(|scope| {
             scope.resolve(name).is_some()
-                || (!self.case_sensitive && scope.resolve_ci(name).is_some())
         })
     }
 
@@ -140,18 +128,6 @@ impl Compiler {
 
     pub(super) fn has_static_local_binding(&self, name: &str) -> bool {
         self.static_local_binding(name).is_some()
-    }
-
-    pub(super) fn php_current_function_declares_global(&self, name: &str) -> bool {
-        self.profile.name == "php"
-            && self
-                .php_function_globals
-                .last()
-                .is_some_and(|globals| globals.contains(&self.canon(name)))
-    }
-
-    pub(super) fn php_inside_function(&self) -> bool {
-        self.profile.name == "php" && !self.php_function_globals.is_empty()
     }
 
     pub(super) fn array_binding_key(&self, name: &str) -> String {
@@ -182,14 +158,16 @@ impl Compiler {
             .or_else(|| self.array_bindings.get(&self.canon(name)))
     }
 
-    pub(super) fn pascal_array_index_bounds_for_owner(
+    /// Declared index bounds for an array binding, when the language records
+    /// them.
+    ///
+    /// No language check: `pascal_bounds` is only ever populated from an
+    /// `array[lo..hi]` type hint, so a language that does not write that shape
+    /// gets `None` from the lookup anyway.
+    pub(super) fn array_index_bounds_for_owner(
         &self,
         owner: &Expression,
     ) -> Option<PascalArrayBoundsMetadata> {
-        if self.profile.name != "pascal" {
-            return None;
-        }
-
         if let ExprKind::Ident(name) = &owner.kind {
             if let Some(bounds) = self
                 .lookup_array_binding(name)
@@ -206,8 +184,7 @@ impl Compiler {
 
     pub(super) fn profile_array_index_semantics(&self) -> Option<ArrayIndexSemantics> {
         match self.profile.name.as_str() {
-            _ => None,
-        }
+            _ => None }
     }
 
     pub(super) fn normalized_array_index_operand_for_owner(
@@ -215,7 +192,7 @@ impl Compiler {
         owner: &Expression,
         index: Expression,
     ) -> Expression {
-        if let Some(bounds) = self.pascal_array_index_bounds_for_owner(owner) {
+        if let Some(bounds) = self.array_index_bounds_for_owner(owner) {
             if let Some(dimension) = bounds.dimensions.first() {
                 let normalized_index = if dimension.uses_char_ordinal {
                     Self::pascal_ordinal_index_expr(index)
@@ -225,8 +202,7 @@ impl Compiler {
                 return normalize_array_index_operand(
                     normalized_index,
                     ArrayIndexSemantics {
-                        first_index: dimension.first_index,
-                    },
+                        first_index: dimension.first_index },
                 );
             }
         }
@@ -285,7 +261,7 @@ impl Compiler {
         let set_length_idx = self.import("ecma:array", "setLength");
         self.emit_host_call(set_length_idx, 2);
         self.emit(Op::DROP);
-        self.emit(Op::NULL);
+        self.emit_null();
         Ok(())
     }
 
@@ -323,8 +299,7 @@ impl Compiler {
         let binding = StaticLocalBinding {
             init_flag_name: format!("{}__init", global_name),
             global_name,
-            type_hint: normalized_type_hint,
-        };
+            type_hint: normalized_type_hint };
         bindings.insert(canon_name, binding.clone());
         Ok(binding)
     }
@@ -335,7 +310,7 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         if bounds.is_empty() {
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(());
         }
 
@@ -406,7 +381,7 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         if dimensions.is_empty() {
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(());
         }
 
@@ -472,7 +447,7 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         if bounds.is_empty() {
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(());
         }
 
@@ -548,7 +523,7 @@ impl Compiler {
         resolved_type_hint: Option<&str>,
     ) -> Result<(), String> {
         if let Some(ref init_expr) = decl.init {
-            if self.profile.name == "fortran"
+            if self.profile.array_bounds_declare_fixed_shape
                 && decl
                     .array_bounds
                     .as_ref()
@@ -563,7 +538,7 @@ impl Compiler {
             } else {
                 self.compile_expr_with_value_copy(init_expr)?;
                 let effective_type_hint = resolved_type_hint.or(decl.type_hint.as_deref());
-                let skip_c_coerce = if self.profile.name == "c" {
+                let skip_c_coerce = if self.profile.aggregate_decl_skips_coercion {
                     let is_array_type = effective_type_hint
                         .map(|hint| hint.contains('['))
                         .unwrap_or(false)
@@ -583,13 +558,13 @@ impl Compiler {
                 if !skip_c_coerce {
                     self.coerce_c_value_for_type_hint(effective_type_hint)?;
                 }
-                self.maybe_promote_pascal_array_literal_to_set(
+                self.maybe_promote_array_literal_to_set(
                     decl.type_hint.as_deref(),
                     init_expr,
                 );
             }
         } else if let Some(ref bounds) = decl.array_bounds {
-            if self.profile.name == "fortran" {
+            if self.profile.array_bounds_declare_fixed_shape {
                 self.emit_fortran_fixed_array_initializer(bounds)?;
             } else if bounds.len() > 1 {
                 // Multi-dimensional inclusive-bound declaration (`Dim a(2,3)`).
@@ -610,7 +585,7 @@ impl Compiler {
                 };
                 common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
         } else {
             let resolved_type_hint = resolved_type_hint.map(str::to_string).or_else(|| {
@@ -631,7 +606,7 @@ impl Compiler {
                     self.emit_const(Value::F64(dimension.length as f64));
                     common::collections::emit_new_with_length(&mut self.chunks, self.current, line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             } else if effective_type_hint
                 .and_then(Self::vb_fixed_string_len)
@@ -665,8 +640,7 @@ impl Compiler {
                     Some(type_hint) if Self::is_string_type_hint(type_hint) => {
                         self.emit_const(Value::String(Arc::from("")))
                     }
-                    _ => self.emit(Op::NULL),
-                }
+                    _ => self.emit_null() }
             }
         }
         if let Some(target_len) = decl
@@ -698,10 +672,6 @@ impl Compiler {
         let normalized = Self::normalize_type_hint(type_hint);
         match normalized.as_str() {
             "bool" | "boolean" | "_bool" => {
-                // `|| self.profile.name == "pascal"` used to be OR'd in here and
-                // was unreachable from either side: `languages/pascal/src/profile`
-                // sets `materialize_bool_results = true`, so the left operand is
-                // already true whenever the right one is (builtinslotplan.md §3c).
                 if self.profile.materialize_bool_results {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -713,7 +683,6 @@ impl Compiler {
             }
             // A language whose `char` holds a CHARACTER, not an 8-bit
             // integer, must not get the modular byte coercion below. Was
-            // `profile.name == "pascal"` (builtinslotplan.md §3c).
             "char" if self.hint_is_builtin_string(&normalized) => {}
             "char" | "uint8" | "unsigned char" | "byte" => {
                 self.emit(Op::F64_TRUNC);

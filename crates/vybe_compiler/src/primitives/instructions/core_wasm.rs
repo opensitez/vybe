@@ -27,7 +27,7 @@ pub fn undefined(c: &mut Chunk, line: u32) {
 }
 
 pub fn null(c: &mut Chunk, line: u32) {
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn string_const(c: &mut Chunk, line: u32, s: &str) {
@@ -40,7 +40,7 @@ pub fn emit_value(c: &mut Chunk, line: u32, val: &Value) {
         Value::I64(v) => c.emit_i64_const(*v, line),
         Value::F64(v) => c.emit_f64_const(*v, line),
         Value::Bool(v) => c.emit_bool_const(*v, line),
-        Value::Null => c.emit_op(Op::NULL, line),
+        Value::Null => c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::Undefined => undefined(c, line),
         Value::String(s) => c.emit_string_const(s, line),
         // ToBigInt64 wrap at the wasm boundary (i64.const is 64-bit).

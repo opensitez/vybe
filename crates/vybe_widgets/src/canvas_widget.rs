@@ -59,8 +59,7 @@ pub struct Canvas {
     /// coordinates by translating the canvas origin to the widget's
     /// top-left before replay. If false, the recording is in
     /// pixmap-absolute coordinates. Default: true.
-    relative_coords: bool,
-}
+    relative_coords: bool }
 
 impl Canvas {
     /// Construct an empty canvas.
@@ -71,8 +70,7 @@ impl Canvas {
             id: WidgetId::next(),
             background: None,
             recording: RecordingCanvas::new(),
-            relative_coords: true,
-        }
+            relative_coords: true }
     }
 
     /// Set the widget's name (used for control lookup by the host

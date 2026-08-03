@@ -217,8 +217,7 @@ pub enum ResolutionTarget {
         /// this (`HostCall { module, func, .. }`); it exists so descriptor-
         /// registered methods can be dispatched by arity without the compiler
         /// asking a platform crate.
-        arity: Option<u8>,
-    },
+        arity: Option<u8> },
     /// `common:<cat>.<op>` dispatch.
     CommonEmit(String),
     /// A constructable type at `path`, with the spec that drives generic
@@ -229,8 +228,7 @@ pub enum ResolutionTarget {
     /// The path names a namespace (or type used as a namespace) — callers
     /// materialize an ECMA-262 §16.2 module-namespace object if a runtime
     /// value is required.
-    NamespaceObject(Path),
-}
+    NamespaceObject(Path) }
 
 fn terminal(
     forest: &Subtree,
@@ -242,8 +240,7 @@ fn terminal(
         NamespaceNode::Namespace(_) => Some(ResolutionTarget::NamespaceObject(path.to_string())),
         NamespaceNode::Type { ctor, .. } => Some(ResolutionTarget::Ctor {
             path: path.to_string(),
-            spec: ctor.clone(),
-        }),
+            spec: ctor.clone() }),
         NamespaceNode::Fn {
             module,
             func,
@@ -252,8 +249,7 @@ fn terminal(
         } => Some(ResolutionTarget::HostCall {
             module: module.clone(),
             func: func.clone(),
-            arity: *arity,
-        }),
+            arity: *arity }),
         NamespaceNode::CommonEmit(name) => Some(ResolutionTarget::CommonEmit(name.clone())),
         // A path walk carries no argument count, so it cannot discriminate
         // overloads; resolve to the LAST-declared target, which is what a
@@ -319,8 +315,7 @@ mod tests {
                 assert_eq!(module, "ecma:json");
                 assert_eq!(func, "stringify");
             }
-            other => panic!("expected HostCall, got {:?}", other),
-        }
+            other => panic!("expected HostCall, got {:?}", other) }
     }
 
     #[test]
@@ -332,8 +327,7 @@ mod tests {
                 assert_eq!(module, "ecma:json");
                 assert_eq!(func, "stringify");
             }
-            other => panic!("expected HostCall via alias, got {:?}", other),
-        }
+            other => panic!("expected HostCall via alias, got {:?}", other) }
     }
 
     #[test]
@@ -342,8 +336,7 @@ mod tests {
         seed();
         match resolve_path(&["ecma", "json"]) {
             Some(ResolutionTarget::NamespaceObject(p)) => assert_eq!(p, "ecma.json"),
-            other => panic!("expected NamespaceObject, got {:?}", other),
-        }
+            other => panic!("expected NamespaceObject, got {:?}", other) }
     }
 
     #[test]
@@ -356,8 +349,7 @@ mod tests {
         });
         match resolve_path(&["python", "js_like", "json", "parse"]) {
             Some(ResolutionTarget::HostCall { func, .. }) => assert_eq!(func, "parse"),
-            other => panic!("expected HostCall through interior alias, got {:?}", other),
-        }
+            other => panic!("expected HostCall through interior alias, got {:?}", other) }
     }
 
     #[test]
@@ -408,8 +400,7 @@ mod tests {
                         ctor_call: None,
                         statics,
                         methods: Subtree::new(),
-                        member_returns: Default::default(),
-                    },
+                        member_returns: Default::default() },
                 )]),
             )]),
         );

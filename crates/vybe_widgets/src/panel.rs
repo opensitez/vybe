@@ -2,8 +2,7 @@
 
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetId, command_color, command_number,
-};
+    WidgetId, command_color, command_number };
 use super::{WidgetColors, rounded_rect_path};
 use tiny_skia::*;
 
@@ -11,8 +10,7 @@ use tiny_skia::*;
 pub enum BorderStyle {
     None,
     FixedSingle,
-    Fixed3D,
-}
+    Fixed3D }
 
 pub struct Panel {
     pub border_style: BorderStyle,
@@ -21,8 +19,7 @@ pub struct Panel {
     pub colors: WidgetColors,
     pub id: WidgetId,
     pub name: String,
-    rect: LayoutRect,
-}
+    rect: LayoutRect }
 
 impl Panel {
     pub fn new() -> Self {
@@ -36,8 +33,7 @@ impl Panel {
             },
             id: WidgetId::next(),
             name: String::new(),
-            rect: LayoutRect::zero(),
-        }
+            rect: LayoutRect::zero() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -152,14 +148,11 @@ impl PanelWidget for Panel {
                         match s.to_lowercase().as_str() {
                             "fixedsingle" | "1" => self.border_style = BorderStyle::FixedSingle,
                             "fixed3d" | "2" => self.border_style = BorderStyle::Fixed3D,
-                            _ => self.border_style = BorderStyle::None,
-                        }
+                            _ => self.border_style = BorderStyle::None }
                     }
                     CommandValue::None
                 }
-                _ => CommandValue::None,
-            },
-            _ => CommandValue::None,
-        }
+                _ => CommandValue::None },
+            _ => CommandValue::None }
     }
 }

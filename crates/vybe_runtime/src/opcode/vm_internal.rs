@@ -38,10 +38,18 @@ impl Op {
     // stale bytecode carrying them fails decode loudly. 0x4F was the old
     // `PROMISE_SUSPEND` (JS `await`), now lowered to spec `suspend` with
     // `AWAIT_SUSPEND_TAG`.
-    // GC extensions
-    pub const SET_TYPE_ID: Op = Op::new(0xFF, 0x50);
-    /// WASM GC typed null (`ref.null none`) — pushes `Value::TypedNull`.
-    pub const NULL_NONE: Op = Op::new(0xFF, 0x51);
+    // 0x50 RETIRED (`set_type_id`). It existed to stamp an object's rtt AFTER
+    // allocation, which WASM GC has no instruction for — and it needed one only
+    // because the BASE constructor allocated and handed the object up, leaving
+    // every derived instance carrying its parent's type. The constructor
+    // protocol is inverted now: the most-derived class allocates via
+    // `struct.new_default $T` and passes the receiver down, so the rtt is
+    // correct from the moment the object exists. See wasmregistryfix.md §0.
+    // 0x51 RETIRED (`null_none`). A GC-heap null is now the core `ref.null`
+    // (0x00 0xD0) carrying `HT_NONE` as its spec heaptype immediate — this
+    // opcode only existed because `ref.null` had been declared with no
+    // immediate at all, leaving no way to say which heap the null belonged to.
+    // Left vacant so stale bytecode fails decode loudly.
     // Weak references
     // Multi-memory
     // Extended const
@@ -102,12 +110,8 @@ opcode_category! {
     [0x4F] promise_suspend => None, "promise.suspend";
     // GC extensions
     [0x50] set_type_id => None, "set_type_id";
-    // WASM GC typed null (`ref.null none`): pushes a `Value::TypedNull` — behaves
-    // like a plain null everywhere except the GC accessors (`struct.get`/
-    // `array.get`/…) which trap on it per spec. Lowers to the real `ref.null
-    // none` bytes (0xD0 0x71); the reader maps a null of any GC heap type back
-    // to it. Distinct from the core `NULL` op, which is `ref.null extern`.
-    [0x51] null_none => None, "ref.null_none";
+    // 0x51 RETIRED (`null_none`) — folded into core `ref.null`'s heaptype
+    // immediate. Deliberately vacant.
     // Weak references
     // Multi-memory
     // Extended const

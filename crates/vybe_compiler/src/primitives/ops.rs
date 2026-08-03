@@ -75,7 +75,7 @@ fn emit_object_field_to_slot(
 ) {
     let field_key = chunk.add_constant(Value::String(Arc::from(field)));
     load(chunk, src_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, field_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, field_key, line);
     save(chunk, dst_slot, line);
 }
 

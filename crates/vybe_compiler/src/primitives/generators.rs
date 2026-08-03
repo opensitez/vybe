@@ -101,18 +101,18 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     // stamp `__gen_done` on the continuation when it completes (below) and
     // short-circuit here before ever resuming a finished generator.
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, done_key, line); // null if never set, else I32(1)
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_key, line); // null if never set, else I32(1)
     chunk.emit_op(Op::REF_IS_NULL, line); // i32: 1 if not-yet-done
     chunk.emit_op(Op::I32_EQZ, line); // i32: 1 if already done
     let done_if = chunk.emit_if(line); // if already done {
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     core_wasm::i32_const(chunk, line, 0); // [null, 0]
     chunk.emit_br(1, line); //   br $block → exit with (undefined, done)
     chunk.emit_end(line); // }
     chunk.patch_block(done_if);
 
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line); // [cont]
-    chunk.emit_op(Op::NULL, line); // resume value → [cont, null]
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // resume value → [cont, null]
     let resume_ip = chunk.code.len();
     chunk.emit_op_u16(Op::RESUME, GEN_YIELD_TAG, line);
     // Completion arm (generator returned): stack = [return_value]. Stamp the
@@ -120,7 +120,7 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     // `resume`-on-completed trap.
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line); // [retval, cont]
     core_wasm::i32_const(chunk, line, 1); // [retval, cont, 1]
-    chunk.emit_op_u16(Op::STRUCT_SET, done_key, line); // [retval, 1]
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_key, line); // [retval, 1]
     chunk.emit_op(Op::DROP, line); // [retval]
     core_wasm::i32_const(chunk, line, 0); // has_more = 0 → [retval, 0]
     chunk.emit_br(0, line); // br $block → converge at END, skipping the yield arm
@@ -427,13 +427,13 @@ pub fn emit_entry_control(
 
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
     let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_control")));
-    chunk.emit_op_u16(Op::STRUCT_GET, marker_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, marker_key, line);
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
     let op_key = chunk.add_constant(Value::String(Arc::from("op")));
-    chunk.emit_op_u16(Op::STRUCT_GET, op_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, op_key, line);
     chunk.emit_string_const("throw", line);
     host::emit(chunk, "wasm:js-string", "equals", 2, line);
     ops::emit_dyn_to_bool(chunk, line);
@@ -441,19 +441,19 @@ pub fn emit_entry_control(
 
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
     let value_key = chunk.add_constant(Value::String(Arc::from("value")));
-    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     crate::primitives::errors::emit_throw(chunk, line);
 
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, op_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, op_key, line);
     chunk.emit_string_const("return", line);
     host::emit(chunk, "wasm:js-string", "equals", 2, line);
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, control_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     emit_return(chunk, line);
 
     chunk.emit_end(line);
@@ -486,13 +486,13 @@ pub fn emit_resume_dispatch(
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
     let marker_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_control")));
-    chunk.emit_op_u16(Op::STRUCT_GET, marker_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, marker_key, line);
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
     let op_key = chunk.add_constant(Value::String(Arc::from("op")));
-    chunk.emit_op_u16(Op::STRUCT_GET, op_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, op_key, line);
     chunk.emit_string_const("throw", line);
     host::emit(chunk, "wasm:js-string", "equals", 2, line);
     ops::emit_dyn_to_bool(chunk, line);
@@ -500,19 +500,19 @@ pub fn emit_resume_dispatch(
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
     let value_key = chunk.add_constant(Value::String(Arc::from("value")));
-    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     crate::primitives::errors::emit_throw(chunk, line);
 
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, op_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, op_key, line);
     chunk.emit_string_const("return", line);
     host::emit(chunk, "wasm:js-string", "equals", 2, line);
     ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, resume_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     emit_return(chunk, line);
 
     chunk.emit_end(line);
@@ -561,7 +561,7 @@ pub fn emit_resolve_async_iterator(
     // Already an iterator (`next` present) → leave as-is (§25.1.2 fast path).
     let next_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("next")));
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, next_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, next_key, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
 
@@ -570,14 +570,14 @@ pub fn emit_resolve_async_iterator(
         "Symbol(@@asyncIterator)",
     )));
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, async_sym, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, async_sym, line);
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     let async_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("asyncIterator")));
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, async_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, async_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, fn_slot, line);
     chunk.emit_op(Op::END, line);
 
@@ -645,7 +645,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     // would resolve values() as its @@iterator, creating a loop).
     let next_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("next")));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, next_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, next_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, next_fn_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
@@ -659,14 +659,14 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
         let async_sym = chunk.add_constant(vybe_runtime::Value::String(Arc::from(
             "Symbol(@@asyncIterator)",
         )));
-        chunk.emit_op_u16(Op::STRUCT_GET, async_sym, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, async_sym, line);
         chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
         chunk.emit_if(line);
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         let async_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("asyncIterator")));
-        chunk.emit_op_u16(Op::STRUCT_GET, async_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, async_key, line);
         chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
         chunk.emit_end(line);
 
@@ -677,7 +677,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     // Sync: try @@iterator
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let sym_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("Symbol(@@iterator)")));
-    chunk.emit_op_u16(Op::STRUCT_GET, sym_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, sym_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
 
     // Fallback: walker-normalized "iterator" key for custom classes
@@ -686,7 +686,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let iter_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("iterator")));
-    chunk.emit_op_u16(Op::STRUCT_GET, iter_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, iter_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, iter_fn_slot, line);
     chunk.emit_end(line);
     if async_iter {
@@ -715,7 +715,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
     // Get next from the new iterator
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, next_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, next_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, next_fn_slot, line);
 
     chunk.emit_else(line);
@@ -735,7 +735,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
     let length_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("length")));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, length_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, length_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, done_slot, line); // reuse done_slot for length
     chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -802,7 +802,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     // done = step.done; if truthy → break
     chunk.emit_op_u16(Op::LOCAL_GET, step_slot, line);
     let done_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("done")));
-    chunk.emit_op_u16(Op::STRUCT_GET, done_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, done_key, line);
     chunk.emit_op_u16(Op::LOCAL_SET, done_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, done_slot, line);
     crate::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -812,7 +812,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, step_slot, line);
     let value_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("value")));
-    chunk.emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -852,16 +852,16 @@ pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, has_more_local, 0);
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
 
-    c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    c.emit_struct_new(0, 0, 0);
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
-    c.emit_op_u16(Op::STRUCT_SET, value_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, has_more_local, 0);
     ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     ops::emit_dyn_not_into(imports, &mut c, 0);
-    c.emit_op_u16(Op::STRUCT_SET, done_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, done_key, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -905,7 +905,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     let try_patch = crate::primitives::errors::emit_try_start(&mut c, 0);
 
     c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
-    c.emit_op_u16(Op::STRUCT_GET, returned_key, 0); // null if never stamped
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, returned_key, 0); // null if never stamped
     ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_if(0);
     // `.return()` already closed the generator: {undefined, true}
@@ -944,7 +944,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     // Stamp started — `.throw()` on an unstarted generator keys on it.
     c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
     core_wasm::bool_const(&mut c, 0, true);
-    c.emit_op_u16(Op::STRUCT_SET, started_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, started_key, 0);
     c.emit_op(Op::DROP, 0);
 
     // §27.6.1.2: Await(value). Async bodies hand back promises (the
@@ -971,16 +971,16 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_end(0); // end returned-short-circuit if/else
     crate::primitives::errors::emit_try_end(&mut c, 0);
 
-    c.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    c.emit_struct_new(0, 0, 0);
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
-    c.emit_op_u16(Op::STRUCT_SET, value_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, done_local, 0);
     // §27.6.1.2: `done` is a Boolean, not the raw i32 flag.
     ops::emit_i32_to_bool(&mut c, 0);
-    c.emit_op_u16(Op::STRUCT_SET, done_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_SET, 0, done_key, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_call(resolve_idx, 1, 0);
     c.emit_op(Op::RETURN, 0);
@@ -1017,7 +1017,7 @@ impl Compiler {
     fn emit_buffered_generator_set_bool_property(&mut self, obj_slot: u16, key: u16, value: bool) {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::Bool(value));
-        self.emit_u16(Op::STRUCT_SET, key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
         self.emit(Op::DROP);
     }
 
@@ -1035,7 +1035,7 @@ impl Compiler {
         self.emit_buffered_generator_set_bool_property(obj_slot, done_key, false);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_generator_yield_value(value_slot);
-        self.emit_u16(Op::STRUCT_SET, current_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, current_key);
         self.emit(Op::DROP);
     }
 
@@ -1050,7 +1050,7 @@ impl Compiler {
         self.emit_buffered_generator_set_bool_property(obj_slot, done_key, true);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit_u16(Op::STRUCT_SET, return_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, return_key);
         self.emit(Op::DROP);
         self.emit_buffered_generator_set_bool_property(obj_slot, current_key, false);
     }
@@ -1227,7 +1227,7 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(true));
-        self.emit_u16(Op::STRUCT_SET, started_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
@@ -1240,25 +1240,25 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(false));
-        self.emit_u16(Op::STRUCT_SET, done_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_generator_yield_value(value_slot);
-        self.emit_u16(Op::STRUCT_SET, current_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, current_key);
         self.emit(Op::DROP);
         self.chunk().emit_else(line);
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(true));
-        self.emit_u16(Op::STRUCT_SET, done_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
-        self.emit_u16(Op::STRUCT_SET, return_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, return_key);
         self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(false));
-        self.emit_u16(Op::STRUCT_SET, current_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, current_key);
         self.emit(Op::DROP);
         self.chunk().emit_br(2, line);
 
@@ -1314,12 +1314,12 @@ impl Compiler {
         match field_name {
             "getReturn" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, return_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, return_key);
                 self.emit_u16(Op::LOCAL_SET, result_slot);
             }
             "valid" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, started_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1328,7 +1328,7 @@ impl Compiler {
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, done_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1353,7 +1353,7 @@ impl Compiler {
             }
             "current" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, started_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1362,7 +1362,7 @@ impl Compiler {
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, done_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1373,7 +1373,7 @@ impl Compiler {
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, current_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, current_key);
                 self.emit_u16(Op::LOCAL_SET, result_slot);
 
                 self.chunk().emit_end(line);
@@ -1391,7 +1391,7 @@ impl Compiler {
             }
             "send" | "next" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, started_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1400,7 +1400,7 @@ impl Compiler {
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, done_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1414,7 +1414,7 @@ impl Compiler {
                 if field_name == "send" {
                     self.compile_expr(&arg_exprs[0])?;
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
                 let line = self.line;
                 crate::primitives::generators::emit_resume(self.chunk(), line);
@@ -1445,12 +1445,12 @@ impl Compiler {
                 let moved_key = self.str_const("__php_gen_moved");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
-                self.emit_u16(Op::STRUCT_SET, moved_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, moved_key);
                 self.emit(Op::DROP);
             }
             "throw" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, started_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1459,7 +1459,7 @@ impl Compiler {
                 self.chunk().emit_if(line);
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, done_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1496,7 +1496,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
-                self.emit_u16(Op::STRUCT_SET, started_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
                 self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
@@ -1544,7 +1544,7 @@ impl Compiler {
                 // been advanced past the initial yield (via next/send).
                 let moved_key = self.str_const("__php_gen_moved");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u16(Op::STRUCT_GET, moved_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, moved_key);
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1556,7 +1556,7 @@ impl Compiler {
                 )));
                 crate::primitives::errors::emit_throw(&mut self.chunks[self.current], line);
                 self.chunk().emit_end(line);
-                self.emit(Op::NULL);
+                self.emit_null();
                 self.emit_u16(Op::LOCAL_SET, result_slot);
             }
             _ => unreachable!(),
@@ -1585,19 +1585,19 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
         let started_key = self.str_const("__php_gen_started");
-        self.emit_u16(Op::STRUCT_GET, started_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, started_key);
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
         let done_key = self.str_const("__php_gen_done");
-        self.emit_u16(Op::STRUCT_GET, done_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, done_key);
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.emit(Op::I32_EQZ);
         self.chunk().emit_if(line);
 
         self.emit_u16(Op::LOCAL_GET, gen_slot);
-        self.emit(Op::NULL);
+        self.emit_null();
         self.emit_generator_control_packet_from_stack("return");
         let line = self.line;
         crate::primitives::generators::emit_resume(self.chunk(), line);

@@ -266,7 +266,7 @@ pub fn emit_pop(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     chunks[current].emit_end(line);
 
@@ -651,7 +651,7 @@ pub fn emit_shift(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
     chunks[current].emit_end(line);
 
@@ -803,7 +803,7 @@ pub fn emit_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::i32_const(&mut chunks[current], line, 1);
     emit_import_call(chunks, current, "ecma:array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// Array insert. Stack: [array, index, deleteCount=0, value] → [null].
@@ -812,7 +812,7 @@ pub fn emit_remove_at(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_insert(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "splice", 4, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// indexOf with fromIndex. Stack: [array, value, fromIndex] → [i32].
@@ -830,7 +830,7 @@ pub fn emit_last_index_of_from(chunks: &mut [Chunk], current: usize, line: u32) 
 pub fn emit_remove_range(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_import_call(chunks, current, "ecma:array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// GetRange. Stack: [array, index, count] → [new_array].
@@ -970,7 +970,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(i32::MAX, line);
     emit_import_call(chunks, current, "ecma:array", "splice", 3, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// Generic stash-and-call: pop `argc` values into scratch locals,
@@ -1347,8 +1347,7 @@ pub enum ZipLen {
     /// Shortest array length; stops at the smallest. (Python `zip`)
     Shortest,
     /// Longest array length; shorter arrays pad with null. (PHP `array_map(null,…)`)
-    Longest,
-}
+    Longest }
 
 /// `a.zip(b, c, …)` → `[[a[0],b[0],c[0]], [a[1],…], …]`, one tuple per index up
 /// to the length chosen by `mode`; indices past a shorter array yield the

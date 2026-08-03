@@ -59,10 +59,8 @@ pub use framework::{
     PluginEntry, init_all_registered, init_registered, init_registered_plugins,
     finalize_registered_plugins, plugins,
     finalize_plugins, init_plugins,
-    Framework, Plugin, init_all, init_all_on_vm, init_all_on_vm_with_caps,
-};
+    Framework, Plugin, init_all, init_all_on_vm, init_all_on_vm_with_caps };
 pub use component::{
     BinaryLoader, Component, ExportImpl, FuncSig, ImportPolicy, Interface, Language, LinkResult,
-    Linker, ModuleExport, ModuleResolver, ResolvedModule, ValType, register_binary_loader,
-};
+    Linker, ModuleExport, ModuleResolver, ResolvedModule, ValType, register_binary_loader };
 pub use project::ProjectConfig;

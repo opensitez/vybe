@@ -32,8 +32,7 @@ struct AstSummary {
     top_level_classes: usize,
     top_level_echoes: usize,
     string_bytes: usize,
-    inline_html_echoes: usize,
-}
+    inline_html_echoes: usize }
 
 fn summarize_module(module: &Module) -> AstSummary {
     let mut summary = AstSummary::default();
@@ -127,8 +126,7 @@ fn print_ast_outline(module: &Module) {
             StmtKind::Echo(_) => "Echo",
             StmtKind::Try { .. } => "Try",
             StmtKind::Empty => "Empty",
-            _ => "Other",
-        };
+            _ => "Other" };
         println!("[{index}] {label}");
     }
 }
@@ -200,6 +198,7 @@ pub fn run() {
     let mut eval_language: Option<String> = None;
     let mut eval_virtual_path: Option<String> = None;
     let mut sandbox = false;
+    let mut worker = false;
     let mut portable = false;
     let mut trace = false;
     let mut debug = false;
@@ -245,6 +244,7 @@ pub fn run() {
                 eval_virtual_path = Some(path.clone());
             }
             "--sandbox" | "-s" => sandbox = true,
+            "--worker" => worker = true,
             "--portable" | "-p" => portable = true,
             "--trace" | "-t" => trace = true,
             "--debug" | "-g" => debug = true,
@@ -323,6 +323,14 @@ pub fn run() {
     } else {
         vybe_runtime::capabilities::Capabilities::all()
     };
+
+    // ── Warm execution mode ─────────────────────────────────────────────────
+    // Boot once, then run program after program against a reset VM. Takes over
+    // the process: jobs arrive on stdin, so there is no entry file to parse and
+    // none of the flags below apply.
+    if worker {
+        crate::worker::run(dynamic_compile_caps);
+    }
 
     // ── One registration ──────────────────────────────────────────────────
     // Create the VM and run THE single plugin loop (all 20 — languages AND
@@ -510,8 +518,7 @@ pub fn run() {
                     eprintln!("Compile error: {e}");
                     std::process::exit(1);
                 }
-            },
-        }
+            } }
     };
 
     // ── --dump: disassemble and exit ────────────────────────────────────────
@@ -594,8 +601,7 @@ pub fn run() {
                 0 => vec![],
                 1 => vec![me],
                 2 => vec![me, sender],
-                _ => vec![me, sender, vybe_runtime::Value::Null],
-            };
+                _ => vec![me, sender, vybe_runtime::Value::Null] };
             Ok(vm.invoke_callback(&cb, &args))
         }));
         if let Some(port) = dap_port {
@@ -657,6 +663,21 @@ pub fn run() {
             eprintln!("Runtime error: {e}");
             std::process::exit(1);
         }
+    }
+
+    // The status the guest handed `wasi:cli/exit.exit-with-code` — `sys.exit(3)`,
+    // `System.exit(4)`, `halt(2)`, `STOP RUN`. The VM only CARRIES it: it ends
+    // the run and hands control back, exactly as the component model requires of
+    // a guest instance, and never calls `process::exit` itself (that would kill
+    // the embedder — a test binary, the server — on the first `exit`). Turning a
+    // status into a process exit is the embedder's job, which is here. Before
+    // this the code was dropped at the host boundary and all four exited 0.
+    //
+    // Read BEFORE the GUI check: a program that exits non-zero must exit, not
+    // open a window. Zero needs no action — falling off the end is already
+    // exit 0, and taking this branch would skip a legitimate GUI launch.
+    if vm.pending_exit_code != 0 {
+        std::process::exit(vm.pending_exit_code);
     }
 
     if gui.lock().unwrap().should_run {
@@ -723,6 +744,12 @@ fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
         }
     }
 
+    // Same contract as the source path: the guest's `exit-with-code` status
+    // becomes this process's status, and only the embedder does that.
+    if vm.pending_exit_code != 0 {
+        std::process::exit(vm.pending_exit_code);
+    }
+
     if gui.lock().unwrap().should_run {
         crate::gui_launch::launch_gui(vm, gui);
     }
@@ -737,8 +764,7 @@ fn filter_chunks<'a>(chunks: &'a [Chunk], chunk_filter: Option<&str>) -> Vec<&'a
                 chunks.iter().filter(|chunk| chunk.name == filter).collect()
             }
         }
-        None => chunks.iter().collect(),
-    }
+        None => chunks.iter().collect() }
 }
 
 fn print_usage() {
@@ -757,7 +783,9 @@ fn print_usage() {
     eprintln!("      --eval CODE   Compile source from a string");
     eprintln!("      --lang NAME   Language for --eval (js, php, python, vb, ...)");
     eprintln!("      --virtual-path PATH  Source path used for relative imports in --eval");
-    eprintln!("  -s, --sandbox     Restricted mode (safe capabilities only)");
+    eprintln!("  -s, --sandbox     Restricted mode (safe capabilities only)
+      --worker      Warm mode: boot once, run a program per stdin line
+                    (reset between each — no relaunch, no re-registration)");
     eprintln!("  -p, --portable    Minimal WASI runtime (no Vybe host)");
     eprintln!("  -t, --trace       Enable bytecode trace output");
     eprintln!("  -g, --debug       Step debugger: pause on entry, REPL on stdin (h for help)");

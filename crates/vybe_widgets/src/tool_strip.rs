@@ -2,16 +2,14 @@
 
 use super::layout::{
     KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent, MouseEventKind,
-    PanelWidget, RenderContext, WidgetEvent, WidgetId,
-};
+    PanelWidget, RenderContext, WidgetEvent, WidgetId };
 use super::{WidgetColors, rounded_rect_path};
 use tiny_skia::*;
 
 #[derive(Clone, Debug)]
 pub enum ToolStripItem {
     Button(String),
-    Separator,
-}
+    Separator }
 
 pub struct ToolStrip {
     pub items: Vec<ToolStripItem>,
@@ -25,8 +23,7 @@ pub struct ToolStrip {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    pending_events: Vec<WidgetEvent>,
-}
+    pending_events: Vec<WidgetEvent> }
 
 impl ToolStrip {
     pub fn new() -> Self {
@@ -45,8 +42,7 @@ impl ToolStrip {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            pending_events: Vec::new(),
-        }
+            pending_events: Vec::new() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {

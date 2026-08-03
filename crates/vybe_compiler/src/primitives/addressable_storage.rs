@@ -20,8 +20,7 @@ fn array_elem(value: Expression) -> ArrayElement {
         value,
         spread: false,
         key: None,
-        by_ref: false,
-    }
+        by_ref: false }
 }
 
 /// Create a zero-filled flat storage array of `count` elements.

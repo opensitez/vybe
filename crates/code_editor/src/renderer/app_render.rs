@@ -4,8 +4,7 @@ use tiny_skia::{Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
 use super::{
     App, EditAction, FOOTER_HEIGHT, GUTTER_WIDTH, Keybinding, MINIMAP_WIDTH, PaletteAction, SCALE,
-    SIDEBAR_TAB_H, SPLITTER_WIDTH, SidebarTab, TAB_BAR_HEIGHT, TabContent, UI_BAR_HEIGHT,
-};
+    SIDEBAR_TAB_H, SPLITTER_WIDTH, SidebarTab, TAB_BAR_HEIGHT, TabContent, UI_BAR_HEIGHT };
 use crate::form_designer_tab::MenuAction;
 use crate::lsp_client::{LspEvent, LspRequest};
 use vybe_widgets::PanelWidget;
@@ -35,8 +34,7 @@ fn format_kb(kb: &Keybinding) -> String {
         "Delete" => "⌦",
         "Escape" => "⎋",
         "Space" => "␣",
-        k => k,
-    };
+        k => k };
     s.push_str(key);
     s
 }
@@ -59,8 +57,7 @@ fn kb_hint_for_palette(kbs: &[Keybinding], action: PaletteAction) -> String {
         PaletteAction::CloseTab => None,
         PaletteAction::NextTab => None,
         PaletteAction::PrevTab => None,
-        _ => None,
-    };
+        _ => None };
     if let Some(action_str) = target {
         if let Some(kb) = kbs.iter().find(|k| k.action == action_str) {
             return format_kb(kb);
@@ -116,14 +113,12 @@ impl App {
                         x: 0.0,
                         y: 0.0,
                         w: pix.width() as f32 / SCALE,
-                        h: 28.0,
-                    };
+                        h: 28.0 };
                     let tb_rect = crate::form_designer_tab::Rect {
                         x: 0.0,
                         y: 28.0,
                         w: pix.width() as f32 / SCALE,
-                        h: 36.0,
-                    };
+                        h: 36.0 };
                     f.menu_bar.render(
                         pix,
                         &mut self.font_system,
@@ -169,8 +164,7 @@ impl App {
             // Sync sidebar tabs active state
             let sidebar_active = match self.sidebar_tab {
                 SidebarTab::Files => 0,
-                SidebarTab::Project => 1,
-            };
+                SidebarTab::Project => 1 };
             self.sidebar_tabs.set_active(sidebar_active);
             self.sidebar_tabs.set_colors(
                 (
@@ -209,8 +203,7 @@ impl App {
                 pixmap: pix,
                 font_system: &mut self.font_system,
                 swash_cache: &mut self.swash_cache,
-                scale: SCALE,
-            };
+                scale: SCALE };
             self.sidebar_tabs.render(&mut ctx);
         }
         // Tab separator
@@ -355,8 +348,7 @@ impl App {
                 pixmap: pix,
                 font_system: &mut self.font_system,
                 swash_cache: &mut self.swash_cache,
-                scale: SCALE,
-            };
+                scale: SCALE };
             self.tab_panel.render(&mut ctx);
         }
 
@@ -456,9 +448,7 @@ impl App {
                                                 Some(
                                                     lsp_types::DiagnosticSeverity::INFORMATION,
                                                 ) => vybe_widgets::DiagnosticSeverity::Info,
-                                                _ => vybe_widgets::DiagnosticSeverity::Hint,
-                                            },
-                                        })
+                                                _ => vybe_widgets::DiagnosticSeverity::Hint } })
                                         .collect();
                                     self.needs_redraw = true;
                                     break;
@@ -490,14 +480,12 @@ impl App {
                                             Some(CompletionItemKind::SNIPPET) => "sn",
                                             Some(CompletionItemKind::ENUM) => "en",
                                             Some(CompletionItemKind::TYPE_PARAMETER) => "tp",
-                                            _ => "  ",
-                                        };
+                                            _ => "  " };
                                         AutocompleteItem {
                                             label: ci.label,
                                             detail: ci.detail,
                                             insert_text: ci.insert_text,
-                                            kind_icon,
-                                        }
+                                            kind_icon }
                                     })
                                     .collect();
                                 cw.autocomplete_selected = 0;
@@ -553,8 +541,7 @@ impl App {
                             x: rect.left() / SCALE,
                             y: rect.top() / SCALE,
                             w: rect.width() / SCALE,
-                            h: rect.height() / SCALE,
-                        },
+                            h: rect.height() / SCALE },
                         SCALE,
                     );
                 }
@@ -604,10 +591,8 @@ impl App {
                                         ProblemSeverity::Warning
                                     }
                                     vybe_widgets::DiagnosticSeverity::Info => ProblemSeverity::Info,
-                                    vybe_widgets::DiagnosticSeverity::Hint => ProblemSeverity::Hint,
-                                },
-                                message: d.message.clone(),
-                            })
+                                    vybe_widgets::DiagnosticSeverity::Hint => ProblemSeverity::Hint },
+                                message: d.message.clone() })
                             .collect::<Vec<_>>()
                     } else {
                         vec![]
@@ -620,8 +605,7 @@ impl App {
                 pixmap: pix,
                 font_system: &mut self.font_system,
                 swash_cache: &mut self.swash_cache,
-                scale: SCALE,
-            };
+                scale: SCALE };
             self.output_panel.render(&mut ctx);
         }
 
@@ -708,8 +692,7 @@ impl App {
             );
             let config_label = match self.build_config {
                 super::BuildConfig::Debug => "[Debug]",
-                super::BuildConfig::Release => "[Release]",
-            };
+                super::BuildConfig::Release => "[Release]" };
             self.status_bar.add_section_with_id(
                 config_label,
                 config_label.len() as f32 * 7.5,
@@ -732,8 +715,7 @@ impl App {
                 pixmap: pix,
                 font_system: &mut self.font_system,
                 swash_cache: &mut self.swash_cache,
-                scale: SCALE,
-            };
+                scale: SCALE };
             self.status_bar.render(&mut ctx);
         }
 
@@ -930,8 +912,7 @@ impl App {
                 .get(self.active_tab)
                 .map(|t| match &t.content {
                     TabContent::Code(cw) => cw.line_count(),
-                    _ => 0,
-                })
+                    _ => 0 })
                 .unwrap_or(0);
             App::draw_ui_text(
                 pix,
@@ -1194,8 +1175,7 @@ impl App {
                         x: 0.0,
                         y: 0.0,
                         w: pix.width() as f32 / SCALE,
-                        h: 28.0,
-                    };
+                        h: 28.0 };
                     f.menu_bar.render_dropdown_overlay(
                         pix,
                         &mut self.font_system,

@@ -1,15 +1,13 @@
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
-};
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
 use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
 use tiny_skia::{Paint, PathBuilder, Pixmap, Rect, Transform};
 
 pub enum DropdownEvent {
     Selected(usize),
     Closed,
-    None,
-}
+    None }
 
 pub struct Dropdown {
     pub items: Vec<String>,
@@ -22,8 +20,7 @@ pub struct Dropdown {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    pending_events: Vec<WidgetEvent>,
-}
+    pending_events: Vec<WidgetEvent> }
 
 impl Dropdown {
     pub fn new(
@@ -53,8 +50,7 @@ impl Dropdown {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            pending_events: Vec::new(),
-        }
+            pending_events: Vec::new() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -269,8 +265,7 @@ impl PanelWidget for Dropdown {
                 true
             }
             DropdownEvent::Closed => true,
-            DropdownEvent::None => false,
-        }
+            DropdownEvent::None => false }
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool {
@@ -310,8 +305,7 @@ impl PanelWidget for Dropdown {
                     .unwrap_or_default();
                 CommandValue::Text(t)
             }
-            _ => CommandValue::None,
-        }
+            _ => CommandValue::None }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

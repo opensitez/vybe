@@ -107,7 +107,7 @@ pub fn emit_sorted_collection_new(
 ) {
     let comparator = chunks[current].alloc_scratch(1);
     if argc == 0 {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
     set(&mut chunks[current], comparator, line);
     if map {

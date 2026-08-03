@@ -131,7 +131,7 @@ pub fn emit_sscanf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
         for _ in 0..argc {
             chunks[current].emit_op(Op::DROP, line);
         }
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
     // Drop any extra reference args, leaving [string, format].

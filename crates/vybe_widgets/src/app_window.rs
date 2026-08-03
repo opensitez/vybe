@@ -82,8 +82,7 @@ struct AppWindowInner<A: Application> {
     init_width: u32,
     init_height: u32,
     modifiers: winit::event::Modifiers,
-    mouse_pos: (f32, f32),
-}
+    mouse_pos: (f32, f32) }
 
 impl<A: Application> ApplicationHandler for AppWindowInner<A> {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -199,8 +198,7 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
             WindowEvent::MouseWheel { delta, .. } => {
                 let d = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y * 120.0,
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0,
-                };
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0 };
                 let x = self.mouse_pos.0 / scale;
                 let y = self.mouse_pos.1 / scale;
                 if self.app.handle_scroll(d, x, y) {
@@ -227,8 +225,7 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                         cmd: mods.super_key() || mods.control_key(),
                         shift: mods.shift_key(),
                         alt: mods.alt_key(),
-                        text: event.text.as_ref().map(|t| t.to_string()),
-                    };
+                        text: event.text.as_ref().map(|t| t.to_string()) };
                     if self.app.handle_key(key_event) {
                         if let Some(w) = &self.window {
                             w.request_redraw();
@@ -245,8 +242,7 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                     kind: MouseEventKind::Move,
                     cmd: mods.super_key() || mods.control_key(),
                     shift: mods.shift_key(),
-                    alt: mods.alt_key(),
-                };
+                    alt: mods.alt_key() };
                 if gui_trace_enabled() {
                     eprintln!(
                         "[gui] window.cursor_moved physical=({:.1},{:.1}) logical=({:.1},{:.1}) scale={:.2}",
@@ -277,20 +273,17 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                     winit::event::MouseButton::Left => MouseButton::Left,
                     winit::event::MouseButton::Right => MouseButton::Right,
                     winit::event::MouseButton::Middle => MouseButton::Middle,
-                    _ => return,
-                };
+                    _ => return };
                 let kind = match state {
                     ElementState::Pressed => MouseEventKind::Press(btn),
-                    ElementState::Released => MouseEventKind::Release(btn),
-                };
+                    ElementState::Released => MouseEventKind::Release(btn) };
                 let event = MouseEvent {
                     x: self.mouse_pos.0 / scale,
                     y: self.mouse_pos.1 / scale,
                     kind,
                     cmd: mods.super_key() || mods.control_key(),
                     shift: mods.shift_key(),
-                    alt: mods.alt_key(),
-                };
+                    alt: mods.alt_key() };
                 if gui_trace_enabled() {
                     eprintln!(
                         "[gui] window.mouse_input state={:?} button={:?} logical=({:.1},{:.1}) physical=({:.1},{:.1}) scale={:.2}",
@@ -346,7 +339,6 @@ pub fn run_app<A: Application + 'static>(title: &str, width: u32, height: u32, s
         init_width: width,
         init_height: height,
         modifiers: winit::event::Modifiers::default(),
-        mouse_pos: (0.0, 0.0),
-    };
+        mouse_pos: (0.0, 0.0) };
     el.run_app(&mut inner).expect("run app");
 }

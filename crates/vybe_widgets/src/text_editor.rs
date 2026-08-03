@@ -12,23 +12,20 @@ pub struct DiagnosticInfo {
     pub col_start: usize,
     pub col_end: usize,
     pub message: String,
-    pub severity: DiagnosticSeverity,
-}
+    pub severity: DiagnosticSeverity }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
     Error,
     Warning,
     Info,
-    Hint,
-}
+    Hint }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LexerState {
     #[default]
     Normal,
-    InBlockComment,
-}
+    InBlockComment }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
@@ -40,15 +37,13 @@ pub enum TokenKind {
     BlockComment,
     Punct,
     #[allow(dead_code)]
-    Unknown,
-}
+    Unknown }
 
 #[derive(Debug, Clone)]
 pub struct TokenSpan {
     pub start: usize,
     pub end: usize,
-    pub kind: TokenKind,
-}
+    pub kind: TokenKind }
 
 pub struct TextEditor {
     pub rope: Rope,
@@ -58,8 +53,7 @@ pub struct TextEditor {
     pub collapsed_starts: HashSet<usize>,
     pub diagnostics: Vec<DiagnosticInfo>,
     pub history: VecDeque<(String, usize, usize)>,
-    pub redo_history: VecDeque<(String, usize, usize)>,
-}
+    pub redo_history: VecDeque<(String, usize, usize)> }
 
 fn tokenize_line(
     line: &str,
@@ -96,8 +90,7 @@ fn tokenize_line(
                 out.push(TokenSpan {
                     start: base_offset + start,
                     end: base_offset + i,
-                    kind: TokenKind::BlockComment,
-                });
+                    kind: TokenKind::BlockComment });
                 if found {
                     continue;
                 }
@@ -106,8 +99,7 @@ fn tokenize_line(
                 out.push(TokenSpan {
                     start: base_offset + start,
                     end: base_offset + i,
-                    kind: TokenKind::BlockComment,
-                });
+                    kind: TokenKind::BlockComment });
             }
             continue;
         }
@@ -124,8 +116,7 @@ fn tokenize_line(
             out.push(TokenSpan {
                 start: base_offset + start,
                 end: base_offset + i,
-                kind: TokenKind::Whitespace,
-            });
+                kind: TokenKind::Whitespace });
             continue;
         }
 
@@ -137,8 +128,7 @@ fn tokenize_line(
                 out.push(TokenSpan {
                     start: base_offset + start,
                     end: base_offset + i,
-                    kind: TokenKind::LineComment,
-                });
+                    kind: TokenKind::LineComment });
                 continue;
             }
         }
@@ -169,8 +159,7 @@ fn tokenize_line(
             out.push(TokenSpan {
                 start: base_offset + start,
                 end: base_offset + i,
-                kind: TokenKind::String,
-            });
+                kind: TokenKind::String });
             continue;
         }
         if b >= b'0' && b <= b'9' {
@@ -182,8 +171,7 @@ fn tokenize_line(
             out.push(TokenSpan {
                 start: base_offset + start,
                 end: base_offset + i,
-                kind: TokenKind::Number,
-            });
+                kind: TokenKind::Number });
             continue;
         }
         if (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') || b == b'_' {
@@ -200,8 +188,7 @@ fn tokenize_line(
             out.push(TokenSpan {
                 start: base_offset + start,
                 end: base_offset + i,
-                kind: TokenKind::Identifier,
-            });
+                kind: TokenKind::Identifier });
             continue;
         }
         let start = i;
@@ -209,8 +196,7 @@ fn tokenize_line(
         out.push(TokenSpan {
             start: base_offset + start,
             end: base_offset + i,
-            kind: TokenKind::Punct,
-        });
+            kind: TokenKind::Punct });
     }
     (out, state)
 }
@@ -226,8 +212,7 @@ impl TextEditor {
             collapsed_starts: HashSet::new(),
             diagnostics: Vec::new(),
             history: VecDeque::new(),
-            redo_history: VecDeque::new(),
-        };
+            redo_history: VecDeque::new() };
         ed.retokenize_all(lang);
         ed
     }

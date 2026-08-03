@@ -64,15 +64,13 @@ pub(crate) enum Resolution {
     /// e.g. `System.Environment.CurrentDirectory.Length`.
     ResolvedPrefix {
         target: ResolutionTarget,
-        suffix: Vec<String>,
-    },
+        suffix: Vec<String> },
     /// The chain head is a scope binding (local/global/class field) --
     /// ordinary instance member access (locals shadow, always). Callers
     /// keep their special intercepts (GUI Controls.Add, Thread.Join).
     ScopedMember { local: String, members: Vec<String> },
     /// A WinForms/layout no-op method -- emit null, skip.
-    NoOp,
-}
+    NoOp }
 
 impl Compiler {
     /// Resolve a bare identifier per the plan's order. `None` = not a
@@ -81,7 +79,7 @@ impl Compiler {
     pub(crate) fn resolve_namespace_name(&self, name: &str) -> Option<Resolution> {
         // 1. Locals shadow, always — every legacy resolver that passed
         //    `is_local: |_| false` was a bug factory (namespaceplan.md).
-        if self.scope().resolve(name).is_some() || self.scope().resolve_ci(name).is_some() {
+        if self.scope().resolve(name).is_some() {
             return None;
         }
         let key = self.canon(name);
@@ -90,21 +88,18 @@ impl Compiler {
         if let Some((module, func)) = self.host_import_bindings.get(&key) {
             return Some(Resolution::HostImport {
                 module: module.clone(),
-                func: func.clone(),
-            });
+                func: func.clone() });
         }
         if let Some(v) = self.host_const_bindings.get(&key) {
             return Some(Resolution::HostConst(v.clone()));
         }
         if let Some(module) = self.host_namespace_aliases.get(&key) {
             return Some(Resolution::NamespaceAlias {
-                module: module.clone(),
-            });
+                module: module.clone() });
         }
         if let Some(root) = self.host_package_roots.get(&key) {
             return Some(Resolution::PackageRoot {
-                module_root: root.clone(),
-            });
+                module_root: root.clone() });
         }
 
         // 3. Global namespace tree (platform surfaces register their
@@ -151,7 +146,7 @@ impl Compiler {
         }
         // 1. A scope binding on the head means the whole chain is ordinary
         //    member access, never a namespace path.
-        if self.scope().resolve(head).is_some() || self.scope().resolve_ci(head).is_some() {
+        if self.scope().resolve(head).is_some() {
             return None;
         }
         let head_key = self.canon(head);
@@ -163,8 +158,7 @@ impl Compiler {
             if let Some(module) = self.host_namespace_aliases.get(&head_key) {
                 return Some(Resolution::HostImport {
                     module: module.clone(),
-                    func: rest[0].to_string(),
-                });
+                    func: rest[0].to_string() });
             }
         }
 
@@ -188,8 +182,7 @@ impl Compiler {
                     }
                     return Some(Resolution::HostImport {
                         module,
-                        func: func.to_string(),
-                    });
+                        func: func.to_string() });
                 }
             }
         }
@@ -297,8 +290,7 @@ impl Compiler {
         if head_is_local {
             return Some(Resolution::ScopedMember {
                 local: lower[0].clone(),
-                members: lower[1..].to_vec(),
-            });
+                members: lower[1..].to_vec() });
         }
 
         let head_is_field = self
@@ -309,8 +301,7 @@ impl Compiler {
         if head_is_field && lower.len() > 1 {
             return Some(Resolution::ScopedMember {
                 local: lower[0].clone(),
-                members: lower[1..].to_vec(),
-            });
+                members: lower[1..].to_vec() });
         }
 
         if is_user_type(&lower[0]) {
@@ -322,11 +313,9 @@ impl Compiler {
             return Some(match resolution {
                 Resolution::Tree(ResolutionTarget::NamespaceObject(path)) => {
                     Resolution::NamespaceChain {
-                        parts: path.split('.').map(str::to_string).collect(),
-                    }
+                        parts: path.split('.').map(str::to_string).collect() }
                 }
-                other => other,
-            });
+                other => other });
         }
 
         for prefix_len in (1..parts.len()).rev() {
@@ -342,8 +331,7 @@ impl Compiler {
             ) {
                 return Some(Resolution::ResolvedPrefix {
                     target,
-                    suffix: lower[prefix_len..].to_vec(),
-                });
+                    suffix: lower[prefix_len..].to_vec() });
             }
         }
         None

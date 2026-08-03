@@ -2,8 +2,7 @@
 
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
-};
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
 use super::{WidgetColors, circle_path, rounded_rect_path};
 use tiny_skia::*;
 
@@ -23,8 +22,7 @@ pub struct Slider {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    pending_events: Vec<WidgetEvent>,
-}
+    pending_events: Vec<WidgetEvent> }
 
 impl Slider {
     pub fn new(min: f32, max: f32, value: f32) -> Self {
@@ -44,8 +42,7 @@ impl Slider {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            pending_events: Vec::new(),
-        }
+            pending_events: Vec::new() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -237,8 +234,7 @@ impl PanelWidget for Slider {
                 ));
                 true
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     fn focusable(&self) -> bool {
@@ -269,8 +265,7 @@ impl PanelWidget for Slider {
                 let n = match val {
                     CommandValue::Text(s) => s.parse::<f32>().ok(),
                     CommandValue::Number(f) => Some(*f as f32),
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(n) = n {
                     match key.as_str() {
                         "SetMin" => self.min = n,
@@ -281,8 +276,7 @@ impl PanelWidget for Slider {
                 }
                 CommandValue::None
             }
-            _ => CommandValue::None,
-        }
+            _ => CommandValue::None }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

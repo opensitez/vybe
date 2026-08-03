@@ -80,7 +80,7 @@ impl Compiler {
             capture_bindings.len() as u8,
         );
         self.chunks.push(factory);
-        self.scopes.push(Scope::new_function());
+        self.scopes.push(Scope::new_function(!self.case_sensitive));
         let saved = self.current;
         self.current = factory_idx;
 
@@ -172,8 +172,7 @@ impl Compiler {
         let is_arrow = is_arrow
             && match body {
                 LambdaBody::Block(stmts) => Self::wrapped_generator_kind(stmts).is_none(),
-                _ => true,
-            };
+                _ => true };
         let has_rest = params.last().map_or(false, |p| p.is_rest);
         if has_rest {
             self.rest_fixed_arities
@@ -220,7 +219,10 @@ impl Compiler {
         self.chunks.push(chunk);
         self.chunks[ci].is_async = is_async;
         self.chunks[ci].is_generator = is_generator;
-        self.scopes.push(Scope::new_function());
+        // A closure resolves names the way the body containing it does — a PHP
+        // closure sees no more of the module than the function it sits in.
+        let enclosing = self.scope().resolution;
+        self.scopes.push(Scope::new_function_like(enclosing, !self.case_sensitive));
         let saved = self.current;
         self.current = ci;
         // Runtime TRY_END counts are per-FRAME: a nested chunk must not
@@ -285,8 +287,7 @@ impl Compiler {
             if !parent_has_this {
                 let body_has_this = match body {
                     LambdaBody::Block(stmts) => crate::primitives::body_contains_this(stmts),
-                    LambdaBody::Expr(expr) => crate::primitives::expr_contains_this(expr),
-                };
+                    LambdaBody::Expr(expr) => crate::primitives::expr_contains_this(expr) };
                 if body_has_this {
                     let this_idx = self.str_const("__js_this");
                     self.emit_u16(Op::GLOBAL_GET, this_idx);
@@ -311,7 +312,7 @@ impl Compiler {
                 let env_size = captured_names.len() as u16;
                 let line = self.line;
                 for _ in 0..env_size {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
                 self.chunks[self.current].emit_array_new_fixed(0, env_size, line);
                 let env_slot = self.define_local("__shared_env");
@@ -358,7 +359,7 @@ impl Compiler {
 
         let result_slot = if self.profile.function_return == ReturnStyle::ResultSlot {
             let rs = self.define_local("Result");
-            self.emit(Op::NULL);
+            self.emit_null();
             self.emit_u16(Op::LOCAL_SET, rs);
             let saved_rs = self.current_result_slot.take();
             self.current_result_slot = Some(rs);
@@ -532,7 +533,7 @@ impl Compiler {
             inst!(self, core_wasm::dup);
             self.emit_const(Value::F64(length as f64));
             let length_key = self.str_const("length");
-            self.emit_u16(Op::STRUCT_SET, length_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
             self.emit(Op::DROP);
 
             inst!(self, core_wasm::dup);
@@ -544,8 +545,7 @@ impl Compiler {
                     LambdaBody::Block(stmts) => {
                         Self::wrapped_generator_kind(stmts).unwrap_or((is_async, is_generator))
                     }
-                    _ => (is_async, is_generator),
-                };
+                    _ => (is_async, is_generator) };
                 let line = self.line;
                 crate::primitives::prototypes::emit_stamp_function_kind_proto(
                     self.chunk(),
@@ -562,7 +562,7 @@ impl Compiler {
             inst!(self, core_wasm::dup);
             self.emit_const(Value::Bool(true));
             let non_ctor_key = self.str_const("__vybe_non_ctor");
-            self.emit_u16(Op::STRUCT_SET, non_ctor_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, non_ctor_key);
             self.emit(Op::DROP);
 
             // §10.2.9/§10.2.10: name/length are non-enumerable.
@@ -580,7 +580,7 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::Bool(true));
                 let arrow_key = self.str_const("__fn_arrow");
-                self.emit_u16(Op::STRUCT_SET, arrow_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, arrow_key);
                 self.emit(Op::DROP);
             }
         }
@@ -680,7 +680,6 @@ impl Compiler {
                 self.emit_host_call(idx, args.len() as u8);
                 Ok(true)
             }
-            _ => Ok(false),
-        }
+            _ => Ok(false) }
     }
 }

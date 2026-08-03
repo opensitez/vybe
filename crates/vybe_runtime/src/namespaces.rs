@@ -53,8 +53,7 @@ pub enum NamespaceNode {
     /// `sb_set_length`). Either side may be absent (read-only / write-only).
     Property {
         get: Option<Box<NamespaceNode>>,
-        set: Option<Box<NamespaceNode>>,
-    },
+        set: Option<Box<NamespaceNode>> },
     /// A class/type — CM-typed constructor + static members + instance
     /// method signatures. Instance methods are listed for *metadata* only:
     /// member dispatch is receiver-based (TypeRegistry vtables) and NEVER
@@ -89,8 +88,7 @@ pub enum NamespaceNode {
         /// member node so it applies uniformly to `Fn` and `CommonEmit`
         /// members. A platform DECLARES these; the compiler must not carry a
         /// per-platform table of its own.
-        member_returns: BTreeMap<String, String>,
-    },
+        member_returns: BTreeMap<String, String> },
     /// A host-backed typed function leaf: resolves to a `CALL_IMPORT` of
     /// `module`/`func` (e.g. `ecma:json` / `stringify`).
     Fn {
@@ -110,8 +108,7 @@ pub enum NamespaceNode {
         /// (`controlGetProperty(this, "Text")`), so the target is the pair
         /// (function, bound name) and not the function alone. Dropping it made
         /// every keyed accessor call the generic getter with no key.
-        bound_arg: Option<String>,
-    },
+        bound_arg: Option<String> },
     /// A `common:<cat>.<op>` dispatch leaf — emitted through the shared
     /// common-emit dispatcher rather than a direct host call.
     CommonEmit(String),
@@ -120,8 +117,7 @@ pub enum NamespaceNode {
     /// This name → a leaf living at a different canonical path. The
     /// source≠canonical reconciliation point (`python.json.dumps` →
     /// `Alias("ecma.json.stringify")`).
-    Alias(Path),
-}
+    Alias(Path) }
 
 /// Everything the compiler needs to construct a tree `Type` generically,
 /// language-neutrally, through the ONE resolver — no per-platform surface.
@@ -158,8 +154,7 @@ pub struct CtorSpec {
     /// construction site stamps `__value_eq` so the language equality path
     /// compares such instances structurally (by `__type` + fields) instead of
     /// by reference. `false` (default) = reference identity, like a plain class.
-    pub value_equality: bool,
-}
+    pub value_equality: bool }
 
 /// How a GUI-adapter constructor arg is applied to its `vybe:gui` control.
 #[derive(Debug, Clone)]
@@ -175,8 +170,7 @@ pub enum FieldGui {
     /// The value is a child widget whose text IS this control's caption
     /// (`ElevatedButton(child: Text('7'))` → the button's `Text`), rather than
     /// a nested control.
-    Caption,
-}
+    Caption }
 
 impl Default for FieldGui {
     fn default() -> Self {
@@ -193,8 +187,7 @@ impl Default for FieldGui {
 #[derive(Default)]
 pub struct RegistryState {
     pub tree: Subtree,
-    host_exports_mounted: bool,
-}
+    host_exports_mounted: bool }
 
 static REGISTRY: OnceLock<RwLock<RegistryState>> = OnceLock::new();
 
@@ -249,8 +242,7 @@ fn merge_into(map: &mut Subtree, key: String, node: NamespaceNode) {
                 ctor_call,
                 mut statics,
                 methods,
-                member_returns,
-            },
+                member_returns },
         ) => {
             if let NamespaceNode::Namespace(existing_children) = existing {
                 let mut merged = existing_children.clone();
@@ -264,8 +256,7 @@ fn merge_into(map: &mut Subtree, key: String, node: NamespaceNode) {
                 ctor_call,
                 statics,
                 methods,
-                member_returns,
-            };
+                member_returns };
         }
         (_, node) => {
             map.insert(key, node);
@@ -395,8 +386,7 @@ pub fn lookup_type_member_return(
                     .then(|| member_returns.get(&member.to_lowercase()).cloned())
                     .flatten()
             }
-            _ => None,
-        }
+            _ => None }
     }
     let leaf = class_name.rsplit('.').next().unwrap_or(class_name).to_lowercase();
     scope
@@ -425,8 +415,7 @@ pub fn scope_declares_member_arity(scope: &[&str], member: &str, arity: u8) -> b
                 .is_some_and(
                     |n| matches!(n, NamespaceNode::Fn { arity: Some(a), .. } if *a == arity),
                 ),
-            _ => false,
-        }
+            _ => false }
     }
     if scope.is_empty() {
         return false;
@@ -434,16 +423,13 @@ pub fn scope_declares_member_arity(scope: &[&str], member: &str, arity: u8) -> b
     let m = member.to_lowercase();
     let mut node = match guard.tree.get(scope[0]) {
         Some(n) => n,
-        None => return false,
-    };
+        None => return false };
     for seg in &scope[1..] {
         node = match node {
             NamespaceNode::Namespace(children) => match children.get(*seg) {
                 Some(n) => n,
-                None => return false,
-            },
-            _ => return false,
-        };
+                None => return false },
+            _ => return false };
     }
     walk(node, &m, arity)
 }
@@ -463,8 +449,7 @@ pub fn lookup_type_instance_target(
     // only target there is.
     let declared = match (&declared, argc) {
         (NamespaceNode::Property { get, .. }, 0) => *(get.clone()?),
-        _ => declared,
-    };
+        _ => declared };
     match select_overload(&declared, argc)?.clone() {
         NamespaceNode::Fn {
             module,
@@ -474,13 +459,11 @@ pub fn lookup_type_instance_target(
         } => Some(crate::component_model::InstanceMethodTarget::Host {
             module,
             func,
-            arity: arity.unwrap_or(argc),
-        }),
+            arity: arity.unwrap_or(argc) }),
         NamespaceNode::CommonEmit(emit) => {
             Some(crate::component_model::InstanceMethodTarget::Common { emit, arity: argc })
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 /// Bundle arity-discriminated targets for one member name. A single entry
@@ -501,8 +484,7 @@ pub fn select_overload(node: &NamespaceNode, argc: u8) -> Option<&NamespaceNode>
             .iter()
             .find(|(a, _)| *a == argc)
             .map(|(_, n)| n),
-        other => Some(other),
-    }
+        other => Some(other) }
 }
 
 /// The backing constructor NODE a platform declared on `class_name`'s `Type`.
@@ -530,8 +512,7 @@ fn find_type_ctor_call(scope: &[String], class_name: &str) -> Option<NamespaceNo
                     .then(|| ctor_call.as_deref().cloned())
                     .flatten()
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     scope
@@ -573,8 +554,7 @@ fn find_type_spec(scope: &[String], class_name: &str) -> Option<CtorSpec> {
                     .then(|| ctor.clone())
                     .flatten()
             }
-            _ => None,
-        }
+            _ => None }
     }
 
     scope
@@ -603,11 +583,9 @@ pub fn lookup_type_ctor_target(
     match find_type_ctor_call(scope, bare)? {
         NamespaceNode::Fn { module, func, .. } => Some(ConstructorTarget::Host(HostTarget {
             module,
-            name: func,
-        })),
+            name: func })),
         NamespaceNode::CommonEmit(emit) => Some(ConstructorTarget::Common(emit)),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// An instance PROPERTY target for `class_name`.
@@ -641,8 +619,7 @@ fn property_target(
         // A plain leaf answers reads only: a method-shaped member has no
         // write direction to route a store through.
         other if !want_setter => other,
-        _ => return None,
-    };
+        _ => return None };
     match node {
         NamespaceNode::Fn {
             module,
@@ -652,11 +629,9 @@ fn property_target(
         } => Some(InstancePropertyTarget::Host {
             module,
             func,
-            key: bound_arg,
-        }),
+            key: bound_arg }),
         NamespaceNode::CommonEmit(emit) => Some(InstancePropertyTarget::Common { emit }),
-        _ => None,
-    }
+        _ => None }
 }
 
 /// True when any registered platform contributed a `Type` node for this name.
@@ -695,8 +670,7 @@ pub fn host_fn(module: &str, func: &str) -> NamespaceNode {
         module: module.to_string(),
         func: func.to_string(),
         arity: None,
-        bound_arg: None,
-    }
+        bound_arg: None }
 }
 
 /// A host-backed leaf that binds a constant argument — the generic `vybe:gui`
@@ -707,16 +681,14 @@ pub fn host_fn_keyed(module: &str, func: &str, key: &str) -> NamespaceNode {
         module: module.to_string(),
         func: func.to_string(),
         arity: None,
-        bound_arg: Some(key.to_string()),
-    }
+        bound_arg: Some(key.to_string()) }
 }
 
 /// A property member with per-direction targets. Either side may be absent.
 pub fn property(get: Option<NamespaceNode>, set: Option<NamespaceNode>) -> NamespaceNode {
     NamespaceNode::Property {
         get: get.map(Box::new),
-        set: set.map(Box::new),
-    }
+        set: set.map(Box::new) }
 }
 
 /// A host-backed leaf whose arity the registrar knows.
@@ -725,8 +697,7 @@ pub fn host_fn_with_arity(module: &str, func: &str, arity: u8) -> NamespaceNode 
         module: module.to_string(),
         func: func.to_string(),
         arity: Some(arity),
-        bound_arg: None,
-    }
+        bound_arg: None }
 }
 
 /// A namespace from a list of children.
@@ -782,8 +753,7 @@ where
             module: module.clone(),
             func: func.clone(),
             arity: None,
-            bound_arg: None,
-        };
+            bound_arg: None };
         while segments.len() > 1 {
             let key = segments.pop().unwrap();
             let mut children = Subtree::new();

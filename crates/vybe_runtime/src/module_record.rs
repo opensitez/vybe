@@ -36,8 +36,7 @@ pub struct ModuleRecord {
     /// must check the active `Capabilities` set and fail the link if
     /// denied. Populated later; Phase 1 leaves it `None` for every
     /// auto-upgraded registration.
-    pub capability: Option<String>,
-}
+    pub capability: Option<String> }
 
 impl ModuleRecord {
     pub fn new_synthetic(specifier: impl Into<String>) -> Self {
@@ -49,8 +48,7 @@ impl ModuleRecord {
             status: ModuleStatus::Linked,
             exports: HashMap::new(),
             requested_modules: Vec::new(),
-            capability: None,
-        }
+            capability: None }
     }
 }
 
@@ -66,8 +64,7 @@ pub enum ModuleKind {
     Wasm,
     /// User-authored source-language module (e.g. `node:http.js`)
     /// whose only job is to re-export from Synthetic modules.
-    Adapter,
-}
+    Adapter }
 
 /// §16.2.1.4 — the module lifecycle state machine. Synthetic modules
 /// jump straight to `Linked`; Wasm / Adapter walk the full path.
@@ -78,8 +75,7 @@ pub enum ModuleStatus {
     Linked,
     Evaluating,
     Evaluated,
-    Errored,
-}
+    Errored }
 
 /// A single named export from a module.
 #[derive(Debug, Clone)]
@@ -108,8 +104,7 @@ pub enum ExportEntry {
     /// Re-export: `export { X } from "other"`. The Linker resolves
     /// transitively so the importer binds to the final target
     /// directly — no runtime chase.
-    Indirect { from: String, name: String },
-}
+    Indirect { from: String, name: String } }
 
 /// §16.2.1.3 — `(specifier, attributes)` identifies the requested
 /// module. Import attributes (`with { type: "json" }`) are reserved
@@ -117,5 +112,4 @@ pub enum ExportEntry {
 #[derive(Debug, Clone, Default)]
 pub struct ModuleRequest {
     pub specifier: String,
-    pub attributes: BTreeMap<String, String>,
-}
+    pub attributes: BTreeMap<String, String> }

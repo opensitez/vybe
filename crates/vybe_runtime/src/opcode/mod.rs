@@ -25,6 +25,37 @@ mod simd;
 mod threads;
 mod vm_internal;
 
+/// Abstract heap types (GC proposal §Reference types) — the single-byte
+/// heaptype immediate of `ref.null`, `ref.test`, `ref.cast`, `br_on_cast`.
+///
+/// These live here, beside the opcodes that take them, because they are
+/// instruction immediates: `ref.null` cannot be emitted without one.
+/// `platforms/wasm/src/encoding.rs` re-exports them so the binary writer and
+/// the bytecode emitter cannot disagree about a byte value.
+pub mod heaptype {
+    pub const HT_NOFUNC: u8 = 0x73; // -0x0D
+    pub const HT_NOEXTERN: u8 = 0x72; // -0x0E
+    pub const HT_NONE: u8 = 0x71; // -0x0F (nullref)
+    pub const HT_FUNC: u8 = 0x70; // -0x10 (funcref)
+    pub const HT_EXTERN: u8 = 0x6F; // -0x11 (externref)
+    pub const HT_ANY: u8 = 0x6E; // -0x12 (anyref)
+    pub const HT_EQ: u8 = 0x6D; // -0x13 (eqref)
+    pub const HT_I31: u8 = 0x6C; // -0x14 (i31ref)
+    pub const HT_STRUCT: u8 = 0x6B; // -0x15 (structref)
+    pub const HT_ARRAY: u8 = 0x6A; // -0x16 (arrayref)
+
+    /// Is this heaptype in the GC heap? A `ref.null` of a GC type is a WASM GC
+    /// **typed null** — the GC accessors (`struct.get`/`set`, `array.*`) trap
+    /// on it per spec — whereas `ref.null extern` / `ref.null func` is the
+    /// lenient null the dynamic languages use. This predicate is what the two
+    /// used to be told apart by, back when the GC case had its own custom
+    /// opcode instead of an immediate.
+    #[inline]
+    pub const fn is_gc_heap(ht: u8) -> bool {
+        !matches!(ht, HT_EXTERN | HT_FUNC | HT_NOEXTERN | HT_NOFUNC)
+    }
+}
+
 /// A bytecode opcode. Encoded as `(group << 16) | sub_opcode`.
 /// Both group and sub are u16. Bytecode stream: [group_hi, group_lo, sub_hi, sub_lo] = 4 bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -95,8 +126,7 @@ impl Op {
             0xFE => threads::operand_format(self.sub()),
             0xF0 => canon::operand_format(self.sub()),
             0xFF => vm_internal::operand_format(self.sub()),
-            _ => OperandFormat::None,
-        }
+            _ => OperandFormat::None }
     }
 
     /// WASM disassembly name, or None if not a valid opcode.
@@ -110,8 +140,7 @@ impl Op {
             0xFE => threads::name(self.sub()),
             0xF0 => canon::name(self.sub()),
             0xFF => vm_internal::name(self.sub()),
-            _ => None,
-        }
+            _ => None }
     }
 
     /// Resolve a WASM mnemonic (e.g. `"i32.clz"`) to its opcode. The inverse of
@@ -240,8 +269,7 @@ pub enum OperandFormat {
     /// 4 raw bytes (f32.const).
     RawF32,
     /// 8 raw bytes (f64.const).
-    RawF64,
-}
+    RawF64 }
 
 impl OperandFormat {
     /// Fixed operand size in bytes, or 0 for variable-length formats.
@@ -267,8 +295,7 @@ impl OperandFormat {
             | Self::BrTable
             | Self::TryTable
             | Self::SlI32
-            | Self::SlI64 => 0,
-        }
+            | Self::SlI64 => 0 }
     }
 
     /// Operand size for formats whose size depends on operand bytes.
@@ -296,8 +323,7 @@ impl OperandFormat {
                 let count = code.get(operand_start).copied().unwrap_or(0) as usize;
                 1 + count * 5
             }
-            fmt => fmt.fixed_size(),
-        }
+            fmt => fmt.fixed_size() }
     }
 }
 
@@ -463,15 +489,13 @@ macro_rules! opcode_category {
         pub(super) fn name(sub: u16) -> Option<&'static str> {
             match sub {
                 $( $sub => Some($wasm_name), )*
-                _ => None,
-            }
+                _ => None }
         }
 
         pub(super) fn operand_format(sub: u16) -> super::OperandFormat {
             match sub {
                 $( $sub => super::OperandFormat::$fmt, )*
-                _ => super::OperandFormat::None,
-            }
+                _ => super::OperandFormat::None }
         }
 
         /// Reverse of `name`: the WASM mnemonic → sub-opcode. Generated from the
@@ -480,8 +504,7 @@ macro_rules! opcode_category {
         pub(super) fn from_name(wasm_name: &str) -> Option<u16> {
             match wasm_name {
                 $( $wasm_name => Some($sub), )*
-                _ => None,
-            }
+                _ => None }
         }
     };
 }

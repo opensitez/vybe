@@ -56,14 +56,14 @@ fn emit_autoderef_cell(chunks: &mut [Chunk], current: usize, line: u32) {
 
     lget(&mut chunks[current], obj_slot, line);
     let kind_key = struct_key(&mut chunks[current], "__ref_kind");
-    chunks[current].emit_op_u16(Op::STRUCT_GET, kind_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, kind_key, line);
     chunks[current].emit_string_const("cell", line);
     crate::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
     chunks[current].emit_if(line);
 
     lget(&mut chunks[current], obj_slot, line);
     let value_key = struct_key(&mut chunks[current], "__value");
-    chunks[current].emit_op_u16(Op::STRUCT_GET, value_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     lset(&mut chunks[current], result_slot, line);
 
     chunks[current].emit_end(line);
@@ -83,7 +83,7 @@ pub fn emit_send(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], channel_slot, line);
     emit_autoderef_cell(chunks, current, line);
     let queue_key = struct_key(&mut chunks[current], "queue");
-    chunks[current].emit_op_u16(Op::STRUCT_GET, queue_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, queue_key, line);
     emit_autoderef_cell(chunks, current, line);
     lset(&mut chunks[current], queue_slot, line);
 
@@ -101,7 +101,7 @@ pub fn emit_receive(chunks: &mut [Chunk], current: usize, line: u32) {
     lget(&mut chunks[current], channel_slot, line);
     emit_autoderef_cell(chunks, current, line);
     let queue_key = struct_key(&mut chunks[current], "queue");
-    chunks[current].emit_op_u16(Op::STRUCT_GET, queue_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, queue_key, line);
     emit_autoderef_cell(chunks, current, line);
     lset(&mut chunks[current], queue_slot, line);
 
@@ -112,7 +112,7 @@ pub fn emit_receive(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_autoderef_cell(chunks, current, line);
     let queue_key = chunks[current].add_constant(Value::String(Arc::from("queue")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, queue_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, queue_key, line);
     emit_autoderef_cell(chunks, current, line);
     collections::emit_len(chunks, current, line);
 }
@@ -120,16 +120,16 @@ pub fn emit_len(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_cap(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_autoderef_cell(chunks, current, line);
     let cap_key = chunks[current].add_constant(Value::String(Arc::from("capacity")));
-    chunks[current].emit_op_u16(Op::STRUCT_GET, cap_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, cap_key, line);
 }
 
 pub fn emit_close(chunks: &mut [Chunk], current: usize, line: u32) {
     emit_autoderef_cell(chunks, current, line);
     let closed_key = chunks[current].add_constant(Value::String(Arc::from("closed")));
     chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_op_u16(Op::STRUCT_SET, closed_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, closed_key, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 // ── AST lowering ────────────────────────────────────────────────────────────

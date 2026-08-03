@@ -219,16 +219,13 @@ pub fn finalize_with_runtime_helpers(chunks: &mut Vec<Chunk>) {
 
 /// Same as [`finalize_with_runtime_helpers`], but skips selected helper exports.
 /// Used by profiles with platform-owned replacements for a generic helper.
-pub fn finalize_with_runtime_helpers_excluding(
-    chunks: &mut Vec<Chunk>,
-    excluded_exports: &[&'static str],
-) {
+pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded_exports: &[&str]) {
     use vybe_runtime::chunk::{ConstExpr, GlobalInit};
 
     let mut requested = referenced_helper_exports(chunks);
     add_helper_dependencies(&mut requested);
     for excluded in excluded_exports {
-        requested.remove(excluded);
+        requested.remove(*excluded);
     }
     if requested.is_empty() {
         return;
@@ -255,8 +252,7 @@ pub fn finalize_with_runtime_helpers_excluding(
         if let Some(global_name) = helper_global_for_export(chunk_name) {
             chunks[0].global_inits.push(GlobalInit {
                 name: global_name.to_string(),
-                init: ConstExpr::RefFunc(helper_base + i),
-            });
+                init: ConstExpr::RefFunc(helper_base + i) });
         }
     }
     chunks.extend(helpers.chunks);
@@ -325,8 +321,7 @@ fn helper_export_dependencies(export: &str) -> &'static [&'static str] {
         "__stdlib_minmax" => &["__stdlib_min", "__stdlib_max"],
         "__stdlib_pynext" => &["__stdlib_iter_drain"],
         "__stdlib_rotate" => &["__stdlib_fmod"],
-        _ => &[],
-    }
+        _ => &[] }
 }
 
 fn ordered_helper_exports(exports: &BTreeSet<&'static str>) -> Vec<&'static str> {

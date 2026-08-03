@@ -31,7 +31,7 @@ fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
     match &val {
         Value::F64(v) => chunk.emit_f64_const(*v, line),
         Value::I32(v) => chunk.emit_i32_const(*v, line),
-        Value::Null => chunk.emit_op(Op::NULL, line),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::BigInt(v) => chunk.emit_i64_const(v.to_i64_wrapping(), line),
         Value::String(s) => chunk.emit_string_const(&s, line),
         Value::Bool(b) => chunk.emit_bool_const(*b, line),

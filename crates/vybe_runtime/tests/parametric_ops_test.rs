@@ -134,8 +134,8 @@ fn select_preserves_f64_values() {
 #[test]
 fn select_preserves_reference_values() {
     let r = run(|c| {
-        c.emit_op(Op::NULL, 0);
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         push_i32(c, 1);
         c.emit_op(Op::SELECT, 0);
     });

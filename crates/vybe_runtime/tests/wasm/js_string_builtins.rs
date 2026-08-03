@@ -55,11 +55,9 @@ fn read_i16_array(v: &Value) -> Vec<i16> {
             let obj = o.lock().unwrap();
             match &obj.kind {
                 ObjectKind::Array(elems) => elems.iter().map(|e| e.as_i32() as i16).collect(),
-                _ => vec![],
-            }
+                _ => vec![] }
         }
-        _ => vec![],
-    }
+        _ => vec![] }
 }
 
 const MOD: &str = "wasm:js-string";

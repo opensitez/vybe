@@ -37,16 +37,14 @@ pub struct CompileTimeTypes {
     /// User-defined type fields (own + inherited, accumulated at registration)
     user_fields: HashMap<String, HashSet<String>>,
     /// User-defined type methods (own + inherited, accumulated at registration)
-    user_methods: HashMap<String, HashSet<String>>,
-}
+    user_methods: HashMap<String, HashSet<String>> }
 
 impl CompileTimeTypes {
     pub fn new() -> Self {
         CompileTimeTypes {
             user_parents: HashMap::new(),
             user_fields: HashMap::new(),
-            user_methods: HashMap::new(),
-        }
+            user_methods: HashMap::new() }
     }
 
     // ── Registration ─────────────────────────────────────────────────────
@@ -91,8 +89,7 @@ impl CompileTimeTypes {
         for _ in 0..50 {
             let name = match current {
                 Some(ref n) => n.clone(),
-                None => return false,
-            };
+                None => return false };
 
             // Try user type parent first
             if let Some(parent_opt) = self.user_parents.get(&name) {
@@ -104,8 +101,7 @@ impl CompileTimeTypes {
                         }
                         current = Some(p_norm);
                     }
-                    None => return false,
-                }
+                    None => return false }
             }
             // Then framework type parent
             else if let Some(parent_fqn) = FRAMEWORK.parent(&name) {
@@ -177,15 +173,13 @@ struct FrameworkTypeTable {
     parents: HashMap<String, Option<String>>,
     /// Short name (lowercased) → FQN (lowercased).
     /// First registration wins (e.g. "timer" → "system.windows.forms.timer").
-    short_to_fqn: HashMap<String, String>,
-}
+    short_to_fqn: HashMap<String, String> }
 
 impl FrameworkTypeTable {
     fn new() -> Self {
         let mut table = FrameworkTypeTable {
             parents: HashMap::new(),
-            short_to_fqn: HashMap::new(),
-        };
+            short_to_fqn: HashMap::new() };
         table.load();
         table
     }

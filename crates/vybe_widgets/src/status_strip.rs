@@ -3,8 +3,7 @@
 use super::WidgetColors;
 use super::layout::{
     KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent, MouseEventKind,
-    PanelWidget, RenderContext, WidgetEvent, WidgetId,
-};
+    PanelWidget, RenderContext, WidgetEvent, WidgetId };
 use cosmic_text::Color as CosmicColor;
 use tiny_skia::*;
 
@@ -17,8 +16,7 @@ pub struct StatusStrip {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    pending_events: Vec<WidgetEvent>,
-}
+    pending_events: Vec<WidgetEvent> }
 
 impl StatusStrip {
     pub fn new() -> Self {
@@ -35,8 +33,7 @@ impl StatusStrip {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            pending_events: Vec::new(),
-        }
+            pending_events: Vec::new() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {

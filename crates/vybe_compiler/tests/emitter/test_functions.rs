@@ -7,7 +7,7 @@ fn default_param_roundtrip() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 5;
     let skip = functions::emit_default_param_start(&mut chunk, 1, 0);
-    chunk.emit_op(Op::NULL, 0); // placeholder default
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // placeholder default
     functions::emit_default_param_end(&mut chunk, 1, skip, 0);
     assert!(chunk.code.len() > 5);
 }
@@ -70,7 +70,7 @@ fn full_cross_language_call_pattern() {
     // push function ref
     functions::emit_push_global_func(&mut chunk, "dart_greet", 0);
     // push arg (would be compile_expr in real code)
-    chunk.emit_op(Op::NULL, 0);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     // call with 1 arg
     functions::emit_call(&mut chunk, 1, 0);
     assert!(chunk.code.len() > 3);

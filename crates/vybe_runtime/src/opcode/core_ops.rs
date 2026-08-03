@@ -259,7 +259,11 @@ opcode_category! {
     [0x0D] br_if => U32Leb, "br_if";
     [0x0E] br_table => BrTable, "br_table";
     [0x0F] r#return => None, "return";
-    [0x10] call => U16_U8, "call";
+    // A single `u8` argc. The VM's `call` is DYNAMIC — `call_value` takes the
+    // callee off the stack, so there is no function-index immediate to carry,
+    // and every emitter writes exactly one byte (`emit_op_u8`). Declaring it
+    // `U16_U8` made every operand_format-driven walk skip two bytes too many.
+    [0x10] call => U8, "call";
     [0x11] call_indirect => U8_U8_U8, "call_indirect";
     [0x12] return_call => U8, "return_call";
     [0x13] return_call_indirect => U8_U8_U8, "return_call_indirect";
@@ -455,7 +459,7 @@ opcode_category! {
     [0xC3] i64_extend16_s => None, "i64.extend16_s";
     [0xC4] i64_extend32_s => None, "i64.extend32_s";
     // References
-    [0xD0] null => None, "ref.null";
+    [0xD0] null => U8, "ref.null";
     [0xD1] ref_is_null => None, "ref.is_null";
     [0xD2] ref_func => Closure, "ref.func";
     // GC proposal (core prefix extensions).

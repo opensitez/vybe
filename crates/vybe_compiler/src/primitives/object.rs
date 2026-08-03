@@ -37,9 +37,9 @@ pub fn emit_non_null(chunk: &mut Chunk, line: u32) {
 pub fn emit_monitor_notify(chunk: &mut Chunk, line: u32) {
     chunk.emit_bool_const(true, line);
     let key = chunk.add_constant(Value::String(Arc::from("__j_notified")));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// Deterministic object hash based on ECMA string conversion.
@@ -241,7 +241,7 @@ pub fn emit_bind_method(
     chunk.emit_op_u16(Op::REF_FUNC, method_chunk_idx as u16, line);
     chunk.emit(0, line); // 0 upvalues (upvalue capture is compiler-specific)
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -274,13 +274,13 @@ pub fn emit_bind_bound_method(
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
-    chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key, line);
     chunk.emit_op(Op::DROP, line);
     if let Some(fixed_count) = rest_fixed_count {
         emit_stamp_rest_metadata(chunk, fixed_count, line);
     }
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -288,7 +288,7 @@ pub fn emit_stamp_rest_metadata(chunk: &mut Chunk, fixed_count: u8, line: u32) {
     chunk.emit_dup(line);
     chunk.emit_f64_const(fixed_count as f64, line);
     let key = chunk.add_constant(Value::String(Arc::from("__vybe_rest_fixed_arity")));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -319,7 +319,7 @@ pub fn emit_bind_method_with_slot(
         if let Some(fixed_count) = rest_fixed_count {
             chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
             let key = chunk.add_constant(Value::String(Arc::from(name)));
-            chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+            chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
             emit_stamp_rest_metadata(chunk, fixed_count, line);
             chunk.emit_op(Op::DROP, line);
         }
@@ -375,7 +375,7 @@ pub fn emit_retype_object_dynamic(
     )));
     chunks[current].emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunks[current].emit_dup(line);
-    chunks[current].emit_op_u16(Op::STRUCT_GET, types_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, types_key, line);
     chunks[current].emit_dup(line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     let init_block = chunks[current].emit_block(line);
@@ -390,7 +390,7 @@ pub fn emit_retype_object_dynamic(
     chunks[current].emit_op_u16(Op::LOCAL_GET, class_name_slot, line);
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::STRUCT_SET, types_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 /// Bind a property getter as __get_<name> on the instance.
@@ -430,7 +430,7 @@ pub fn stamp_local_dynamic_field(
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 pub fn stamp_local_string_field(chunk: &mut Chunk, slot: u16, field: &str, value: &str, line: u32) {
@@ -440,6 +440,6 @@ pub fn stamp_local_string_field(chunk: &mut Chunk, slot: u16, field: &str, value
 pub fn set_string_field(chunk: &mut Chunk, field: &str, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
     let key = chunk.add_constant(Value::String(Arc::from(field)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }

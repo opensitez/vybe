@@ -15,8 +15,7 @@ use vybe_platform_node::http::{RequestBodyReader, RequestContext, ResponseMessag
 
 pub struct BuiltContext {
     pub ctx: Arc<RequestContext>,
-    pub response_rx: std::sync::mpsc::Receiver<ResponseMessage>,
-}
+    pub response_rx: std::sync::mpsc::Receiver<ResponseMessage> }
 
 pub fn build<B>(
     req: &Request<B>,
@@ -82,13 +81,11 @@ pub fn build<B>(
         remote_addr: remote.ip().to_string(),
         remote_port: remote.port(),
         body: Mutex::new(body_reader),
-        response: Mutex::new(ResponseState::new(Some(tx))),
-    };
+        response: Mutex::new(ResponseState::new(Some(tx))) };
 
     BuiltContext {
         ctx: Arc::new(ctx),
-        response_rx: rx,
-    }
+        response_rx: rx }
 }
 
 fn split_host_port(host_hdr: &str, default_port: u16) -> (String, u16) {
@@ -108,8 +105,7 @@ fn split_host_port(host_hdr: &str, default_port: u16) -> (String, u16) {
     }
     match host_hdr.rsplit_once(':') {
         Some((h, p)) => (h.into(), p.parse().unwrap_or(default_port)),
-        None => (host_hdr.into(), default_port),
-    }
+        None => (host_hdr.into(), default_port) }
 }
 
 #[allow(clippy::too_many_arguments)]

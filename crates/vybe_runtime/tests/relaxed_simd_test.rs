@@ -57,8 +57,7 @@ fn emit_v128(c: &mut Chunk, bytes: [u8; 16]) {
 fn as_v128(v: Value) -> [u8; 16] {
     match v {
         Value::V128(b) => b,
-        _ => panic!("expected V128, got {:?}", v),
-    }
+        _ => panic!("expected V128, got {:?}", v) }
 }
 
 fn i32_lanes(b: &[u8; 16]) -> [i32; 4] {

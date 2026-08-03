@@ -57,7 +57,7 @@ pub fn create_function_chunk(name: &str, arity: u8) -> Chunk {
 /// fall through without explicit return).
 /// Stack: [] → diverges (return)
 pub fn emit_function_epilogue(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op(Op::RETURN, line);
 }
 
@@ -74,7 +74,7 @@ pub fn emit_async_body_start(chunk: &mut Chunk, line: u32) -> usize {
 /// `Promise.resolve(undefined)` before returning.
 pub fn emit_async_body_fallthrough(chunk: &mut Chunk, catch_jump: usize, line: u32) {
     crate::primitives::errors::emit_try_end(chunk, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     let _ = catch_jump;
 }
 

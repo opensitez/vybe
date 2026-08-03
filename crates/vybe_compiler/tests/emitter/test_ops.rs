@@ -27,7 +27,7 @@ fn push(c: &mut Chunk, v: Value) {
 #[test]
 fn to_bool_null_is_false() {
     let r = run(|c| {
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         ops::emit_dyn_to_bool(c, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -146,7 +146,7 @@ fn not_false_gives_true() {
 #[test]
 fn not_null_gives_true() {
     let r = run(|c| {
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         ops::emit_dyn_not(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -216,8 +216,8 @@ fn eq_different_strings() {
 #[test]
 fn eq_both_null() {
     let r = run(|c| {
-        c.emit_op(Op::NULL, 0);
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         ops::emit_dyn_eq(c, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -226,7 +226,7 @@ fn eq_both_null() {
 #[test]
 fn eq_null_and_undefined_are_equal() {
     let r = run(|c| {
-        c.emit_op(Op::NULL, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         push(c, Value::Undefined);
         ops::emit_dyn_eq(c, 0);
     });

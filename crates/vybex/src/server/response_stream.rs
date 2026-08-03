@@ -27,8 +27,7 @@ pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
 /// Body backed by a tokio mpsc receiver. Yields `ResponseMessage::Data`
 /// chunks as body frames; ignores stray `Headers` frames after the first.
 struct ChannelBody {
-    rx: tokio_mpsc::Receiver<ResponseMessage>,
-}
+    rx: tokio_mpsc::Receiver<ResponseMessage> }
 
 impl Body for ChannelBody {
     type Data = Bytes;
@@ -47,8 +46,7 @@ impl Body for ChannelBody {
                 }
                 // Stray headers after first are a script bug; skip and
                 // continue polling so we drain to EOF cleanly.
-                Poll::Ready(Some(ResponseMessage::Headers { .. })) => continue,
-            }
+                Poll::Ready(Some(ResponseMessage::Headers { .. })) => continue }
         }
     }
 

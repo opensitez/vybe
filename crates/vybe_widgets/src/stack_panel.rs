@@ -6,16 +6,14 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetEvent, WidgetId,
-};
+    WidgetEvent, WidgetId };
 use tiny_skia::*;
 
 /// Orientation for StackPanel layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Orientation {
     Vertical,
-    Horizontal,
-}
+    Horizontal }
 
 pub struct StackPanel {
     pub orientation: Orientation,
@@ -27,8 +25,7 @@ pub struct StackPanel {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    children: Vec<Box<dyn PanelWidget>>,
-}
+    children: Vec<Box<dyn PanelWidget>> }
 
 impl StackPanel {
     pub fn new(orientation: Orientation) -> Self {
@@ -43,8 +40,7 @@ impl StackPanel {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            children: Vec::new(),
-        }
+            children: Vec::new() }
     }
 
     pub fn vertical() -> Self {
@@ -215,7 +211,6 @@ impl PanelWidget for StackPanel {
                 }
                 CommandValue::None
             }
-            _ => CommandValue::None,
-        }
+            _ => CommandValue::None }
     }
 }

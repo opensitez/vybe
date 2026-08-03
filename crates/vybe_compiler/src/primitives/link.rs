@@ -41,11 +41,9 @@ fn platform_base_spec_from_ctor_spec(
                 crate::primitives::namespaces::FieldGui::Event(name) => {
                     PlatformFieldGui::Event(name)
                 }
-                crate::primitives::namespaces::FieldGui::Caption => PlatformFieldGui::Caption,
-            })
+                crate::primitives::namespaces::FieldGui::Caption => PlatformFieldGui::Caption })
             .collect(),
-        value_equality: spec.value_equality,
-    }
+        value_equality: spec.value_equality }
 }
 
 impl Compiler {
@@ -78,8 +76,7 @@ impl Compiler {
             .map(|(local, (module, func))| HostImportNamed {
                 local: local.clone(),
                 module: module.clone(),
-                func: func.clone(),
-            })
+                func: func.clone() })
             .collect();
         named.sort_by(|a, b| a.local.cmp(&b.local));
         let mut wildcard: Vec<HostWildcardImport> = self
@@ -87,8 +84,7 @@ impl Compiler {
             .iter()
             .map(|(alias, module)| HostWildcardImport {
                 alias: alias.clone(),
-                module: module.clone(),
-            })
+                module: module.clone() })
             .collect();
         wildcard.sort_by(|a, b| a.alias.cmp(&b.alias));
         HostImportMetadata { named, wildcard }
@@ -173,6 +169,70 @@ impl Compiler {
         }
     }
 
+    /// Record every module-level VARIABLE name, for `primitives/globals.rs`.
+    ///
+    /// Only top-level statements are walked: a name assigned inside a function
+    /// is a local, not a member of the global namespace.
+    pub(super) fn collect_module_variable_names(&mut self, body: &[Statement]) {
+        for stmt in body {
+            match &stmt.kind {
+                // The error boundary (`errors::wrap_module_in_error_boundary`)
+                // nests the whole module body in a `Try`. It is a reporting
+                // wrapper, not a scope — module-level names inside it are still
+                // module-level, so descend. Without this the wrap hid every
+                // top-level variable and `$GLOBALS[$k]` went blank again.
+                StmtKind::Try {
+                    body: try_body,
+                    finally,
+                    ..
+                } => {
+                    self.collect_module_variable_names(try_body);
+                    if let Some(finally_body) = finally {
+                        self.collect_module_variable_names(finally_body);
+                    }
+                }
+                StmtKind::VarDecl { declarations, .. } => {
+                    for decl in declarations {
+                        if let BindingPattern::Ident(name) = &decl.pattern {
+                            self.module_variable_names.insert(name.clone());
+                        }
+                    }
+                }
+                StmtKind::Assign { targets, .. } => {
+                    for target in targets {
+                        match &target.kind {
+                            ExprKind::Ident(name) => {
+                                self.module_variable_names.insert(name.clone());
+                            }
+                            // `globals()['y'] = 7` / `_G['y'] = 7` DECLARE `y`.
+                            // The key is a literal, so the name is known here
+                            // even though the binding never appears as an
+                            // ordinary assignment — without this the write had
+                            // no member to match and silently did nothing.
+                            ExprKind::Index { object, index, .. }
+                                if self.expr_is_global_namespace(object) =>
+                            {
+                                if let ExprKind::Lit(Literal::Str(key)) = &index.kind {
+                                    self.module_variable_names.insert(key.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                StmtKind::Expr(expr) => {
+                    // PHP desugars `$x = 5;` to an expression-statement Assign.
+                    if let ExprKind::Assign { target, .. } = &expr.kind {
+                        if let ExprKind::Ident(name) = &target.kind {
+                            self.module_variable_names.insert(name.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub(super) fn predeclare_type_names(&mut self, body: &[Statement], namespace: Option<&str>) {
         fn namespace_member_name(
             compiler: &Compiler,
@@ -184,8 +244,7 @@ impl Compiler {
                 Some(prefix) if !prefix.is_empty() && !member.contains('.') => {
                     format!("{prefix}.{member}")
                 }
-                _ => member,
-            }
+                _ => member }
         }
 
         for stmt in body {
@@ -197,8 +256,7 @@ impl Compiler {
                             format!("{prefix}.{member}")
                         }
                         Some(prefix) if !prefix.is_empty() => prefix.to_string(),
-                        _ => member,
-                    };
+                        _ => member };
                     let namespace = if qualified.is_empty() {
                         None
                     } else {
@@ -602,8 +660,7 @@ impl Compiler {
             .filter(|key| key.ends_with(&dotted));
         match (matches.next(), matches.next()) {
             (Some(key), None) => Some(key.clone()),
-            _ => None,
-        }
+            _ => None }
     }
 
     /// Classes ordered so that every augmenting type is folded before the
@@ -632,8 +689,7 @@ impl Compiler {
                     // prevent.
                     match self.resolve_augmentation_source(&aug.from) {
                         Some(key) => placed.contains(&key),
-                        None => true,
-                    }
+                        None => true }
                 });
                 if ready {
                     ordered.push(name.clone());
@@ -748,8 +804,7 @@ impl Compiler {
                 instance_method_overloads: HashMap::new(),
                 static_method_overloads: HashMap::new(),
                 nested_types: Vec::new(),
-                statics: Vec::new(),
-            });
+                statics: Vec::new() });
     }
 
     pub(super) fn predeclare_struct_surface(&mut self, name: &str, members: &[ClassMember]) {
@@ -833,8 +888,7 @@ impl Compiler {
                 instance_method_overloads: HashMap::new(),
                 static_method_overloads: HashMap::new(),
                 nested_types: Vec::new(),
-                statics: Vec::new(),
-            });
+                statics: Vec::new() });
     }
 
     pub(super) fn register_module_static_container(
@@ -904,8 +958,7 @@ impl Compiler {
                         | StmtKind::EnumDecl { name, .. }
                         | StmtKind::InterfaceDecl { name, .. }
                         | StmtKind::ModuleDecl { name, .. } => Some(self.canon(name)),
-                        _ => None,
-                    } {
+                        _ => None } {
                         module_nested_types.push(type_name);
                     }
                     if let StmtKind::InterfaceDecl { name, members, .. } = &stmt.kind {
@@ -934,8 +987,7 @@ impl Compiler {
                 instance_method_overloads: HashMap::new(),
                 static_method_overloads: HashMap::new(),
                 nested_types: module_nested_types,
-                statics: Vec::new(),
-            },
+                statics: Vec::new() },
         );
     }
 
@@ -967,8 +1019,7 @@ impl Compiler {
                 crate::profile::EsmDefault::Named {
                     local,
                     module: m,
-                    name,
-                } => {
+                    name } => {
                     let key = self.canon(local);
                     self.host_import_bindings
                         .insert(key, (m.clone(), name.clone()));
@@ -981,8 +1032,7 @@ impl Compiler {
                     module: m,
                     name,
                     target_module,
-                    target_name,
-                } => {
+                    target_name } => {
                     // Mount-with-rename (namespaceplan.md): the profile
                     // declares module `m`'s export surface, so a user
                     // `from m import name` / `import { name } from "m"`
@@ -1014,8 +1064,7 @@ impl Compiler {
                 }
                 crate::profile::EsmDefault::PackageRoot {
                     prefix,
-                    module_root,
-                } => {
+                    module_root } => {
                     // Component Model package names are lowercase by
                     // spec; store + look up in lowercase regardless of
                     // the language's case sensitivity.
@@ -1045,8 +1094,7 @@ impl Compiler {
             match &imp.kind {
                 crate::ast::ImportKind::Simple {
                     path,
-                    alias: Some(alias),
-                } => {
+                    alias: Some(alias) } => {
                     self.source_type_aliases
                         .insert(self.canon(alias), path.clone());
                     // ESM §16.2: `import X as j` rebinds X's module namespace
@@ -1174,7 +1222,9 @@ impl Compiler {
             }
         }
 
-        if self.profile.name == "go" {
+        // Redundant name check removed: the loop below only fires on a
+        // `__go_named_type(...)` call, which only the Go walker emits.
+        {
             for stmt in &module.body {
                 let StmtKind::Expr(expr) = &stmt.kind else {
                     continue;
@@ -1193,8 +1243,7 @@ impl Compiler {
                 let type_name = match &args[1].value.kind {
                     ExprKind::Lit(Literal::Str(type_name)) => Some(type_name.clone()),
                     ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
-                    _ => None,
-                };
+                    _ => None };
                 if let Some(type_name) = type_name {
                     self.source_type_aliases.insert(self.canon(name), type_name);
                 }
@@ -1218,14 +1267,12 @@ impl Compiler {
         if let Some(target) = self.source_type_aliases.get(&key) {
             return match tail {
                 Some(tail) if !tail.is_empty() => format!("{}{}.{}", target, suffix, tail),
-                _ => format!("{}{}", target, suffix),
-            };
+                _ => format!("{}{}", target, suffix) };
         }
 
         let lookup_name = match tail {
             Some(tail) if !tail.is_empty() => format!("{alias_head}.{tail}"),
-            _ => alias_head.to_string(),
-        };
+            _ => alias_head.to_string() };
         if let Some(target) = self.resolve_source_namespace_type(&lookup_name) {
             return format!("{target}{suffix}");
         }

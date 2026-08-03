@@ -20,8 +20,7 @@ use crate::value::{Value, ValueTag};
 /// tagged `ValueTag::<i>` was written to (or read from) this slot.
 #[derive(Debug, Clone, Default)]
 pub struct SlotObservations {
-    pub counts: [u64; ValueTag::COUNT],
-}
+    pub counts: [u64; ValueTag::COUNT] }
 
 impl SlotObservations {
     /// Number of distinct variants observed (0 = slot never written,
@@ -62,16 +61,14 @@ fn index_to_tag(i: usize) -> ValueTag {
         9 => ValueTag::V128,
         10 => ValueTag::Symbol,
         11 => ValueTag::BigInt,
-        _ => unreachable!(),
-    }
+        _ => unreachable!() }
 }
 
 /// Per-VM observation bank. Sparse 2-D map: `slots[chunk_index][slot]`
 /// grows lazily as execution encounters new slots.
 #[derive(Debug, Default)]
 pub struct TypeRecorder {
-    slots: Vec<Vec<SlotObservations>>,
-}
+    slots: Vec<Vec<SlotObservations>> }
 
 impl TypeRecorder {
     pub fn new() -> Self {
@@ -122,8 +119,7 @@ impl TypeRecorder {
             observed_slots: total,
             monomorphic,
             polymorphic,
-            by_tag,
-        }
+            by_tag }
     }
 
     /// Human-readable summary — useful to paste into an issue or
@@ -181,8 +177,7 @@ pub struct TypeRecordSummary {
     pub observed_slots: usize,
     pub monomorphic: usize,
     pub polymorphic: usize,
-    pub by_tag: [u64; ValueTag::COUNT],
-}
+    pub by_tag: [u64; ValueTag::COUNT] }
 
 impl TypeRecordSummary {
     pub fn mono_percent(&self) -> f64 {

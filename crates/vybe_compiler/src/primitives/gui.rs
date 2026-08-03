@@ -121,8 +121,7 @@ pub fn canonical_control_name(name: &str) -> String {
         // ── Forms ──
         "form" | "window" => "Form",
 
-        _ => return String::new(),
-    }
+        _ => return String::new() }
     .to_string()
 }
 
@@ -210,36 +209,28 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "createForm".to_string(),
                 params: vec![ValType::String],
-                results: vec![ValType::Any],
-            }),
-        },
+                results: vec![ValType::Any] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "addControl".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "addControl".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "setProperty".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "setProperty".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "getProperty".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "getProperty".to_string(),
                 params: vec![],
-                results: vec![ValType::Any],
-            }),
-        },
+                results: vec![ValType::Any] }) },
         // Event handling
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -247,27 +238,21 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "onEvent".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "removeEvent".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "removeEvent".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "raiseEvent".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "raiseEvent".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         // Collections
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -275,27 +260,21 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "newControlsCollection".to_string(),
                 params: vec![],
-                results: vec![ValType::Any],
-            }),
-        },
+                results: vec![ValType::Any] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "newComponentsCollection".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "newComponentsCollection".to_string(),
                 params: vec![],
-                results: vec![ValType::Any],
-            }),
-        },
+                results: vec![ValType::Any] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "controlsAdd".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "controlsAdd".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         // Application
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -303,18 +282,14 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "runApplication".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "appExit".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "appExit".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         // Form lifecycle
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -322,27 +297,21 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "showForm".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "closeForm".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "closeForm".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "showFormDialog".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "showFormDialog".to_string(),
                 params: vec![],
-                results: vec![],
-            }),
-        },
+                results: vec![] }) },
         // Dialog
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -350,9 +319,7 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "msgBox".to_string(),
                 params: vec![],
-                results: vec![ValType::I32],
-            }),
-        },
+                results: vec![ValType::I32] }) },
     ]
 }
 
@@ -454,7 +421,7 @@ pub const CONTROL_TYPE_FIELD: &str = "__control_type";
 /// Stack on exit: [name_string]
 pub fn emit_get_control_name(chunk: &mut Chunk, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(CONTROL_NAME_FIELD)));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 /// Emit a struct_get to read the control's type tag field.
@@ -462,5 +429,5 @@ pub fn emit_get_control_name(chunk: &mut Chunk, line: u32) {
 /// Stack on exit: [type_string]
 pub fn emit_get_control_type(chunk: &mut Chunk, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(CONTROL_TYPE_FIELD)));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }

@@ -12,8 +12,7 @@ use crate::primitives::pointers::{CELL_KIND, REF_KIND_KEY, REF_VALUE_KEY};
 fn prop(key: &str, value: Expression) -> ObjectProperty {
     ObjectProperty::KeyValue {
         key: Expression::string(key),
-        value,
-    }
+        value }
 }
 
 fn elem(value: Expression) -> ArrayElement {
@@ -21,8 +20,7 @@ fn elem(value: Expression) -> ArrayElement {
         value,
         spread: false,
         key: None,
-        by_ref: false,
-    }
+        by_ref: false }
 }
 
 pub fn heap_cell(value: Expression) -> Expression {

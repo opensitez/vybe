@@ -160,7 +160,6 @@ impl Compiler {
     /// This one lookup replaces THREE mechanisms that all answered the same
     /// question depending on who was asking: the `string_aware_relational`
     /// profile bool, the name-keyed `LanguageHooks::relational_compare`
-    /// callback, and a literal `profile.name == "pascal"` check (§3c).
     fn string_compare3_target(&self) -> Option<String> {
         self.profile
             .builtin_slots
@@ -652,7 +651,6 @@ impl Compiler {
             BinOp::Mod => {
                 let l = self.line;
                 // `[builtin_slots.int] mod` — was `is_python_profile()`,
-                // i.e. `profile.name == "python"` (builtinslotplan.md §3c).
                 // LANGUAGE table only: the platform's `%` truncates, and a
                 // language whose `%` floors says so.
                 if let Some(target) = self
@@ -723,8 +721,7 @@ impl Compiler {
                             Some(t) => common::expressions::RichFallback::Target(t),
                             None => common::expressions::RichFallback::Op(
                                 crate::primitives::ops::emit_dyn_eq,
-                            ),
-                        },
+                            ) },
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -777,8 +774,7 @@ impl Compiler {
                             Some(t) => common::expressions::RichFallback::Target(t),
                             None => common::expressions::RichFallback::Op(
                                 crate::primitives::ops::emit_dyn_eq,
-                            ),
-                        },
+                            ) },
                         line,
                     );
                     crate::primitives::ops::emit_dyn_not(self.chunk(), line);
@@ -802,16 +798,16 @@ impl Compiler {
                 } else {
                     crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
                 }
-                // A comparison RESULT is a boolean — normalized here, not left
-                // to a per-language flag. The VM has no true/false, so the raw
-                // comparison is an i32 and `emit_i32_to_bool` is what makes it a
-                // value; skipping it leaked the i32 to anything that inspects a
-                // TYPE. php never set `materialize_bool_results`, so
-                // `var_dump(1 === 2)` printed `0` where real php prints
-                // `bool(false)` — while `==` was correct, because php binds it
-                // through `[builtin_slots.string] eq` and its own emitter
-                // returns a bool. Languages keep their quirks in the GRAMMAR
-                // (php spells two equalities); the result type is normalized.
+                // A comparison RESULT is a boolean, normalized here rather than
+                // left to a per-language flag. The VM has no true/false, so the
+                // raw comparison is an i32 and this is what makes it a value.
+                // php set neither `ecma_boolean_operators` nor
+                // `materialize_bool_results`, so `var_dump(1 === 2)` printed `0`
+                // where real php prints `bool(false)` — while `==` was already
+                // correct, because php binds it through
+                // `[builtin_slots.string] eq` and its own emitter returns a
+                // bool. Languages keep their quirks in the GRAMMAR (php spells
+                // two equalities); the result TYPE is normalized.
                 crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
             }
             BinOp::StrictNotEq => {
@@ -1120,7 +1116,6 @@ impl Compiler {
             BinOp::In => {
                 // §2c RUNTIME path: the language declares a `Contains` for
                 // each container shape and the probe picks one at run time.
-                // Was `is_python_profile()`, i.e. `profile.name == "python"`.
                 if let Some(targets) = self.contains_probe_targets() {
                     let t_y = self.define_local("__in_probe_y");
                     let t_x = self.define_local("__in_probe_x");
@@ -1130,12 +1125,8 @@ impl Compiler {
                     return;
                 }
 
-                // builtinslotplan.md §3c: this was `profile.name == "pascal"`
-                // calling the `__vybe_pascal_set_contains` global, whose whole
-                // body (`runtime_helpers::build_pascal_set_contains`) is
-                // `ecma:set.has` with the two arguments swapped. Pascal now
-                // declares `[builtin_slots.set] contains` and gets the same
-                // emission without the shared compiler knowing its name.
+                // A language declares `[builtin_slots.set] contains`; the
+                // shared path emits it without knowing the language.
                 if let Some(target) = self.set_contains_target() {
                     self.emit_contains(&target);
                     return;
@@ -1230,7 +1221,7 @@ impl Compiler {
                     // host fn for this case.
                     let has_inst_key = self.str_const("hasinstance");
                     self.emit_u16(Op::LOCAL_GET, rhs_slot);
-                    self.emit_u16(Op::STRUCT_GET, has_inst_key);
+                    self.emit_struct_field_op(Op::STRUCT_GET, 0, has_inst_key);
                     let method_slot = self.define_local("__has_inst_method");
                     self.emit_u16(Op::LOCAL_SET, method_slot);
                     self.emit_u16(Op::LOCAL_GET, method_slot);
@@ -1278,7 +1269,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, t_ctor); // [val]
                     self.emit_u16(Op::LOCAL_GET, t_ctor);
                     let name_key = self.str_const("name");
-                    self.chunk().emit_op_u16(Op::STRUCT_GET, name_key, l); // [val, ctor_name]
+                    self.chunk().emit_struct_field_op(Op::STRUCT_GET, 0, name_key, l); // [val, ctor_name]
                     common::reflection::emit_instanceof(&mut self.chunks, self.current, l);
                 }
             }
@@ -1407,7 +1398,6 @@ impl Compiler {
                     return true;
                 }
                 if self.scope().resolve(name).is_some()
-                    || (!self.case_sensitive && self.scope().resolve_ci(name).is_some())
                 {
                     return false;
                 }
@@ -1423,8 +1413,7 @@ impl Compiler {
             ExprKind::New { args, .. } if args.len() == 1 => {
                 self.is_csharp_delegate_handler_expr(&args[0].value)
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     pub(super) fn assign_target_matches_expr(
@@ -1452,8 +1441,7 @@ impl Compiler {
                 self.assign_target_matches_expr(to, eo)
             }
             (ExprKind::This, ExprKind::This) => true,
-            _ => false,
-        }
+            _ => false }
     }
 
     // ════════════════════════════════════════════════════════════════════════

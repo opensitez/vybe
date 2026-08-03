@@ -23,7 +23,7 @@ pub fn emit_heapify(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) 
     let h = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, h, line);
     emit_sort_in_place(chunk, h, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn emit_push_sorted(chunk: &mut Chunk, h: u16, x: u16, line: u32) {
@@ -62,7 +62,7 @@ pub fn emit_push(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, x, line);
     chunk.emit_op_u16(Op::LOCAL_SET, h, line);
     emit_push_sorted(chunk, h, x, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 /// Push one item into a comparator-backed heap.
@@ -87,7 +87,7 @@ pub fn emit_push_with_comparator(chunks: &mut [Chunk], current: usize, _argc: u8
     let _ = chunk;
     collections::emit_sort_with_comparator(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn emit_pop_front(chunk: &mut Chunk, h: u16, line: u32) {

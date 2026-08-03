@@ -25,23 +25,20 @@ pub struct ProjectConfig {
     pub entry: String,
     pub files: Vec<String>,
     pub window: Option<WindowConfig>,
-    pub host: HostConfig,
-}
+    pub host: HostConfig }
 
 #[derive(Debug, Clone)]
 pub struct WindowConfig {
     pub title: String,
     pub width: u32,
-    pub height: u32,
-}
+    pub height: u32 }
 
 #[derive(Debug, Clone, Default)]
 pub struct HostConfig {
     pub gui: bool,
     pub filesystem: bool,
     pub network: bool,
-    pub database: bool,
-}
+    pub database: bool }
 
 impl ProjectConfig {
     /// Parse a simple TOML-like project file.
@@ -69,8 +66,7 @@ impl ProjectConfig {
                     "sources" => "sources",
                     "window" => "window",
                     "host" => "host",
-                    _ => "",
-                };
+                    _ => "" };
                 continue;
             }
 
@@ -118,8 +114,7 @@ impl ProjectConfig {
             window = Some(WindowConfig {
                 title: win_title,
                 width: win_width,
-                height: win_height,
-            });
+                height: win_height });
         }
 
         if entry.is_empty() && !files.is_empty() {
@@ -131,7 +126,6 @@ impl ProjectConfig {
             entry,
             files,
             window,
-            host,
-        })
+            host })
     }
 }

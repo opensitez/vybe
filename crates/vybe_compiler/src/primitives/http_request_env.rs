@@ -173,7 +173,7 @@ pub fn emit_header(chunks: &mut [Chunk], current: usize, name: &str, line: u32) 
     chunks[current].emit_call(get, 2, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, list, line);
 
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, out, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, list, line);

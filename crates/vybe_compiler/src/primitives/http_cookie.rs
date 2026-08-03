@@ -162,7 +162,7 @@ pub fn emit_serialize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     if argc >= 3 {
         chunks[current].emit_op_u16(Op::LOCAL_SET, attrs, line);
     } else {
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, attrs, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);

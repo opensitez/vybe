@@ -128,8 +128,7 @@ impl App {
         if let Some(path) = self.project_path.clone() {
             match vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(&self.project, &path) {
                 Ok(_) => self.output_push(format!("Saved: {}", path)),
-                Err(e) => self.output_push(format!("Save error: {}", e)),
-            }
+                Err(e) => self.output_push(format!("Save error: {}", e)) }
         } else {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("VB Project", &["vbproj"])
@@ -142,8 +141,7 @@ impl App {
                     &path_str,
                 ) {
                     Ok(_) => self.output_push(format!("Saved: {}", path_str)),
-                    Err(e) => self.output_push(format!("Save error: {}", e)),
-                }
+                    Err(e) => self.output_push(format!("Save error: {}", e)) }
             }
         }
     }
@@ -161,8 +159,7 @@ impl App {
         let _ = vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(&self.project, &path);
         let config_flag = match self.build_config {
             super::BuildConfig::Debug => "--debug",
-            super::BuildConfig::Release => "--release",
-        };
+            super::BuildConfig::Release => "--release" };
         let vybec = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("vybex")))
@@ -204,8 +201,7 @@ impl App {
                 self.run_child = Some(child);
                 self.output_push(format!("Running project: {}", path));
             }
-            Err(e) => self.output_push(format!("Could not launch vybec: {}", e)),
-        }
+            Err(e) => self.output_push(format!("Could not launch vybec: {}", e)) }
     }
 
     pub(super) fn stop_project(&mut self) {
@@ -244,8 +240,7 @@ impl App {
                         }
                     }
                 }
-                Err(e) => self.output_push(format!("Failed to load form: {}", e)),
-            }
+                Err(e) => self.output_push(format!("Failed to load form: {}", e)) }
         }
     }
 
@@ -324,8 +319,7 @@ impl App {
                 content: TabContent::Code(widget),
                 is_sticky: true,
                 buffer: None,
-                is_modified: false,
-            });
+                is_modified: false });
             self.active_tab = self.tabs.len() - 1;
         }
         self.needs_redraw = true;
@@ -381,8 +375,7 @@ impl App {
                     .code_files
                     .push(vybe_platform_dotnet::winforms::designer::project::CodeFile {
                         name: name.clone(),
-                        code: code.clone(),
-                    });
+                        code: code.clone() });
                 let lang = load_language("vb")
                     .or_else(|| load_language("rust"))
                     .expect("language not found");
@@ -399,8 +392,7 @@ impl App {
                     content: TabContent::Code(widget),
                     is_sticky: true,
                     buffer: None,
-                    is_modified: false,
-                });
+                    is_modified: false });
                 self.active_tab = self.tabs.len() - 1;
             }
         }
@@ -585,8 +577,7 @@ impl App {
                             vybe_widgets::ResourceTab::Other
                         }
                     },
-                    file_name: item.file_name.clone(),
-                });
+                    file_name: item.file_name.clone() });
             }
         }
         editor
@@ -610,8 +601,7 @@ impl App {
                         vybe_widgets::ResourceTab::Audio => {
                             ("Audio", vec!["wav", "mp3", "ogg", "flac", "aiff"])
                         }
-                        _ => ("All Files", vec!["*"]),
-                    };
+                        _ => ("All Files", vec!["*"]) };
                     if !exts.is_empty() && exts[0] != "*" {
                         dialog = dialog.add_filter(filter_name, &exts);
                     }
@@ -630,8 +620,7 @@ impl App {
                                 value: path_str.clone(),
                                 comment: String::new(),
                                 tab: res_tab,
-                                file_name: Some(path_str.clone()),
-                            });
+                                file_name: Some(path_str.clone()) });
                             let rt = match res_tab {
                                 vybe_widgets::ResourceTab::Images => {
                                     vybe_platform_dotnet::winforms::designer::resources::ResourceType::Image
@@ -645,8 +634,7 @@ impl App {
                                 vybe_widgets::ResourceTab::Files => {
                                     vybe_platform_dotnet::winforms::designer::resources::ResourceType::File
                                 }
-                                _ => vybe_platform_dotnet::winforms::designer::resources::ResourceType::String,
-                            };
+                                _ => vybe_platform_dotnet::winforms::designer::resources::ResourceType::String };
                             if project.resource_files.is_empty() {
                                 project
                                     .resource_files
@@ -666,8 +654,7 @@ impl App {
                         value: String::new(),
                         comment: String::new(),
                         tab,
-                        file_name: None,
-                    });
+                        file_name: None });
                 }
                 r.dirty = true;
             }
@@ -692,8 +679,7 @@ impl App {
                         vybe_widgets::ResourceTab::Audio => {
                             vec!["wav", "mp3", "ogg", "flac", "aiff"]
                         }
-                        _ => vec![],
-                    };
+                        _ => vec![] };
                     if !exts.is_empty() {
                         dialog = dialog.add_filter("Supported", &exts);
                     }
@@ -720,8 +706,7 @@ impl App {
                     value: value.clone(),
                     comment: comment.clone(),
                     tab,
-                    file_name: None,
-                });
+                    file_name: None });
                 r.dirty = true;
                 if project.resource_files.is_empty() {
                     project
@@ -734,8 +719,7 @@ impl App {
                         vybe_widgets::ResourceTab::Other => {
                             vybe_platform_dotnet::winforms::designer::resources::ResourceType::Other
                         }
-                        _ => vybe_platform_dotnet::winforms::designer::resources::ResourceType::String,
-                    };
+                        _ => vybe_platform_dotnet::winforms::designer::resources::ResourceType::String };
                     item.comment = if comment.is_empty() {
                         None
                     } else {
@@ -1025,8 +1009,7 @@ impl App {
             .code_files
             .push(vybe_platform_dotnet::winforms::designer::project::CodeFile {
                 name: name.clone(),
-                code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")),
-            });
+                code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")) });
     }
 
     fn palette_add_resource_file(&mut self) {
@@ -1049,8 +1032,7 @@ impl App {
                 content: TabContent::Resources(editor),
                 is_sticky: true,
                 buffer: None,
-                is_modified: false,
-            });
+                is_modified: false });
             self.active_tab = self.tabs.len() - 1;
         }
     }
@@ -1086,8 +1068,7 @@ impl App {
                     out.push(ProjectSearchHit {
                         file: file.to_string(),
                         line: li,
-                        snippet,
-                    });
+                        snippet });
                 }
             }
         }
@@ -1177,8 +1158,7 @@ impl App {
             content: TabContent::Code(widget),
             is_sticky: false,
             buffer: None,
-            is_modified: false,
-        });
+            is_modified: false });
         self.active_tab = self.tabs.len() - 1;
     }
 }
@@ -1275,8 +1255,7 @@ pub(super) fn search_dir(
                     hits.push(super::ProjectSearchHit {
                         file: display.clone(),
                         line: li,
-                        snippet: line.trim().chars().take(120).collect(),
-                    });
+                        snippet: line.trim().chars().take(120).collect() });
                 }
             }
         }

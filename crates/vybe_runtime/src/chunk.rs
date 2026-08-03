@@ -2,13 +2,29 @@ use crate::opcode::Op;
 use crate::value::Value;
 use std::collections::BTreeMap;
 
+/// The namespace designated for imported string constants
+/// (js-string-builtins, § String constants). Every import from it is a global
+/// of type `(ref extern)` whose value **is** the import's field name.
+pub const STRING_CONSTANTS_MODULE: &str = "wasm:string-constants";
+
+/// How an imported global is spelled in the VM's name-keyed global map.
+///
+/// WASM addresses globals by index and imported globals are identified by
+/// their `(module, name)` pair; our map is keyed by name, and that name space
+/// is shared with user variables. Spelling the pair is what keeps the two
+/// disjoint: `var count = 5` must not be able to redefine the string constant
+/// `"count"`, and no source language can declare an identifier containing
+/// `:`.
+pub fn imported_global_key(module: &str, name: &str) -> String {
+    format!("{}::{}", module, name)
+}
+
 /// A host function import declaration — (module, name).
 /// Like WASM: (import "vybe:math" "floor" (func ...))
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Import {
     pub module: String,
-    pub name: String,
-}
+    pub name: String }
 
 /// A spec EH tag declaration (exception-handling proposal tag section):
 /// `(tag $t (param ...))`. Identity is the DECLARATION — two entries are
@@ -23,8 +39,7 @@ pub struct TagDecl {
     /// tag entity by name at instantiation (same name ⇒ same entity —
     /// this is how `vybe:exception` is shared across chunks/modules).
     /// `false` for local declarations, which are always fresh entities.
-    pub imported: bool,
-}
+    pub imported: bool }
 
 /// Property descriptor per ECMA-262 §6.2.4 — represented using WASM Annotations proposal.
 /// Format: (@ecma262 descriptor field_name writable enumerable configurable)
@@ -38,8 +53,7 @@ pub struct PropertyDescriptor {
     /// Can the property appear in for-in loops and Object.keys / Object.getOwnPropertyNames.
     pub enumerable: bool,
     /// Can the property be deleted (§7.3.7 DeletePropertyOrThrow).
-    pub configurable: bool,
-}
+    pub configurable: bool }
 
 impl PropertyDescriptor {
     /// All attributes true (standard object property).
@@ -47,8 +61,7 @@ impl PropertyDescriptor {
         PropertyDescriptor {
             writable: true,
             enumerable: true,
-            configurable: true,
-        }
+            configurable: true }
     }
 
     /// Read-only non-enumerable non-configurable (built-in method/property).
@@ -56,8 +69,7 @@ impl PropertyDescriptor {
         PropertyDescriptor {
             writable: false,
             enumerable: false,
-            configurable: false,
-        }
+            configurable: false }
     }
 
     /// Non-enumerable but writable and configurable (error.message).
@@ -65,8 +77,7 @@ impl PropertyDescriptor {
         PropertyDescriptor {
             writable: true,
             enumerable: false,
-            configurable: true,
-        }
+            configurable: true }
     }
 }
 
@@ -85,8 +96,7 @@ pub enum CompositeKind {
     /// on null ref or out-of-bounds index (WASM GC proposal §array).
     Array,
     /// `(func …)` — a function signature type.
-    Func,
-}
+    Func }
 
 /// A compile-time type definition — WASM GC type section entry.
 /// Describes a class/struct with named fields and vtable methods.
@@ -111,8 +121,7 @@ pub struct TypeEntry {
     pub constructor_chunk: Option<usize>,
     /// Field property descriptors (WASM Annotations proposal @ecma262 namespace).
     /// Maps field_name → descriptor. Fields without entries default to PropertyDescriptor::standard().
-    pub field_descriptors: std::collections::HashMap<String, PropertyDescriptor>,
-}
+    pub field_descriptors: std::collections::HashMap<String, PropertyDescriptor> }
 
 /// A constant initialization expression (Extended Const Expressions proposal).
 /// Evaluated at module instantiation time, before code execution.
@@ -128,8 +137,7 @@ pub enum ConstExpr {
     Mul(Box<ConstExpr>, Box<ConstExpr>),
     /// Create a function reference from a chunk index.
     /// Evaluated at load time — produces a callable Function object.
-    RefFunc(usize),
-}
+    RefFunc(usize) }
 
 /// A global variable initializer — evaluated at link/load time.
 #[derive(Debug, Clone)]
@@ -137,8 +145,7 @@ pub struct GlobalInit {
     /// Global name (stored in VM.globals).
     pub name: String,
     /// Initialization expression (evaluated before code runs).
-    pub init: ConstExpr,
-}
+    pub init: ConstExpr }
 
 /// A continuation tag — defines the type contract for typed continuations.
 #[derive(Debug, Clone)]
@@ -148,22 +155,19 @@ pub struct ContinuationTag {
     /// Expected yield value type name (empty = any).
     pub yield_type: String,
     /// Expected resume value type name (empty = any).
-    pub resume_type: String,
-}
+    pub resume_type: String }
 
 #[derive(Debug, Clone)]
 pub struct ActiveDataSegment {
     pub memory_index: u32,
     pub offset: u64,
-    pub data_index: u32,
-}
+    pub data_index: u32 }
 
 #[derive(Debug, Clone)]
 pub struct ActiveElementSegment {
     pub table_index: u32,
     pub offset: u64,
-    pub elem_index: u32,
-}
+    pub elem_index: u32 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackSwitchHandler {
@@ -172,8 +176,7 @@ pub struct StackSwitchHandler {
     pub tag_index: u32,
     /// For decoded standard Wasm this is the structural label index.
     /// Direct bytecode VM tests use a resolved bytecode instruction offset.
-    pub label_index: u32,
-}
+    pub label_index: u32 }
 
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
@@ -201,6 +204,12 @@ pub struct Chunk {
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
     pub imports: Vec<Import>,
+    /// Imported **globals** — a separate index space from `imports`, exactly
+    /// as in WASM, where each import kind numbers independently and only
+    /// function imports are reachable by `call`. Keeping them apart is what
+    /// stops a declared global from shifting the function indices that
+    /// `CALL_IMPORT` operands carry.
+    pub global_imports: Vec<Import>,
     /// Type table — WASM GC type section. Only on the script chunk (chunk 0).
     /// Each entry defines a class type with fields and vtable methods.
     /// Loaded into VM's TypeRegistry before execution.
@@ -308,8 +317,7 @@ pub struct Chunk {
     /// the function object's `__capture_N` properties at call time.
     pub capture_count: u8,
     /// First local slot for captured variables.
-    pub capture_base: u16,
-}
+    pub capture_base: u16 }
 
 impl Chunk {
     pub fn new(name: impl Into<String>) -> Self {
@@ -324,6 +332,7 @@ impl Chunk {
             user_code_offset: None,
             dup_slot: None,
             imports: Vec::new(),
+            global_imports: Vec::new(),
             types: Vec::new(),
             exception_tags: Vec::new(),
             tags: Vec::new(),
@@ -350,16 +359,14 @@ impl Chunk {
             is_generator: false,
             capture_count: 0,
             capture_base: 0,
-            scratch_high_water: 0,
-        }
+            scratch_high_water: 0 }
     }
 
     /// Add an import and return its index (used by CallHost operand).
     pub fn add_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
         let import = Import {
             module: module.into(),
-            name: name.into(),
-        };
+            name: name.into() };
         // Deduplicate — return existing index if already imported
         for (i, existing) in self.imports.iter().enumerate() {
             if *existing == import {
@@ -368,6 +375,35 @@ impl Chunk {
         }
         self.imports.push(import);
         (self.imports.len() - 1) as u16
+    }
+
+    /// Declare an imported **global** and return its index in the global
+    /// import space. Deduplicated on `(module, name)` — two references to the
+    /// same import are the same global, as in WASM.
+    pub fn add_global_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
+        let import = Import { module: module.into(), name: name.into() };
+        for (i, existing) in self.global_imports.iter().enumerate() {
+            if *existing == import {
+                return i as u16;
+            }
+        }
+        self.global_imports.push(import);
+        (self.global_imports.len() - 1) as u16
+    }
+
+    /// Intern a string in the constant pool. The pool is read-only at run
+    /// time, so sharing one entry between sites is always safe; string
+    /// constants reference theirs once per emit site and there are ~1,455 of
+    /// them in a large module.
+    pub fn intern_string_constant(&mut self, s: &str) -> u16 {
+        if let Some(i) = self
+            .constants
+            .iter()
+            .position(|c| matches!(c, Value::String(existing) if existing.as_ref() == s))
+        {
+            return i as u16;
+        }
+        self.add_constant(Value::String(std::sync::Arc::from(s)))
     }
 
     /// Declare a spec EH tag (exception-handling proposal tag section) and
@@ -379,8 +415,7 @@ impl Chunk {
         self.tags.push(TagDecl {
             debug_name: debug_name.into(),
             arity,
-            imported: false,
-        });
+            imported: false });
         (self.tags.len() - 1) as u16
     }
 
@@ -397,8 +432,7 @@ impl Chunk {
         self.tags.push(TagDecl {
             debug_name: name,
             arity,
-            imported: true,
-        });
+            imported: true });
         (self.tags.len() - 1) as u16
     }
 
@@ -421,8 +455,7 @@ impl Chunk {
     pub fn add_global_init(&mut self, name: impl Into<String>, init: ConstExpr) {
         self.global_inits.push(GlobalInit {
             name: name.into(),
-            init,
-        });
+            init });
     }
 
     /// Add a continuation tag and return its index.
@@ -435,8 +468,7 @@ impl Chunk {
         let tag = ContinuationTag {
             name: name.into(),
             yield_type: yield_type.into(),
-            resume_type: resume_type.into(),
-        };
+            resume_type: resume_type.into() };
         self.continuation_tags.push(tag);
         (self.continuation_tags.len() - 1) as u16
     }
@@ -446,11 +478,26 @@ impl Chunk {
         self.lines.push(line);
     }
 
+    /// Emit an opcode's 4 bytes. Ops WITH immediates legitimately come through
+    /// here too — `emit_i32_const` is `emit_op(I32_CONST)` + `emit_leb_i32`,
+    /// and `core_wasm::i32_const` does the same — so this cannot assert that
+    /// the op is operand-less.
     pub fn emit_op(&mut self, op: Op, line: u32) {
         let bytes = op.encode();
         for b in bytes {
             self.emit(b, line);
         }
+    }
+
+    /// Emit `ref.null <heaptype>` — the spec instruction, immediate included.
+    ///
+    /// The heaptype is not decoration: `ref.null none` (a GC-heap null) traps
+    /// on the GC accessors, while `ref.null extern` is the lenient null the
+    /// dynamic languages use for JS `null` / PHP `NULL` / Python `None`. The VM
+    /// used to express that difference with a second, custom opcode because
+    /// `ref.null` had been declared with no immediate at all.
+    pub fn emit_ref_null(&mut self, heaptype: u8, line: u32) {
+        self.emit_op_u8(Op::NULL, heaptype, line);
     }
 
     /// Emit a `try_table` header with N catch clauses — the SINGLE SOURCE OF
@@ -496,6 +543,28 @@ impl Chunk {
     /// This instruction used to carry only `N`, so every array it built was
     /// indistinguishable from a dynamic one and could never trap. Pass `0` for
     /// a dynamic-language array literal, which is deliberately lenient.
+    /// `struct.get` / `get_s` / `get_u` / `set` — `(typeidx, idx)`.
+    /// typeidx 0 makes `idx` a constant-pool index for a field NAME; a real
+    /// typeidx makes it a spec `fieldidx` into indexed storage.
+    pub fn emit_struct_field_op(&mut self, op: Op, typeidx: u16, idx: u16, line: u32) {
+        self.emit_op(op, line);
+        self.emit((typeidx >> 8) as u8, line);
+        self.emit((typeidx & 0xff) as u8, line);
+        self.emit((idx >> 8) as u8, line);
+        self.emit((idx & 0xff) as u8, line);
+    }
+
+    /// `struct.new $t N` — typeidx 0 means the dynamic object-literal form,
+    /// where `count` is the number of key/value pairs on the stack. A real
+    /// typeidx takes its field count from the type, per the GC spec.
+    pub fn emit_struct_new(&mut self, typeidx: u16, count: u16, line: u32) {
+        self.emit_op(Op::STRUCT_NEW, line);
+        self.emit((typeidx >> 8) as u8, line);
+        self.emit((typeidx & 0xff) as u8, line);
+        self.emit((count >> 8) as u8, line);
+        self.emit((count & 0xff) as u8, line);
+    }
+
     pub fn emit_array_new_fixed(&mut self, typeidx: u16, count: u16, line: u32) {
         self.emit_op(Op::ARRAY_NEW_FIXED, line);
         self.emit((typeidx >> 8) as u8, line);
@@ -763,10 +832,20 @@ impl Chunk {
         }
     }
 
-    /// Emit a string constant via wasm:string-constants import.
+    /// Emit a string constant — js-string-builtins § String constants:
+    ///
+    /// ```wasm
+    /// (global (import "wasm:string-constants" "hello") (ref extern))
+    /// global.get $that
+    /// ```
+    ///
+    /// The import's field name IS the value, so nothing is called and nothing
+    /// is encoded: the constant reaches the module through its own import.
     pub fn emit_string_const(&mut self, s: &str, line: u32) {
-        let idx = self.add_import("wasm:string-constants", s);
-        self.emit_call(idx, 0, line);
+        self.add_global_import(STRING_CONSTANTS_MODULE, s);
+        let key = imported_global_key(STRING_CONSTANTS_MODULE, s);
+        let ci = self.intern_string_constant(&key);
+        self.emit_op_u16(Op::GLOBAL_GET, ci, line);
     }
 
     /// Emit a boolean constant: i32.const N + call wasm:js-boolean.fromI32.

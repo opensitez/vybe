@@ -16,11 +16,9 @@
 //!
 //! Go (`encoding/csv`) and Ruby (`CSV`) are the obvious next consumers.
 //!
-//! **fortran's `str_getcsv` could not run.** It resolved through
-//! `LanguageHooks::str_getcsv`, which only php registers, reached via a
-//! `profile.name == "fortran"` check in `builtins.rs` — a language-name test in
-//! shared code — and then `.unwrap()` on `None`. Binding both languages here
-//! removes the hook, the name check, and the panic together.
+//! **fortran's `str_getcsv` could not run** — it resolved through a
+//! `LanguageHooks::str_getcsv` callback only php registered, then `.unwrap()`
+//! on `None`. Binding both languages here removed the hook and the panic.
 //!
 //! # The dialect is RUNTIME, not compile-time
 //!
@@ -210,13 +208,34 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], out, line);
 }
 
+/// When a field must be enclosed.
+///
+/// The delimiter, the enclosure and a line break always force it. Languages
+/// disagree on WHITESPACE: fpc's `TStringList.CommaText` quotes `has space`,
+/// php `fputcsv` and python `QUOTE_MINIMAL` do not. Measured against real `fpc`
+/// and real `php`, so this is the one axis, not a fork.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FormatOptions {
+    /// Also enclose a field containing a space — fpc `CommaText`.
+    pub quote_whitespace: bool }
+
+impl FormatOptions {
+    /// php `fputcsv`, python `QUOTE_MINIMAL`.
+    pub const fn minimal() -> FormatOptions {
+        FormatOptions { quote_whitespace: false }
+    }
+    /// fpc `TStringList.CommaText` / `DelimitedText`.
+    pub const fn quote_whitespace() -> FormatOptions {
+        FormatOptions { quote_whitespace: true }
+    }
+}
+
 /// Render one record. Stack: `[array, delimiter, enclosure]` → `[string]`.
 ///
 /// A field is enclosed only when it has to be — it contains the delimiter, the
-/// enclosure, or a line break — which is what php `fputcsv` and python's
-/// `csv.writer` with `QUOTE_MINIMAL` (the default) both do. An enclosure inside
-/// the field is doubled.
-pub fn emit_format_row(chunks: &mut [Chunk], current: usize, line: u32) {
+/// enclosure, a line break, or (per [`FormatOptions`]) whitespace. An enclosure
+/// inside the field is doubled.
+pub fn emit_format_row(chunks: &mut [Chunk], current: usize, opts: FormatOptions, line: u32) {
     let base = chunks[current].alloc_scratch(7);
     let (enc, delim, row, out, i, n, f) = (
         base,
@@ -277,7 +296,12 @@ pub fn emit_format_row(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_op(Op::I32_OR, line);
         set(&mut chunks[current], needs, line);
     }
-    for nl in ["\n", "\r"] {
+    let forced: &[&str] = if opts.quote_whitespace {
+        &["\n", "\r", " ", "\t"]
+    } else {
+        &["\n", "\r"]
+    };
+    for nl in forced {
         get(&mut chunks[current], f, line);
         chunks[current].emit_string_const(nl, line);
         call(chunks, current, "ecma:string", "includes", 2, line);

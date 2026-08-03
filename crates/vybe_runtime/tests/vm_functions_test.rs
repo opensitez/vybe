@@ -28,15 +28,13 @@ fn assert_f64(val: &Value, expected: f64) {
             expected,
             v
         ),
-        _ => panic!("Expected F64({}), got {:?}", expected, val),
-    }
+        _ => panic!("Expected F64({}), got {:?}", expected, val) }
 }
 
 fn assert_i32(val: &Value, expected: i32) {
     match val {
         Value::I32(v) => assert_eq!(*v, expected, "Expected I32({}), got I32({})", expected, v),
-        _ => panic!("Expected I32({}), got {:?}", expected, val),
-    }
+        _ => panic!("Expected I32({}), got {:?}", expected, val) }
 }
 
 fn assert_string(val: &Value, expected: &str) {
@@ -48,30 +46,26 @@ fn assert_string(val: &Value, expected: &str) {
             expected,
             s.as_ref()
         ),
-        _ => panic!("Expected String({:?}), got {:?}", expected, val),
-    }
+        _ => panic!("Expected String({:?}), got {:?}", expected, val) }
 }
 
 fn assert_null(val: &Value) {
     match val {
         Value::Null | Value::Undefined => {}
-        _ => panic!("Expected Null/Undefined, got {:?}", val),
-    }
+        _ => panic!("Expected Null/Undefined, got {:?}", val) }
 }
 
 fn assert_undefined(val: &Value) {
     match val {
         Value::Undefined => {}
-        _ => panic!("Expected Undefined, got {:?}", val),
-    }
+        _ => panic!("Expected Undefined, got {:?}", val) }
 }
 
 #[allow(dead_code)]
 fn assert_bool(val: &Value, expected: bool) {
     match val {
         Value::Bool(v) => assert_eq!(*v, expected),
-        _ => panic!("Expected Bool({}), got {:?}", expected, val),
-    }
+        _ => panic!("Expected Bool({}), got {:?}", expected, val) }
 }
 
 // ============================================================
@@ -601,11 +595,9 @@ fn invoke_zero_args_arity_zero() {
             name: Some("get42".to_string()),
             arity: 0,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
     assert_i32(&result, 42);
@@ -620,7 +612,7 @@ fn invoke_fewer_args_padding() {
     // func(a, b, c) => returns b (should be Null if only 1 arg passed)
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     dummy_main.emit_op(Op::HALT, 0);
 
     let mut func = Chunk::new("check_pad");
@@ -638,11 +630,9 @@ fn invoke_fewer_args_padding() {
             name: Some("check_pad".to_string()),
             arity: 3,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     let result = vm.invoke(&func_obj, &[Value::I32(100)]).unwrap();
     assert_null(&result);
@@ -656,7 +646,7 @@ fn invoke_fewer_args_padding() {
 fn invoke_exact_args() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     dummy_main.emit_op(Op::HALT, 0);
 
     // func(a, b, c) => a + b + c
@@ -679,11 +669,9 @@ fn invoke_exact_args() {
             name: Some("sum3".to_string()),
             arity: 3,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     let result = vm
         .invoke(&func_obj, &[Value::I32(10), Value::I32(20), Value::I32(30)])
@@ -699,7 +687,7 @@ fn invoke_exact_args() {
 fn invoke_returning_value() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     dummy_main.emit_op(Op::HALT, 0);
 
     // func() => "hello"
@@ -719,11 +707,9 @@ fn invoke_returning_value() {
             name: Some("greet".to_string()),
             arity: 0,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
     assert_string(&result, "hello");
@@ -737,7 +723,7 @@ fn invoke_returning_value() {
 fn invoke_returning_object() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     dummy_main.emit_op(Op::HALT, 0);
 
     // func() => creates {x: 10} via struct_new
@@ -748,7 +734,7 @@ fn invoke_returning_object() {
     let val = func.add_constant(Value::I32(10));
     func.emit_op_u16(Op::CONST, key, 0);
     func.emit_op_u16(Op::CONST, val, 0);
-    func.emit_op_u16(Op::STRUCT_NEW, 1, 0); // 1 key-value pair
+    func.emit_struct_new(0, 1, 0); // 1 key-value pair
     func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -760,11 +746,9 @@ fn invoke_returning_object() {
             name: Some("make_obj".to_string()),
             arity: 0,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
     match &result {
@@ -772,8 +756,7 @@ fn invoke_returning_object() {
             let ob = o.lock().unwrap();
             assert_i32(&ob.get("x"), 10);
         }
-        _ => panic!("Expected Object, got {:?}", result),
-    }
+        _ => panic!("Expected Object, got {:?}", result) }
 }
 
 // ============================================================
@@ -789,7 +772,7 @@ fn invoke_host_function() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
     let _import_idx = dummy_main.add_import("test", "square"); // index 0
-    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     dummy_main.emit_op(Op::HALT, 0);
 
     // chunk 1: wrapper(x) => call_import square(x)
@@ -819,11 +802,9 @@ fn invoke_host_function() {
             name: Some("wrapper".to_string()),
             arity: 1,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     let result = vm.invoke(&wrapper_obj, &[Value::I32(9)]).unwrap();
     assert_i32(&result, 81);
@@ -837,7 +818,7 @@ fn invoke_host_function() {
 fn invoke_stack_clean_between_invocations() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     dummy_main.emit_op(Op::HALT, 0);
 
     // func(x) => x * 2
@@ -859,11 +840,9 @@ fn invoke_stack_clean_between_invocations() {
             name: Some("double".to_string()),
             arity: 1,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     let r1 = vm.invoke(&func_obj, &[Value::I32(5)]).unwrap();
     assert_i32(&r1, 10);
@@ -884,7 +863,7 @@ fn invoke_stack_clean_between_invocations() {
 fn invoke_preserves_globals() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     dummy_main.emit_op(Op::HALT, 0);
 
     // chunk 1: set_global(val) => sets global "counter" = val
@@ -913,11 +892,9 @@ fn invoke_preserves_globals() {
             name: Some("set_global".to_string()),
             arity: 1,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     let getter_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
         properties: indexmap::IndexMap::new(),
@@ -925,11 +902,9 @@ fn invoke_preserves_globals() {
             name: Some("get_global".to_string()),
             arity: 0,
             chunk_index: 2,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     // Set global to 42
     vm.invoke(&setter_obj, &[Value::I32(42)]).unwrap();
@@ -946,7 +921,7 @@ fn invoke_preserves_globals() {
 fn invoke_function_that_uses_struct_get() {
     let mut dummy_main = Chunk::new("main");
     dummy_main.local_count = 1;
-    dummy_main.emit_op(Op::NULL, 0);
+    dummy_main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     dummy_main.emit_op(Op::HALT, 0);
 
     // chunk 1: get_x(obj) => obj.x
@@ -955,7 +930,7 @@ fn invoke_function_that_uses_struct_get() {
     func.local_count = 1;
     let prop = func.add_constant(Value::String(Arc::from("x")));
     func.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
-    func.emit_op_u16(Op::STRUCT_GET, prop, 0); // obj.x
+    func.emit_struct_field_op(Op::STRUCT_GET, 0, prop, 0); // obj.x
     func.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -967,11 +942,9 @@ fn invoke_function_that_uses_struct_get() {
             name: Some("get_x".to_string()),
             arity: 1,
             chunk_index: 1,
-            upvalues: vec![],
-        }),
+            upvalues: vec![] }),
         type_id: 0,
-        fields: Vec::new(),
-    })));
+        fields: Vec::new() })));
 
     // Create an object {x: 99}
     let mut obj = Object::new();
@@ -1236,9 +1209,9 @@ fn struct_get_returns_value() {
     let val = chunk.add_constant(Value::String(Arc::from("alice")));
     chunk.emit_op_u16(Op::CONST, key, 0);
     chunk.emit_op_u16(Op::CONST, val, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {name: "alice"}
+    chunk.emit_struct_new(0, 1, 0); // {name: "alice"}
     let get_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, get_key, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
@@ -1257,9 +1230,9 @@ fn struct_get_missing_prop_returns_null() {
     let val = chunk.add_constant(Value::I32(10));
     chunk.emit_op_u16(Op::CONST, key, 0);
     chunk.emit_op_u16(Op::CONST, val, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {x: 10}
+    chunk.emit_struct_new(0, 1, 0); // {x: 10}
     let miss_key = chunk.add_constant(Value::String(Arc::from("y")));
-    chunk.emit_op_u16(Op::STRUCT_GET, miss_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, miss_key, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
@@ -1276,7 +1249,7 @@ fn struct_set_creates_new_property() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 2;
     // Create empty object
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+    chunk.emit_struct_new(0, 0, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0); // local 1 = obj
 
     // struct_set: pops val then obj from stack
@@ -1284,13 +1257,13 @@ fn struct_set_creates_new_property() {
     let c25 = chunk.add_constant(Value::I32(25));
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0); // obj
     chunk.emit_op_u16(Op::CONST, c25, 0); // 25
-    chunk.emit_op_u16(Op::STRUCT_SET, set_key, 0); // obj.age = 25
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, set_key, 0); // obj.age = 25
     chunk.emit_op(Op::DROP, 0); // struct_set pushes assigned val
 
     // struct_get
     let get_key = chunk.add_constant(Value::String(Arc::from("age")));
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, get_key, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
@@ -1310,7 +1283,7 @@ fn struct_set_overwrites_existing_property() {
     let val = chunk.add_constant(Value::I32(1));
     chunk.emit_op_u16(Op::CONST, key, 0);
     chunk.emit_op_u16(Op::CONST, val, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0);
+    chunk.emit_struct_new(0, 1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Overwrite x = 99
@@ -1318,13 +1291,13 @@ fn struct_set_overwrites_existing_property() {
     let c99 = chunk.add_constant(Value::I32(99));
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
     chunk.emit_op_u16(Op::CONST, c99, 0);
-    chunk.emit_op_u16(Op::STRUCT_SET, set_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, set_key, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Read it back
     let get_key = chunk.add_constant(Value::String(Arc::from("x")));
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    chunk.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, get_key, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
@@ -1346,7 +1319,7 @@ fn struct_get_chain() {
     let c42 = chunk.add_constant(Value::I32(42));
     chunk.emit_op_u16(Op::CONST, key_c, 0);
     chunk.emit_op_u16(Op::CONST, c42, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {c: 42}
+    chunk.emit_struct_new(0, 1, 0); // {c: 42}
 
     // Create outer object {b: inner}
     let key_b = chunk.add_constant(Value::String(Arc::from("b")));
@@ -1359,13 +1332,13 @@ fn struct_get_chain() {
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     chunk.emit_op_u16(Op::CONST, key_b, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 1, 0); // {b: {c: 42}}
+    chunk.emit_struct_new(0, 1, 0); // {b: {c: 42}}
 
     // Now chain access: obj.b.c
     let get_b = chunk.add_constant(Value::String(Arc::from("b")));
-    chunk.emit_op_u16(Op::STRUCT_GET, get_b, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, get_b, 0);
     let get_c = chunk.add_constant(Value::String(Arc::from("c")));
-    chunk.emit_op_u16(Op::STRUCT_GET, get_c, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, get_c, 0);
     chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
@@ -1389,10 +1362,10 @@ fn getter_auto_dispatch() {
     main.emit_op_u16(Op::CONST, key, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0); // 0 upvalues
-    main.emit_op_u16(Op::STRUCT_NEW, 1, 0); // { __get_name: <func> }
+    main.emit_struct_new(0, 1, 0); // { __get_name: <func> }
     // struct_get "name" should trigger the getter
     let get_name = main.add_constant(Value::String(Arc::from("name")));
-    main.emit_op_u16(Op::STRUCT_GET, get_name, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, get_name, 0);
     main.emit_op(Op::HALT, 0);
 
     // chunk 1: getter(this) => "computed"
@@ -1423,7 +1396,7 @@ fn setter_auto_dispatch() {
     main.emit_op_u16(Op::CONST, key, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::STRUCT_NEW, 1, 0); // { __set_x: <func> }
+    main.emit_struct_new(0, 1, 0); // { __set_x: <func> }
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // struct_set "x" = 5
@@ -1431,13 +1404,13 @@ fn setter_auto_dispatch() {
     let c5 = main.add_constant(Value::I32(5));
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     main.emit_op_u16(Op::CONST, c5, 0);
-    main.emit_op_u16(Op::STRUCT_SET, set_key, 0);
+    main.emit_struct_field_op(Op::STRUCT_SET, 0, set_key, 0);
     main.emit_op(Op::DROP, 0); // drop set result
 
     // struct_get "actual_x"
     let get_key = main.add_constant(Value::String(Arc::from("actual_x")));
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    main.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, get_key, 0);
     main.emit_op(Op::HALT, 0);
 
     // chunk 1: setter(this, value) => this.actual_x = value * 2
@@ -1450,7 +1423,7 @@ fn setter_auto_dispatch() {
     setter.emit_op_u16(Op::LOCAL_GET, 1, 0); // value
     setter.emit_op_u16(Op::CONST, c2, 0);
     setter.emit_op(Op::I32_MUL, 0); // value * 2
-    setter.emit_op_u16(Op::STRUCT_SET, actual_key, 0); // this.actual_x = value*2
+    setter.emit_struct_field_op(Op::STRUCT_SET, 0, actual_key, 0); // this.actual_x = value*2
     setter.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, setter]);
@@ -1472,13 +1445,13 @@ fn object_method_get_and_call() {
     main.emit_op_u16(Op::CONST, key, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u16(Op::STRUCT_NEW, 1, 0); // { greet: <func> }
+    main.emit_struct_new(0, 1, 0); // { greet: <func> }
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // obj.greet
     let get_key = main.add_constant(Value::String(Arc::from("greet")));
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    main.emit_op_u16(Op::STRUCT_GET, get_key, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, get_key, 0);
     // call it with obj as arg (acting as this)
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     main.emit_op_u8(Op::CALL, 1, 0);
@@ -1518,13 +1491,13 @@ fn object_multiple_methods_call_correct() {
     main.emit_op_u16(Op::REF_FUNC, 2, 0);
     main.emit(0, 0);
 
-    main.emit_op_u16(Op::STRUCT_NEW, 2, 0); // { add: <f1>, mul: <f2> }
+    main.emit_struct_new(0, 2, 0); // { add: <f1>, mul: <f2> }
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Call obj.mul(3, 4)
     let get_mul = main.add_constant(Value::String(Arc::from("mul")));
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    main.emit_op_u16(Op::STRUCT_GET, get_mul, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, get_mul, 0);
     let c3 = main.add_constant(Value::I32(3));
     let c4 = main.add_constant(Value::I32(4));
     main.emit_op_u16(Op::CONST, c3, 0);
@@ -1576,13 +1549,13 @@ fn object_method_receives_this() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
 
-    main.emit_op_u16(Op::STRUCT_NEW, 2, 0); // { value: 7, get_value: <func> }
+    main.emit_struct_new(0, 2, 0); // { value: 7, get_value: <func> }
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     // Call obj.get_value(obj)
     let get_method = main.add_constant(Value::String(Arc::from("get_value")));
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    main.emit_op_u16(Op::STRUCT_GET, get_method, 0);
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, get_method, 0);
     main.emit_op_u16(Op::LOCAL_GET, 1, 0); // pass obj as this
     main.emit_op_u8(Op::CALL, 1, 0);
     main.emit_op(Op::HALT, 0);
@@ -1593,7 +1566,7 @@ fn object_method_receives_this() {
     func.local_count = 1;
     let prop = func.add_constant(Value::String(Arc::from("value")));
     func.emit_op_u16(Op::LOCAL_GET, 0, 0); // this
-    func.emit_op_u16(Op::STRUCT_GET, prop, 0); // this.value
+    func.emit_struct_field_op(Op::STRUCT_GET, 0, prop, 0); // this.value
     func.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, func]);

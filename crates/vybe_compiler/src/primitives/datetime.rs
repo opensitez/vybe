@@ -26,8 +26,7 @@
 //! a language check — see that type for why each knob exists.
 
 use vybe_ast::datetime::{
-    DateTimePolicy, EpochPrecision, MonthIndexing, MonthOverflow, WeekdayBase,
-};
+    DateTimePolicy, EpochPrecision, MonthIndexing, MonthOverflow, WeekdayBase };
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -44,8 +43,7 @@ pub fn emit_epoch_to_millis(chunk: &mut Chunk, precision: EpochPrecision, line: 
         EpochPrecision::Seconds => 1_000.0,
         EpochPrecision::Millis => return,
         EpochPrecision::Micros => 0.001,
-        EpochPrecision::Nanos => 0.000_001,
-    };
+        EpochPrecision::Nanos => 0.000_001 };
     chunk.emit_f64_const(factor, line);
     chunk.emit_op(Op::F64_MUL, line);
 }
@@ -58,8 +56,7 @@ pub fn emit_millis_to_epoch(chunk: &mut Chunk, precision: EpochPrecision, line: 
         EpochPrecision::Seconds => 0.001,
         EpochPrecision::Millis => return,
         EpochPrecision::Micros => 1_000.0,
-        EpochPrecision::Nanos => 1_000_000.0,
-    };
+        EpochPrecision::Nanos => 1_000_000.0 };
     chunk.emit_f64_const(factor, line);
     chunk.emit_op(Op::F64_MUL, line);
 }
@@ -247,11 +244,54 @@ pub fn month_add_clamps(policy: DateTimePolicy) -> bool {
     policy.month_overflow == MonthOverflow::Clamp
 }
 
-/// Push a constant, used by the emitters above and by adapters migrating onto
-/// them — six adapters each had a private copy of this.
+/// Push a constant as the WASM instruction that expresses it — **the one
+/// constant-encoding policy for the whole compiler.** `Compiler::emit_const`
+/// (`control_flow.rs`) delegates here, so the method used by the core
+/// expression compiler and the free function used by 1432 adapter call sites
+/// cannot drift apart.
+///
+/// The numeric variants are core `*.const`; `null` is `ref.null`; boolean,
+/// string and bigint are the js-primitive-builtins / js-string-builtins
+/// imports (`wasm:js-boolean.fromI32`, `wasm:string-constants`,
+/// `wasm:js-bigint.fromI64`). None of it goes through the constant pool, and
+/// none of it is a custom opcode.
+///
+/// Anything with no WASM encoding panics rather than pooling it. The pool push
+/// this replaced looked safe but wasn't: the wasm writer's fallback lowers an
+/// unrecognised pool constant to `ref.null extern`, so an `Object` or `Symbol`
+/// arriving here used to become a silent null in the emitted binary. Every
+/// caller was checked — direct and through the `set_*_const`/`set_*_from_value`
+/// helpers — and only `Null`/`Bool`/`I32`/`I64`/`F64`/`String`/`BigInt` occur.
 pub fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
-    let index = chunk.add_constant(value);
-    chunk.emit_op_u16(Op::CONST, index, line);
+    match value {
+        // Both push `Value::Null`; this is the same push through the spec
+        // instruction instead of a pool index.
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+        Value::Bool(b) => chunk.emit_bool_const(b, line),
+        Value::I32(n) => chunk.emit_i32_const(n, line),
+        Value::I64(n) => chunk.emit_i64_const(n, line),
+        Value::F32(n) => chunk.emit_f32_const(n, line),
+        Value::F64(n) => chunk.emit_f64_const(n, line),
+        Value::String(s) => chunk.emit_string_const(&s, line),
+        // `Value::Undefined` has no literal form; it is the global.
+        Value::Undefined => {
+            let idx = chunk.add_constant(Value::String(std::sync::Arc::from("undefined")));
+            chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+        }
+        // AST bigint literals always fit i64 — oversize ones are normalized to
+        // `BigInt("…")` by the walker — so the ToBigInt64 wrap is lossless.
+        Value::BigInt(v) => {
+            chunk.emit_i64_const(v.to_i64_wrapping(), line);
+            let idx = chunk.add_import("wasm:js-bigint", "fromI64");
+            chunk.emit_call(idx, 1, line);
+        }
+        Value::V128(v) => {
+            chunk.emit_op(Op::V128_CONST, line);
+            for b in v {
+                chunk.emit(b, line);
+            }
+        }
+        other => panic!("push_const: no WASM-compliant encoding for {:?}", other) }
 }
 
 // ── Arithmetic ─────────────────────────────────────────────────────────────

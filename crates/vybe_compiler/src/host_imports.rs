@@ -67,10 +67,8 @@ fn resolve_export_value(
         ExportEntry::Value(value) => Some(value.clone()),
         ExportEntry::Indirect {
             from,
-            name: target_name,
-        } => resolve_export_value(vm, from, target_name, visited),
-        ExportEntry::Class { .. } | ExportEntry::ResourceType { .. } => None,
-    }
+            name: target_name } => resolve_export_value(vm, from, target_name, visited),
+        ExportEntry::Class { .. } | ExportEntry::ResourceType { .. } => None }
 }
 
 /// Build the Module Namespace Object for `import * as ns from "<module>"`

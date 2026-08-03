@@ -40,8 +40,7 @@ fn binary_loader(ext: &str) -> Option<BinaryLoader> {
 pub struct FuncSig {
     pub name: String,
     pub params: Vec<ValType>,
-    pub results: Vec<ValType>,
-}
+    pub results: Vec<ValType> }
 
 /// Value types for interface signatures.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,15 +61,13 @@ pub enum ValType {
     /// result<T, E>
     Result(Box<ValType>, Box<ValType>),
     /// Any — for dynamic languages that don't specify types
-    Any,
-}
+    Any }
 
 /// An interface — a named collection of function signatures.
 #[derive(Debug, Clone)]
 pub struct Interface {
     pub name: String,
-    pub functions: Vec<FuncSig>,
-}
+    pub functions: Vec<FuncSig> }
 
 /// An export entry — maps interface function to implementation.
 #[derive(Debug, Clone)]
@@ -78,8 +75,7 @@ pub enum ExportImpl {
     /// Host function index
     HostFn(usize),
     /// Bytecode chunk index
-    ChunkFn(usize),
-}
+    ChunkFn(usize) }
 
 /// A component — a compiled module with import/export declarations.
 #[derive(Debug, Clone)]
@@ -99,8 +95,7 @@ pub struct Component {
     pub type_exports: HashMap<(String, String), crate::TypeDef>,
     /// Type imports: types this component needs from other components.
     /// (interface_name, type_name)
-    pub type_imports: Vec<(String, String)>,
-}
+    pub type_imports: Vec<(String, String)> }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Language {
@@ -112,8 +107,7 @@ pub enum Language {
     Php,
     Ruby,
     Cobol,
-    Wasm,
-}
+    Wasm }
 
 /// The Component Model Linker.
 /// Takes multiple components and resolves imports against exports.
@@ -123,16 +117,14 @@ pub struct Linker {
     /// Host-provided interfaces (wasi:*, vybe:*)
     host_exports: HashMap<(String, String), ExportImpl>,
     /// Host-provided type exports sourced from Module Records.
-    host_type_exports: HashMap<(String, String), crate::TypeDef>,
-}
+    host_type_exports: HashMap<(String, String), crate::TypeDef> }
 
 impl Linker {
     pub fn new() -> Self {
         Linker {
             components: Vec::new(),
             host_exports: HashMap::new(),
-            host_type_exports: HashMap::new(),
-        }
+            host_type_exports: HashMap::new() }
     }
 
     /// Register a host interface export.
@@ -179,8 +171,7 @@ impl Linker {
             for ((iface, func), impl_) in &comp.exports {
                 let adjusted = match impl_ {
                     ExportImpl::ChunkFn(idx) => ExportImpl::ChunkFn(idx + offset),
-                    ExportImpl::HostFn(idx) => ExportImpl::HostFn(*idx),
-                };
+                    ExportImpl::HostFn(idx) => ExportImpl::HostFn(*idx) };
                 all_exports.insert((iface.clone(), func.clone()), adjusted);
             }
         }
@@ -413,8 +404,7 @@ impl Linker {
                             };
                             resolved_imports.push(crate::vm::ImportTarget::ChunkFn {
                                 chunk_index: *ci,
-                                arity,
-                            });
+                                arity });
                         }
                         ExportImpl::HostFn(idx) => {
                             resolved_imports.push(crate::vm::ImportTarget::Host(*idx));
@@ -444,8 +434,7 @@ impl Linker {
             exports: resolved_exports,
             component_offsets,
             type_exports: all_type_exports,
-            resolved_imports,
-        })
+            resolved_imports })
     }
 }
 
@@ -462,8 +451,7 @@ pub struct LinkResult {
     /// Pre-resolved import table for the unified import list on chunks[0].
     /// Maps import index → ImportTarget. The VM can load this directly instead
     /// of resolving at runtime.
-    pub resolved_imports: Vec<crate::vm::ImportTarget>,
-}
+    pub resolved_imports: Vec<crate::vm::ImportTarget> }
 
 // ============================================================
 // ESM Integration — Source Phase Imports
@@ -479,16 +467,14 @@ pub struct ResolvedModule {
     /// Compiled bytecode chunks
     pub chunks: Vec<crate::Chunk>,
     /// Named exports: name → chunk_index (for functions)
-    pub exports: HashMap<String, ModuleExport>,
-}
+    pub exports: HashMap<String, ModuleExport> }
 
 #[derive(Debug, Clone)]
 pub enum ModuleExport {
     /// A function export: chunk index + arity
     Function { chunk_index: usize, arity: u8 },
     /// A constant value export
-    Value(crate::Value),
-}
+    Value(crate::Value) }
 
 /// Security policy for module resolution.
 /// Controls what files and paths ESM imports can access.
@@ -508,8 +494,7 @@ pub struct ImportPolicy {
     pub allow_absolute_paths: bool,
     /// Whether to allow .. (parent directory traversal).
     /// Default: false — prevents escaping the project directory.
-    pub allow_parent_traversal: bool,
-}
+    pub allow_parent_traversal: bool }
 
 impl ImportPolicy {
     /// Restrictive default: only .wasm, relative paths, no parent traversal.
@@ -520,8 +505,7 @@ impl ImportPolicy {
             denied_paths: Vec::new(),
             max_modules: 64,
             allow_absolute_paths: false,
-            allow_parent_traversal: false,
-        }
+            allow_parent_traversal: false }
     }
 
     /// No restrictions — for trusted environments (CLI with --unrestricted).
@@ -532,8 +516,7 @@ impl ImportPolicy {
             denied_paths: Vec::new(),
             max_modules: 0,
             allow_absolute_paths: true,
-            allow_parent_traversal: true,
-        }
+            allow_parent_traversal: true }
     }
 
     /// Sandbox to a single directory (for web/untrusted contexts).
@@ -544,8 +527,7 @@ impl ImportPolicy {
             denied_paths: Vec::new(),
             max_modules: 16,
             allow_absolute_paths: false,
-            allow_parent_traversal: false,
-        }
+            allow_parent_traversal: false }
     }
 
     /// Check if a resolved path is allowed by this policy.
@@ -618,24 +600,21 @@ pub struct ModuleResolver {
     /// Base directory for relative path resolution
     pub base_dir: String,
     /// Security policy controlling what can be imported
-    pub policy: ImportPolicy,
-}
+    pub policy: ImportPolicy }
 
 impl ModuleResolver {
     pub fn new(base_dir: impl Into<String>) -> Self {
         ModuleResolver {
             cache: HashMap::new(),
             base_dir: base_dir.into(),
-            policy: ImportPolicy::default(),
-        }
+            policy: ImportPolicy::default() }
     }
 
     pub fn with_policy(base_dir: impl Into<String>, policy: ImportPolicy) -> Self {
         ModuleResolver {
             cache: HashMap::new(),
             base_dir: base_dir.into(),
-            policy,
-        }
+            policy }
     }
 
     /// Resolve a module source path, returning its exports.
@@ -686,8 +665,7 @@ impl ModuleResolver {
                     source
                 ));
             }
-            _ => return Err(format!("Unknown module type: {}", source)),
-        };
+            _ => return Err(format!("Unknown module type: {}", source)) };
 
         self.cache.insert(abs_path.clone(), module);
         Ok(&self.cache[&abs_path])
@@ -706,8 +684,7 @@ impl ModuleResolver {
                     chunk.name.clone(),
                     ModuleExport::Function {
                         chunk_index: i,
-                        arity: chunk.arity,
-                    },
+                        arity: chunk.arity },
                 );
             }
         }
@@ -716,8 +693,7 @@ impl ModuleResolver {
             source: path.to_string(),
             language: Language::Wasm,
             chunks,
-            exports,
-        })
+            exports })
     }
 
     fn resolve_path(&self, source: &str) -> String {

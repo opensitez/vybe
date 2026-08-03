@@ -154,8 +154,7 @@ impl Compiler {
                 instance_method_overloads: HashMap::new(),
                 static_method_overloads: HashMap::new(),
                 nested_types: Vec::new(),
-                statics: Vec::new(),
-            },
+                statics: Vec::new() },
         );
     }
 
@@ -181,8 +180,7 @@ impl Compiler {
     pub(crate) fn variable_name_body<'a>(&self, name: &'a str) -> &'a str {
         match self.variable_namespace {
             Some(ns) => (ns.body)(name),
-            None => name,
-        }
+            None => name }
     }
 
     /// True when `name` is spelled in the language's separate VARIABLE
@@ -256,8 +254,7 @@ impl Compiler {
             Some(type_hint) if Self::is_string_type_hint(type_hint) => {
                 self.emit_const(Value::String(Arc::from("")))
             }
-            _ => self.emit(Op::NULL),
-        }
+            _ => self.emit_null() }
     }
 
     /// Whether `type_hint` names a string.
@@ -312,7 +309,7 @@ impl Compiler {
     }
 
     pub(super) fn maybe_initialize_fortran_out_param(&mut self, param: &Param) {
-        if self.profile.name != "fortran" || param.pass_by != PassBy::Out {
+        if !self.profile.out_params_default_initialized || param.pass_by != PassBy::Out {
             return;
         }
 
@@ -429,7 +426,7 @@ impl Compiler {
         } else if let Some(ctor_name) = ctor_name {
             self.emit_fortran_ctor_call(ctor_name);
         } else {
-            self.emit(Op::NULL);
+            self.emit_null();
         }
         common::collections::emit_set(&mut self.chunks, self.current, line);
         self.emit(Op::DROP);
@@ -462,8 +459,7 @@ impl Compiler {
             if let ExprKind::Binary {
                 op: BinOp::Add,
                 left,
-                right,
-            } = &expr.kind
+                right } = &expr.kind
             {
                 self.compile_expr_with_numeric_add_hint(left, true)?;
                 self.compile_expr_with_numeric_add_hint(right, true)?;
@@ -585,7 +581,7 @@ impl Compiler {
         self.emit_ensure_global_map(map_name);
         self.emit_u16(Op::GLOBAL_GET, map_key);
         self.emit_u16(Op::LOCAL_GET, key_slot);
-        self.emit(Op::NULL);
+        self.emit_null();
         self.emit(Op::ARRAY_SET);
         self.emit(Op::DROP);
     }
@@ -655,7 +651,7 @@ impl Compiler {
 
     pub(super) fn emit_record_assign_nulls(&mut self, variables: &[String]) {
         for variable in variables {
-            self.emit(Op::NULL);
+            self.emit_null();
             self.emit_var_set(variable);
         }
     }
@@ -882,7 +878,7 @@ impl Compiler {
             inst!(self, core_wasm::dup);
             self.compile_expr(&number.value)?;
             let key = self.str_const("number");
-            self.emit_u16(Op::STRUCT_SET, key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
             self.emit(Op::DROP);
         }
 
@@ -890,7 +886,7 @@ impl Compiler {
             inst!(self, core_wasm::dup);
             self.compile_expr(&source.value)?;
             let key = self.str_const("source");
-            self.emit_u16(Op::STRUCT_SET, key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
             self.emit(Op::DROP);
         }
 

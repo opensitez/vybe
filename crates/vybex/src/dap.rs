@@ -79,8 +79,7 @@ struct Session {
     cmd_tx: Sender<DebugRequest>,
     writer: Arc<Mutex<std::net::TcpStream>>,
     seq: Arc<AtomicI64>,
-    source_path: String,
-}
+    source_path: String }
 
 impl Session {
     /// Handle one DAP request. Returns true if the session should end.
@@ -99,8 +98,7 @@ impl Session {
                     "supportsSetVariable": true,
                     "supportsEvaluateForHovers": true,
                     "supportsTerminateRequest": true,
-                    "supportsRestartRequest": true,
-                }));
+                    "supportsRestartRequest": true }));
                 // Ready for breakpoint configuration.
                 self.event("initialized", J::Null);
             }
@@ -125,8 +123,7 @@ impl Session {
                             Some(DebugResponse::Breakpoints(v)) => {
                                 v.first().and_then(|b| b.line).unwrap_or(line)
                             }
-                            _ => line,
-                        };
+                            _ => line };
                         verified.push(json!({ "verified": ok, "line": actual_line }));
                     }
                 }
@@ -149,11 +146,9 @@ impl Session {
                             "name": f.chunk_name,
                             "line": f.line.unwrap_or(0),
                             "column": 1,
-                            "source": { "name": basename(&self.source_path), "path": self.source_path },
-                        }))
+                            "source": { "name": basename(&self.source_path), "path": self.source_path } }))
                         .collect::<Vec<_>>(),
-                    _ => Vec::new(),
-                };
+                    _ => Vec::new() };
                 let total = frames.len();
                 self.respond(req_seq, command, true, json!({
                     "stackFrames": frames, "totalFrames": total
@@ -166,8 +161,7 @@ impl Session {
                     "scopes": [{
                         "name": "Locals",
                         "variablesReference": frame_id + 1,
-                        "expensive": false,
-                    }]
+                        "expensive": false }]
                 }));
             }
             "variables" => {
@@ -179,11 +173,9 @@ impl Session {
                         .map(|s| json!({
                             "name": s.name.clone().unwrap_or_else(|| format!("[{}]", s.index)),
                             "value": s.value,
-                            "variablesReference": 0,
-                        }))
+                            "variablesReference": 0 }))
                         .collect::<Vec<_>>(),
-                    _ => Vec::new(),
-                };
+                    _ => Vec::new() };
                 self.respond(req_seq, command, true, json!({ "variables": vars }));
             }
             "continue" => {
@@ -211,8 +203,7 @@ impl Session {
                 let (ok, result) = match self.run(DebugCommand::Print { path: expr.to_string() }) {
                     Some(DebugResponse::Value(v)) => (true, v),
                     Some(DebugResponse::Error(e)) => (false, e),
-                    _ => (false, "eval unavailable".to_string()),
-                };
+                    _ => (false, "eval unavailable".to_string()) };
                 self.respond(req_seq, command, ok, json!({
                     "result": result, "variablesReference": 0
                 }));
@@ -223,8 +214,7 @@ impl Session {
                 let (ok, shown) = match self.run(DebugCommand::SetVar { name, literal: value.clone() }) {
                     Some(DebugResponse::Value(_)) => (true, value),
                     Some(DebugResponse::Error(e)) => (false, e),
-                    _ => (false, "set failed".to_string()),
-                };
+                    _ => (false, "set failed".to_string()) };
                 self.respond(req_seq, command, ok, json!({
                     "value": shown, "variablesReference": 0
                 }));
@@ -256,8 +246,7 @@ impl Session {
             "request_seq": request_seq,
             "success": success,
             "command": command,
-            "body": body,
-        });
+            "body": body });
         write_message(&self.writer, &msg);
     }
 
@@ -272,8 +261,7 @@ fn emit_event(writer: &Arc<Mutex<std::net::TcpStream>>, seq: &Arc<AtomicI64>, ev
             emit_named(writer, seq, "stopped", json!({
                 "reason": dap_stop_reason(&reason),
                 "threadId": 1,
-                "allThreadsStopped": true,
-            }));
+                "allThreadsStopped": true }));
         }
         DebugEvent::Resumed => {
             emit_named(writer, seq, "continued", json!({ "threadId": 1, "allThreadsContinued": true }));
@@ -296,8 +284,7 @@ fn dap_stop_reason(r: &PauseReason) -> &'static str {
         PauseReason::Step => "step",
         PauseReason::Interrupt => "pause",
         PauseReason::Watchpoint { .. } => "data breakpoint",
-        PauseReason::Exception { .. } => "exception",
-    }
+        PauseReason::Exception { .. } => "exception" }
 }
 
 fn emit_named(writer: &Arc<Mutex<std::net::TcpStream>>, seq: &Arc<AtomicI64>, event: &str, body: J) {
@@ -305,8 +292,7 @@ fn emit_named(writer: &Arc<Mutex<std::net::TcpStream>>, seq: &Arc<AtomicI64>, ev
         "seq": seq.fetch_add(1, Ordering::SeqCst),
         "type": "event",
         "event": event,
-        "body": body,
-    });
+        "body": body });
     write_message(writer, &msg);
 }
 

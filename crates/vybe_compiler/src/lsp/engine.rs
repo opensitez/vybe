@@ -22,24 +22,20 @@ pub enum AnalysisRequest {
     Update {
         uri: String,
         content: String,
-        version: u64,
-    },
+        version: u64 },
     /// Shutdown the analysis thread.
-    Shutdown,
-}
+    Shutdown }
 
 /// Event from the analysis thread back to the UI.
 pub enum AnalysisEvent {
     /// Full analysis result (symbols + diagnostics) for a file.
-    Analysis(AnalysisResult),
-}
+    Analysis(AnalysisResult) }
 
 /// The analysis engine. Create one, send requests, poll for events.
 pub struct AnalysisEngine {
     tx: Sender<AnalysisRequest>,
     rx: Receiver<AnalysisEvent>,
-    version: Arc<AtomicU64>,
-}
+    version: Arc<AtomicU64> }
 
 const DEBOUNCE_MS: u64 = 250;
 
@@ -60,8 +56,7 @@ impl AnalysisEngine {
         Self {
             tx: req_tx,
             rx: evt_rx,
-            version,
-        }
+            version }
     }
 
     /// Send an update with auto-incrementing version. Returns the version number.
@@ -72,8 +67,7 @@ impl AnalysisEngine {
             .send(AnalysisRequest::Update {
                 uri,
                 content,
-                version: v,
-            })
+                version: v })
             .ok();
         v
     }
@@ -83,8 +77,7 @@ impl AnalysisEngine {
         match self.rx.try_recv() {
             Ok(event) => Some(event),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => None,
-        }
+            Err(TryRecvError::Disconnected) => None }
     }
 }
 
@@ -105,8 +98,7 @@ pub fn analyze(uri: &str, content: &str) -> AnalysisResult {
         version: 0,
         symbols,
         diagnostics,
-        keywords,
-    }
+        keywords }
 }
 
 fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>) {
@@ -121,8 +113,7 @@ fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>)
         Lang::Dart => vybe_runtime::registry::find("dart").map(|p| p.parse),
         Lang::Pascal => vybe_runtime::registry::find("pascal").map(|p| p.parse),
         Lang::Cobol => vybe_runtime::registry::find("cobol").map(|p| p.parse),
-        _ => None,
-    };
+        _ => None };
 
     if let Some(parser) = parse_fn {
         match parser(content) {
@@ -136,8 +127,7 @@ fn parse_content(lang: Lang, content: &str) -> (Vec<Symbol>, Vec<LspDiagnostic>)
                         col,
                         end_col: col + 10,
                         message: msg,
-                        severity: DiagSeverity::Error,
-                    }],
+                        severity: DiagSeverity::Error }],
                 )
             }
         }
@@ -213,8 +203,7 @@ fn analysis_loop(
             Ok(AnalysisRequest::Update {
                 uri,
                 content,
-                version,
-            }) => {
+                version }) => {
                 pending = Some((uri, content, version, Instant::now()));
                 // Drain queued updates to coalesce
                 while let Ok(req) = rx.try_recv() {
@@ -223,16 +212,14 @@ fn analysis_loop(
                         AnalysisRequest::Update {
                             uri,
                             content,
-                            version,
-                        } => {
+                            version } => {
                             pending = Some((uri, content, version, Instant::now()));
                         }
                     }
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
-        }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return }
 
         // Check if debounce period elapsed
         if let Some((ref uri, ref content, version, at)) = pending {
@@ -249,8 +236,7 @@ fn analysis_loop(
                         version,
                         symbols,
                         diagnostics,
-                        keywords,
-                    }))
+                        keywords }))
                     .ok();
                 }
                 pending = None;

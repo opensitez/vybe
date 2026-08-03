@@ -3,8 +3,7 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetId,
-};
+    WidgetId };
 use cosmic_text::Color as CosmicColor;
 use tiny_skia::*;
 
@@ -16,8 +15,7 @@ pub struct GroupBox {
     pub colors: WidgetColors,
     pub id: WidgetId,
     pub name: String,
-    rect: LayoutRect,
-}
+    rect: LayoutRect }
 
 impl GroupBox {
     pub fn new<S: Into<String>>(title: S) -> Self {
@@ -33,8 +31,7 @@ impl GroupBox {
                 border: (160, 160, 160, 255),
                 ..WidgetColors::default()
             },
-            rect: LayoutRect::zero(),
-        }
+            rect: LayoutRect::zero() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -161,7 +158,6 @@ impl PanelWidget for GroupBox {
                 CommandValue::None
             }
             WidgetCommand::GetText => CommandValue::Text(self.title.clone()),
-            _ => CommandValue::None,
-        }
+            _ => CommandValue::None }
     }
 }

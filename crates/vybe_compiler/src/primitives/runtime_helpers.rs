@@ -73,7 +73,7 @@ fn emit_str_concat(imports: &mut Chunk, chunk: &mut Chunk, line: u32) {
 
 fn emit_const_index(chunk: &mut Chunk, idx: u16, line: u32) {
     match chunk.constants[idx as usize].clone() {
-        Value::Null | Value::TypedNull(_) => chunk.emit_op(Op::NULL, line),
+        Value::Null | Value::TypedNull(_) => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         Value::Undefined => crate::primitives::expressions::emit_undefined(chunk, line),
         Value::Bool(value) => chunk.emit_bool_const(value, line),
         Value::I32(value) => chunk.emit_i32_const(value, line),
@@ -147,8 +147,7 @@ pub(crate) fn build_polyfill_batch(
         // recovering the inner data is safe.
         let mut guard = match cache.lock() {
             Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
+            Err(p) => p.into_inner() };
         if let Some(cached) = guard.get(&key) {
             cached.clone()
         } else {
@@ -653,15 +652,13 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_regex_replace_pat_first" => build_regex_replace_pat_first(imports),
         "__stdlib_regex_split_pat_first" => build_regex_split_pat_first(imports),
         "__stdlib_regex_match_all_pat_first" => build_regex_match_all_pat_first(imports),
-        _ => return None,
-    };
+        _ => return None };
     Some(chunk)
 }
 
 pub struct RuntimeHelpers {
     pub chunks: Vec<Chunk>,
-    pub exports: Vec<&'static str>,
-}
+    pub exports: Vec<&'static str> }
 
 impl RuntimeHelpers {
     pub fn get(&self, name: &str) -> Option<usize> {
@@ -672,8 +669,7 @@ impl RuntimeHelpers {
 pub fn rest_fixed_arity(name: &str) -> Option<u8> {
     match name {
         "sprintf" => Some(1),
-        _ => None,
-    }
+        _ => None }
 }
 
 // ── sorted(array) → array (insertion sort — O(n²) but works) ──
@@ -1227,7 +1223,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    c.emit_op_u16(Op::STRUCT_GET, iter_alt_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, iter_alt_key, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_end(0);
     c.patch_block(try_alt);
@@ -1238,7 +1234,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    c.emit_op_u16(Op::STRUCT_GET, async_iter_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, async_iter_key, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_end(0);
     c.patch_block(try_async);
@@ -1254,7 +1250,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_br_if(0, 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    c.emit_op_u16(Op::STRUCT_GET, iter_slot_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, iter_slot_key, 0);
     c.emit_op_u16(Op::LOCAL_SET, method, 0);
     c.emit_end(0);
     c.patch_block(try_slot);
@@ -1381,14 +1377,14 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(1, 0);
 
     c.emit_op_u16(Op::LOCAL_GET, step, 0);
-    c.emit_op_u16(Op::STRUCT_GET, done_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, done_key, 0);
     crate::primitives::ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_br_if(1, 0);
 
     // out.push(step.value); push returns new length → drop it.
     c.emit_op_u16(Op::LOCAL_GET, out, 0);
     c.emit_op_u16(Op::LOCAL_GET, step, 0);
-    c.emit_op_u16(Op::STRUCT_GET, value_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, 0);
     crate::primitives::collections::emit_push_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
 
@@ -2161,7 +2157,7 @@ fn build_array_copy(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::ARRAY_COPY, 0);
 
     // .NET Array.Copy returns void
-    c.emit_op(Op::NULL, 0);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c.emit_op(Op::RETURN, 0);
     let _ = imports; // silence unused
     c
@@ -2443,7 +2439,7 @@ fn build_pascal_write(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     crate::primitives::ops::emit_dyn_add_into(imports, &mut c, line);
     c.emit_op_u16(Op::GLOBAL_SET, buffer_key, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c
 }
@@ -2466,7 +2462,7 @@ fn build_pascal_writeln(imports: &mut Chunk) -> Chunk {
 
     emit_const_index(&mut c, empty_key, line);
     c.emit_op_u16(Op::GLOBAL_SET, buffer_key, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c
 }
@@ -2896,7 +2892,7 @@ fn build_isdate(imports: &mut Chunk) -> Chunk {
 
     // result = (v.__type == "DateTime")
     c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    c.emit_op_u16(Op::STRUCT_GET, type_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, 0);
     emit_const_index(&mut c, dt_str, 0);
     emit_str_equals(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, 1, 0);
@@ -3044,7 +3040,7 @@ fn build_vartype(imports: &mut Chunk) -> Chunk {
 
     // It's an object; check __type
     c.emit_op_u16(Op::LOCAL_GET, val, 0);
-    c.emit_op_u16(Op::STRUCT_GET, type_key, 0);
+    c.emit_struct_field_op(Op::STRUCT_GET, 0, type_key, 0);
     emit_const_index(&mut c, dt_str, 0);
     emit_str_equals(&mut c, 0);
     let _is_dt = c.emit_block(0);
@@ -4124,7 +4120,7 @@ fn build_delete_property(imports: &mut Chunk) -> Chunk {
     c.local_count = 2;
     c.emit_op_u16(Op::LOCAL_GET, 0, 0); // obj
     c.emit_op_u16(Op::LOCAL_GET, 1, 0); // key
-    c.emit_op(Op::NULL, 0); // value = null
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // value = null
     crate::primitives::collections::emit_set_into(imports, &mut c, 0);
     c.emit_op(Op::DROP, 0);
     c.emit_bool_const(true, 0);
@@ -4691,7 +4687,7 @@ fn build_array_insert(_imports: &mut Chunk) -> Chunk {
     let splice = c.add_import("ecma:array", "splice");
     c.emit_call(splice, 4, 0); // 4 args
     c.emit_op(Op::DROP, 0); // drop returned removed-elements array
-    c.emit_op(Op::NULL, 0);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -4711,7 +4707,7 @@ fn build_array_remove_at(_imports: &mut Chunk) -> Chunk {
     let splice = c.add_import("ecma:array", "splice");
     c.emit_call(splice, 3, 0);
     c.emit_op(Op::DROP, 0);
-    c.emit_op(Op::NULL, 0);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -4807,7 +4803,7 @@ fn build_array_insert_range(imports: &mut Chunk) -> Chunk {
     c.patch_loop(lp);
     c.emit_end(0);
     c.patch_block(blk);
-    c.emit_op(Op::NULL, 0);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -4859,7 +4855,7 @@ fn build_array_set_range(imports: &mut Chunk) -> Chunk {
     c.patch_loop(lp);
     c.emit_end(0);
     c.patch_block(blk);
-    c.emit_op(Op::NULL, 0);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -4949,7 +4945,7 @@ fn build_array_reverse_range(imports: &mut Chunk) -> Chunk {
     c.patch_loop(lp);
     c.emit_end(0);
     c.patch_block(blk);
-    c.emit_op(Op::NULL, 0);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }

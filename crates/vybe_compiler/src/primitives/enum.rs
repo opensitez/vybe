@@ -93,7 +93,7 @@ pub fn emit_name_to_member_or_null(chunk: &mut Chunk, line: u32) {
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, input, line);
     chunk.emit_else(line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_end(line);
 }
 

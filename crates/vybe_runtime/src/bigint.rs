@@ -23,8 +23,7 @@ pub const MAX_LIMBS: usize = 1 << 20;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BigIntVal {
     negative: bool,
-    limbs: Vec<u64>,
-}
+    limbs: Vec<u64> }
 
 // ── magnitude helpers (little-endian &[u64], canonical) ───────────────
 
@@ -43,8 +42,7 @@ fn mag_cmp(a: &[u64], b: &[u64]) -> std::cmp::Ordering {
     for i in (0..a.len()).rev() {
         match a[i].cmp(&b[i]) {
             Equal => continue,
-            other => return other,
-        }
+            other => return other }
     }
     Equal
 }
@@ -109,8 +107,7 @@ fn mag_mul(a: &[u64], b: &[u64]) -> Vec<u64> {
 fn mag_bit_len(a: &[u64]) -> usize {
     match a.last() {
         None => 0,
-        Some(top) => (a.len() - 1) * 64 + (64 - top.leading_zeros() as usize),
-    }
+        Some(top) => (a.len() - 1) * 64 + (64 - top.leading_zeros() as usize) }
 }
 
 fn mag_get_bit(a: &[u64], i: usize) -> bool {
@@ -240,16 +237,14 @@ impl BigIntVal {
     pub fn zero() -> Self {
         BigIntVal {
             negative: false,
-            limbs: Vec::new(),
-        }
+            limbs: Vec::new() }
     }
 
     fn make(negative: bool, limbs: Vec<u64>) -> Self {
         let limbs = mag_norm(limbs);
         BigIntVal {
             negative: negative && !limbs.is_empty(),
-            limbs,
-        }
+            limbs }
     }
 
     pub fn from_i64(n: i64) -> Self {
@@ -305,8 +300,7 @@ impl BigIntVal {
         match self.limbs.len() {
             0 => true,
             1 => self.limbs[0] <= i64::MAX as u64 || (self.negative && self.limbs[0] == 1 << 63),
-            _ => false,
-        }
+            _ => false }
     }
 
     pub fn fits_i32(&self) -> bool {
@@ -363,8 +357,7 @@ impl BigIntVal {
             (false, true) => Greater,
             (true, false) => Less,
             (false, false) => mag_cmp(&self.limbs, &other.limbs),
-            (true, true) => mag_cmp(&other.limbs, &self.limbs),
-        }
+            (true, true) => mag_cmp(&other.limbs, &self.limbs) }
     }
 
     /// §7.2.13 mixed BigInt/Number comparison on mathematical values.
@@ -493,8 +486,7 @@ impl BigIntVal {
                 Self::make(true, mag_add(&m, &[1]))
             }
             (false, true) => Self::make(false, mag_andnot(&self.limbs, &other.mag_minus_one())),
-            (true, false) => Self::make(false, mag_andnot(&other.limbs, &self.mag_minus_one())),
-        }
+            (true, false) => Self::make(false, mag_andnot(&other.limbs, &self.mag_minus_one())) }
     }
 
     pub fn bit_or(&self, other: &Self) -> Self {
@@ -619,8 +611,7 @@ impl BigIntVal {
         }
         let (negative, digits) = match t.strip_prefix('-') {
             Some(rest) => (true, rest),
-            None => (false, t.strip_prefix('+').unwrap_or(t)),
-        };
+            None => (false, t.strip_prefix('+').unwrap_or(t)) };
         Self::parse_digits(digits, 10).map(|m| Self::make(negative, m))
     }
 

@@ -85,21 +85,21 @@ pub fn emit_then(chunks: &mut [Chunk], current: usize, line: u32) {
 fn emit_rejected_promise(chunk: &mut Chunk, line: u32) {
     let err = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, err, line);
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     let type_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__type")));
     let state_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__state")));
     let value_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__value")));
     chunk.emit_dup(line);
     chunk.emit_string_const("Promise", line);
-    chunk.emit_op_u16(Op::STRUCT_SET, type_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_dup(line);
     chunk.emit_string_const("rejected", line);
-    chunk.emit_op_u16(Op::STRUCT_SET, state_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, state_key, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_dup(line);
     chunk.emit_op_u16(Op::LOCAL_GET, err, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, value_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 

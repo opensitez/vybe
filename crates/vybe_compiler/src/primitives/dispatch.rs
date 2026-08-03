@@ -26,8 +26,7 @@ use vybe_runtime::opcode::Op;
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
     collections, csv, dict, heap, http_cookie, http_form, http_request_env, http_session, io,
-    object, ops, reflection, strings, threading, url, xml,
-};
+    object, ops, reflection, strings, threading, url, xml };
 
 /// Handle common ops that need only a chunk and line.
 /// Returns `true` if `name` was recognized and emitted, `false` otherwise.
@@ -124,7 +123,7 @@ pub fn emit_common(
         // ── Dict ops ──
         "dict.set_dynamic" => {
             dict::emit_set_dynamic(chunks, current, line);
-            chunks[current].emit_op(Op::NULL, line); // void return
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // void return
         }
         "dict.get_dynamic" => dict::emit_get_dynamic(chunks, current, line),
         "dict.has" => dict::emit_method_has(chunks, current, line),
@@ -163,7 +162,7 @@ pub fn emit_common(
         "object.compare" => object::emit_compare(&mut chunks[current], line),
         "object.to_string_or" => {
             if argc < 2 {
-                chunks[current].emit_op(Op::NULL, line);
+                chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             }
             object::emit_to_string_or(&mut chunks[current], line);
         }
@@ -508,6 +507,7 @@ pub fn emit_common(
         "channels.close" => crate::primitives::channels::emit_close(chunks, current, line),
 
         // ── Python adapters ──
+        "strings.join_iterable" => strings::emit_join_iterable(chunks, current, line),
         "strings.length" => strings::emit_length(&mut chunks[current], line),
         "strings.to_upper" => strings::emit_to_upper(&mut chunks[current], line),
         "strings.to_lower" => strings::emit_to_lower(&mut chunks[current], line),
@@ -608,6 +608,8 @@ pub fn emit_common(
         // this arm existed there was nothing on the platform to point at — the
         // only byte counter was private to php's adapter.
         "str_byte_length" => strings::emit_byte_length(chunks, current, line),
+        "str_cstr_length" => strings::emit_cstr_length(chunks, current, line),
+        "str_cstr_truncate" => strings::emit_cstr_truncate(chunks, current, line),
         // Shell-style glob matching — php `fnmatch`, python `fnmatch.fnmatch`,
         // Go `path.Match`, Ruby `File.fnmatch`. Stack: `[name, pattern]`.
         // `_fold` is the case-insensitive spelling; it is the regex `i` flag,
@@ -616,11 +618,19 @@ pub fn emit_common(
         // `number_format`, python's `,` format flag, java `%,d`.
         // Stack: `[formatted, group_sep, dec_point]`.
         "str_group_digits" => strings::emit_group_digits(chunks, current, line),
+        // `[s, index, count, insert]` → spliced string; index is 0-based.
+        "str_splice" => strings::emit_splice(chunks, current, line),
         // CSV — a structured format, so it lives beside `json` and `url`.
         // Dialect (delimiter, enclosure) is on the STACK because php takes it
         // as runtime arguments.
         "csv.parse_line" => csv::emit_parse_line(chunks, current, line),
-        "csv.format_row" => csv::emit_format_row(chunks, current, line),
+        "csv.format_row" => {
+            csv::emit_format_row(chunks, current, csv::FormatOptions::minimal(), line)
+        }
+        // fpc `TStringList.CommaText` also encloses on whitespace.
+        "csv.format_row_quote_ws" => {
+            csv::emit_format_row(chunks, current, csv::FormatOptions::quote_whitespace(), line)
+        }
         "str_glob_match" => {
             strings::emit_glob_match(chunks, current, strings::GlobOptions::exact(), line)
         }
@@ -783,8 +793,7 @@ pub fn emit_common(
             chunks[current].emit_call(idx, 2, line);
         }
 
-        _ => return false,
-    }
+        _ => return false }
     true
 }
 
@@ -810,9 +819,8 @@ pub fn emit_common_with_imports(
             let sub_dur_idx = import("wasi:clocks/monotonic-clock", "subscribe-duration");
             let block_idx = import("wasi:io/poll", "[method]pollable.block");
             thread_adapter::emit_thread_sleep(chunk, sub_dur_idx, block_idx, line);
-            chunk.emit_op(Op::NULL, line);
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
-        _ => return false,
-    }
+        _ => return false }
     true
 }

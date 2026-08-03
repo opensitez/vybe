@@ -13,8 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use vybe_runtime::debugger::{
-    ChunkRef, DebugEvent, DebugResponse, FrameInfo, Location, PauseReason,
-};
+    ChunkRef, DebugEvent, DebugResponse, FrameInfo, Location, PauseReason };
 use vybe_runtime::{DebugCommand, DebugRequest, VM};
 use vybe_platform_vybe::gui_state::GuiState;
 
@@ -61,8 +60,7 @@ pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
                         break; // channel closed — VM gone
                     }
                 }
-                Err(msg) => eprintln!("  {msg}"),
-            }
+                Err(msg) => eprintln!("  {msg}") }
         }
     });
 }
@@ -128,8 +126,7 @@ fn send_and_print(cmd_tx: &Sender<DebugRequest>, command: DebugCommand) -> bool 
     if cmd_tx
         .send(DebugRequest {
             command,
-            reply: reply_tx,
-        })
+            reply: reply_tx })
         .is_err()
     {
         return false;
@@ -139,8 +136,7 @@ fn send_and_print(cmd_tx: &Sender<DebugRequest>, command: DebugCommand) -> bool 
             print_response(&resp);
             true
         }
-        Err(_) => false,
-    }
+        Err(_) => false }
 }
 
 // ─── Command parsing ────────────────────────────────────────────────────────
@@ -174,16 +170,14 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
                 .ok_or("usage: enable <id>")?
                 .parse()
                 .map_err(|_| "bad id")?,
-            enabled: true,
-        },
+            enabled: true },
         "disable" => DebugCommand::EnableBreakpoint {
             id: rest
                 .first()
                 .ok_or("usage: disable <id>")?
                 .parse()
                 .map_err(|_| "bad id")?,
-            enabled: false,
-        },
+            enabled: false },
 
         "p" | "print" => {
             // Join the whole tail so compound expressions (`p a + b`) survive;
@@ -201,20 +195,16 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
                 .ok_or("usage: set <name> = <literal>")?;
             DebugCommand::SetVar {
                 name: name.trim().to_string(),
-                literal: val.trim().to_string(),
-            }
+                literal: val.trim().to_string() }
         }
         "bt" | "where" | "backtrace" => DebugCommand::Backtrace,
         "locals" | "l" => DebugCommand::Locals {
-            frame: rest.first().and_then(|s| s.parse().ok()).unwrap_or(0),
-        },
+            frame: rest.first().and_then(|s| s.parse().ok()).unwrap_or(0) },
         "stack" => DebugCommand::OperandStack,
         "globals" | "g" => DebugCommand::Globals {
-            prefix: rest.first().map(|s| s.to_string()),
-        },
+            prefix: rest.first().map(|s| s.to_string()) },
         "dis" | "disasm" => DebugCommand::Disasm {
-            window: rest.first().and_then(|s| s.parse().ok()).unwrap_or(4),
-        },
+            window: rest.first().and_then(|s| s.parse().ok()).unwrap_or(4) },
         "chunks" => DebugCommand::Chunks,
         "watch" | "w" => {
             let expr = rest.join(" ");
@@ -229,17 +219,14 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
         "reload" | "r" => DebugCommand::Reload,
         "restart" | "R" => DebugCommand::Restart,
         "trace" => DebugCommand::StreamOpcodes {
-            enabled: rest.first() != Some(&"off"),
-        },
+            enabled: rest.first() != Some(&"off") },
         "skip-system" | "sys" => DebugCommand::SetSkipSystem {
-            enabled: rest.first() != Some(&"off"),
-        },
+            enabled: rest.first() != Some(&"off") },
 
         // ── simulate GUI events (fire a handler through the live VM) ──
         "click" | "tap" => DebugCommand::FireEvent {
             control: rest.first().ok_or("usage: click <control>  (see `widgets` for names)")?.to_string(),
-            event: "Click".to_string(),
-        },
+            event: "Click".to_string() },
         "fire" => {
             let control = rest.first().ok_or("usage: fire <control> <event>")?.to_string();
             let event = rest.get(1).ok_or("usage: fire <control> <event>")?.to_string();
@@ -247,8 +234,7 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
         }
         "close" | "window-close" => DebugCommand::FireEvent {
             control: rest.first().unwrap_or(&"form").to_string(),
-            event: "Close".to_string(),
-        },
+            event: "Close".to_string() },
 
         // ── function breakpoint / logpoint / run-to-cursor / ignore ──
         "bf" | "break-fn" => {
@@ -282,8 +268,7 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
             Some("throw") => DebugCommand::ExceptionBreak { on_throw: true, on_uncaught: false },
             Some("uncaught") => DebugCommand::ExceptionBreak { on_throw: false, on_uncaught: true },
             Some("off") | None => DebugCommand::ExceptionBreak { on_throw: false, on_uncaught: false },
-            Some(other) => return Err(format!("usage: catch throw|uncaught|off  (got `{other}`)")),
-        },
+            Some(other) => return Err(format!("usage: catch throw|uncaught|off  (got `{other}`)")) },
         // ── data watchpoints ──
         "wp" | "watchpoint" => {
             let target = rest.join(" ");
@@ -302,8 +287,7 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
             print_help();
             return Err(String::new());
         }
-        other => return Err(format!("unknown command `{other}` — try `h`")),
-    })
+        other => return Err(format!("unknown command `{other}` — try `h`")) })
 }
 
 /// `b <chunk>:<line> [if <cond>]`, `b <chunk>@<offset> [if <cond>]`. Chunk may
@@ -328,15 +312,13 @@ fn parse_breakpoint(rest: &[&str]) -> Result<DebugCommand, String> {
         Ok(DebugCommand::BreakLine {
             chunk: chunk_ref(chunk),
             line,
-            condition,
-        })
+            condition })
     } else if let Some((chunk, offset)) = spec.split_once('@') {
         let offset: usize = offset.parse().map_err(|_| "bad offset")?;
         Ok(DebugCommand::BreakOffset {
             chunk: chunk_ref(chunk),
             offset,
-            condition,
-        })
+            condition })
     } else {
         Err("usage: b <line>  ·  b <file>:<line>  ·  b <chunk>@<offset>  [if <cond>]".into())
     }
@@ -345,8 +327,7 @@ fn parse_breakpoint(rest: &[&str]) -> Result<DebugCommand, String> {
 fn chunk_ref(s: &str) -> ChunkRef {
     match s.parse::<usize>() {
         Ok(i) => ChunkRef::Index(i),
-        Err(_) => ChunkRef::Name(s.to_string()),
-    }
+        Err(_) => ChunkRef::Name(s.to_string()) }
 }
 
 // ─── Presentation ───────────────────────────────────────────────────────────
@@ -357,8 +338,7 @@ fn print_event(event: &DebugEvent) {
             reason,
             location,
             frame_summary,
-            watches,
-        } => {
+            watches } => {
             eprintln!(
                 "\n■ paused ({}) — {}",
                 reason_str(reason),
@@ -378,12 +358,10 @@ fn print_event(event: &DebugEvent) {
             chunk,
             ip,
             op,
-            stack_depth,
-        } => {
+            stack_depth } => {
             eprintln!("  · {chunk}@{ip:04} {op}  (stack {stack_depth})");
         }
-        DebugEvent::Log { message } => eprintln!("  {message}"),
-    }
+        DebugEvent::Log { message } => eprintln!("  {message}") }
 }
 
 fn print_response(resp: &DebugResponse) {
@@ -400,8 +378,7 @@ fn print_response(resp: &DebugResponse) {
             id,
             chunk,
             offset,
-            line,
-        } => {
+            line } => {
             let at = line
                 .map(|l| format!("line {l}"))
                 .unwrap_or_else(|| format!("offset {offset}"));
@@ -429,8 +406,7 @@ fn print_response(resp: &DebugResponse) {
             for s in slots {
                 match &s.name {
                     Some(name) => eprintln!("  {} [{}] = {}", name, s.index, s.value),
-                    None => eprintln!("  [{}] = {}", s.index, s.value),
-                }
+                    None => eprintln!("  [{}] = {}", s.index, s.value) }
             }
         }
         DebugResponse::OperandStack(vals) => {

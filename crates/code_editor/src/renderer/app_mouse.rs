@@ -6,8 +6,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
 use super::{
     App, EditAction, FOOTER_HEIGHT, MINIMAP_WIDTH, SCALE, SIDEBAR_TAB_H, SPLITTER_WIDTH,
-    SidebarTab, TAB_BAR_HEIGHT, Tab, TabContent,
-};
+    SidebarTab, TAB_BAR_HEIGHT, Tab, TabContent };
 use crate::editor::Editor as MyEditor;
 use crate::language::load_language;
 use crate::lsp_client::LspRequest;
@@ -19,8 +18,7 @@ impl App {
     pub(super) fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
         let a = match delta {
             MouseScrollDelta::LineDelta(_, y) => y * 120.0,
-            MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0,
-        };
+            MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 2.0 };
         let tch = self.top_chrome_h();
         let mx = self.mouse_pos.0 / SCALE;
         let my = self.mouse_pos.1 / SCALE;
@@ -48,8 +46,7 @@ impl App {
                         x: ed_sx,
                         y: ed_top,
                         w: pw - ed_sx,
-                        h: ph - ed_top - FOOTER_HEIGHT,
-                    };
+                        h: ph - ed_top - FOOTER_HEIGHT };
                     let lay = f.layout(form_rect);
                     let lmx = self.mouse_pos.0 / SCALE;
                     let lmy = self.mouse_pos.1 / SCALE;
@@ -135,8 +132,7 @@ impl App {
                 kind: WMEKind::Move,
                 cmd: self.cmd_held,
                 shift: self.shift_held,
-                alt: self.alt_held,
-            };
+                alt: self.alt_held };
             self.tab_panel.handle_mouse(&move_event);
 
             // Drag-reorder: if the user is dragging, move the tab to the new slot.
@@ -165,8 +161,7 @@ impl App {
                     x: 0.0,
                     y: 0.0,
                     w: self.win_width * SCALE / SCALE,
-                    h: 28.0,
-                };
+                    h: 28.0 };
                 f.menu_bar.handle_hover(
                     self.mouse_pos.0 / SCALE,
                     self.mouse_pos.1 / SCALE,
@@ -217,8 +212,7 @@ impl App {
                             x: ed_start_x,
                             y: ed_top / SCALE,
                             w: r.width() / SCALE,
-                            h: r.height() / SCALE,
-                        },
+                            h: r.height() / SCALE },
                     );
                     form_touched = true;
                 }
@@ -317,8 +311,7 @@ impl App {
                     kind: WMEKind::Press(vybe_widgets::layout::MouseButton::Left),
                     cmd: self.cmd_held,
                     shift: self.shift_held,
-                    alt: self.alt_held,
-                };
+                    alt: self.alt_held };
                 self.output_panel.handle_mouse(&click);
                 return;
             }
@@ -438,8 +431,7 @@ impl App {
                     DropdownEvent::Closed => {
                         self.lang_dropdown = None;
                     }
-                    DropdownEvent::None => self.lang_dropdown = Some(dropdown),
-                }
+                    DropdownEvent::None => self.lang_dropdown = Some(dropdown) }
                 return;
             }
 
@@ -561,8 +553,7 @@ impl App {
                                 x: 0.0,
                                 y: 0.0,
                                 w: pw / SCALE,
-                                h: 28.0,
-                            };
+                                h: 28.0 };
                             if let Some(action) = f.menu_bar.handle_click(mx, my, menu_rect) {
                                 match action {
                                     crate::form_designer_tab::MenuAction::NewProject => {
@@ -672,8 +663,7 @@ impl App {
                                                 code: format!(
                                                     "Module {}\n\nEnd Module\n",
                                                     name.replace(".vb", "")
-                                                ),
-                                            },
+                                                ) },
                                         );
                                     }
                                     crate::form_designer_tab::MenuAction::AddResourceFile => {
@@ -696,8 +686,7 @@ impl App {
                                                 content: TabContent::Resources(editor),
                                                 is_sticky: true,
                                                 buffer: None,
-                                                is_modified: false,
-                                            });
+                                                is_modified: false });
                                             self.active_tab = self.tabs.len() - 1;
                                         }
                                     }
@@ -747,8 +736,7 @@ impl App {
                                             x: 0.0,
                                             y: 28.0,
                                             w: pw / SCALE,
-                                            h: 36.0,
-                                        },
+                                            h: 36.0 },
                                     )
                                 {
                                     match action {
@@ -879,8 +867,7 @@ impl App {
                                                     content: TabContent::Code(widget),
                                                     is_sticky: true,
                                                     buffer: None,
-                                                    is_modified: false,
-                                                });
+                                                    is_modified: false });
                                                 self.active_tab = self.tabs.len() - 1;
                                             }
                                         }
@@ -917,8 +904,7 @@ impl App {
                                             self.project.code_files.push(
                                                 vybe_platform_dotnet::winforms::designer::project::CodeFile {
                                                     name: name.clone(),
-                                                    code: code.clone(),
-                                                },
+                                                    code: code.clone() },
                                             );
                                             let lang = load_language("vb")
                                                 .or_else(|| load_language("rust"))
@@ -943,8 +929,7 @@ impl App {
                                                 content: TabContent::Code(widget),
                                                 is_sticky: true,
                                                 buffer: None,
-                                                is_modified: false,
-                                            });
+                                                is_modified: false });
                                             self.active_tab = self.tabs.len() - 1;
                                         }
                                     }
@@ -1010,16 +995,14 @@ impl App {
                 if my >= stab_top && my < stab_top + SIDEBAR_TAB_H {
                     // Route to sidebar_tabs TabPanel
                     use vybe_widgets::layout::{
-                        MouseEvent as WMouseEvent, MouseEventKind as WMEKind,
-                    };
+                        MouseEvent as WMouseEvent, MouseEventKind as WMEKind };
                     let click = WMouseEvent {
                         x: mx,
                         y: my,
                         kind: WMEKind::Press(vybe_widgets::layout::MouseButton::Left),
                         cmd: self.cmd_held,
                         shift: self.shift_held,
-                        alt: self.alt_held,
-                    };
+                        alt: self.alt_held };
                     self.sidebar_tabs.handle_mouse(&click);
                     return;
                 }
@@ -1082,8 +1065,7 @@ impl App {
                                         content: TabContent::Code(widget),
                                         is_sticky: is_double,
                                         buffer: None,
-                                        is_modified: false,
-                                    };
+                                        is_modified: false };
                                     self.tabs.push(new_tab);
                                     self.active_tab = self.tabs.len() - 1;
                                     self.tree_view.reveal_path(&path);
@@ -1168,8 +1150,7 @@ impl App {
                                             content: TabContent::Code(widget),
                                             is_sticky: true,
                                             buffer: None,
-                                            is_modified: false,
-                                        };
+                                            is_modified: false };
                                         self.tabs.push(new_tab);
                                         self.active_tab = self.tabs.len() - 1;
                                         return;
@@ -1229,8 +1210,7 @@ impl App {
                                                 content: TabContent::Resources(editor),
                                                 is_sticky: true,
                                                 buffer: None,
-                                                is_modified: false,
-                                            });
+                                                is_modified: false });
                                             self.active_tab = self.tabs.len() - 1;
                                         }
                                         return;
@@ -1295,8 +1275,7 @@ impl App {
                                 x: ed_start_x,
                                 y: ed_top / SCALE,
                                 w: rect.width() / SCALE,
-                                h: rect.height() / SCALE,
-                            };
+                                h: rect.height() / SCALE };
                             let handled = f.handle_mouse_down(
                                 self.mouse_pos.0 / SCALE,
                                 self.mouse_pos.1 / SCALE,
@@ -1349,8 +1328,7 @@ impl App {
                         x: ed_sx,
                         y: ed_top,
                         w: ed_w,
-                        h: ed_h,
-                    });
+                        h: ed_h });
                     self.sync_active_form_to_project();
                 }
             }

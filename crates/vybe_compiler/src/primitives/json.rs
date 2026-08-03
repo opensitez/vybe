@@ -67,8 +67,7 @@ fn loop_start(chunk: &mut Chunk, line: u32) -> LoopState {
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None,
-    }
+        body_block_patch: None }
 }
 
 /// Emit `if !(i < n) break;` for a numeric counter loop condition.
@@ -240,7 +239,7 @@ fn build_normalize_helper(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         h.emit_else(line);
         {
             // throw TypeError("Object of type <T> is not JSON serializable")
-            h.emit_op_u16(Op::STRUCT_NEW, 0, line);
+            h.emit_struct_new(0, 0, line);
             h.emit_dup(line);
             push_str(&mut h, "Object of type ", line);
             dyn_get(&mut h, value_slot, "__type", line);
@@ -341,7 +340,7 @@ pub fn emit_stringify_props(chunks: &mut Vec<Chunk>, current: usize, line: u32) 
     let props_slot = value_slot + 3;
 
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, default_slot, line);
     chunks[current].emit_bool_const(false, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sort_slot, line);

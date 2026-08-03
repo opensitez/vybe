@@ -75,8 +75,7 @@ fn read_typed_array_element(ta: &TypedArrayState, index: usize) -> Value {
         return match ta.elem {
             TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
             TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::bigint_i64(0),
-            _ => Value::I32(0),
-        };
+            _ => Value::I32(0) };
     }
     match ta.elem {
         TypedElemKind::I8 => Value::I32(buf[abs] as i8 as i32),
@@ -169,8 +168,7 @@ impl VM {
         skip_handlers: usize,
     ) -> Result<(), VMError> {
         use crate::vm::{
-            CATCH_KIND_CATCH, CATCH_KIND_CATCH_ALL, CATCH_KIND_CATCH_ALL_REF, CATCH_KIND_CATCH_REF,
-        };
+            CATCH_KIND_CATCH, CATCH_KIND_CATCH_ALL, CATCH_KIND_CATCH_ALL_REF, CATCH_KIND_CATCH_REF };
         let mut matched_idx = None;
         let search_len = self.exception_handlers.len().saturating_sub(skip_handlers);
         for i in (0..search_len).rev() {
@@ -178,8 +176,7 @@ impl VM {
             let matches = match handler.kind {
                 CATCH_KIND_CATCH_ALL | CATCH_KIND_CATCH_ALL_REF => true,
                 CATCH_KIND_CATCH | CATCH_KIND_CATCH_REF => handler.tag_entity == tag_entity,
-                _ => false,
-            };
+                _ => false };
             if matches {
                 matched_idx = Some(i);
                 break;
@@ -392,8 +389,7 @@ impl VM {
                                     Vec::new()
                                 }
                             }
-                            _ => Vec::new(),
-                        };
+                            _ => Vec::new() };
                         drop(o);
                         let mut args: Vec<Value> = Vec::with_capacity(bound.len() + argc);
                         args.extend(bound);
@@ -538,20 +534,17 @@ impl VM {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Function(func.clone()),
                 type_id: 0,
-                fields: Vec::new(),
-            };
+                fields: Vec::new() };
             let entry = Value::Object(crate::heap::alloc(fn_obj));
             let state = ContinuationState {
                 entry,
                 saved: std::sync::Mutex::new(None),
-                state: std::sync::Mutex::new(ContinuationPhase::Ready),
-            };
+                state: std::sync::Mutex::new(ContinuationPhase::Ready) };
             let mut cont = Object {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Continuation(state),
                 type_id: 0,
-                fields: Vec::new(),
-            };
+                fields: Vec::new() };
             let entry_is_async = self.chunks[chunk_index].is_async;
             attach_continuation_protocols(&mut cont.properties, &self.globals, entry_is_async);
             if !args.is_empty() {
@@ -560,8 +553,7 @@ impl VM {
                     properties: indexmap::IndexMap::new(),
                     kind: ObjectKind::Array(args),
                     type_id: 0,
-                    fields: Vec::new(),
-                };
+                    fields: Vec::new() };
                 cont.properties.insert(
                     "__bound_args".into(),
                     Value::Object(crate::heap::alloc(bound)),
@@ -610,8 +602,7 @@ impl VM {
                 crate::value::UpvalueLocation::Open(si) => {
                     self.stack.get(*si).cloned().unwrap_or(Value::Null)
                 }
-                crate::value::UpvalueLocation::Closed(v) => v.clone(),
-            };
+                crate::value::UpvalueLocation::Closed(v) => v.clone() };
             let slot = base + capture_base + i;
             if slot < self.stack.len() {
                 self.stack[slot] = val;
@@ -624,8 +615,7 @@ impl VM {
             ip: 0,
             base,
             label_base: self.label_stack.len(),
-            upvalues,
-        });
+            upvalues });
         Ok(())
     }
 
@@ -717,8 +707,7 @@ impl VM {
                     .map(|v| format!("{}", v).to_lowercase())
                     .unwrap_or_else(|| match &ob.kind {
                         ObjectKind::Array(_) => "list".into(),
-                        _ => String::new(),
-                    });
+                        _ => String::new() });
                 drop(ob);
 
                 if !inferred_type.is_empty() {
@@ -801,16 +790,14 @@ impl VM {
                     name: Some(chunk.name.clone()),
                     arity: chunk.arity,
                     chunk_index: *idx,
-                    upvalues: Vec::new(),
-                };
+                    upvalues: Vec::new() };
                 let mut properties = indexmap::IndexMap::new();
                 properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
                 let obj = Object {
                     properties,
                     kind: ObjectKind::Function(func),
                     type_id: 0,
-                    fields: Vec::new(),
-                };
+                    fields: Vec::new() };
                 Value::Object(crate::heap::alloc(obj))
             }
         }

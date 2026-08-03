@@ -160,7 +160,7 @@ fn emit_thread_spawn_no_arg(chunks: &mut [Chunk], current: usize, line: u32) {
     // [func_ref] → stash to scratch slot, drop from stack
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
     // Push null (start_arg), then func_ref back from scratch
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op(Op::THREAD_SPAWN, line);
 }
@@ -227,7 +227,7 @@ pub fn emit_task_delay(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let mut worker = create_function_chunk("__task_delay_worker", 1);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
     emit_thread_sleep(&mut worker, sub_dur_idx, block_idx, line);
-    worker.emit_op(Op::NULL, line);
+    worker.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     worker.emit_op(Op::RETURN, line);
     worker.local_count = 1;
     chunks.push(worker);

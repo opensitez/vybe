@@ -129,7 +129,7 @@ fn capture_pre_migration_baseline() {
 
     let struct_get = run_and_time("struct.get (one field)", |chunk| {
         // Build a simple struct, read a field repeatedly.
-        chunk.emit_op_u16(Op::STRUCT_NEW, 0, 0);
+        chunk.emit_struct_new(0, 0, 0);
         let obj_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
         chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, 0);
@@ -139,13 +139,13 @@ fn capture_pre_migration_baseline() {
         let v = chunk.add_constant(Value::I32(99));
         chunk.emit_op_u16(Op::CONST, v, 0);
         let field_name = chunk.add_constant(Value::String("x".into()));
-        chunk.emit_op_u16(Op::STRUCT_SET, field_name, 0);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, field_name, 0);
         chunk.emit_op(Op::DROP, 0);
 
         emit_structured_counter_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, obj_slot, 0);
             let fk = c.add_constant(Value::String("x".into()));
-            c.emit_op_u16(Op::STRUCT_GET, fk, 0);
+            c.emit_struct_field_op(Op::STRUCT_GET, 0, fk, 0);
             c.emit_op(Op::DROP, 0);
         });
     });

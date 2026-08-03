@@ -3,8 +3,7 @@
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
     MouseEventKind, PanelWidget, RenderContext, SelectionMode, WidgetCommand, WidgetEvent,
-    WidgetId,
-};
+    WidgetId };
 use super::{WidgetColors, rounded_rect_path};
 use tiny_skia::*;
 
@@ -26,8 +25,7 @@ pub struct ListBox {
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
     /// Anchor index for Shift+click range selection.
-    range_anchor: Option<usize>,
-}
+    range_anchor: Option<usize> }
 
 impl ListBox {
     pub fn new() -> Self {
@@ -47,8 +45,7 @@ impl ListBox {
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
-            range_anchor: None,
-        }
+            range_anchor: None }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -64,8 +61,7 @@ impl ListBox {
     pub fn is_selected(&self, idx: usize) -> bool {
         match self.selection_mode {
             SelectionMode::Single => self.selected_index == Some(idx),
-            _ => self.selected_indices.contains(&idx),
-        }
+            _ => self.selected_indices.contains(&idx) }
     }
 
     /// Paint the listbox — white background, inset border, selection highlight.
@@ -372,8 +368,7 @@ impl PanelWidget for ListBox {
                 }
                 true
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     fn handle_scroll(&mut self, _x: f32, _y: f32, delta_y: f32) -> bool {
@@ -446,10 +441,8 @@ impl PanelWidget for ListBox {
                         .join(",");
                     CommandValue::Text(s)
                 }
-                _ => CommandValue::None,
-            },
-            _ => CommandValue::None,
-        }
+                _ => CommandValue::None },
+            _ => CommandValue::None }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

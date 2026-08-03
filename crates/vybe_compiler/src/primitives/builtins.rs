@@ -10,8 +10,7 @@ use super::*;
 fn expr_const_u8(expr: Option<&Expression>) -> u8 {
     match expr.map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Int(n))) => *n as u8,
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 /// Compile-time `u16` from a literal instruction argument (a GC type index).
@@ -20,8 +19,7 @@ fn expr_const_u8(expr: Option<&Expression>) -> u8 {
 fn expr_const_u16(expr: Option<&Expression>) -> u16 {
     match expr.map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Int(n))) => *n as u16,
-        _ => 0,
-    }
+        _ => 0 }
 }
 
 /// The textual form of a WASM type reference operand — a symbolic id (`$t` →
@@ -31,8 +29,7 @@ fn wasm_type_ref_name(expr: &Expression) -> String {
     match &expr.kind {
         ExprKind::Ident(n) => n.clone(),
         ExprKind::Lit(Literal::Int(i)) => i.to_string(),
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 /// A string literal argument's value (empty when not a string literal). Used
@@ -40,8 +37,7 @@ fn wasm_type_ref_name(expr: &Expression) -> String {
 fn expr_str_lit(expr: Option<&Expression>) -> String {
     match expr.map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Str(s))) => s.to_string(),
-        _ => String::new(),
-    }
+        _ => String::new() }
 }
 
 /// The named heap type a `ref.test`/`ref.cast` operand refers to, plus whether
@@ -97,21 +93,18 @@ fn encode_v128_const(args: &[&Expression]) -> [u8; 16] {
     let mut bytes = [0u8; 16];
     let shape = match args.first().map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Str(s))) => s.as_str(),
-        _ => "i32x4",
-    };
+        _ => "i32x4" };
     let vals = &args[1..];
     let int_at = |i: usize| -> i64 {
         match vals.get(i).map(|e| &e.kind) {
             Some(ExprKind::Lit(Literal::Int(n))) => *n,
-            _ => 0,
-        }
+            _ => 0 }
     };
     let float_at = |i: usize| -> f64 {
         match vals.get(i).map(|e| &e.kind) {
             Some(ExprKind::Lit(Literal::Float(f))) => *f,
             Some(ExprKind::Lit(Literal::Int(n))) => *n as f64,
-            _ => 0.0,
-        }
+            _ => 0.0 }
     };
     match shape {
         "i8x16" => {
@@ -160,17 +153,21 @@ impl Compiler {
     ) -> Result<bool, String> {
         let line = self.line;
 
-        if self.is_python_profile() && name == "globals" && args.is_empty() {
+        // Language name dropped. This one cannot move to a language emitter:
+        // it reads `self.defined_globals`, which only the compiler has. A user
+        // function named `globals()` in another language would now reach here —
+        // no profile declares that name today.
+        if name == "globals" && args.is_empty() {
             common::dict::emit_new(&mut self.chunks, self.current, line);
 
             inst!(self, core_wasm::dup);
             self.emit_const(Value::String(Arc::from("__main__")));
             let name_key = self.str_const("__name__");
-            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
             self.emit(Op::DROP);
             inst!(self, core_wasm::dup);
             let keys_key = self.str_const("__keys");
-            self.emit_u16(Op::STRUCT_GET, keys_key);
+            self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
             self.emit_const(Value::String(Arc::from("__name__")));
             common::collections::emit_push(&mut self.chunks, self.current, line);
             self.emit(Op::DROP);
@@ -185,12 +182,12 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit_var_get(&global);
                 let key = self.str_const(&global);
-                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
                 self.emit(Op::DROP);
 
                 inst!(self, core_wasm::dup);
                 let keys_key = self.str_const("__keys");
-                self.emit_u16(Op::STRUCT_GET, keys_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
                 self.emit_const(Value::String(Arc::from(global.as_str())));
                 common::collections::emit_push(&mut self.chunks, self.current, line);
                 self.emit(Op::DROP);
@@ -198,206 +195,14 @@ impl Compiler {
             return Ok(true);
         }
 
-        if self.is_python_profile() && name == "frozenset" && args.len() <= 1 {
-            if let Some(arg) = args.first() {
-                self.compile_expr(arg)?;
-                let idx = self.import("ecma:array", "from");
-                self.emit_host_call(idx, 1);
-                self.emit_const(Value::String(Arc::from("\u{1f}")));
-                common::collections::emit_join(&mut self.chunks, self.current, line);
-            } else {
-                self.emit_const(Value::String(Arc::from("")));
-            }
-            return Ok(true);
-        }
+        // `frozenset` removed: the python profile already binds it to
+        // `common:python.make_set`, whose emitter is in the language module.
 
-        if self.profile.name == "pascal" {
-            let builtin_name = self.canon(name);
-            if builtin_name == "write" || builtin_name == "writeln" {
-                let mut part_count = 0usize;
-                for (index, arg) in args.iter().enumerate() {
-                    if index > 0 {
-                        self.emit_const(Value::String(Arc::from(" ")));
-                        part_count += 1;
-                    }
-                    self.compile_expr(arg)?;
-                    let line = self.line;
-                    common::strings::emit_to_string(self.chunk(), line);
-                    part_count += 1;
-                }
-                if builtin_name == "writeln" {
-                    self.emit_const(Value::String(Arc::from("\n")));
-                    part_count += 1;
-                }
-                let line = self.line;
-                common::strings::emit_concat(self.chunk(), part_count, line);
-
-                let text_slot = self.define_local("__pascal_stdout_text");
-                self.emit_u16(Op::LOCAL_SET, text_slot);
-
-                let stdout_idx = self.import("wasi:cli/stdout", "get-stdout");
-                let write_idx = self.import(
-                    "wasi:io/streams",
-                    "[method]output-stream.blocking-write-and-flush",
-                );
-                self.emit_host_call(stdout_idx, 0);
-                self.emit_u16(Op::LOCAL_GET, text_slot);
-                self.emit_host_call(write_idx, 2);
-                self.emit(Op::DROP);
-                return Ok(true);
-            }
-
-            if (builtin_name == "integer" || builtin_name == "int" || builtin_name == "longint")
-                && args.len() == 1
-            {
-                self.compile_expr(args[0])?;
-                common::math::emit_trunc(self.chunk(), line);
-                return Ok(true);
-            }
-
-            if builtin_name == "inttohex" && (1..=2).contains(&args.len()) {
-                self.compile_expr(args[0])?;
-                let number_idx = self.import("ecma:number", "Number");
-                self.emit_host_call(number_idx, 1);
-                self.emit_const(Value::F64(16.0));
-                let to_string_idx = self.import("ecma:number", "toString");
-                self.emit_host_call(to_string_idx, 2);
-                let upper_idx = self.import("ecma:string", "toUpperCase");
-                self.emit_host_call(upper_idx, 1);
-                if let Some(width) = args.get(1) {
-                    self.compile_expr(width)?;
-                    self.emit_const(Value::String(Arc::from("0")));
-                    let pad_start_idx = self.import("ecma:string", "padStart");
-                    self.emit_host_call(pad_start_idx, 3);
-                }
-                return Ok(true);
-            }
-
-            if builtin_name == "booltostr" && (1..=2).contains(&args.len()) {
-                self.compile_expr(args[0])?;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if_value(line);
-                self.emit_const(Value::String(Arc::from(if args.len() == 1 {
-                    "true"
-                } else {
-                    "True"
-                })));
-                self.chunk().emit_else(line);
-                self.emit_const(Value::String(Arc::from(if args.len() == 1 {
-                    "false"
-                } else {
-                    "False"
-                })));
-                self.chunk().emit_end(line);
-                return Ok(true);
-            }
-
-            if (builtin_name == "ansiuppercase" || builtin_name == "ansilowercase")
-                && args.len() == 1
-            {
-                self.compile_expr(args[0])?;
-                let method = if builtin_name == "ansiuppercase" {
-                    "toUpperCase"
-                } else {
-                    "toLowerCase"
-                };
-                let idx = self.import("ecma:string", method);
-                self.emit_host_call(idx, 1);
-                return Ok(true);
-            }
-
-            if builtin_name == "samestr" && args.len() == 2 {
-                self.compile_expr(args[0])?;
-                self.compile_expr(args[1])?;
-                crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                return Ok(true);
-            }
-
-            if (builtin_name == "sametext" || builtin_name == "comparetext") && args.len() == 2 {
-                self.compile_expr(args[0])?;
-                let lower_idx = self.import("ecma:string", "toLowerCase");
-                self.emit_host_call(lower_idx, 1);
-                self.compile_expr(args[1])?;
-                self.emit_host_call(lower_idx, 1);
-                if builtin_name == "sametext" {
-                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                    crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                } else {
-                    let compare_idx = self.import("ecma:string", "localeCompare");
-                    self.emit_host_call(compare_idx, 2);
-                }
-                return Ok(true);
-            }
-
-            if builtin_name == "strtobool" && args.len() == 1 {
-                self.compile_expr(args[0])?;
-                let lower_idx = self.import("ecma:string", "toLowerCase");
-                self.emit_host_call(lower_idx, 1);
-                self.emit_const(Value::String(Arc::from("true")));
-                crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
-                return Ok(true);
-            }
-
-            if builtin_name == "strtointdef" && args.len() == 2 {
-                self.compile_expr(args[0])?;
-                let parse_idx = self.import("ecma:number", "parseInt");
-                self.emit_host_call(parse_idx, 1);
-                let parsed_slot = self.define_local("__pascal_strtointdef_value");
-                self.emit_u16(Op::LOCAL_SET, parsed_slot);
-                self.emit_u16(Op::LOCAL_GET, parsed_slot);
-                let is_nan_idx = self.import("ecma:number", "isNaN");
-                self.emit_host_call(is_nan_idx, 1);
-                self.chunk().emit_if_value(line);
-                self.compile_expr(args[1])?;
-                self.chunk().emit_else(line);
-                self.emit_u16(Op::LOCAL_GET, parsed_slot);
-                self.chunk().emit_end(line);
-                return Ok(true);
-            }
-
-            if builtin_name == "delete"
-                && args.len() == 3
-                && matches!(&args[0].kind, ExprKind::Ident(_))
-            {
-                let ExprKind::Ident(var_name) = &args[0].kind else {
-                    unreachable!();
-                };
-                let helper_idx = self.str_const("__vybe_pascal_str_remove_range");
-                self.emit_u16(Op::GLOBAL_GET, helper_idx);
-                self.emit_var_get(var_name);
-                self.compile_expr(args[1])?;
-                self.compile_expr(args[2])?;
-                self.emit_u8(Op::CALL_REF, 3);
-                self.emit_var_set(var_name);
-                self.emit(Op::NULL);
-                return Ok(true);
-            }
-
-            if builtin_name == "insert"
-                && args.len() == 3
-                && matches!(&args[1].kind, ExprKind::Ident(_))
-            {
-                let ExprKind::Ident(var_name) = &args[1].kind else {
-                    unreachable!();
-                };
-                let helper_idx = self.str_const("__vybe_pascal_str_insert");
-                self.emit_u16(Op::GLOBAL_GET, helper_idx);
-                self.compile_expr(args[0])?;
-                self.emit_var_get(var_name);
-                self.compile_expr(args[2])?;
-                self.emit_u8(Op::CALL_REF, 3);
-                self.emit_var_set(var_name);
-                self.emit(Op::NULL);
-                return Ok(true);
-            }
-        }
-
-        if self.profile.name == "pascal"
-            && args.len() == 2
-            && matches!(&args[0].kind, ExprKind::Ident(_))
-        {
+        // `Include(S, X)` / `Exclude(S, X)` mutate a SET variable in place. No
+        // language check: `is_set_var` below resolves through
+        // `hint_is_builtin_set`, which reads `profile.builtin_type_spellings`,
+        // so only a language that DECLARES a set spelling can match.
+        if args.len() == 2 && matches!(&args[0].kind, ExprKind::Ident(_)) {
             let builtin_name = self.canon(name);
             let ExprKind::Ident(var_name) = &args[0].kind else {
                 unreachable!();
@@ -418,7 +223,7 @@ impl Compiler {
                 self.compile_expr(args[1])?;
                 self.emit_u8(Op::CALL_REF, 2);
                 self.emit(Op::DROP);
-                self.emit(Op::NULL);
+                self.emit_null();
                 return Ok(true);
             }
         }
@@ -427,7 +232,7 @@ impl Compiler {
             if args.len() >= 2 {
                 self.compile_setlength(args[0], args[1])?;
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
@@ -549,7 +354,7 @@ impl Compiler {
                 self.compile_expr(args[1])?;
                 common::math::emit_max(self.chunk(), line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
@@ -559,7 +364,7 @@ impl Compiler {
                 self.compile_expr(args[1])?;
                 common::math::emit_min(self.chunk(), line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
@@ -595,7 +400,7 @@ impl Compiler {
                 self.emit_var_set("__vybe_fortran_io_buffer");
             } else {
                 self.emit_var_set("__vybe_fortran_io_buffer");
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
@@ -633,12 +438,12 @@ impl Compiler {
             self.emit_global_map_set_null("__vb_record_rows_by_handle", file_slot);
             self.emit_global_map_set_null("__vb_record_next_index_by_handle", file_slot);
             self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(true);
         }
 
         if name.eq_ignore_ascii_case("__fortran_namelist_decl") {
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(true);
         }
 
@@ -652,7 +457,7 @@ impl Compiler {
                     ExprKind::Call {
                         callee, args: dims, ..
                     } if !dims.is_empty() => {
-                        if self.profile.name == "fortran" {
+                        if self.profile.allocate_takes_dimension_list {
                             let mut dim_slots = Vec::with_capacity(dims.len());
                             for (index, dim) in dims.iter().enumerate() {
                                 self.compile_expr(&dim.value)?;
@@ -676,34 +481,34 @@ impl Compiler {
                         }
                     }
                     _ => {
-                        if self.profile.name == "fortran" {
+                        if self.profile.allocate_takes_dimension_list {
                             if let Some(ctor_name) = self.fortran_allocate_ctor_name(arg) {
                                 self.emit_fortran_ctor_call(&ctor_name);
                             } else {
-                                self.emit(Op::NULL);
+                                self.emit_null();
                             }
                             self.compile_assign_target(arg)?;
                         }
                     }
                 }
             }
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(true);
         }
         if name.eq_ignore_ascii_case("deallocate") {
             for arg in args {
                 match &arg.kind {
                     ExprKind::Call { callee, .. } => {
-                        self.emit(Op::NULL);
+                        self.emit_null();
                         self.compile_assign_target(callee)?;
                     }
                     _ => {
-                        self.emit(Op::NULL);
+                        self.emit_null();
                         self.compile_assign_target(arg)?;
                     }
                 }
             }
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(true);
         }
         if name.eq_ignore_ascii_case("present") {
@@ -724,7 +529,7 @@ impl Compiler {
                 self.compile_expr(arg)?;
                 common::collections::emit_sum(&mut self.chunks, self.current, line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
@@ -733,7 +538,7 @@ impl Compiler {
                 self.compile_expr(arg)?;
                 common::collections::emit_pymin(&mut self.chunks, self.current, line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
@@ -742,7 +547,7 @@ impl Compiler {
                 self.compile_expr(arg)?;
                 common::collections::emit_pymax(&mut self.chunks, self.current, line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
@@ -752,7 +557,7 @@ impl Compiler {
                 common::math::emit_round(self.chunk(), line);
                 common::convert::emit_to_int(self.chunk(), line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
@@ -761,37 +566,38 @@ impl Compiler {
                 self.compile_expr(arg)?;
                 common::collections::emit_len(&mut self.chunks, self.current, line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
-        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("matmul") {
-            for arg in args {
-                self.compile_expr(arg)?;
-            }
-            self.emit_common("fortran.matmul", args.len() as u8, line);
-            return Ok(true);
-        }
-        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("array_join") {
+        // `matmul` removed: the emitter already lives in the fortran language
+        // module (`emitter/math_adapter.rs`, dispatched as `fortran.matmul`),
+        // so the routing decision belongs in the profile binding, not here.
+        // Restored after deleting it regressed `shared_array_join_runtime` and
+        // `shared_array_join_direct_runtime` to `null`: this is NOT a duplicate
+        // of the `intrinsic:array_join` profile binding — this site is reached
+        // for call shapes that never get there. Only the language-name half of
+        // the condition is gone; `array_join` is declared by one profile.
+        if name.eq_ignore_ascii_case("array_join") {
             if args.len() >= 2 {
                 self.compile_expr(args[0])?;
                 self.compile_expr(args[1])?;
                 common::collections::emit_join(&mut self.chunks, self.current, line);
             } else {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             return Ok(true);
         }
-        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("this_image") {
+        if name.eq_ignore_ascii_case("this_image") {
             self.emit_const(Value::I32(1));
             return Ok(true);
         }
-        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("num_images") {
+        if name.eq_ignore_ascii_case("num_images") {
             self.emit_const(Value::I32(1));
             return Ok(true);
         }
-        if self.profile.name == "fortran" && name.eq_ignore_ascii_case("co_sum") {
-            self.emit(Op::NULL);
+        if name.eq_ignore_ascii_case("co_sum") {
+            self.emit_null();
             return Ok(true);
         }
 
@@ -819,7 +625,7 @@ impl Compiler {
                             .unwrap()(&mut self.chunks, self.current, line);
                     } else {
                         let length_key = self.str_const("length");
-                        self.emit_u16(Op::STRUCT_GET, length_key);
+                        self.emit_struct_field_op(Op::STRUCT_GET, 0, length_key);
                     }
                     // §10.1.8.1 OrdinaryGet: a missing own `length` walks
                     // the prototype chain like any other key (e.g.
@@ -883,7 +689,7 @@ impl Compiler {
                     if normalized == "datetime" || normalized.ends_with(".datetime") {
                         self.compile_expr(&args[0])?;
                         let idx = self.str_const(&field_name);
-                        self.emit_u16(Op::STRUCT_GET, idx);
+                        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
                         return Ok(true);
                     }
                 }
@@ -934,8 +740,7 @@ impl Compiler {
         // is opt-in per method rather than applied blindly.
         let builtin = match (builtin, args.first()) {
             (Some(def), Some(receiver)) => Some(self.apply_builtin_slot_binding(receiver, def)),
-            (other, _) => other,
-        };
+            (other, _) => other };
 
         // Census AFTER the substitution, matching the value-method site. It
         // reports the EFFECTIVE emit — the one actually compiled — so the two
@@ -979,7 +784,7 @@ impl Compiler {
                         self.compile_expr(args[0])?;
                         common::strings::emit_length(self.chunk(), line);
                     } else {
-                        self.emit(Op::NULL);
+                        self.emit_null();
                     }
                 }
                 BuiltinEmit::HostCall(module, func) => {
@@ -1106,6 +911,27 @@ impl Compiler {
                 BuiltinEmit::Opcode(op_name) => {
                     self.emit_builtin_opcode(op_name, args)?;
                 }
+                BuiltinEmit::MutateCall(op, index) => {
+                    // Call the op with every argument, then store the result
+                    // back into argument `index` — a `var` parameter.
+                    for a in args {
+                        self.compile_expr(a)?;
+                    }
+                    self.emit_common(op, args.len() as u8, line);
+                    match args.get(*index as usize).map(|a| &a.kind) {
+                        Some(ExprKind::Ident(var)) => {
+                            let var = var.clone();
+                            self.emit_var_set(&var);
+                            // Leave the NEW value, not NULL: a caller that
+                            // stores the statement's value back into the same
+                            // variable (pascal's var-parameter path does) would
+                            // otherwise overwrite the result with null.
+                            self.emit_var_get(&var);
+                        }
+                        // Nowhere to write back to; the call still happened.
+                        _ => {}
+                    }
+                }
                 BuiltinEmit::MutateVar(op) => {
                     if let Some(first) = args.first() {
                         if let ExprKind::Ident(var) = &first.kind {
@@ -1130,7 +956,7 @@ impl Compiler {
                             self.emit_var_set(&var);
                         }
                     }
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
                 BuiltinEmit::Intrinsic(intrinsic_name) => {
                     self.emit_intrinsic(intrinsic_name, args)?;
@@ -1153,7 +979,7 @@ impl Compiler {
                     self.emit_common(name.as_str(), args.len() as u8, line);
                 }
                 BuiltinEmit::Noop => {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
                 BuiltinEmit::Invoke(_) => {
                     // `invoke:` is only meaningful for value-method calls
@@ -1161,7 +987,7 @@ impl Compiler {
                     // profile shouldn't use it — emit null so misconfigured
                     // profiles fail loudly via type checks rather than
                     // silent wrong behaviour.
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             return Ok(true);
@@ -1255,14 +1081,15 @@ impl Compiler {
                 // through, or trap if it is null (spec). Wrapped around the field
                 // access object by the walker so the read/write lowering is
                 // unchanged; dynamic-language member access is never routed here.
-                // `ref.null $t` → a WASM GC typed null: the single `ref.null none`
-                // op (Op::NULL_NONE) pushes a TypedNull and round-trips as
-                // `0xD0 0x71` in `.wasm`. The VM's GC accessors trap on it; it's a
-                // plain null elsewhere. Non-wast callers keep emitting bare
-                // Op::NULL → plain null (`ref.null extern`).
+                // `ref.null $t` → a WASM GC typed null. This is `ref.null none`
+                // — the same opcode as every other null, distinguished by its
+                // heaptype immediate, and round-tripping as `0xD0 0x71`. The
+                // VM's GC accessors trap on it; it is a plain null elsewhere.
+                // Non-wast callers pass `HT_EXTERN` and get the lenient null.
                 "__wast_typed_null" => {
                     let l = self.line;
-                    self.chunk().emit_op(Op::NULL_NONE, l);
+                    self.chunk()
+                        .emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, l);
                     return Ok(true);
                 }
                 // Stamp a struct instance with its WASM GC rtt: compile the
@@ -1270,39 +1097,82 @@ impl Compiler {
                 // installed at load) + `SET_TYPE_ID` so the instance carries the
                 // real `type_id` for `ref.test`/`ref.cast` — no `__type` string.
                 "__wast_stamp_type" => {
-                    if let Some(obj) = args.first() {
-                        self.compile_expr(obj)?;
-                    }
                     let type_name = expr_str_lit(args.get(1).copied());
-                    let l = self.line;
-                    let g = self
-                        .chunk()
-                        .add_constant(Value::String(std::sync::Arc::from(
-                            format!("__tid_{type_name}").as_str(),
-                        )));
-                    self.chunk().emit_op_u16(Op::GLOBAL_GET, g, l);
-                    self.chunk().emit_op(Op::SET_TYPE_ID, l);
+                    // 1-based module type-table index, same convention as
+                    // `resolve_gc_array_type_id`.
+                    let typeidx = self.chunks[0]
+                        .types
+                        .iter()
+                        .position(|t| t.name == type_name)
+                        .map(|i| i as u16 + 1);
+                    match (typeidx, args.first().map(|e| &e.kind)) {
+                        (Some(tidx), Some(ExprKind::Object(props))) => {
+                            // Push field values in declaration order, then
+                            // `struct.new $T` — the SPEC instruction, which
+                            // stamps the rtt AT ALLOCATION into indexed field
+                            // storage. wast structs are genuinely positional
+                            // (`register_wast_struct_type` names their fields
+                            // "0".."n-1"), so this is the natural encoding, and
+                            // it removes the `SET_TYPE_ID` re-stamp — a 0xFF
+                            // CUSTOM opcode — entirely.
+                            let count = props.len() as u16;
+                            for p in props.to_vec() {
+                                match p {
+                                    ObjectProperty::KeyValue { value, .. } => {
+                                        self.compile_expr(&value)?
+                                    }
+                                    _ => self.emit_null() }
+                            }
+                            let l = self.line;
+                            self.chunk().emit_struct_new(tidx, count, l);
+                        }
+                        _ => {
+                            // Unregistered type or a non-literal operand:
+                            // compile as-is and leave it dynamic. A custom
+                            // opcode is not an available fallback.
+                            if let Some(obj) = args.first() {
+                                self.compile_expr(obj)?;
+                            }
+                        }
+                    }
                     return Ok(true);
                 }
-                // Stamp an `array.new_fixed` literal with its `(array …)` rtt:
-                // register the type (so its `__tid_` global exists at load) and
-                // SET_TYPE_ID, so the fixed array traps on OOB like `array.new`.
+                // `array.new_fixed $T N` — the SPEC instruction, whose first
+                // immediate IS the type index. Push the N element values, then
+                // `ARRAY_NEW_FIXED $T N`: the VM resolves the rtt from the
+                // immediate (`resolve_gc_rtt`) and stamps it AT ALLOCATION, so
+                // the fixed array traps on OOB like `array.new`.
+                //
+                // This used to build a dynamic (typeidx 0) array literal and
+                // then re-stamp it with `SET_TYPE_ID` — a 0xFF CUSTOM opcode.
+                // Custom opcodes are being eliminated, and here the spec
+                // instruction expresses the whole thing directly.
                 "__wast_stamp_array_type" => {
-                    if let Some(obj) = args.first() {
-                        self.compile_expr(obj)?;
-                    }
                     let type_ref = expr_str_lit(args.get(1).copied());
-                    // Registering returns the 1-based table index; the load-time
-                    // `__tid___wast_array::<ref>` global carries the registry id.
-                    let _ = self.resolve_gc_array_type_id(&type_ref);
-                    let l = self.line;
-                    let g = self
-                        .chunk()
-                        .add_constant(Value::String(std::sync::Arc::from(
-                            format!("__tid___wast_array::{type_ref}").as_str(),
-                        )));
-                    self.chunk().emit_op_u16(Op::GLOBAL_GET, g, l);
-                    self.chunk().emit_op(Op::SET_TYPE_ID, l);
+                    // 1-based index into this module's type table — what the
+                    // immediate must carry (NOT the runtime registry id; the
+                    // host pre-registers builtins ahead of the module's own).
+                    let typeidx = self.resolve_gc_array_type_id(&type_ref) as u16;
+                    match args.first().map(|e| &e.kind) {
+                        Some(ExprKind::Array(elems)) if elems.iter().all(|e| !e.spread) => {
+                            let count = elems.len() as u16;
+                            for el in elems.to_vec() {
+                                self.compile_expr(&el.value)?;
+                            }
+                            let l = self.line;
+                            self.chunk().emit_array_new_fixed(typeidx, count, l);
+                        }
+                        _ => {
+                            // Not a literal element list (spread, or a shape the
+                            // walker did not build): compile the operand as-is.
+                            // No stamp — a custom opcode is not an option, and
+                            // the dynamic array stays lenient, as it was before
+                            // the rtt existed.
+                            if let Some(obj) = args.first() {
+                                self.compile_expr(obj)?;
+                            }
+                        }
+                    }
                     return Ok(true);
                 }
                 "ref.test" | "ref_test" | "ref.test_null" | "ref_test_null" => {
@@ -1419,8 +1289,7 @@ impl Compiler {
             (false, false) => Op::REF_TEST,
             (false, true) => Op::REF_TEST_NULL,
             (true, false) => Op::REF_CAST,
-            (true, true) => Op::REF_CAST_NULL,
-        };
+            (true, true) => Op::REF_CAST_NULL };
         let cidx = self
             .chunk()
             .add_constant(Value::String(std::sync::Arc::from(type_name.as_str())));
@@ -1453,6 +1322,20 @@ impl Compiler {
     /// constructors with overloaded shapes) branch on it; most emits
     /// ignore it because their stack contract is fixed.
     pub(super) fn emit_common(&mut self, name: &str, argc: u8, line: u32) {
+        // `control_flow.exit` is THE exit primitive. It is handled here rather
+        // than in the common dispatch because the lowering needs the compiler
+        // itself — an import index for `wasi:cli/exit` AND the chunk list, to
+        // flush open output buffers. A profile binds its own spelling to it
+        // (`emit = "common:control_flow.exit"`) instead of naming the host
+        // function directly, which is what gives every language the same
+        // flush-then-exit behaviour.
+        if name == "control_flow.exit" {
+            self.line = line;
+            // The emitter signature is infallible; an exit that cannot be
+            // lowered would be a compiler bug, not a program error.
+            let _ = self.emit_exit_from_stack(argc);
+            return;
+        }
         // First try the import-needing dispatch (sleep, etc.). It needs a
         // closure into the compiler to resolve imports against chunk[0].
         // We use a raw pointer to break the borrow of self.
@@ -1511,7 +1394,7 @@ impl Compiler {
             }
             "dyn_to_bool" => {
                 let line = self.line;
-                if self.is_python_profile() {
+                if self.profile.truthiness_via_dunder_or_length {
                     self.emit_condition_truthiness_from_stack();
                 } else {
                     crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1697,7 +1580,7 @@ impl Compiler {
                     self.compile_expr(args[1])?;
                     common::math::emit_min(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "max" => {
@@ -1706,7 +1589,7 @@ impl Compiler {
                     self.compile_expr(args[1])?;
                     common::math::emit_max(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "sqr" => {
@@ -1745,7 +1628,7 @@ impl Compiler {
                     self.compile_expr(args[1])?;
                     fn_call!(self, "ecma:string", "includes", 2);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "str_starts_with" => {
@@ -1754,7 +1637,7 @@ impl Compiler {
                     self.compile_expr(args[1])?;
                     fn_call!(self, "ecma:string", "startsWith", 2);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "str_ends_with" => {
@@ -1763,7 +1646,7 @@ impl Compiler {
                     self.compile_expr(args[1])?;
                     fn_call!(self, "ecma:string", "endsWith", 2);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "concat" => {
@@ -1806,7 +1689,7 @@ impl Compiler {
                 if args.len() >= 2 {
                     self.compile_setlength(args[0], args[1])?;
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "trim_start" => {
@@ -1865,11 +1748,11 @@ impl Compiler {
                 if let Some(first) = args.first() {
                     if let ExprKind::Ident(var) = &first.kind {
                         let var = var.clone();
-                        self.emit(Op::NULL);
+                        self.emit_null();
                         self.emit_var_set(&var);
                     }
                 }
-                self.emit(Op::NULL);
+                self.emit_null();
             }
             // NOTE: bare WASM opcodes (f64.*, ref.is_null, ALL SIMD lane ops, …)
             // are NOT enumerated here — they emit through the one VM opcode table
@@ -1894,7 +1777,7 @@ impl Compiler {
                 }
                 {
                     let line = self.line;
-                    if self.is_python_profile() {
+                    if self.profile.truthiness_via_dunder_or_length {
                         self.emit_condition_truthiness_from_stack();
                     } else {
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -1992,11 +1875,7 @@ impl Compiler {
                 }
             }
             // CSV parsing is a SHARED primitive (`primitives/csv.rs`), not a
-            // per-language hook. This used to call
-            // `hooks(profile.name).str_getcsv.unwrap()`, which only php ever
-            // registered — so fortran's own `str_getcsv`, declared in its
-            // profile, unwrapped `None`. A second `profile.name == "fortran"`
-            // branch above routed here and is gone with it.
+            // per-language hook.
             "str_getcsv" => {
                 let line = self.line;
                 for arg in args {
@@ -2032,7 +1911,7 @@ impl Compiler {
                 if let Some(cb) = args.first() {
                     self.compile_expr(cb)?;
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
                 if args.len() >= 2 {
                     self.compile_expr(args[1])?;
@@ -2083,7 +1962,7 @@ impl Compiler {
                     self.compile_expr(first)?;
                     common::collections::emit_pop(&mut self.chunks, self.current, line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "array_shift" => {
@@ -2091,7 +1970,7 @@ impl Compiler {
                     self.compile_expr(first)?;
                     common::collections::emit_shift(&mut self.chunks, self.current, line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "array_reverse" => {
@@ -2099,7 +1978,7 @@ impl Compiler {
                     self.compile_expr(first)?;
                     common::collections::emit_reverse(&mut self.chunks, self.current, line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "array_concat" => {
@@ -2156,7 +2035,7 @@ impl Compiler {
                 // v128.const value, shuffle mask — so there is no second list.
                 let resolved = Op::from_flattened_name(op_name);
                 let Some(op) = resolved else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                     return Ok(());
                 };
                 use vybe_runtime::opcode::OperandFormat;
@@ -2292,7 +2171,7 @@ impl Compiler {
     ) -> Result<(), String> {
         let line = self.line;
         if args.len() < 2 {
-            self.emit(Op::NULL);
+            self.emit_null();
             return Ok(());
         }
 
@@ -2487,7 +2366,7 @@ impl Compiler {
                 let type_key = self
                     .chunk()
                     .add_constant(Value::String(Arc::from("__type")));
-                self.emit_u16(Op::STRUCT_GET, type_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, type_key);
                 self.emit_const(Value::String(Arc::from("DateTime")));
                 {
                     let line = self.line;
@@ -2499,7 +2378,7 @@ impl Compiler {
                 let time_key = self
                     .chunk()
                     .add_constant(Value::String(Arc::from("__time")));
-                self.emit_u16(Op::STRUCT_GET, time_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, time_key);
                 let iso_idx = self.import("ecma:date", "toISOString");
                 self.emit_host_call(iso_idx, 1);
                 self.chunk().emit_else(line);
@@ -2694,7 +2573,7 @@ impl Compiler {
             }
             "switch" => {
                 if args.len() < 2 {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 } else {
                     let mut slots = Vec::with_capacity(args.len());
                     for (index, arg) in args.iter().enumerate() {
@@ -2705,7 +2584,7 @@ impl Compiler {
                     }
 
                     let result_slot = self.define_local("__vb_switch_result");
-                    self.emit(Op::NULL);
+                    self.emit_null();
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     let matched_slot = self.define_local("__vb_switch_matched");
                     self.emit_const(Value::Bool(false));
@@ -2744,7 +2623,7 @@ impl Compiler {
                     self.compile_expr(args[0])?;
                     common::strings::emit_repeat(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "left" => {
@@ -2756,7 +2635,7 @@ impl Compiler {
                     common::convert::emit_to_int(self.chunk(), line);
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "php_is_float" => {
@@ -2887,7 +2766,7 @@ impl Compiler {
                         self.compile_expr(arg)?;
                         self.emit(Op::DROP);
                     }
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "php_function_exists" => {
@@ -3033,7 +2912,7 @@ impl Compiler {
                         self.chunk().emit_call(idx, 1, line);
                     }
                     self.chunk().emit_if_value(line);
-                    self.emit(Op::NULL);
+                    self.emit_null();
                     self.chunk().emit_else(line);
                     self.emit_const(Value::String(Arc::from(name.as_str())));
                     self.chunk().emit_end(line);
@@ -3042,7 +2921,7 @@ impl Compiler {
                         self.compile_expr(arg)?;
                         self.emit(Op::DROP);
                     }
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             n if n.starts_with("symbol_resolve_or_throw:") || n.starts_with("symbol_require:") => {
@@ -3057,8 +2936,7 @@ impl Compiler {
                 //                             agree with it).
                 let (prefix, yields_name) = match n.starts_with("symbol_require:") {
                     true => ("symbol_require:", true),
-                    false => ("symbol_resolve_or_throw:", false),
-                };
+                    false => ("symbol_resolve_or_throw:", false) };
                 let exception_name = &n[prefix.len()..];
                 if let Some(Expression {
                     kind: ExprKind::Lit(Literal::Str(name)),
@@ -3090,7 +2968,7 @@ impl Compiler {
                     if let Some(arg) = args.first() {
                         self.compile_expr(arg)?;
                     } else {
-                        self.emit(Op::NULL);
+                        self.emit_null();
                     }
                     for arg in args.iter().skip(1) {
                         self.compile_expr(arg)?;
@@ -3328,12 +3206,29 @@ impl Compiler {
                     self.emit_common("sprintf.format_array", 2, line);
                 }
             }
+            // `register_shutdown_function(cb, ...args)` — the callbacks used to
+            // be DISCARDED here, so the function was a silent no-op: a
+            // registered handler never ran, with or without `exit`. They are
+            // now collected into `__php_shutdown_fns` and invoked by
+            // `emit_php_run_shutdown_fns` at end of program and on exit/die.
             "php_register_shutdown_function" => {
+                self.emit_ensure_global_list("__php_shutdown_fns");
+                let key = self.shared_global_slot("__php_shutdown_fns");
+                self.emit_u16(Op::GLOBAL_GET, key);
+                // One entry per registration: [callback, ...extra args].
+                let line = self.line;
+                common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
                 for arg in args {
+                    inst!(self, core_wasm::dup);
                     self.compile_expr(arg)?;
+                    let push = self.import("ecma:array", "push");
+                    self.emit_host_call(push, 2);
                     self.emit(Op::DROP);
                 }
-                self.emit(Op::NULL);
+                let push = self.import("ecma:array", "push");
+                self.emit_host_call(push, 2);
+                self.emit(Op::DROP);
+                self.emit_null();
             }
             // The host environment's time zone — ONE clock shared by every
             // language, so PHP's `date_default_timezone_set`, Java's
@@ -3384,9 +3279,9 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     common::collections::emit_reverse(&mut self.chunks, self.current, line);
                     self.emit(Op::DROP);
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "right" => {
@@ -3434,7 +3329,7 @@ impl Compiler {
                     common::strings::emit_length(self.chunk(), line);
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "php_substr" => {
@@ -3585,7 +3480,7 @@ impl Compiler {
 
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             // `php_strpos` / `strtr` relocated to the PHP string adapter
@@ -3689,7 +3584,7 @@ impl Compiler {
 
                     common::collections::emit_slice(&mut self.chunks, self.current, line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "php_range" => {
@@ -3785,7 +3680,7 @@ impl Compiler {
                     }
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "number_isnan" => {
@@ -3828,7 +3723,7 @@ impl Compiler {
                     let idx = self.import("ecma:array", "at");
                     self.emit_host_call(idx, 2);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "instr" => {
@@ -3872,7 +3767,7 @@ impl Compiler {
                     self.emit(Op::I32_ADD);
                     self.chunk().emit_end(line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "strcomp" => {
@@ -3913,7 +3808,7 @@ impl Compiler {
                     fn_call!(self, "wasm:js-string", "compare", 2);
                     self.chunk().emit_end(line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "instrrev" => {
@@ -3960,7 +3855,7 @@ impl Compiler {
                         self.emit(Op::I32_ADD);
                     }
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "fortran_index" => {
@@ -4006,7 +3901,7 @@ impl Compiler {
                     self.emit_const(Value::I32(1));
                     self.emit(Op::I32_ADD);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "fortran_scan" => {
@@ -4243,7 +4138,7 @@ impl Compiler {
                     };
                     self.chunk().emit_end(line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "filter" => {
@@ -4351,7 +4246,7 @@ impl Compiler {
                     );
                     self.emit_u16(Op::LOCAL_GET, result_slot);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "split" => {
@@ -4591,7 +4486,7 @@ impl Compiler {
             "assigned" => {
                 // Assigned(x) → x is not null
                 self.compile_expr(args[0])?;
-                self.emit(Op::NULL);
+                self.emit_null();
                 {
                     let line = self.line;
                     crate::primitives::ops::emit_dyn_ne(self.chunk(), line);
@@ -4607,7 +4502,7 @@ impl Compiler {
                 // ClassName(obj) → obj.__type
                 self.compile_expr(args[0])?;
                 let idx = self.str_const("__type");
-                self.emit_u16(Op::STRUCT_GET, idx);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
             }
             "pos" => {
                 // Pos(substr, s) → IndexOf(s, substr) + 1 (Pascal 1-based)
@@ -4618,7 +4513,7 @@ impl Compiler {
                     self.emit_const(Value::I32(1));
                     self.emit(Op::I32_ADD);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "copy" => {
@@ -4639,7 +4534,7 @@ impl Compiler {
                     }
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "leftstr" => {
@@ -4651,7 +4546,7 @@ impl Compiler {
                     common::convert::emit_to_int(self.chunk(), line);
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "str_concat" => {
@@ -4682,7 +4577,7 @@ impl Compiler {
                     common::strings::emit_length(self.chunk(), line);
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
 
@@ -4702,7 +4597,7 @@ impl Compiler {
                     let idx = self.import("ecma:string", "padStart");
                     self.emit_host_call(idx, 3);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "partition" | "rpartition" => {
@@ -4765,7 +4660,7 @@ impl Compiler {
                     common::tuples::emit_tuple(&mut self.chunks, self.current, 3, line);
                     self.chunk().emit_end(line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "capitalize" => {
@@ -4795,7 +4690,7 @@ impl Compiler {
                         crate::primitives::ops::emit_dyn_add(self.chunk(), line);
                     };
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "center" => {
@@ -4825,7 +4720,7 @@ impl Compiler {
                         line,
                     );
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "count" => {
@@ -4847,7 +4742,7 @@ impl Compiler {
                     self.emit_const(Value::I32(1));
                     self.emit(Op::I32_SUB);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "chop" => {
@@ -4864,7 +4759,7 @@ impl Compiler {
                     self.emit(Op::I32_SUB);
                     common::strings::emit_substring(self.chunk(), line);
                 } else {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
             }
             "chars" => {
@@ -4947,15 +4842,34 @@ impl Compiler {
                     let frac_slot = self.define_local("__cint_frac");
 
                     self.emit_u16(Op::LOCAL_SET, rounded_value_slot);
-                    if self.profile.name == "vb" {
+                    // A value that is not numeric at all reaches here as NaN.
+                    // Languages that reject it name the exception and message
+                    // in their profile; the rest fall through to the numeric
+                    // path unchanged.
+                    if !self.profile.numeric_cast_invalid_error.is_empty() {
+                        let error_type = self.profile.numeric_cast_invalid_error.clone();
+                        let template = self.profile.numeric_cast_invalid_message.clone();
                         self.emit_u16(Op::LOCAL_GET, rounded_value_slot);
                         self.emit_u16(Op::LOCAL_GET, rounded_value_slot);
                         self.emit(Op::F64_NE);
                         self.chunk().emit_if(line);
-                        self.emit_const(Value::String(Arc::from(
-                            "Conversion from string to type 'Integer' is not valid.",
-                        )));
-                        self.emit_js_exception_ctor_from_message_value("InvalidCastException")?;
+                        match template.split_once("{}") {
+                            // `{}` is the offending value — the message is
+                            // built at runtime, not folded.
+                            Some((prefix, suffix)) => {
+                                self.emit_const(Value::String(Arc::from(prefix)));
+                                self.emit_u16(Op::LOCAL_GET, value_slot);
+                                let to_str = self.import("ecma:string", "String");
+                                self.emit_host_call(to_str, 1);
+                                fn_call!(self, "wasm:js-string", "concat", 2);
+                                self.emit_const(Value::String(Arc::from(suffix)));
+                                fn_call!(self, "wasm:js-string", "concat", 2);
+                            }
+                            None => {
+                                self.emit_const(Value::String(Arc::from(template.as_str())));
+                            }
+                        }
+                        self.emit_js_exception_ctor_from_message_value(&error_type)?;
                         common::errors::emit_throw(self.chunk(), line);
                         self.chunk().emit_end(line);
                     }
@@ -5068,7 +4982,7 @@ impl Compiler {
             }
 
             _ => {
-                self.emit(Op::NULL);
+                self.emit_null();
             }
         }
         Ok(())

@@ -6,8 +6,7 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetEvent, WidgetId,
-};
+    WidgetEvent, WidgetId };
 use tiny_skia::*;
 
 /// How a column or row is sized.
@@ -16,8 +15,7 @@ pub enum SizeMode {
     /// Fixed pixel size.
     Absolute(f32),
     /// Proportional share of remaining space (weight).
-    Percent(f32),
-}
+    Percent(f32) }
 
 /// A child placed in a specific cell.
 struct CellChild {
@@ -25,8 +23,7 @@ struct CellChild {
     row: usize,
     col_span: usize,
     row_span: usize,
-    widget: Box<dyn PanelWidget>,
-}
+    widget: Box<dyn PanelWidget> }
 
 pub struct TableLayoutPanel {
     pub cols: usize,
@@ -41,8 +38,7 @@ pub struct TableLayoutPanel {
     col_sizes: Vec<SizeMode>,
     row_sizes: Vec<SizeMode>,
     children: Vec<CellChild>,
-    rect: LayoutRect,
-}
+    rect: LayoutRect }
 
 impl TableLayoutPanel {
     pub fn new(cols: usize, rows: usize) -> Self {
@@ -62,8 +58,7 @@ impl TableLayoutPanel {
             col_sizes: vec![SizeMode::Percent(1.0); cols],
             row_sizes: vec![SizeMode::Percent(1.0); rows],
             children: Vec::new(),
-            rect: LayoutRect::zero(),
-        }
+            rect: LayoutRect::zero() }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -93,8 +88,7 @@ impl TableLayoutPanel {
             row,
             col_span: 1,
             row_span: 1,
-            widget,
-        });
+            widget });
         self.relayout();
     }
 
@@ -112,8 +106,7 @@ impl TableLayoutPanel {
             row,
             col_span: col_span.max(1),
             row_span: row_span.max(1),
-            widget,
-        });
+            widget });
         self.relayout();
     }
 
@@ -130,8 +123,7 @@ impl TableLayoutPanel {
         for m in modes {
             match m {
                 SizeMode::Absolute(px) => abs_total += px,
-                SizeMode::Percent(w) => pct_total += w,
-            }
+                SizeMode::Percent(w) => pct_total += w }
         }
         let remaining = (total - abs_total).max(0.0);
         let mut pos = 0.0;
@@ -340,7 +332,6 @@ impl PanelWidget for TableLayoutPanel {
                 }
                 CommandValue::None
             }
-            _ => CommandValue::None,
-        }
+            _ => CommandValue::None }
     }
 }

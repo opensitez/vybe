@@ -64,7 +64,9 @@ impl Compiler {
 
             let target_name = signature_source.as_ref().unwrap_or(name);
             let target_canonical = self.canon(target_name);
-            let canonical_names = if self.profile.name == "fortran" && !interface_name.is_empty() {
+            let canonical_names = if self.profile.interface_block_is_generic_alias
+                && !interface_name.is_empty()
+            {
                 vec![target_canonical.clone(), interface_canonical.clone()]
             } else {
                 vec![self.canon(name)]
@@ -149,15 +151,14 @@ impl Compiler {
                 }
             }
 
-            if self.profile.name == "fortran" && !interface_name.is_empty() {
+            if self.profile.interface_block_is_generic_alias && !interface_name.is_empty() {
                 let overload = FortranInterfaceOverload {
                     target_name: target_canonical,
                     min_arity: params
                         .iter()
                         .take_while(|param| param.default.is_none() && !param.is_rest)
                         .count(),
-                    param_types: params.iter().map(|param| param.type_hint.clone()).collect(),
-                };
+                    param_types: params.iter().map(|param| param.type_hint.clone()).collect() };
 
                 if let Some(symbol) = operator_symbol.as_ref() {
                     let overloads = self
@@ -329,8 +330,9 @@ impl Compiler {
         name: &str,
         arg_exprs: &[Expression],
     ) -> Option<String> {
-        (self.profile.name == "fortran")
-            .then(|| self.canon(name))
+        // Redundant name check removed: `fortran_interface_overloads` is only
+        // populated under `interface_block_is_generic_alias`.
+        Some(self.canon(name))
             .and_then(|canonical| self.fortran_interface_overloads.get(&canonical))
             .and_then(|overloads| self.resolve_fortran_overload_target(overloads, arg_exprs))
     }
@@ -346,8 +348,7 @@ impl Compiler {
             BinOp::Mul => "*",
             BinOp::Div => "/",
             BinOp::Pow => "**",
-            _ => return None,
-        };
+            _ => return None };
 
         self.fortran_operator_overloads
             .get(symbol)

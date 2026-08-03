@@ -9,6 +9,79 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use crate::primitives::reflection;
+use vybe_ast::{CatchClause, ExprKind, Expression, StmtKind, Statement};
+
+/// Wrap a module body in the program's ERROR BOUNDARY: a catch-all `Try` whose
+/// handler is the language's own uncaught-exception report.
+///
+/// An uncaught exception otherwise escapes to the VM, which prints
+/// `RuntimeError: [object]` — the correct terminal for a value whose role was
+/// never resolved (`Display for ObjectKind::Ordinary`), but useless as a
+/// diagnostic. Wrapping means nothing reaches that path.
+///
+/// The MECHANISM is shared and lives here; the REPORT is the caller's, supplied
+/// as ordinary statements. That split matters: PHP's
+/// `PHP Fatal error:  Uncaught RuntimeException: boom`, Python's traceback and
+/// Java's `Exception in thread "main" …` have no common shape, and expressing
+/// them as a format string in a shared crate would put a per-language table
+/// here. As AST the handler runs through each language's own `get_class` /
+/// `type()` / `.getClass()` and its own concatenation, so a user's
+/// `__toString` / `__str__` is reached by the language's normal rules.
+///
+/// `StmtKind::Try` already models everything needed — this adds no AST surface.
+/// A language that supplies no handler is not wrapped and is unaffected.
+pub fn wrap_module_in_error_boundary(
+    body: Vec<Statement>,
+    catch_var: &str,
+    handler: Vec<Statement>,
+) -> Vec<Statement> {
+    if handler.is_empty() {
+        return body;
+    }
+    // Declarations stay OUTSIDE the boundary. The module-body compile runs a
+    // first pass over top-level `FunctionDecl`s (`mod.rs`), and anything nested
+    // inside the `Try` is invisible to it — wrapping them would unhoist every
+    // top-level function. They cannot throw at module level anyway; only the
+    // executable statements can.
+    let (declarations, executable): (Vec<Statement>, Vec<Statement>) =
+        body.into_iter().partition(|stmt| {
+            matches!(
+                stmt.kind,
+                StmtKind::FunctionDecl { .. }
+                    | StmtKind::ClassDecl { .. }
+                    | StmtKind::StructDecl { .. }
+                    | StmtKind::InterfaceDecl { .. }
+                    | StmtKind::EnumDecl { .. }
+                    | StmtKind::ModuleDecl { .. }
+            )
+        });
+    // Report, then RE-THROW. The boundary must not swallow the exception: the
+    // process exit code is how a runner decides pass/fail, and a swallowed
+    // throw exits 0 — turning every genuine failure into a pass. Measured
+    // 2026-08-02: without this, an uncaught php throw exited 0 where real php
+    // exits 255, and a php slice "improved" 96/14 → 108/2 entirely falsely.
+    //
+    // Exiting with a code instead would be the tidier shape, but
+    // `wasi:cli/exit.exit-with-code` currently ignores its argument
+    // (`platforms/wasi/src/console.rs`), so `exit(255)` cannot set it.
+    let mut handler = handler;
+    handler.push(Statement::new(StmtKind::Throw {
+        expr: Some(Expression::new(ExprKind::Ident(catch_var.to_string()))),
+        cause: None }));
+    let mut out = declarations;
+    out.push(Statement::new(StmtKind::Try {
+        body: executable,
+        catches: vec![CatchClause {
+            // No types — a boundary catches everything the language can throw.
+            types: Vec::new(),
+            var_name: Some(catch_var.to_string()),
+            stack_var: None,
+            body: handler,
+            when_clause: None }],
+        else_body: None,
+        finally: None }));
+    out
+}
 
 /// Build a standard exception constructor chunk.
 /// All languages should use this shape: { __type, __exception_type, name, message }.
@@ -21,7 +94,7 @@ pub fn emit_exception_constructor(
     line: u32,
 ) {
     // Create object
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
 
     // Shared type/reflection stamps. `__exception_type` remains for older
@@ -39,7 +112,7 @@ pub fn emit_exception_constructor(
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_string_const(val, line);
         let k = chunk.add_constant(Value::String(Arc::from(key)));
-        chunk.emit_op_u16(Op::STRUCT_SET, k, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -47,14 +120,14 @@ pub fn emit_exception_constructor(
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_string_const(exc_name, line);
     let n_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, n_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, n_key, line);
     chunk.emit_op(Op::DROP, line);
 
     // message = msg_slot
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, msg_slot, line);
     let m_key = chunk.add_constant(Value::String(Arc::from("message")));
-    chunk.emit_op_u16(Op::STRUCT_SET, m_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, m_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -71,9 +144,9 @@ pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
     let ctor_key = chunk.add_constant(Value::String(Arc::from(format!("__ctor_{kind}").as_str())));
     chunk.emit_op_u16(Op::GLOBAL_GET, ctor_key, line); // [err, err, ctor]
     let proto_key = chunk.add_constant(Value::String(Arc::from("prototype")));
-    chunk.emit_op_u16(Op::STRUCT_GET, proto_key, line); // [err, err, proto]
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key, line); // [err, err, proto]
     let link_key = chunk.add_constant(Value::String(Arc::from("__proto__")));
-    chunk.emit_op_u16(Op::STRUCT_SET, link_key, line); // [err, err]
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, link_key, line); // [err, err]
     chunk.emit_op(Op::DROP, line); // [err]
     // delete err.name — own stamp off, prototype `name` takes over
     crate::primitives::instructions::core_wasm::dup(chunk, line); // [err, err]
@@ -115,8 +188,7 @@ pub fn canonical_exception_name(name: &str) -> &str {
         "ioerror" | "ioexception" => "IOError",
         "oserror" => "OSError",
         "exception" | "error" => "Exception",
-        _ => trimmed,
-    }
+        _ => trimmed }
 }
 
 /// Spec EH catch-clause kinds (exception-handling proposal `try_table`).
@@ -141,8 +213,7 @@ pub fn exception_tag(chunk: &mut Chunk) -> u16 {
 #[derive(Clone, Copy)]
 pub struct TryTableClause {
     pub kind: u8,
-    pub tag: u16,
-}
+    pub tag: u16 }
 
 /// Emit a `try_table` header with N catch clauses — the single source of
 /// truth for the VM's internal try_table byte layout, shared by every
@@ -171,8 +242,7 @@ pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
         chunk,
         &[TryTableClause {
             kind: CATCH_KIND_CATCH,
-            tag,
-        }],
+            tag }],
         line,
     )[0]
 }
@@ -298,7 +368,7 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     chunk.emit_call(str_idx, 1, line);
     // [obj, obj, msg_string] → [obj, msg_string] via struct_set "message"
     let m_key = chunk.add_constant(Value::String(Arc::from("message")));
-    chunk.emit_op_u16(Op::STRUCT_SET, m_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, m_key, line);
     // [obj, msg_val] → [obj]
     chunk.emit_op(Op::DROP, line);
 
@@ -316,7 +386,7 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
         chunk.emit_dup(line);
         chunk.emit_string_const(val, line);
         let k = chunk.add_constant(Value::String(Arc::from(key)));
-        chunk.emit_op_u16(Op::STRUCT_SET, k, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
         chunk.emit_op(Op::DROP, line);
     }
 
@@ -325,7 +395,7 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     chunk.emit_dup(line);
     chunk.emit_string_const(original, line);
     let n_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, n_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, n_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -490,8 +560,7 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "BaseException",
         ],
         "StopAsyncIteration" => &["StopAsyncIteration", "Exception", "BaseException"],
-        _ => &[],
-    }
+        _ => &[] }
 }
 
 /// Stamp `__types` with the canonical ancestor chain so typed catches
@@ -511,7 +580,7 @@ pub fn emit_stamp_exception_ancestors(chunk: &mut Chunk, exc_name: &str, line: u
     }
     chunk.emit_array_new_fixed(0, chain.len() as u16, line);
     let key = chunk.add_constant(Value::String(Arc::from(reflection::FIELD_TYPES)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -533,7 +602,7 @@ pub fn emit_resource_dispose(chunk: &mut Chunk, slot: u16, dispose_method: &str,
     let dispose_block = chunk.emit_block(line);
     // method = resource[<dispose_method>]
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, dispose_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, dispose_key, line);
     // if method is null/undefined, skip the call.
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);

@@ -81,8 +81,7 @@ fn bind_with_slot_publishes_the_name_and_the_role() {
         .iter()
         .filter_map(|c| match c {
             Value::String(text) => Some(text.to_string()),
-            _ => None,
-        })
+            _ => None })
         .collect();
     assert!(constants.contains(&"__str__".to_string()));
     assert!(constants.contains(&protocol_slot_key(ProtocolSlot::ToString)));
@@ -97,8 +96,7 @@ fn an_ordinary_method_binds_under_one_name_only() {
         .iter()
         .filter_map(|c| match c {
             Value::String(text) => Some(text.to_string()),
-            _ => None,
-        })
+            _ => None })
         .collect();
     assert_eq!(names, vec!["doSomething".to_string()]);
 }
@@ -111,8 +109,10 @@ use vybe_runtime::{Chunk, Value};
 #[test]
 fn emit_new_typed_object_stamps_type() {
     let mut chunk = Chunk::new("test");
-    classes::emit_new_typed_object(&mut chunk, 1, "Dog", 0);
-    // Should have emitted struct_new, __type stamp, set_type_id
+    // typeidx 1 — allocation carries the type, so the rtt is set by
+    // `struct.new_default $T` rather than stamped afterwards.
+    classes::emit_new_typed_object(&mut chunk, 1, "Dog", 1, 0);
+    // Should have emitted struct.new_default $T and the __type stamp
     assert!(chunk.code.len() > 10, "Should emit multiple opcodes");
     // Check constants contain "Dog" and "__type"
     let has_dog = chunk
@@ -279,7 +279,7 @@ fn dict_set_const_key_tracks_key() {
     dict::emit_new(&mut chunks, 0, 0);
     // Simulate: dup dict, push value, then set key
     chunks[0].emit_dup(0);
-    chunks[0].emit_op(Op::NULL, 0); // placeholder value
+    chunks[0].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // placeholder value
     dict::emit_set_const_key(&mut chunks, 0, "name", 0);
     // Should have "name" in constants (for struct_set AND for __keys push)
     let name_count = chunks[0]

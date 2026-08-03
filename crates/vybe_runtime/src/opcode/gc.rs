@@ -108,12 +108,20 @@ impl Op {
 
 opcode_category! {
     // Struct ops (0x00..=0x05)
-    [0x00] struct_new         => U16,    "struct.new";
+    // `(typeidx, count)`, mirroring `array.new_fixed`. typeidx 0 = the
+    // DYNAMIC object-literal form every language front end emits (count = k/v
+    // pairs); non-zero is spec `struct.new $t`, whose field count comes from
+    // $t itself, not from an immediate.
+    [0x00] struct_new         => U16_U16, "struct.new";
     [0x01] struct_new_default => U16,    "struct.new_default";
-    [0x02] struct_get         => U16,    "struct.get";
-    [0x03] struct_get_s       => U16,    "struct.get_s";
-    [0x04] struct_get_u       => U16,    "struct.get_u";
-    [0x05] struct_set         => U16,    "struct.set";
+    // `(typeidx, idx)` — same discrimination as `struct.new`. typeidx 0 means
+    // `idx` is a constant-pool index for a field NAME (the dynamic path every
+    // language front end emits); non-zero means `idx` is a spec `fieldidx`
+    // into the instance's indexed storage.
+    [0x02] struct_get         => U16_U16, "struct.get";
+    [0x03] struct_get_s       => U16_U16, "struct.get_s";
+    [0x04] struct_get_u       => U16_U16, "struct.get_u";
+    [0x05] struct_set         => U16_U16, "struct.set";
     // Array ops (0x06..=0x13)
     //
     // Note on bytecode vs WASM binary: the spec assigns each of these
@@ -125,7 +133,12 @@ opcode_category! {
     // the spec-required typeidx when lowering to the WASM binary.
     [0x06] array_new          => U16,     "array.new";         // typeidx (VM reads it)
     [0x07] array_new_default  => U16,     "array.new_default"; // typeidx (VM reads it)
-    [0x08] array_new_fixed    => U16,     "array.new_fixed";
+    // BOTH immediates, `$t` and `N` — 4 bytes. Declaring this `U16` while
+    // `Chunk::emit_array_new_fixed` writes four bytes and the dispatch reads
+    // four leaves every operand_format-driven walk (the block-scanning
+    // pre-pass, disassembly, codec skips) two bytes short, so the scan
+    // resynchronises inside the NEXT instruction.
+    [0x08] array_new_fixed    => U16_U16, "array.new_fixed";
     [0x09] array_new_data     => U16_U16, "array.new_data";
     [0x0A] array_new_elem     => U16_U16, "array.new_elem";
     [0x0B] array_get          => None,    "array.get";

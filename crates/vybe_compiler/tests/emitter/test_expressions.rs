@@ -39,7 +39,7 @@ fn or_short_circuit() {
 #[test]
 fn null_coalesce() {
     let mut chunk = Chunk::new("test");
-    chunk.emit_op(Op::NULL, 0); // left
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // left
     let (_null_jump, end_jump) = expressions::emit_null_coalesce_start(&mut chunk, 0);
     chunk.emit_i32_const(1, 0); // right (default)
     expressions::emit_null_coalesce_end(&mut chunk, end_jump);
@@ -49,7 +49,7 @@ fn null_coalesce() {
 #[test]
 fn null_safe_access() {
     let mut chunk = Chunk::new("test");
-    chunk.emit_op(Op::NULL, 0); // object
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // object
     let (skip, _) = expressions::emit_null_safe_start(&mut chunk, 0);
     // member access would go here
     chunk.emit_op(Op::DROP, 0); // placeholder

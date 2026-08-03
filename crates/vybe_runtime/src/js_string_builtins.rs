@@ -159,8 +159,7 @@ pub fn register(vm: &mut VM) {
                     }
                 }
                 (Value::Null, Value::Null) => 1,
-                _ => 0,
-            })
+                _ => 0 })
         }),
     );
 

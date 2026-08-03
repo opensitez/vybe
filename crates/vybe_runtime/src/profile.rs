@@ -44,6 +44,19 @@ pub struct LanguageProfile {
     /// stays language-agnostic — it just throws whatever the profile names.
     pub member_call_on_null_error: String,
 
+    /// Exception type raised when an integer cast (`cint`/`clng`) is handed a
+    /// value that is not numeric at all — VB `CInt("abc")`, Ruby
+    /// `Integer("abc")`. Empty (the default) means the language does not
+    /// reject: the cast falls through to the numeric path. Same contract as
+    /// `member_call_on_null_error` — the emitter throws whatever the profile
+    /// names and knows nothing about the language.
+    pub numeric_cast_invalid_error: String,
+
+    /// Message for `numeric_cast_invalid_error`. `{}` is substituted with the
+    /// offending value (Ruby: `invalid value for Integer(): "abc"`); a template
+    /// without `{}` is emitted verbatim (VB's message names no value).
+    pub numeric_cast_invalid_message: String,
+
     /// Class instance-method dispatch model.
     /// "instance" (default): construction binds compiled method refs
     /// directly onto the instance.
@@ -57,8 +70,23 @@ pub struct LanguageProfile {
     /// Whether enum values are compiled as global ordinal constants.
     pub enum_as_ordinals: bool,
 
-    /// Whether the language is case-sensitive.
+    /// Whether the language is case-sensitive. Governs VARIABLE names, which is
+    /// what the compiler's scopes fold on (`Scope::fold_case`).
     pub case_sensitive: bool,
+
+    /// Whether FUNCTION and CLASS names fold case, independently of
+    /// `case_sensitive`.
+    ///
+    /// Case folding is a property of the name KIND, not of the language: PHP
+    /// variables are case-sensitive while its function and class names are not.
+    /// That split is why this cannot be one boolean, and why it used to be a
+    /// `self.name == "php"` check inside `lookup_builtin` — a language-name gate
+    /// in the VM crate.
+    ///
+    /// Defaults to `!case_sensitive`, so the four genuinely case-insensitive
+    /// languages (vb, pascal, cobol, fortran) get it without declaring it and
+    /// PHP is the only profile that sets it explicitly.
+    pub fold_callable_names: bool,
 
     /// String indexing: "zero_based" or "one_based" (VB).
     pub string_indexing: StringIndexing,
@@ -135,6 +163,136 @@ pub struct LanguageProfile {
     /// tuple allocation for the common `return a, b` / `a, b = f()` idiom.
     pub multi_value_tuple_returns: bool,
 
+    /// Methods declare their receiver explicitly and a `*T` receiver means the
+    /// method mutates the original while a bare `T` receiver gets a COPY (Go).
+    /// Drives the pending-class instance-call path that clones a value
+    /// receiver before dispatch.
+    pub pointer_receiver_methods: bool,
+
+    /// `exit(code)` as a statement compiles to a return of `code`. C's `exit`
+    /// terminates the process; returning approximates that at the entry
+    /// function and is what the language has always emitted. (Known limit: a
+    /// nested call returns from its own frame rather than the program.)
+
+    /// How this language spells its global namespace — Lua `_G`, JS
+    /// `globalThis`, PHP `$GLOBALS`, Python `globals`. Empty means the language
+    /// has no such spelling. See `primitives/globals.rs`.
+    pub global_namespace: String,
+
+    /// The spelling is a zero-argument CALL (`globals()`) rather than an
+    /// identifier (`_G`).
+    pub global_namespace_is_call: bool,
+
+    /// A call site supplies `undefined` for a trailing OPTIONAL dummy argument
+    /// the callee declares but the call omits (Fortran `optional ::`).
+    ///
+    /// Honest limit of the current emit: it pads only the receiver-less
+    /// one-argument call to two. A general fix compares the call's arity
+    /// against the callee's signature; nothing does that here yet.
+    pub pads_trailing_optional_arg: bool,
+
+    /// `allocate(a(n,m))` states the DIMENSIONS of the array being allocated,
+    /// so every dimension is compiled and the result is a shaped array. When
+    /// false the first argument is a plain length.
+    pub allocate_takes_dimension_list: bool,
+
+    /// A slice `a(lo:hi)` includes BOTH endpoints, so the upper bound is a
+    /// position rather than an exclusive end.
+    pub slice_bounds_inclusive: bool,
+
+    /// A user-declared type is a VALUE type: assignment and member writes copy,
+    /// and a mutation through a member has to be written back to its source.
+    pub user_types_are_value_types: bool,
+
+    /// Assigning a scalar to a whole array broadcasts it to every element
+    /// (`a = 0` fills), rather than rebinding the name to the scalar.
+    pub array_assign_broadcasts_scalar: bool,
+
+    /// Arguments are passed BY REFERENCE: an `in`/`const` argument aliases the
+    /// caller's object instead of being copied, and an `out` argument arrives
+    /// as the caller's value rather than null.
+    pub args_pass_by_reference: bool,
+
+    /// A type/module body compiles its variable declarations before its
+    /// contained procedures, so a procedure body sees them already defined.
+    pub class_body_declarations_before_procedures: bool,
+
+    /// `array_bounds` on a declaration states the array's FIXED SHAPE — the
+    /// declaration allocates it, including a non-zero lower bound — rather than
+    /// being a size hint applied to an initializer.
+    pub array_bounds_declare_fixed_shape: bool,
+
+    /// An `intent(out)` parameter arrives default-initialized: the callee may
+    /// read it before assigning. Languages whose `out` requires definite
+    /// assignment by the callee (C#) leave this false.
+    pub out_params_default_initialized: bool,
+
+    /// Arithmetic between arrays is ELEMENTWISE (`a + b` adds pairwise), rather
+    /// than an error or a concatenation.
+    pub array_arithmetic_elementwise: bool,
+
+    /// A method call on a value-type receiver writes the receiver back to its
+    /// source expression afterwards, so mutations inside the call are visible.
+    pub member_call_writes_receiver_back: bool,
+
+    /// `TypeName(args)` with no `new` constructs a value-type instance, when the
+    /// name is a declared type and not shadowed by a local binding.
+    pub bare_name_constructs_value_type: bool,
+
+    /// A procedure declared inside an INTERFACE block is callable under the
+    /// interface's name too, with the target chosen by signature — Fortran's
+    /// generic interface. Distinct from an explicit interface implementation
+    /// (C#/VB/Kotlin `void IFoo.Bar()`), which also carries an interface name
+    /// but adds no generic alias.
+    pub interface_block_is_generic_alias: bool,
+
+    /// Cast-to-integer widths BY TYPE SPELLING, declared as
+    /// `[integer_cast_widths]` in the profile. A cast to one of these truncates
+    /// toward zero and then wraps to the declared width — C's `(char)x`,
+    /// `(int16)x`, `(unsigned)x`. An entry with no `bits` truncates only.
+    /// Empty (the default) means the language declares no such widths and the
+    /// generic cast path applies.
+    pub integer_cast_widths: HashMap<String, IntegerCastWidth>,
+
+    /// Type spellings whose cast coerces to a float with no truncation
+    /// (C's `(double)`, `(float)`).
+    pub float_cast_types: Vec<String>,
+
+    /// An AGGREGATE declaration is not a scalar value, so the declared type
+    /// must not coerce it: an array-typed declaration, or a char array
+    /// initialised from a string literal (`char s[] = "hi"`). Only consulted
+    /// where `coerces_value_to_type_hint` already applies.
+    pub aggregate_decl_skips_coercion: bool,
+
+    /// Taking the address of a global (`&g`) promotes it to a pointer cell even
+    /// when the name was never declared as a global in this unit — C compiles
+    /// translation units that reference externally-defined objects.
+    pub globals_may_be_undeclared: bool,
+
+    /// Pre-scan each function body for locals/params whose address is taken and
+    /// promote them to a pointer cell once at entry, instead of re-wrapping at
+    /// every `&v` site (which re-wraps on each loop iteration). Opt-in: the
+    /// other AddrOf languages (Pascal/Go/C#) keep lazy promotion.
+    pub promote_addr_taken_at_entry: bool,
+
+    /// Runtime helpers this language must NOT have linked in automatically,
+    /// because it supplies its own implementation of the same name (C's libc
+    /// `sprintf` vs the shared `__stdlib_sprintf`).
+    pub excluded_runtime_helpers: Vec<String>,
+
+    /// Field name stamped on a packed multi-value row so the language's own
+    /// adjust/spread emitters can tell a multi-value row from an ordinary
+    /// array (Lua: `__lua_multi_row`). Empty (the default) means the language
+    /// does not distinguish the two and no row is stamped — the marker name
+    /// lives in the profile so no language-specific key appears in shared code.
+    pub multi_value_row_marker: String,
+
+    /// The walker already desugars method calls to a call that passes the
+    /// receiver as an explicit ARGUMENT (Lua's `t:f(x)` → `__lua_method_call`).
+    /// The shared call path must then not re-inject the callable's bound
+    /// receiver, which would land in the callee's rest/vararg slot.
+    pub explicit_method_receiver_argument: bool,
+
     /// Reading a method off an instance yields a fresh bound-method object,
     /// distinct per instance and carrying its own receiver (Python/Ruby
     /// descriptor semantics: `C().f is C().f` is False). When false, the
@@ -170,6 +328,13 @@ pub struct LanguageProfile {
     /// Only languages that declare this treat a `#`-prefixed member specially;
     /// the shared compiler no longer keys that on the JS name.
     pub supports_private_fields: bool,
+
+    /// A static class field is defined as a writable/enumerable/configurable
+    /// OWN property of the constructor object, so it is observable through
+    /// `Object.getOwnPropertyDescriptor` and removable with `delete`
+    /// (ECMA-262 class static field semantics). When false the field goes
+    /// through the ordinary class-field initializer.
+    pub static_fields_are_own_properties: bool,
 
     /// Functions/class-constructors are first-class objects carrying
     /// `Function.prototype` methods `.bind`/`.call`/`.apply` (ECMAScript
@@ -271,7 +436,7 @@ pub struct LanguageProfile {
     /// languages whose construction is a plain class-instantiation.
     pub ecma_new_dispatch: bool,
 
-    /// Array literals may have elisions (holes), e.g. `[1, , 3]` — the walker
+    /// Array literals may have elisions (holes), e.g. `[1,  3]` — the walker
     /// marks a hole with a sentinel key and the compiler builds a sparse array.
     /// ECMAScript-only syntax.
     pub ecma_array_elisions: bool,
@@ -459,6 +624,87 @@ pub struct LanguageProfile {
     /// which the code does not bear out.
     pub xor_is_logical_for_non_integers: bool,
 
+    /// `and`/`or`/`not` are ONE token with two meanings, resolved by operand
+    /// type: BITWISE when the operands are integers, logical otherwise (Pascal,
+    /// Delphi, and VB's `And`/`Or`/`Not`).
+    ///
+    /// The sibling of [`Self::xor_is_logical_for_non_integers`], which covers
+    /// `xor` alone. A property rather than a slot because `Int` is not
+    /// resolvable as a `BuiltinType` (builtinslotplan.md `unresolvable_reason`),
+    /// so there is nothing to bind a `(BuiltinType, ProtocolSlot)` pair to yet.
+    pub logical_ops_bitwise_for_integers: bool,
+
+    /// `+`, `*` and `-` on two SETS mean union, intersection and difference
+    /// (Pascal). Languages where sets exist but arithmetic operators do not
+    /// apply to them — python, where `set + set` is a `TypeError` — leave this
+    /// false, which is why the set predicates alone cannot gate it: a bare set
+    /// LITERAL satisfies them in any language that has one.
+    pub set_arithmetic_operators: bool,
+
+    /// `|`, `&`, `-` and `^` on two SETS mean union, intersection, difference
+    /// and symmetric difference (Python). The sibling of
+    /// `set_arithmetic_operators`, which is Pascal's `+`/`*`/`-` spelling of
+    /// the same algebra — a language declares whichever spelling it uses.
+    pub set_bitwise_operators: bool,
+
+    /// Truth-testing consults the VALUE, not just its presence: an empty
+    /// collection, an empty string and `0` are all falsy, and a user class can
+    /// override via `__bool__`/`__len__`. When false, the shared
+    /// `emit_dyn_to_bool` coercion applies.
+    pub truthiness_via_dunder_or_length: bool,
+
+    /// Generators expose `send(v)`, `throw(e)` and `close()` on the generator
+    /// object itself, dispatched at the call site.
+    pub generator_send_throw_close: bool,
+
+    /// Assigning to or deleting a SLICE target splices the sequence: a no-step
+    /// slice may change the sequence's length, and a stepped slice assigns
+    /// positionally.
+    pub slice_assignment_splices: bool,
+
+    /// A MEMBER reference to a parameterless routine invokes it, with no empty
+    /// parens: pascal's `TShape.Circle` (class function) and `obj.Method`
+    /// (instance method).
+    ///
+    /// The member counterpart of
+    /// [`Self::bare_name_invokes_parameterless_function`]. Kept separate rather
+    /// than folded into it because a language can require parens on one and not
+    /// the other, and because auto-invoking members would change how a
+    /// PROPERTY read behaves in languages that have both.
+    pub member_invokes_parameterless_method: bool,
+
+    /// A top-level `const` declaration with a TYPE but no initializer is a TYPE
+    /// ALIAS, not a variable: pascal's `const TFoo: TBar;` inside a `type`
+    /// section. Languages where an uninitialized const is simply a const leave
+    /// this false.
+    pub const_without_init_is_type_alias: bool,
+
+    /// `s[i]` indexes a string from ONE, not zero (pascal, lua).
+    pub string_index_is_one_based: bool,
+
+    /// A cast to an integer TYPE truncates toward zero — pascal `Integer(9.7)`
+    /// is `9`. Which names are integer types comes from `[builtin_types] int`,
+    /// so no spelling list lives in shared code.
+    pub integer_cast_truncates: bool,
+
+    /// `value.Helper(args)` resolves to a free function named by convention
+    /// from the receiver's static type — pascal's TYPE HELPERS.
+    pub type_helper_methods: bool,
+
+    /// A bare `name(args)` where `name` is a field of the enclosing class calls
+    /// the callable it holds, without an explicit `Self.`.
+    ///
+    /// Languages without implicit-self field access only do this when the
+    /// field's type hint says it is callable.
+    pub bare_class_field_is_callable: bool,
+
+    /// An echo/display statement CONCATENATES its operands into one record
+    /// rather than writing each separately — COBOL `DISPLAY A B C` emits one
+    /// line with no separator.
+    pub echo_concatenates_operands: bool,
+
+
+
     /// A `for` loop gives its loop variable a FRESH binding each iteration, so
     /// closures created in the body capture the per-iteration value (VB `For`,
     /// JS `let`-in-`for`). Languages where the loop variable is shared across
@@ -519,6 +765,16 @@ pub struct LanguageProfile {
     /// `ReferenceError` rather than yielding `undefined`. Statically-resolved
     /// languages and those that auto-vivify globals leave this `false`.
     pub unresolved_reference_throws: bool,
+
+    /// Exception type raised for an unresolvable read, when
+    /// `unresolved_reference_throws` applies. JS `ReferenceError`, Python
+    /// `NameError` — the emitter throws whatever the profile names, exactly as
+    /// with `member_call_on_null_error`.
+    pub unresolved_reference_error: String,
+
+    /// Message for it. `{}` is substituted with the name that failed to
+    /// resolve: JS `x is not defined`, Python `name 'x' is not defined`.
+    pub unresolved_reference_message: String,
 
     /// Statically-typed languages coerce a value to its binding's declared
     /// type on assignment/initialization (C `_Bool b = 5` → `1`, int-width
@@ -648,8 +904,14 @@ pub struct LanguageProfile {
     /// table empty so their bare imports stay unrouted by this
     /// mechanism. Declared in profile TOML as a `[bare_module_aliases]`
     /// table: `"fs" = "node:fs"` etc.
-    pub bare_module_aliases: HashMap<String, String>,
-}
+    pub bare_module_aliases: HashMap<String, String> }
+
+/// One `[integer_cast_widths]` entry: the width a cast to this type spelling
+/// wraps to. `bits: None` truncates toward zero without wrapping.
+#[derive(Clone, Debug)]
+pub struct IntegerCastWidth {
+    pub bits: Option<u32>,
+    pub signed: bool }
 
 /// One pre-declared ESM import in the ambient module scope — the
 /// profile's equivalent of a hand-written `import` statement. Three
@@ -661,8 +923,7 @@ pub enum EsmDefault {
     Named {
         local: String,
         module: String,
-        name: String,
-    },
+        name: String },
     /// `import * as alias from "module"`. Qualified access `alias.field`
     /// resolves to `(module, field)` at compile time.
     Namespace { alias: String, module: String },
@@ -685,8 +946,7 @@ pub enum EsmDefault {
         module: String,
         name: String,
         target_module: String,
-        target_name: String,
-    },
+        target_name: String },
     /// Namespace-tree mount (namespaceplan.md): a qualified chain whose
     /// first segment matches `prefix` resolves by walking the global
     /// namespace tree rooted at `path` — `System.Math.Sin` with
@@ -702,22 +962,20 @@ pub enum EsmDefault {
     /// (`Thread.Sleep` found at `dotnet.system.threading.thread.sleep`).
     /// Profile entries give the language's defaults; user `Imports X.Y`
     /// statements add more at link time (rebased through the tree-mounts).
-    TreeAmbient { path: String },
-}
+    TreeAmbient { path: String } }
 
 /// A compile-time constant value.
 #[derive(Debug, Clone)]
 pub enum ConstantValue {
+    Bool(bool),
     Float(f64),
-    Str(String),
-}
+    Str(String) }
 
 /// String indexing style.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StringIndexing {
     ZeroBased,
-    OneBased,
-}
+    OneBased }
 
 /// Namespace resolution configuration.
 #[derive(Debug, Clone, Default)]
@@ -760,8 +1018,7 @@ pub struct NamespaceConfig {
     /// A PATH, not a language name: the question "should `xs.Add(v)` defer to
     /// runtime dispatch" is answered by where the declaring type lives, so a
     /// language opts in by naming the subtree. Empty means never defer.
-    pub runtime_collection_scope: Vec<String>,
-}
+    pub runtime_collection_scope: Vec<String> }
 
 /// How a function returns its value.
 #[derive(Debug, Clone, PartialEq)]
@@ -771,8 +1028,7 @@ pub enum ReturnStyle {
     /// Explicit `return expr` statements. (Python, JS, C#, PHP, VB)
     Explicit,
     /// Last expression in body is the return value. (Ruby)
-    LastExpression,
-}
+    LastExpression }
 
 /// How a language forms reflection / runtime type-identity names. Owned by
 /// the profile so each language keeps its own type namespace — see
@@ -788,8 +1044,7 @@ pub enum ReflectionTypeNaming {
     Native,
     /// .NET BCL scheme: qualify under `System.` and map primitives
     /// (`int`→`Int32`, `string`→`String`, …). C#/VB reflection expects this.
-    Dotnet,
-}
+    Dotnet }
 
 /// Definition of a builtin function's compilation.
 #[derive(Debug, Clone)]
@@ -810,8 +1065,7 @@ pub struct BuiltinDef {
     ///
     /// `None` — the overwhelming default — means the method keeps its declared
     /// `emit` and no slot resolution is attempted.
-    pub slot: Option<vybe_ast::ProtocolSlot>,
-}
+    pub slot: Option<vybe_ast::ProtocolSlot> }
 
 /// What to emit for a builtin call.
 #[derive(Debug, Clone)]
@@ -822,6 +1076,15 @@ pub enum BuiltinEmit {
     Opcode(String),
     /// Mutate a variable: var = var OP arg. (Inc, Dec)
     MutateVar(String), // "add" or "sub"
+    /// Call a common op with all arguments, then STORE the result back into
+    /// argument `index` — the shape of a procedure with a `var` parameter
+    /// (pascal `Delete(var S; Index; Count)`, `Insert(Src; var Dst; Index)`).
+    ///
+    /// Spelled `mutate_call:<common op>@<index>`. The write-back sibling of
+    /// [`Self::MutateVar`], which can only add or subtract. Argument `index`
+    /// must be an identifier; anything else emits the call and discards, since
+    /// there is nowhere to store.
+    MutateCall(String, u8),
     /// Multi-opcode intrinsic: name references [intrinsics] table in profile.
     Intrinsic(String),
     /// Dispatch to a compiler_common opcode-style emitter (args already on stack).
@@ -838,8 +1101,7 @@ pub enum BuiltinEmit {
     /// `arr.slice`) — runtime picks the right implementation based on the
     /// receiver. Args are compiled as `[receiver, arg1, ..., argN]` and
     /// the emitter splices in the method name.
-    Invoke(String),
-}
+    Invoke(String) }
 
 impl LanguageProfile {
     /// Whether this profile uses the shared namespace resolver.
@@ -856,21 +1118,17 @@ impl LanguageProfile {
             || !self.namespaces.default_imports.is_empty()
     }
 
-    /// Look up a builtin by name (case-insensitive for case-insensitive languages).
+    /// Look up a builtin by name, folding case when the language says callable
+    /// names fold. Exact first, so a language whose keys are stored verbatim is
+    /// unaffected by the fallback.
     pub fn lookup_builtin(&self, name: &str) -> Option<&BuiltinDef> {
-        if self.case_sensitive {
-            self.builtins.get(name).or_else(|| {
-                if self.name == "php" {
-                    let lower = name.to_lowercase();
-                    self.builtins.get(&lower)
-                } else {
-                    None
-                }
-            })
-        } else {
-            let lower = name.to_lowercase();
-            self.builtins.get(&lower)
-        }
+        self.builtins.get(name).or_else(|| {
+            if self.fold_callable_names {
+                self.builtins.get(&name.to_lowercase())
+            } else {
+                None
+            }
+        })
     }
 
     /// Look up a known type constructor mapping.
@@ -994,6 +1252,11 @@ pub fn parse_emit_target(s: &str) -> Option<BuiltinEmit> {
         _ if s.starts_with("opcode:") => {
             Some(BuiltinEmit::Opcode(s["opcode:".len()..].to_string()))
         }
+        _ if s.starts_with("mutate_call:") => {
+            let rest = &s["mutate_call:".len()..];
+            let (op, idx) = rest.rsplit_once('@')?;
+            Some(BuiltinEmit::MutateCall(op.to_string(), idx.parse().ok()?))
+        }
         _ if s.starts_with("mutate:") => {
             Some(BuiltinEmit::MutateVar(s["mutate:".len()..].to_string()))
         }
@@ -1006,8 +1269,7 @@ pub fn parse_emit_target(s: &str) -> Option<BuiltinEmit> {
         _ if s.starts_with("invoke:") => {
             Some(BuiltinEmit::Invoke(s["invoke:".len()..].to_string()))
         }
-        _ => None,
-    }
+        _ => None }
 }
 
 pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
@@ -1051,8 +1313,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
     {
         "result_slot" => ReturnStyle::ResultSlot,
         "last_expression" => ReturnStyle::LastExpression,
-        _ => ReturnStyle::Explicit,
-    };
+        _ => ReturnStyle::Explicit };
 
     let result_slot_name = compiler
         .get("result_slot_name")
@@ -1079,6 +1340,16 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("TypeError")
         .to_string();
+    let numeric_cast_invalid_error = compiler
+        .get("numeric_cast_invalid_error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let numeric_cast_invalid_message = compiler
+        .get("numeric_cast_invalid_message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let class_method_dispatch = compiler
         .get("class_method_dispatch")
         .and_then(|v| v.as_str())
@@ -1096,14 +1367,20 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("case_sensitive")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
+    // A language whose VARIABLES fold necessarily folds its callable names too;
+    // the reverse does not hold (PHP), which is the only reason this is its own
+    // property rather than `!case_sensitive`.
+    let fold_callable_names = compiler
+        .get("fold_callable_names")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(!case_sensitive);
     let string_indexing = match compiler
         .get("string_indexing")
         .and_then(|v| v.as_str())
         .unwrap_or("zero_based")
     {
         "one_based" => StringIndexing::OneBased,
-        _ => StringIndexing::ZeroBased,
-    };
+        _ => StringIndexing::ZeroBased };
     let array_upper_bound_inclusive = compiler
         .get("array_upper_bound_inclusive")
         .and_then(|v| v.as_bool())
@@ -1154,6 +1431,121 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let multi_value_tuple_returns = compiler
         .get("multi_value_tuple_returns")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let pointer_receiver_methods = compiler
+        .get("pointer_receiver_methods")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let aggregate_decl_skips_coercion = compiler
+        .get("aggregate_decl_skips_coercion")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut integer_cast_widths: HashMap<String, IntegerCastWidth> = HashMap::new();
+    if let Some(tbl) = root.get("integer_cast_widths").and_then(|v| v.as_table()) {
+        for (spelling, spec) in tbl {
+            let bits = spec
+                .get("bits")
+                .and_then(|v| v.as_integer())
+                .map(|b| b as u32);
+            let signed = spec.get("signed").and_then(|v| v.as_bool()).unwrap_or(false);
+            integer_cast_widths.insert(spelling.clone(), IntegerCastWidth { bits, signed });
+        }
+    }
+    let float_cast_types: Vec<String> = compiler
+        .get("float_cast_types")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let out_params_default_initialized = compiler
+        .get("out_params_default_initialized")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let array_arithmetic_elementwise = compiler
+        .get("array_arithmetic_elementwise")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let member_call_writes_receiver_back = compiler
+        .get("member_call_writes_receiver_back")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let bare_name_constructs_value_type = compiler
+        .get("bare_name_constructs_value_type")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let interface_block_is_generic_alias = compiler
+        .get("interface_block_is_generic_alias")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let user_types_are_value_types = compiler
+        .get("user_types_are_value_types")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let array_assign_broadcasts_scalar = compiler
+        .get("array_assign_broadcasts_scalar")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let args_pass_by_reference = compiler
+        .get("args_pass_by_reference")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let class_body_declarations_before_procedures = compiler
+        .get("class_body_declarations_before_procedures")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let array_bounds_declare_fixed_shape = compiler
+        .get("array_bounds_declare_fixed_shape")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let allocate_takes_dimension_list = compiler
+        .get("allocate_takes_dimension_list")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let slice_bounds_inclusive = compiler
+        .get("slice_bounds_inclusive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let pads_trailing_optional_arg = compiler
+        .get("pads_trailing_optional_arg")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let global_namespace = compiler
+        .get("global_namespace")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let global_namespace_is_call = compiler
+        .get("global_namespace_is_call")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let globals_may_be_undeclared = compiler
+        .get("globals_may_be_undeclared")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let promote_addr_taken_at_entry = compiler
+        .get("promote_addr_taken_at_entry")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let excluded_runtime_helpers: Vec<String> = compiler
+        .get("excluded_runtime_helpers")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let multi_value_row_marker = compiler
+        .get("multi_value_row_marker")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let explicit_method_receiver_argument = compiler
+        .get("explicit_method_receiver_argument")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let methods_bind_on_access = compiler
@@ -1212,10 +1604,13 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
     {
         Some("dotnet") => ReflectionTypeNaming::Dotnet,
         // Default (and explicit "native"): each language owns its type names.
-        _ => ReflectionTypeNaming::Native,
-    };
+        _ => ReflectionTypeNaming::Native };
     let supports_private_fields = compiler
         .get("supports_private_fields")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let static_fields_are_own_properties = compiler
+        .get("static_fields_are_own_properties")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let ecma_error_object_shape = compiler
@@ -1346,6 +1741,16 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("lexical_block_scope")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let unresolved_reference_error = compiler
+        .get("unresolved_reference_error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ReferenceError")
+        .to_string();
+    let unresolved_reference_message = compiler
+        .get("unresolved_reference_message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("{} is not defined")
+        .to_string();
     let unresolved_reference_throws = compiler
         .get("unresolved_reference_throws")
         .and_then(|v| v.as_bool())
@@ -1402,6 +1807,58 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("xor_is_logical_for_non_integers")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let set_bitwise_operators = compiler
+        .get("set_bitwise_operators")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let truthiness_via_dunder_or_length = compiler
+        .get("truthiness_via_dunder_or_length")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let generator_send_throw_close = compiler
+        .get("generator_send_throw_close")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let slice_assignment_splices = compiler
+        .get("slice_assignment_splices")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let logical_ops_bitwise_for_integers = compiler
+        .get("logical_ops_bitwise_for_integers")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let set_arithmetic_operators = compiler
+        .get("set_arithmetic_operators")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let member_invokes_parameterless_method = compiler
+        .get("member_invokes_parameterless_method")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let const_without_init_is_type_alias = compiler
+        .get("const_without_init_is_type_alias")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let string_index_is_one_based = compiler
+        .get("string_index_is_one_based")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let integer_cast_truncates = compiler
+        .get("integer_cast_truncates")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let type_helper_methods = compiler
+        .get("type_helper_methods")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let bare_class_field_is_callable = compiler
+        .get("bare_class_field_is_callable")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let echo_concatenates_operands = compiler
+        .get("echo_concatenates_operands")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let for_loop_per_iteration_binding = compiler
         .get("for_loop_per_iteration_binding")
         .and_then(|v| v.as_bool())
@@ -1447,8 +1904,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                                 emit,
                                 min_args,
                                 max_args,
-                                slot,
-                            },
+                                slot },
                         );
                     }
                 }
@@ -1527,8 +1983,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     (true, true) => Match::Contains,
                     (true, false) => Match::Suffix,
                     (false, true) => Match::Prefix,
-                    (false, false) => Match::Exact,
-                };
+                    (false, false) => Match::Exact };
                 out.push(Spelling::owned(core, how, ty));
             }
         }
@@ -1636,8 +2091,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                                     emit,
                                     min_args,
                                     max_args,
-                                    slot,
-                                });
+                                    slot });
                             }
                         }
                     }
@@ -1655,8 +2109,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                             emit,
                             min_args,
                             max_args,
-                            slot,
-                        });
+                            slot });
                     }
                 }
             }
@@ -1742,8 +2195,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         .filter_map(|v| v.as_str().map(|s| s.to_string()))
                         .collect()
                 })
-                .unwrap_or_default(),
-        }
+                .unwrap_or_default() }
     } else {
         NamespaceConfig::default()
     };
@@ -1784,6 +2236,9 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
     if let Some(nc) = root.get("namespace_constants").and_then(|v| v.as_table()) {
         for (name, val) in nc {
             match val {
+                Value::Boolean(b) => {
+                    namespace_constants.insert(name.clone(), ConstantValue::Bool(*b));
+                }
                 Value::Float(f) => {
                     namespace_constants.insert(name.clone(), ConstantValue::Float(*f));
                 }
@@ -1834,8 +2289,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     esm_defaults.push(EsmDefault::Named {
                         local: local.to_string(),
                         module: module.to_string(),
-                        name: name.to_string(),
-                    });
+                        name: name.to_string() });
                 }
                 "namespace" => {
                     let Some(alias) = tbl.get("alias").and_then(|v| v.as_str()) else {
@@ -1846,8 +2300,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     };
                     esm_defaults.push(EsmDefault::Namespace {
                         alias: alias.to_string(),
-                        module: module.to_string(),
-                    });
+                        module: module.to_string() });
                 }
                 "package-root" | "package_root" => {
                     let Some(prefix) = tbl.get("prefix").and_then(|v| v.as_str()) else {
@@ -1858,8 +2311,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     };
                     esm_defaults.push(EsmDefault::PackageRoot {
                         prefix: prefix.to_string(),
-                        module_root: module_root.to_string(),
-                    });
+                        module_root: module_root.to_string() });
                 }
                 "module-export" | "module_export" => {
                     let (Some(module), Some(name), Some(target_module), Some(target_name)) = (
@@ -1874,8 +2326,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         module: module.to_string(),
                         name: name.to_string(),
                         target_module: target_module.to_string(),
-                        target_name: target_name.to_string(),
-                    });
+                        target_name: target_name.to_string() });
                 }
                 "tree-mount" | "tree_mount" => {
                     let (Some(prefix), Some(path)) = (
@@ -1886,16 +2337,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     };
                     esm_defaults.push(EsmDefault::TreeMount {
                         prefix: prefix.to_string(),
-                        path: path.to_string(),
-                    });
+                        path: path.to_string() });
                 }
                 "tree-ambient" | "tree_ambient" => {
                     let Some(path) = tbl.get("path").and_then(|v| v.as_str()) else {
                         continue;
                     };
                     esm_defaults.push(EsmDefault::TreeAmbient {
-                        path: path.to_string(),
-                    });
+                        path: path.to_string() });
                 }
                 _ => {
                     eprintln!("Warning: unknown esm_default kind: {:?}", kind);
@@ -1927,6 +2376,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         dynamic_numeric_dispatch,
         enum_as_ordinals,
         case_sensitive,
+        fold_callable_names,
         string_indexing,
         array_upper_bound_inclusive,
         negative_index_wraps,
@@ -1941,6 +2391,30 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         function_references,
         commonjs_require,
         multi_value_tuple_returns,
+        pointer_receiver_methods,
+        global_namespace,
+        global_namespace_is_call,
+        pads_trailing_optional_arg,
+        allocate_takes_dimension_list,
+        slice_bounds_inclusive,
+        user_types_are_value_types,
+        array_assign_broadcasts_scalar,
+        args_pass_by_reference,
+        class_body_declarations_before_procedures,
+        array_bounds_declare_fixed_shape,
+        out_params_default_initialized,
+        array_arithmetic_elementwise,
+        member_call_writes_receiver_back,
+        bare_name_constructs_value_type,
+        interface_block_is_generic_alias,
+        integer_cast_widths,
+        float_cast_types,
+        aggregate_decl_skips_coercion,
+        globals_may_be_undeclared,
+        promote_addr_taken_at_entry,
+        excluded_runtime_helpers,
+        multi_value_row_marker,
+        explicit_method_receiver_argument,
         methods_bind_on_access,
         default_args_evaluated_once,
         byref_boxing,
@@ -1954,12 +2428,26 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         methods_virtual_by_default,
         integer_division_on_slash,
         xor_is_logical_for_non_integers,
+        logical_ops_bitwise_for_integers,
+        set_arithmetic_operators,
+        set_bitwise_operators,
+        truthiness_via_dunder_or_length,
+        generator_send_throw_close,
+        slice_assignment_splices,
+        member_invokes_parameterless_method,
+        const_without_init_is_type_alias,
+        string_index_is_one_based,
+        integer_cast_truncates,
+        type_helper_methods,
+        bare_class_field_is_callable,
+        echo_concatenates_operands,
         for_loop_per_iteration_binding,
         bare_name_invokes_parameterless_function,
         source_function_callable_aliases,
         separate_property_method_namespace,
         reflection_type_naming,
         supports_private_fields,
+        static_fields_are_own_properties,
         has_function_prototype_bind,
         function_invocation_members,
         has_function_constructor,
@@ -1990,10 +2478,14 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         ecma_promise_methods,
         ecma_iterator_result_shape,
         member_call_on_null_error,
+        numeric_cast_invalid_error,
+        numeric_cast_invalid_message,
         string_aware_relational,
         lexical_block_scope,
         function_scoped_variables,
         unresolved_reference_throws,
+        unresolved_reference_error,
+        unresolved_reference_message,
         coerces_value_to_type_hint,
         ambient_this_binding,
         uses_common_resolver,
@@ -2020,8 +2512,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         builtin_return_types,
         datetime_field_functions,
         esm_defaults,
-        bare_module_aliases,
-    })
+        bare_module_aliases })
 }
 
 #[cfg(test)]

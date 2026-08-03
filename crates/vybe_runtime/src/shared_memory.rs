@@ -15,14 +15,12 @@ use std::sync::{Arc, Condvar, Mutex};
 #[derive(Default)]
 struct WaitState {
     waiters: usize,
-    notifications: usize,
-}
+    notifications: usize }
 
 #[derive(Default)]
 struct WaitEntry {
     state: Mutex<WaitState>,
-    condvar: Condvar,
-}
+    condvar: Condvar }
 
 /// WASM trap on out-of-bounds memory access.
 #[derive(Debug, Clone)]
@@ -30,9 +28,7 @@ pub enum MemoryTrap {
     OutOfBounds {
         addr: usize,
         size: usize,
-        limit: usize,
-    },
-}
+        limit: usize } }
 
 impl std::fmt::Display for MemoryTrap {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -41,8 +37,7 @@ impl std::fmt::Display for MemoryTrap {
                 f,
                 "memory access out of bounds: addr={} size={} limit={}",
                 addr, size, limit
-            ),
-        }
+            ) }
     }
 }
 
@@ -71,8 +66,7 @@ pub struct SharedMemory {
     /// Wait/notify infrastructure: maps memory addresses to condvars.
     /// When a thread calls wait32(addr), it blocks on the condvar for that addr.
     /// When another thread calls notify(addr), it signals the condvar.
-    waiters: Arc<Mutex<HashMap<usize, Arc<WaitEntry>>>>,
-}
+    waiters: Arc<Mutex<HashMap<usize, Arc<WaitEntry>>>> }
 
 impl Clone for SharedMemory {
     fn clone(&self) -> Self {
@@ -80,8 +74,7 @@ impl Clone for SharedMemory {
         Self {
             buffer: Arc::clone(&self.buffer),
             max_pages: self.max_pages,
-            waiters: Arc::clone(&self.waiters),
-        }
+            waiters: Arc::clone(&self.waiters) }
     }
 }
 
@@ -90,16 +83,14 @@ impl SharedMemory {
         Self {
             buffer: Arc::new(Mutex::new(vec![0u8; size])),
             max_pages: None,
-            waiters: Arc::new(Mutex::new(HashMap::new())),
-        }
+            waiters: Arc::new(Mutex::new(HashMap::new())) }
     }
 
     pub fn from_vec(v: Vec<u8>) -> Self {
         Self {
             buffer: Arc::new(Mutex::new(v)),
             max_pages: None,
-            waiters: Arc::new(Mutex::new(HashMap::new())),
-        }
+            waiters: Arc::new(Mutex::new(HashMap::new())) }
     }
 
     pub fn set_max_pages(&mut self, max_pages: Option<usize>) {
@@ -149,8 +140,7 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 4,
-                limit: buf.len(),
-            });
+                limit: buf.len() });
         }
         Ok(i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap()))
     }
@@ -161,8 +151,7 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 4,
-                limit: buf.len(),
-            });
+                limit: buf.len() });
         }
         buf[addr..addr + 4].copy_from_slice(&val.to_le_bytes());
         Ok(())
@@ -174,8 +163,7 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 8,
-                limit: buf.len(),
-            });
+                limit: buf.len() });
         }
         Ok(i64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap()))
     }
@@ -186,8 +174,7 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 8,
-                limit: buf.len(),
-            });
+                limit: buf.len() });
         }
         buf[addr..addr + 8].copy_from_slice(&val.to_le_bytes());
         Ok(())
@@ -199,8 +186,7 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 8,
-                limit: buf.len(),
-            });
+                limit: buf.len() });
         }
         Ok(f64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap()))
     }
@@ -211,8 +197,7 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 8,
-                limit: buf.len(),
-            });
+                limit: buf.len() });
         }
         buf[addr..addr + 8].copy_from_slice(&val.to_le_bytes());
         Ok(())
@@ -224,8 +209,7 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 1,
-                limit: buf.len(),
-            });
+                limit: buf.len() });
         }
         Ok(buf[addr])
     }
@@ -236,8 +220,7 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 1,
-                limit: buf.len(),
-            });
+                limit: buf.len() });
         }
         buf[addr] = val;
         Ok(())

@@ -294,7 +294,7 @@ pub fn emit_ob_start(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     }
     for (i, slot) in slots.iter().enumerate() {
         if i >= argc as usize {
-            chunks[current].emit_op(Op::NULL, line);
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, *slot, line);
         }
     }
@@ -313,8 +313,7 @@ pub fn emit_ob_start(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunks[current].emit_string_const(field, line);
         match slot {
             Some(s) => chunks[current].emit_op_u16(Op::LOCAL_GET, s, line),
-            None => chunks[current].emit_string_const("", line),
-        }
+            None => chunks[current].emit_string_const("", line) }
         super::collections::emit_set(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     }
@@ -379,8 +378,7 @@ pub type LengthEmit = fn(&mut [Chunk], usize, u32);
 fn emit_buffer_len(chunks: &mut [Chunk], current: usize, len: Option<LengthEmit>, line: u32) {
     match len {
         Some(emit) => emit(chunks, current, line),
-        None => super::collections::emit_len(chunks, current, line),
-    }
+        None => super::collections::emit_len(chunks, current, line) }
 }
 
 /// Size of the innermost buffer, or `false`. Stack: [] → [num|false].
@@ -607,8 +605,7 @@ fn emit_ob_status_record(
                 super::collections::emit_get(chunks, current, line);
                 emit_buffer_len(chunks, current, len, line);
             }
-            _ => chunks[current].emit_f64_const(0.0, line),
-        }
+            _ => chunks[current].emit_f64_const(0.0, line) }
         super::collections::emit_set(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     }

@@ -78,12 +78,10 @@ impl Compiler {
                         key: None,
                         value: element_expr.clone(),
                         spread: false,
-                        by_ref: false,
-                    })
+                        by_ref: false })
                     .collect(),
             ))),
-            type_name: trimmed.to_string(),
-        }))
+            type_name: trimmed.to_string() }))
     }
 
     fn array_default_element_expr(type_hint: Option<&str>) -> Expression {
@@ -100,8 +98,7 @@ impl Compiler {
             | Some("sbyte") | Some("char") => Expression::new(ExprKind::Lit(Literal::Int(0))),
             Some("boolean") | Some("bool") => Expression::new(ExprKind::Lit(Literal::Bool(false))),
             Some(type_hint) if Self::is_string_type_hint(type_hint) => Expression::string(""),
-            _ => Expression::null(),
-        }
+            _ => Expression::null() }
     }
 
     fn array_bounds_extent_expr(bounds: &[Expression]) -> Option<Expression> {
@@ -111,8 +108,7 @@ impl Compiler {
             Expression::new(ExprKind::Binary {
                 op: BinOp::Mul,
                 left: Box::new(acc),
-                right: Box::new(bound),
-            })
+                right: Box::new(bound) })
         }))
     }
 
@@ -139,8 +135,7 @@ impl Compiler {
                         Argument::positional(extent),
                         Argument::positional(Self::array_default_element_expr(type_hint)),
                     ],
-                    optional: false,
-                });
+                    optional: false });
                 self.compile_expr(&init_expr)?;
             }
         } else if let Some(init_expr) = type_hint.and_then(Self::fixed_array_zero_expr) {
@@ -165,7 +160,7 @@ impl Compiler {
             // JS spec: declared fields with no initializer default to undefined (not null).
             inst!(self, core_wasm::undefined);
         } else {
-            self.emit(Op::NULL);
+            self.emit_null();
         }
         self.emit_u16(Op::LOCAL_SET, value_slot);
 
@@ -212,7 +207,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, this_slot);
         self.emit_var_get(parent_name);
         let super_key = self.str_const("__super");
-        self.emit_u16(Op::STRUCT_SET, super_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, super_key);
         self.emit(Op::DROP);
     }
 
@@ -224,17 +219,17 @@ impl Compiler {
     /// to already-compiled `super.foo()` calls.
     pub(super) fn emit_js_super_home_base(&mut self) {
         let Some(class_name) = self.current_class.clone() else {
-            self.emit(Op::NULL);
+            self.emit_null();
             return;
         };
 
         self.emit_var_get(&class_name);
         if !self.current_member_is_static {
             let prototype_key = self.str_const("prototype");
-            self.emit_u16(Op::STRUCT_GET, prototype_key);
+            self.emit_struct_field_op(Op::STRUCT_GET, 0, prototype_key);
         }
         let proto_link_key = self.str_const("__proto__");
-        self.emit_u16(Op::STRUCT_GET, proto_link_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, proto_link_key);
     }
 
     /// Instance identity + member stamps a derived constructor applies to
@@ -424,13 +419,19 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, this_slot);
         self.emit_const(Value::String(Arc::from(name)));
         let type_key = self.str_const("__type");
-        self.emit_u16(Op::STRUCT_SET, type_key);
+        self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
         self.emit(Op::DROP);
-        let tid_key = self.str_const(&format!("__tid_{}", self.canon(name)));
-        self.emit_u16(Op::LOCAL_GET, this_slot);
-        self.emit_u16(Op::GLOBAL_GET, tid_key);
-        self.emit(Op::SET_TYPE_ID);
-        self.emit(Op::DROP);
+        // No rtt re-stamp. `SET_TYPE_ID` used to live here because the BASE
+        // constructor allocated and handed the object up, so the derived class
+        // inherited its parent's type and had to overwrite it — something WASM
+        // GC cannot express, which is why it needed a 0xFF custom opcode.
+        //
+        // The constructor protocol is inverted now: the most-derived class
+        // allocates via `struct.new_default $T` and passes the receiver DOWN, so
+        // the instance carries the right rtt from the moment it exists and there
+        // is nothing left to re-stamp. `__type` above is still written because
+        // the string channel is what host-constructed objects use (184 stamps
+        // across 59 files); see wasmregistryfix.md steps 3–4.
         if is_value_type {
             crate::primitives::classes::emit_value_equality_stamp(self.chunk(), this_slot, line);
         }
@@ -519,8 +520,7 @@ impl Compiler {
         let canon = self.canon(name);
         let bases: Vec<String> = match self.pending_classes.get(&canon) {
             Some(pc) => pc.bases.iter().map(|b| self.canon(b)).collect(),
-            None => return vec![canon],
-        };
+            None => return vec![canon] };
         if bases.is_empty() {
             return vec![canon];
         }
@@ -660,7 +660,6 @@ impl Compiler {
             if let Some(slot) = self
                 .scope()
                 .resolve(capture_name)
-                .or_else(|| self.scope().resolve_ci(capture_name))
             {
                 common::functions::emit_closure_upvalue(
                     &mut self.chunks[self.current],
@@ -723,7 +722,7 @@ impl Compiler {
         self.emit_u16(Op::GLOBAL_GET, class_global);
         self.chunks[self.current].emit_end(line);
         let prototype_key = self.str_const("prototype");
-        self.emit_u16(Op::STRUCT_GET, prototype_key);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, prototype_key);
     }
 
     fn emit_bind_instance_method_with_aliases(
@@ -772,9 +771,9 @@ impl Compiler {
                 let class_idx = self.global_name_const_idx(&cname);
                 self.emit_u16(Op::GLOBAL_GET, class_idx);
                 let proto_key = self.str_const("prototype");
-                self.emit_u16(Op::STRUCT_GET, proto_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key);
                 let mkey = self.str_const(method_name);
-                self.emit_u16(Op::STRUCT_GET, mkey);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, mkey);
                 inst!(self, core_wasm::dup);
                 self.emit(Op::REF_IS_NULL);
                 let line = self.line;
@@ -788,7 +787,7 @@ impl Compiler {
             if bind_receiver {
                 inst!(self, core_wasm::dup);
                 self.emit_u16(Op::LOCAL_GET, this_slot);
-                self.emit_u16(Op::STRUCT_SET, receiver_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key);
                 self.emit(Op::DROP);
             }
             if self.profile.supports_private_fields && bind_name.starts_with("__js_private_") {
@@ -799,18 +798,18 @@ impl Compiler {
                     .unwrap_or_else(|| method_name.to_string());
                 self.emit_const(Value::String(Arc::from(display_name.as_str())));
                 let name_key = self.str_const("name");
-                self.emit_u16(Op::STRUCT_SET, name_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
                 let line = self.line;
                 crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
             }
             if let Some(fixed_count) = rest_fixed_count {
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::F64(fixed_count as f64));
-                self.emit_u16(Op::STRUCT_SET, rest_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, rest_key);
                 self.emit(Op::DROP);
             }
             let method_key = self.str_const(&bind_name);
-            self.emit_u16(Op::STRUCT_SET, method_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, method_key);
             self.emit(Op::DROP);
         }
         Ok(())
@@ -955,11 +954,8 @@ impl Compiler {
             chunk.result_arity = n;
         }
         self.chunks.push(chunk);
-        self.scopes.push(Scope::new_function());
+        self.scopes.push(Scope::new_function(!self.case_sensitive));
         self.static_local_bindings.push(HashMap::new());
-        if self.profile.name == "php" {
-            self.php_function_globals.push(HashSet::new());
-        }
         let saved = self.current;
         self.current = func_idx;
         // Runtime TRY_END counts are per-FRAME: a nested chunk must not
@@ -976,10 +972,10 @@ impl Compiler {
         // Pre-scan: collect locals/params whose address is taken (`&v`) so they
         // can be promoted to a pointer cell once at declaration / entry, rather
         // than lazily at the `&v` site (which re-wraps every loop iteration).
-        // Scoped to C — the only profile exercising this path — so the other
-        // AddrOf-using languages (Pascal/Go/C#) keep their current behavior.
+        // Opt-in per profile — the other AddrOf-using languages (Pascal/Go/C#)
+        // keep lazy promotion.
         let saved_addr_taken = std::mem::take(&mut self.current_addr_taken_locals);
-        if self.profile.name == "c" {
+        if self.profile.promote_addr_taken_at_entry {
             crate::primitives::collect_addr_taken_idents(body, &mut self.current_addr_taken_locals);
         }
         let saved_closure_captured = std::mem::take(&mut self.current_closure_captured_locals);
@@ -1019,14 +1015,14 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, slot);
             self.emit_var_get(name);
             let callee_key = self.str_const("callee");
-            self.emit_u16(Op::STRUCT_SET, callee_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, callee_key);
             self.emit(Op::DROP);
             // §10.4.4.6: arguments objects report "[object Arguments]" —
             // stamp the tag the host's object_to_string_tag reads.
             self.emit_u16(Op::LOCAL_GET, slot);
             self.chunk().emit_string_const("Arguments", 0);
             let type_key = self.str_const("__type");
-            self.emit_u16(Op::STRUCT_SET, type_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
             self.emit(Op::DROP);
             Some(slot)
         } else {
@@ -1064,8 +1060,7 @@ impl Compiler {
                         pascal_bounds: p
                             .type_hint
                             .as_deref()
-                            .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint)),
-                    },
+                            .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint)) },
                 );
             }
             if simple_arguments_alias {
@@ -1089,8 +1084,7 @@ impl Compiler {
             *self.js_arguments_bindings.last_mut().unwrap() = Some(JsArgumentsBinding {
                 args_slot: slot,
                 aliased_params,
-                aliased_indices,
-            });
+                aliased_indices });
         }
 
         if uses_js_arguments {
@@ -1160,9 +1154,11 @@ impl Compiler {
                 }
                 self.chunks[self.current].emit_end(branch_line);
             }
-            if p.is_rest && self.profile.name == "lua" {
+            // Redundant name check removed: the stamp is a no-op for a profile
+            // that declares no multi-value row marker.
+            if p.is_rest {
                 let slot = self.scope().resolve(&p.name).unwrap();
-                self.stamp_lua_multi_row_slot(slot);
+                self.stamp_multi_value_row_slot(slot);
             }
             self.maybe_initialize_fortran_out_param(p);
         }
@@ -1194,7 +1190,7 @@ impl Compiler {
             if return_type.is_some() && self.profile.function_return == ReturnStyle::ResultSlot {
                 let slot_name = self.profile.result_slot_name.clone();
                 let rs = self.define_local_typed(&slot_name, return_type.clone());
-                self.emit(Op::NULL);
+                self.emit_null();
                 self.emit_u16(Op::LOCAL_SET, rs);
                 Some(rs)
             } else {
@@ -1259,7 +1255,7 @@ impl Compiler {
                 let env_size = captured_names.len() as u16;
                 let line = self.line;
                 for _ in 0..env_size {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                 }
                 self.chunks[self.current].emit_array_new_fixed(0, env_size, line);
                 let env_slot = self.define_local("__shared_env");
@@ -1301,7 +1297,7 @@ impl Compiler {
             }
         }
 
-        if self.profile.name == "fortran" {
+        if self.profile.class_body_declarations_before_procedures {
             for statement in body {
                 if matches!(&statement.kind, StmtKind::VarDecl { .. }) {
                     self.compile_stmt(statement)?;
@@ -1352,7 +1348,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, rs);
             self.emit_return_through_finally(1)?;
         } else if self.current_ref_out_params.is_some() {
-            self.emit(Op::NULL);
+            self.emit_null();
             self.emit_return_through_finally(1)?;
         } else {
             let line = self.line;
@@ -1381,9 +1377,6 @@ impl Compiler {
         self.js_arguments_bindings.pop();
         self.scopes.pop();
         self.static_local_bindings.pop();
-        if self.profile.name == "php" {
-            self.php_function_globals.pop();
-        }
         self.current = saved;
         self.active_async_try_depth = saved_async_try_depth;
         self.function_label_base = saved_label_base;
@@ -1456,7 +1449,7 @@ impl Compiler {
             self.emit_var_get(name);
             self.emit_const(Value::String(Arc::from(name.as_str())));
             let name_key = self.str_const("name");
-            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
             self.emit(Op::DROP);
 
             // ECMA-262 §10.2.4 `length`: number of params before the
@@ -1468,7 +1461,7 @@ impl Compiler {
             self.emit_var_get(name);
             self.emit_const(Value::F64(length as f64));
             let length_key = self.str_const("length");
-            self.emit_u16(Op::STRUCT_SET, length_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
             self.emit(Op::DROP);
 
             // The JS walker's wrap_generator lowers `function*` /
@@ -1503,7 +1496,7 @@ impl Compiler {
                 self.emit_var_get(name);
                 self.emit_const(Value::Bool(true));
                 let non_ctor_key = self.str_const("__vybe_non_ctor");
-                self.emit_u16(Op::STRUCT_SET, non_ctor_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, non_ctor_key);
                 self.emit(Op::DROP);
             }
 
@@ -1516,14 +1509,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, proto_slot);
                     self.emit_var_get(name);
                     let ctor_key = self.str_const("constructor");
-                    self.emit_u16(Op::STRUCT_SET, ctor_key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
                     self.emit(Op::DROP);
                 }
 
                 self.emit_var_get(name);
                 self.emit_u16(Op::LOCAL_GET, proto_slot);
                 let proto_key = self.str_const("prototype");
-                self.emit_u16(Op::STRUCT_SET, proto_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_key);
                 self.emit(Op::DROP);
             }
         }
@@ -1592,8 +1585,7 @@ impl Compiler {
                     members: nm,
                     ..
                 } => (nn, nm, None),
-                _ => continue,
-            };
+                _ => continue };
             let qualified_nested_name = Self::qualified_nested_type_name(enclosing, nested_name);
             let nested_canon = self.canon(&qualified_nested_name);
             let nested_leaf_canon =
@@ -1700,6 +1692,12 @@ impl Compiler {
         // Canonicalisation happens once here rather than at every caller.
         let cname = self.canon(&class.name);
         let name: &str = &cname;
+        // Reserve the type-table slot NOW, before the constructor is compiled,
+        // so `struct.new_default $T` inside it can name this class. Registration
+        // used to happen after the ctor was emitted, which is precisely why
+        // identity had to be stamped post-allocation instead of at it.
+        // `register_type` fills this entry in at the end of the function.
+        let type_slot = crate::primitives::classes::reserve_type_slot(&mut self.chunks, &cname);
         let parent_canonical = class.parent.as_ref().map(|p| self.canon(p));
         let parent: &Option<String> = &parent_canonical;
 
@@ -1973,8 +1971,7 @@ impl Compiler {
                                 | StmtKind::EnumDecl { name, .. } => {
                                     Some(Self::qualified_nested_type_name(&class.name, name))
                                 }
-                                _ => None,
-                            }
+                                _ => None }
                         } else {
                             None
                         }
@@ -2207,11 +2204,21 @@ impl Compiler {
                     .insert(user_params.len().saturating_sub(1) as u8);
             }
             // Whether this method carries an implicit leading receiver slot,
-            // so its `arity` is `params + 1`. Mirrors the arity branches below.
+            // so its `arity` is `params + 1`. THE single decision for this
+            // method: the arity below, `chunk.is_method`, the `self_kw` local
+            // and the shared-env decl all read it, rather than each re-deriving
+            // the same condition (they did, and one of the four could drift).
+            //
+            // The `is_static` arm is the last language-name check here. It asks
+            // whether STATIC methods carry a receiver, which is late static
+            // binding (`static::`, `get_called_class()`) — a class-shape trait
+            // the frontend should declare, the way seven frontends already set
+            // `explicit_self_param`, not something shared code infers from a
+            // profile name.
             let has_receiver = if is_static_init {
                 false
             } else if is_static {
-                cc.profile.name == "php"
+                cc.static_methods_take_receiver()
             } else if ambient_this {
                 false
             } else {
@@ -2259,7 +2266,7 @@ impl Compiler {
                 chunk.result_arity = n;
             }
             cc.chunks.push(chunk);
-            cc.scopes.push(Scope::new_function());
+            cc.scopes.push(Scope::new_function(!cc.case_sensitive));
             cc.static_local_bindings.push(HashMap::new());
             let saved = cc.current;
             cc.current = ci;
@@ -2271,7 +2278,7 @@ impl Compiler {
                 &mut cc.current_closure_captured_locals,
             );
 
-            if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
+            if has_receiver {
                 cc.define_local(&self_kw);
             }
             let js_arguments_source_slot = if uses_js_arguments {
@@ -2297,8 +2304,7 @@ impl Compiler {
                             type_hint: p.type_hint.clone(),
                             pascal_bounds: p.type_hint.as_deref().and_then(|type_hint| {
                                 cc.pascal_array_type_hint_metadata(type_hint)
-                            }),
-                        },
+                            }) },
                     );
                 }
             }
@@ -2309,7 +2315,7 @@ impl Compiler {
                 cc.emit_u16(Op::LOCAL_GET, slot);
                 cc.chunk().emit_string_const("Arguments", 0);
                 let type_key = cc.str_const("__type");
-                cc.emit_u16(Op::STRUCT_SET, type_key);
+                cc.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
                 cc.emit(Op::DROP);
 
                 let len_slot = cc.define_local("__vybe_js_arguments_length");
@@ -2346,7 +2352,7 @@ impl Compiler {
                 cc.emit_u16(Op::LOCAL_SET, this_slot);
                 cc.emit_js_private_brand_check(this_slot, &bound_name)?;
             }
-            if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php") {
+            if has_receiver {
                 if class.explicit_self_param {
                     if let Some(self_param) = m.params.first() {
                         if self_param.name != self_kw {
@@ -2438,7 +2444,7 @@ impl Compiler {
                     let env_size = captured_names.len() as u16;
                     let line = cc.line;
                     for _ in 0..env_size {
-                        cc.emit(Op::NULL);
+                        cc.emit_null();
                     }
                     cc.chunks[cc.current].emit_array_new_fixed(0, env_size, line);
                     let env_slot = cc.define_local("__shared_env");
@@ -2448,8 +2454,7 @@ impl Compiler {
 
                     let mut local_decls: std::collections::HashSet<String> =
                         user_params.iter().map(|p| p.name.clone()).collect();
-                    if !ambient_this && !is_static_init && (!is_static || cc.profile.name == "php")
-                    {
+                    if has_receiver {
                         local_decls.insert(self_kw.clone());
                     }
                     crate::primitives::collect_declared_names(&m.body, &mut local_decls);
@@ -2498,7 +2503,6 @@ impl Compiler {
                 if let Some(slot) = cc
                     .scope()
                     .resolve(&self_kw)
-                    .or_else(|| cc.scope().resolve_ci(&self_kw))
                 {
                     cc.emit_u16(Op::LOCAL_GET, slot);
                     cc.emit_return_through_finally(1)?;
@@ -2514,7 +2518,7 @@ impl Compiler {
                     cc.emit_var_get(&class.name);
                     cc.emit_u8(Op::CALL_REF, 0);
                 } else {
-                    cc.emit(Op::NULL);
+                    cc.emit_null();
                 }
                 cc.emit_u16(Op::LOCAL_SET, rs);
                 cc.current_result_slot = Some(rs);
@@ -2528,7 +2532,7 @@ impl Compiler {
                     cc.compile_stmt(s)?;
                 }
                 if cc.current_ref_out_params.is_some() {
-                    cc.emit(Op::NULL);
+                    cc.emit_null();
                     cc.emit_return_through_finally(1)?;
                 } else {
                     let line = cc.line;
@@ -2628,16 +2632,14 @@ impl Compiler {
                                 is_rest: true,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false,
-                            }]
+                                is_nullable: false }]
                         } else {
                             user_params
                                 .iter()
                                 .map(|param| (*param).clone())
                                 .collect::<Vec<_>>()
                         }),
-                        is_virtual,
-                    });
+                        is_virtual });
             }
             let explicit_overload_extends_ancestor = !is_static
                 && !is_ctor
@@ -2720,8 +2722,7 @@ impl Compiler {
                             self.canon(nested_name),
                             self.canon(nested_name.rsplit('.').next().unwrap_or(nested_name)),
                         ),
-                        _ => (String::new(), String::new()),
-                    };
+                        _ => (String::new(), String::new()) };
                     self.compile_stmt(&nested)?;
                     if !qualified_nested.is_empty() && qualified_nested != leaf_nested {
                         let qualified_idx = self.str_const(&qualified_nested);
@@ -2770,7 +2771,7 @@ impl Compiler {
                 let ci = self.chunks.len();
                 let chunk = common::functions::create_function_chunk(&get_name, 1);
                 self.chunks.push(chunk);
-                self.scopes.push(Scope::new_function());
+                self.scopes.push(Scope::new_function(!self.case_sensitive));
                 let saved = self.current;
                 self.current = ci;
                 let saved_member_static = self.current_member_is_static;
@@ -2782,13 +2783,13 @@ impl Compiler {
                     if let Some(slot) = self.scope().resolve(&self_kw) {
                         self.emit_u16(Op::LOCAL_GET, slot);
                         let backing = self.str_const(&format!("__{}", pname_canon));
-                        self.emit_u16(Op::STRUCT_GET, backing);
+                        self.emit_struct_field_op(Op::STRUCT_GET, 0, backing);
                         self.emit(Op::RETURN);
                     }
                 } else {
                     let slot_name = self.profile.result_slot_name.clone();
                     let rs = self.define_local(&slot_name);
-                    self.emit(Op::NULL);
+                    self.emit_null();
                     self.emit_u16(Op::LOCAL_SET, rs);
                     let saved_fn = self.current_func_name.take();
                     let saved_rs = self.current_result_slot.take();
@@ -2819,7 +2820,7 @@ impl Compiler {
                 let ci = self.chunks.len();
                 let chunk = common::functions::create_function_chunk(&set_name, 2);
                 self.chunks.push(chunk);
-                self.scopes.push(Scope::new_function());
+                self.scopes.push(Scope::new_function(!self.case_sensitive));
                 let saved = self.current;
                 self.current = ci;
                 let saved_member_static = self.current_member_is_static;
@@ -2840,7 +2841,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, val_slot);
                         }
                         let backing = self.str_const(&format!("__{}", pname_canon));
-                        self.emit_u16(Op::STRUCT_SET, backing);
+                        self.emit_struct_field_op(Op::STRUCT_SET, 0, backing);
                         self.emit(Op::DROP);
                     }
                 } else {
@@ -3003,11 +3004,28 @@ impl Compiler {
             };
 
             let helper_idx = self.chunks.len();
+            // `user_arity + 1`: the extra trailing argument is the RECEIVER.
+            //
+            // WASM GC fixes an object's type at allocation and offers no way to
+            // retype it afterwards, so whoever allocates decides the type. The
+            // model used to let the BASE constructor allocate and hand the
+            // object up (`emit_super_call_store_result` — "store parent-created
+            // object as this"), which left every derived instance carrying its
+            // parent's rtt and needed a post-hoc stamp that the spec cannot
+            // express. Inverted: the most-derived constructor allocates with its
+            // own type and passes the receiver DOWN, so base constructors
+            // initialise what they are given.
+            //
+            // It rides as the LAST argument because `this` is `define_local`'d
+            // immediately after the user params — slot `user_arity` — so the
+            // incoming argument lands in the slot `this` already occupies, with
+            // no renumbering. A caller that passes only the user arguments
+            // leaves it null, and the guard below falls back to allocating.
             self.chunks.push(common::functions::create_function_chunk(
                 &helper_name,
-                user_arity,
+                user_arity.saturating_add(1),
             ));
-            self.scopes.push(Scope::new_function());
+            self.scopes.push(Scope::new_function(!self.case_sensitive));
             let saved_cur = self.current;
             let saved_class2 = self.current_class.take();
             let saved_implicit2 = self.current_class_implicit_self;
@@ -3153,13 +3171,6 @@ impl Compiler {
                         let has_local = self
                             .scope()
                             .resolve(parent_name)
-                            .or_else(|| {
-                                if self.case_sensitive {
-                                    None
-                                } else {
-                                    self.scope().resolve_ci(parent_name)
-                                }
-                            })
                             .is_some();
                         let has_upvalue = self.scopes.len() > 1
                             && self
@@ -3185,7 +3196,7 @@ impl Compiler {
                     false
                 };
                 if is_child {
-                    self.emit(Op::NULL);
+                    self.emit_null();
                     self.emit_u16(Op::LOCAL_SET, this_slot);
 
                     let has_explicit_base =
@@ -3228,12 +3239,27 @@ impl Compiler {
                         if let Some(bargs) = base_args {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
+                                    // Allocate with THIS class's type before the
+                                    // base ctor runs, then hand it down as the
+                                    // trailing receiver. WASM GC fixes type at
+                                    // allocation, so the most-derived class must
+                                    // be the one that allocates; the base
+                                    // initialises what it is given.
+                                    let canon_name = self.canon(name);
+                                    crate::primitives::classes::emit_new_typed_object(
+                                        self.chunk(),
+                                        this_slot,
+                                        &canon_name,
+                                        type_slot,
+                                        line,
+                                    );
                                     self.emit_default_js_new_target(name);
                                     self.emit_parent_ctor_value(parent_name);
                                     for a in *bargs {
                                         self.compile_expr(a)?;
                                     }
-                                    self.emit_u8(Op::CALL_REF, bargs.len() as u8);
+                                    self.emit_u16(Op::LOCAL_GET, this_slot);
+                                    self.emit_u8(Op::CALL_REF, bargs.len() as u8 + 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                 } else {
                                     let canon_name = self.canon(name);
@@ -3241,6 +3267,7 @@ impl Compiler {
                                         self.chunk(),
                                         this_slot,
                                         &canon_name,
+                                        type_slot,
                                         line,
                                     );
                                 }
@@ -3248,9 +3275,20 @@ impl Compiler {
                         } else if auto_base_needed {
                             if let Some(parent_name) = parent {
                                 if parent_ctor_is_bound {
+                                    // Same inversion as the explicit-base-args
+                                    // path: derived allocates, base initialises.
+                                    let canon_name = self.canon(name);
+                                    crate::primitives::classes::emit_new_typed_object(
+                                        self.chunk(),
+                                        this_slot,
+                                        &canon_name,
+                                        type_slot,
+                                        line,
+                                    );
                                     self.emit_default_js_new_target(name);
                                     self.emit_parent_ctor_value(parent_name);
-                                    self.emit_u8(Op::CALL_REF, 0);
+                                    self.emit_u16(Op::LOCAL_GET, this_slot);
+                                    self.emit_u8(Op::CALL_REF, 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                 } else {
                                     let canon_name = self.canon(name);
@@ -3258,6 +3296,7 @@ impl Compiler {
                                         self.chunk(),
                                         this_slot,
                                         &canon_name,
+                                        type_slot,
                                         line,
                                     );
                                 }
@@ -3265,6 +3304,17 @@ impl Compiler {
                         }
                     } else if let Some(parent_name) = parent {
                         if parent_ctor_is_bound {
+                            // Derived allocates, base initialises — see the
+                            // explicit-base-args path above. Done once here for
+                            // every forwarding shape below.
+                            let canon_name = self.canon(name);
+                            crate::primitives::classes::emit_new_typed_object(
+                                self.chunk(),
+                                this_slot,
+                                &canon_name,
+                                type_slot,
+                                line,
+                            );
                             self.emit_default_js_new_target(name);
                             self.emit_parent_ctor_value(parent_name);
                             if synthesized_forward_args {
@@ -3287,7 +3337,8 @@ impl Compiler {
                                     for arg_index in 0..count {
                                         self.emit_u16(Op::LOCAL_GET, arg_index as u16);
                                     }
-                                    self.emit_u8(Op::CALL_REF, count);
+                                    self.emit_u16(Op::LOCAL_GET, this_slot);
+                                    self.emit_u8(Op::CALL_REF, count + 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                     inst!(self, core_wasm::i32_const, 1);
                                     self.emit_u16(Op::LOCAL_SET, parent_called_slot);
@@ -3298,14 +3349,16 @@ impl Compiler {
                                 self.emit(Op::I32_EQZ);
                                 self.chunks[self.current].emit_if(line);
                                 self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
-                                self.emit_u8(Op::CALL_REF, 0);
+                                self.emit_u16(Op::LOCAL_GET, this_slot);
+                                self.emit_u8(Op::CALL_REF, 1);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                                 self.chunks[self.current].emit_end(line);
                             } else {
                                 for i in 0..user_arity {
                                     self.emit_u16(Op::LOCAL_GET, i as u16);
                                 }
-                                self.emit_u8(Op::CALL_REF, user_arity);
+                                self.emit_u16(Op::LOCAL_GET, this_slot);
+                                self.emit_u8(Op::CALL_REF, user_arity + 1);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                             }
                         } else if self.profile.ecma_error_object_shape
@@ -3324,13 +3377,39 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, 0);
                             self.chunks[self.current].emit_end(line);
                             self.emit_js_exception_ctor_from_message_value(parent_name)?;
+                            // Honour a receiver passed down from a derived
+                            // constructor. This branch builds an intrinsic error
+                            // object; overwriting `this` with it would DISCARD
+                            // the instance the most-derived class allocated —
+                            // and with it the rtt, since WASM GC cannot re-type
+                            // the host-built one. Measured: `new
+                            // InvalidArgumentException(...) instanceof
+                            // InvalidArgumentException` went false, because the
+                            // chain bottoms out here at `Exception`.
+                            // With a receiver, take the message and keep our
+                            // instance; without one, adopt the error as `this`.
+                            let exc_slot = self.define_local("__exc_intrinsic");
+                            self.emit_u16(Op::LOCAL_SET, exc_slot);
+                            self.emit_u16(Op::LOCAL_GET, this_slot);
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                            self.chunks[self.current].emit_if(line);
+                            self.emit_u16(Op::LOCAL_GET, this_slot);
+                            self.emit_u16(Op::LOCAL_GET, exc_slot);
+                            let msg_key = self.str_const("message");
+                            self.emit_struct_field_op(Op::STRUCT_GET, 0, msg_key);
+                            self.emit_struct_field_op(Op::STRUCT_SET, 0, msg_key);
+                            self.emit(Op::DROP);
+                            self.chunks[self.current].emit_else(line);
+                            self.emit_u16(Op::LOCAL_GET, exc_slot);
                             self.emit_u16(Op::LOCAL_SET, this_slot);
+                            self.chunks[self.current].emit_end(line);
                         } else {
                             let canon_name = self.canon(name);
                             crate::primitives::classes::emit_new_typed_object(
                                 self.chunk(),
                                 this_slot,
                                 &canon_name,
+                                type_slot,
                                 line,
                             );
                         }
@@ -3348,6 +3427,7 @@ impl Compiler {
                             self.chunk(),
                             this_slot,
                             &canon_name,
+                            type_slot,
                             line,
                         );
                     }
@@ -3360,7 +3440,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, this_slot);
                         self.emit_const(Value::String(Arc::from(name)));
                         let type_key = self.str_const("__type");
-                        self.emit_u16(Op::STRUCT_SET, type_key);
+                        self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
                         self.emit(Op::DROP);
                         if class.is_value_type {
                             crate::primitives::classes::emit_value_equality_stamp(
@@ -3382,7 +3462,7 @@ impl Compiler {
                             self.chunks[self.current].emit_if(line);
                             self.emit_u16(Op::LOCAL_GET, this_slot);
                             self.emit_u16(Op::LOCAL_GET, proto_local);
-                            self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                            self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
                             self.emit(Op::DROP);
                             self.chunks[self.current].emit_end(line);
                         }
@@ -3507,8 +3587,7 @@ impl Compiler {
                                 }
                                 end
                             }
-                            None => 0,
-                        };
+                            None => 0 };
                         for stmt in &body_stmts[..preamble_end] {
                             self.compile_stmt(stmt)?;
                         }
@@ -3572,6 +3651,7 @@ impl Compiler {
                         self.chunk(),
                         this_slot,
                         &canon_name,
+                        type_slot,
                         line,
                     );
                     if class.is_value_type {
@@ -3644,7 +3724,7 @@ impl Compiler {
                         self.chunks[self.current].emit_if(line);
                         self.emit_u16(Op::LOCAL_GET, this_slot);
                         self.emit_u16(Op::LOCAL_GET, proto_local);
-                        self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                        self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
                         self.emit(Op::DROP);
                         self.chunks[self.current].emit_end(line);
                     }
@@ -3693,7 +3773,7 @@ impl Compiler {
                     let ctor_key = self.str_const("constructor");
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_u16(Op::GLOBAL_GET, class_global);
-                    self.emit_u16(Op::STRUCT_SET, ctor_key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
                     self.emit(Op::DROP);
                     let canon_name = self.canon(name);
                     crate::primitives::classes::emit_retype_object(
@@ -3714,7 +3794,7 @@ impl Compiler {
                     let class_key = self.str_const("__class__");
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_u16(Op::GLOBAL_GET, class_global);
-                    self.emit_u16(Op::STRUCT_SET, class_key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, class_key);
                     self.emit(Op::DROP);
                 }
 
@@ -3779,7 +3859,7 @@ impl Compiler {
                     self.chunks[self.current].emit_if(line);
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.emit_u16(Op::STRUCT_SET, proto_key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_key);
                     self.emit(Op::DROP);
                     self.chunks[self.current].emit_end(line);
                 }
@@ -3846,7 +3926,7 @@ impl Compiler {
             .unwrap_or(0) as u8;
         self.chunks
             .push(common::functions::create_function_chunk(name, ctor_arity));
-        self.scopes.push(Scope::new_function());
+        self.scopes.push(Scope::new_function(!self.case_sensitive));
         let saved_cur = self.current;
         self.current = ctor_idx;
         for i in 0..ctor_arity {
@@ -3896,7 +3976,7 @@ impl Compiler {
             emit_helper_ref(self, *helper_idx, helper_captures)?;
             self.emit_u8(Op::CALL_REF, 0);
         } else {
-            self.emit(Op::NULL);
+            self.emit_null();
         }
         self.emit_return_through_finally(1)?;
         {
@@ -3931,7 +4011,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from(name)));
             let name_key = self.str_const("name");
-            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
             self.emit(Op::DROP);
         }
         for (arity, _, helper_idx, helper_captures, named) in &ctor_helpers {
@@ -3949,7 +4029,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
                 emit_helper_ref(self, *helper_idx, helper_captures)?;
                 let key = self.str_const(named);
-                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
                 self.emit(Op::DROP);
             }
         }
@@ -3970,7 +4050,7 @@ impl Compiler {
             if let Some(parent_name) = proto_parent {
                 self.emit_parent_class_value(parent_name);
                 let parent_proto_key = self.str_const("prototype");
-                self.emit_u16(Op::STRUCT_GET, parent_proto_key);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, parent_proto_key);
                 let parent_proto_local = self.define_local(&format!("__{}_parent_prototype", name));
                 self.emit_u16(Op::LOCAL_SET, parent_proto_local);
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
@@ -3980,7 +4060,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, proto_local);
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
                 let proto_link_key = self.str_const("__proto__");
-                self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
                 self.emit(Op::DROP);
                 self.chunks[self.current].emit_end(line);
             }
@@ -3988,7 +4068,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, proto_local);
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             let ctor_key = self.str_const("constructor");
-            self.emit_u16(Op::STRUCT_SET, ctor_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
             self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
@@ -3997,7 +4077,7 @@ impl Compiler {
             inst!(self, core_wasm::dup);
             self.emit_u16(Op::LOCAL_GET, proto_local);
             let value_key = self.str_const("value");
-            self.emit_u16(Op::STRUCT_SET, value_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
             self.emit(Op::DROP);
             for (flag, value) in [
                 ("writable", false),
@@ -4007,7 +4087,7 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::Bool(value));
                 let flag_key = self.str_const(flag);
-                self.emit_u16(Op::STRUCT_SET, flag_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, flag_key);
                 self.emit(Op::DROP);
             }
             let define_prop_idx = self.import("ecma:object", "defineProperty");
@@ -4017,13 +4097,13 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from(name)));
             let name_key = self.str_const("name");
-            self.emit_u16(Op::STRUCT_SET, name_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
             self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::F64(0.0));
             let length_key = self.str_const("length");
-            self.emit_u16(Op::STRUCT_SET, length_key);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
             self.emit(Op::DROP);
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
@@ -4041,7 +4121,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
                     self.emit_parent_class_value(parent_name);
                     let proto_link_key = self.str_const("__proto__");
-                    self.emit_u16(Op::STRUCT_SET, proto_link_key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
                     self.emit(Op::DROP);
                     if self.profile.has_ecma_globals
                         && Self::is_ecma_typed_array_ctor_name(parent_name)
@@ -4049,17 +4129,17 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, ctor_local);
                         self.emit_const(Value::Bool(true));
                         let marker_key = self.str_const("__vybe_typed_array_ctor");
-                        self.emit_u16(Op::STRUCT_SET, marker_key);
+                        self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
                         self.emit(Op::DROP);
                         for static_name in ["from", "of"] {
                             self.emit_u16(Op::LOCAL_GET, ctor_local);
                             self.emit_parent_class_value(parent_name);
                             let static_key = self.str_const(static_name);
-                            self.emit_u16(Op::STRUCT_GET, static_key);
+                            self.emit_struct_field_op(Op::STRUCT_GET, 0, static_key);
                             self.emit_u16(Op::LOCAL_GET, ctor_local);
                             let bind_idx = self.import("ecma:function", "bind");
                             self.emit_host_call(bind_idx, 2);
-                            self.emit_u16(Op::STRUCT_SET, static_key);
+                            self.emit_struct_field_op(Op::STRUCT_SET, 0, static_key);
                             self.emit(Op::DROP);
                         }
                     }
@@ -4118,7 +4198,7 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::String(Arc::from(mname.as_str())));
                 let name_key = self.str_const("name");
-                self.emit_u16(Op::STRUCT_SET, name_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
                 {
                     let line = self.line;
                     crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(
@@ -4127,7 +4207,7 @@ impl Compiler {
                     );
                 }
                 let key = self.str_const(mname);
-                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
                 self.emit(Op::DROP);
                 // Publish the PROTOCOL SLOT alongside the method's own name, so
                 // a prototype-dispatch language (JS, PHP, Dart) reaches its
@@ -4146,9 +4226,9 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, proto_local);
                     self.emit_u16(Op::LOCAL_GET, proto_local);
                     let method_key = self.str_const(mname);
-                    self.emit_u16(Op::STRUCT_GET, method_key);
+                    self.emit_struct_field_op(Op::STRUCT_GET, 0, method_key);
                     let slot_const = self.str_const(&slot_key);
-                    self.emit_u16(Op::STRUCT_SET, slot_const);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, slot_const);
                     self.emit(Op::DROP);
                 }
             }
@@ -4181,7 +4261,9 @@ impl Compiler {
         for (fname, type_hint, init, array_bounds) in &static_field_inits {
             let saved_member_static = self.current_member_is_static;
             self.current_member_is_static = true;
-            if self.profile.name == "js" && fname.starts_with("__static_block_") {
+            // Redundant name check removed: `__static_block_N` is a name only
+            // the JS class normalizer produces.
+            if fname.starts_with("__static_block_") {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
                 if let Some(init_expr) = init {
                     self.compile_expr(init_expr)?;
@@ -4193,7 +4275,9 @@ impl Compiler {
                 self.emit(Op::DROP);
                 continue;
             }
-            if self.profile.name == "js" && !fname.starts_with("__js_private_") {
+            if self.profile.static_fields_are_own_properties
+                && !fname.starts_with("__js_private_")
+            {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
                 if let Some(init_expr) = init {
                     self.compile_expr(init_expr)?;
@@ -4209,8 +4293,7 @@ impl Compiler {
                                 type_hint.as_deref(),
                             )),
                         ],
-                        optional: false,
-                    });
+                        optional: false });
                     self.compile_expr(&init_expr)?;
                 } else {
                     inst!(self, core_wasm::undefined);
@@ -4226,7 +4309,7 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 let value_key = self.str_const("value");
-                self.emit_u16(Op::STRUCT_SET, value_key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
                 self.emit(Op::DROP);
                 for (flag, value) in [
                     ("writable", true),
@@ -4236,7 +4319,7 @@ impl Compiler {
                     inst!(self, core_wasm::dup);
                     self.emit_const(Value::Bool(value));
                     let flag_key = self.str_const(flag);
-                    self.emit_u16(Op::STRUCT_SET, flag_key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, flag_key);
                     self.emit(Op::DROP);
                 }
                 let define_prop_idx = self.import("ecma:object", "defineProperty");
@@ -4268,7 +4351,7 @@ impl Compiler {
             let global_idx = self.str_const(&global_name);
             self.emit_u16(Op::GLOBAL_GET, global_idx);
             let field_idx = self.str_const(const_name);
-            self.emit_u16(Op::STRUCT_SET, field_idx);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
             self.emit(Op::DROP);
         }
 
@@ -4309,8 +4392,8 @@ impl Compiler {
                     let parent_idx = self.str_const(pname);
                     self.emit_u16(Op::GLOBAL_GET, parent_idx);
                     let field_idx = self.str_const(field_name);
-                    self.emit_u16(Op::STRUCT_GET, field_idx);
-                    self.emit_u16(Op::STRUCT_SET, field_idx);
+                    self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
                     self.emit(Op::DROP);
                 }
                 current_parent = next_parent;
@@ -4335,14 +4418,16 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
                 self.emit_u16(Op::GLOBAL_GET, nested_idx);
                 let key = self.str_const(&key_name);
-                self.emit_u16(Op::STRUCT_SET, key);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
                 self.emit(Op::DROP);
             }
         }
 
         // Attach static methods to the constructor object
         let mut all_statics: Vec<(String, usize)> = Vec::new();
-        let php_static_receiver = if self.profile.name == "php" {
+        // Late static binding: the class object rides along as the static
+        // method's receiver so `static::` resolves against the CALLED class.
+        let php_static_receiver = if self.static_methods_take_receiver() {
             Some(ctor_local)
         } else {
             None
@@ -4389,26 +4474,26 @@ impl Compiler {
                         inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
                         let receiver_key = self.str_const("__vybe_method_receiver");
-                        self.emit_u16(Op::STRUCT_SET, receiver_key);
+                        self.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key);
                         self.emit(Op::DROP);
                     }
                     if let Some(fixed_count) = method_rest_fixed_count(*chunk_idx) {
                         inst!(self, core_wasm::dup);
                         self.emit_const(Value::F64(fixed_count as f64));
                         let rest_key = self.str_const("__vybe_rest_fixed_arity");
-                        self.emit_u16(Op::STRUCT_SET, rest_key);
+                        self.emit_struct_field_op(Op::STRUCT_SET, 0, rest_key);
                         self.emit(Op::DROP);
                     }
                     inst!(self, core_wasm::dup);
                     self.emit_const(Value::String(Arc::from(method.source_name.as_str())));
                     let name_key = self.str_const("name");
-                    self.emit_u16(Op::STRUCT_SET, name_key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
                     crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(
                         self.chunk(),
                         line,
                     );
                     let storage_key = self.str_const(&bound_name);
-                    self.emit_u16(Op::STRUCT_SET, storage_key);
+                    self.emit_struct_field_op(Op::STRUCT_SET, 0, storage_key);
                     self.emit(Op::DROP);
                 }
             }
@@ -4501,8 +4586,7 @@ impl Compiler {
             vybe_ast::ClassKind::Class if class.is_value_type => {
                 crate::primitives::reflection::ReflectKind::Struct
             }
-            kind => crate::primitives::reflection::ReflectKind::from_class_kind(kind),
-        };
+            kind => crate::primitives::reflection::ReflectKind::from_class_kind(kind) };
 
         // The declared-kind annotation is stamped unconditionally: it is what
         // `interface_exists` / `trait_exists` / `kind_of?` read, and every
@@ -4610,7 +4694,32 @@ impl Compiler {
         // (JS/TS/Python/C#) preserve. Registry stores whatever the walker
         // produced; runtime `Op::REF_TEST` looks up by the same canon.
         let canon_name = ctor_global_prefix;
-        let canon_parent = parent.as_ref().map(|p| self.canon(p)).unwrap_or_default();
+        // A class with no declared base extends the universal root. Every
+        // platform already registers its builtins that way — `t.parent =
+        // Some(0) // inherits from Object` in ecma/web/vybe `builtin_types.rs`
+        // — and only compiler-registered USER classes were left rootless. That
+        // gap is invisible while `type_id` is 0 (the string scan ends with
+        // `eq_ignore_ascii_case("object")`), but the moment a real rtt is
+        // stamped, `test_type`'s fast path asks `is_subtype(Child, Object)`
+        // and gets false: `is_object($x)` — `ref.test object` — returns false
+        // for every user instance. Measured, not inferred.
+        let canon_parent = parent
+            .as_ref()
+            .map(|p| self.canon(p))
+            .unwrap_or_else(|| "Object".to_string());
+        // The DECLARED interfaces, canonicalised like every other name here.
+        // This was `Vec::new()`, which left the runtime `TypeRegistry` with no
+        // interface list at all — so `is_subtype` (which checks `implements` on
+        // the type and on each ancestor as it walks parents) could never match
+        // an interface, and `x instanceof SomeInterface` only worked via the
+        // `__types` STRING scan that `test_type` falls back to when
+        // `type_id == 0`. Two representations of one fact, disagreeing.
+        // `normalize_class_from_ast` fills `interfaces` for all twelve
+        // languages (flexclassplan §1873), so the data was always here — this
+        // is the "the data exists but this lookup can't see it" shape §1453
+        // names.
+        let canon_interfaces: Vec<String> =
+            class.interfaces.iter().map(|i| self.canon(i)).collect();
         crate::primitives::classes::register_type(
             &mut self.chunks,
             &canon_name,
@@ -4618,7 +4727,7 @@ impl Compiler {
             fields,
             all_methods,
             false,
-            Vec::new(),
+            canon_interfaces,
             Some(ctor_idx),
             std::collections::HashMap::new(),
         );
@@ -4726,8 +4835,7 @@ fn stmt_has_result_member_assign(stmt: &Statement) -> bool {
                     .as_ref()
                     .is_some_and(|body| body_has_result_member_assign(body))
         }
-        _ => false,
-    }
+        _ => false }
 }
 
 fn expr_is_result_member(expr: &Expression) -> bool {
@@ -4789,10 +4897,47 @@ fn stamp_reflection_type_fields(
 /// that nothing reads. Stamping it unconditionally keeps the compiler and
 /// the resolver from having to detect "is this class a form?" — the same
 /// canonical AST and bytecode shape works for both.
-pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, line: u32) {
-    // Create empty object → store in this_slot
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+pub fn emit_new_typed_object(
+    chunk: &mut Chunk,
+    this_slot: u16,
+    class_name: &str,
+    typeidx: u16,
+    line: u32,
+) {
+    // `struct.new_default $T` — the SPEC instruction. A non-zero typeidx makes
+    // the VM resolve the rtt (`resolve_gc_rtt`) and set `obj.type_id` AT
+    // ALLOCATION, which is the only point WASM GC allows a type to be assigned.
+    // That is what makes `ref.test` / `ref.cast` answer from the type registry
+    // instead of a `__type` STRING.
+    //
+    // Field ACCESS stays by name: `struct.new_default` leaves `properties`
+    // empty and sizes `fields` from the registry, and the VM's named
+    // `struct.set` mirrors into `fields` whenever `type_id > 0` — so the two
+    // views stay in step without the class model having to become positional.
+    //
+    // typeidx 0 (type not reserved) keeps the old dynamic allocation.
+    //
+    // Allocate ONLY when no receiver was handed in. A base constructor invoked
+    // as part of a derived construction receives the already-allocated instance
+    // as its trailing argument (which lands in `this_slot`) and must INITIALISE
+    // it, not replace it — the derived allocation is the one that carries the
+    // correct rtt, and WASM GC has no way to retype it afterwards.
+    //
+    // The test is truthiness, not `ref.is_null`: an omitted argument arrives as
+    // `Undefined` (ECMA-262 §10.2.1.1, `calls.rs:580`) and `is_null_ref` is
+    // false for it, so a null check alone would skip the allocation on every
+    // plain `new Base()`.
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if(line);
+    chunk.emit_else(line);
+    if typeidx != 0 {
+        chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, typeidx, line);
+    } else {
+        chunk.emit_struct_new(0, 0, line);
+    }
     chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
+    chunk.emit_end(line);
 
     // Stamp shared reflection/class type metadata.
     stamp_reflection_type_fields(
@@ -4812,23 +4957,12 @@ pub fn emit_new_typed_object(chunk: &mut Chunk, this_slot: u16, class_name: &str
         line,
     );
 
-    // Stamp WASM GC type_id via __tid_ global. The caller has already
-    // canonicalised `class_name` per the source language's case-
-    // sensitivity, and `register_type` stored the type under that
-    // same name — VM `load_type_table` populates `__tid_<canon>`,
-    // which we look up verbatim here.
-    let tid_name = chunk.add_constant(Value::String(Arc::from(
-        format!("__tid_{}", class_name).as_str(),
-    )));
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
-    {
-        let tid_key = chunk.add_constant(Value::String(Arc::from(
-            crate::primitives::reflection::FIELD_TYPE_ID,
-        )));
-        chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line);
-    }
-    chunk.emit_op(Op::DROP, line);
+    // NO post-hoc identity stamp. The rtt was set by `struct.new_default $T`
+    // above, at allocation, by the engine's own type resolution. The
+    // `GLOBAL_GET __tid_<class>` + write that used to live here fed a
+    // `__type_id` PROPERTY that nothing in the VM ever read — `test_type`
+    // reads `ob.type_id`, a struct field — so it was two representations of
+    // one fact, and the string scan was doing the real work.
 }
 
 /// Re-stamp type identity on an EXISTING object — a child constructor
@@ -4847,18 +4981,12 @@ pub fn emit_retype_object(chunk: &mut Chunk, this_slot: u16, class_name: &str, l
         line,
     );
 
-    let tid_name = chunk.add_constant(Value::String(Arc::from(
-        format!("__tid_{}", class_name).as_str(),
-    )));
-    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_GET, tid_name, line);
-    {
-        let tid_key = chunk.add_constant(Value::String(Arc::from(
-            crate::primitives::reflection::FIELD_TYPE_ID,
-        )));
-        chunk.emit_op_u16(Op::STRUCT_SET, tid_key, line);
-    }
-    chunk.emit_op(Op::DROP, line);
+    // Only the STRING channel is re-stamped here. There is no rtt to rewrite:
+    // the instance was allocated by its most-derived class via
+    // `struct.new_default $T`, so `ob.type_id` is already correct and WASM GC
+    // offers no way to change it anyway. The `GLOBAL_GET __tid_<class>` +
+    // `__type_id` property write that used to follow fed a property nothing in
+    // the VM ever read.
 }
 
 /// Mark a shared class instance as a structural value type. The normal class
@@ -4869,7 +4997,7 @@ pub fn emit_value_equality_stamp(chunk: &mut Chunk, this_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_bool_const(true, line);
     let key = chunk.add_constant(Value::String(Arc::from("__value_eq")));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -4970,12 +5098,10 @@ pub fn emit_stamp_class_members(
         chunks[current].emit_i32_const(param_count as i32, line);
         match type_name {
             Some(t) => chunks[current].emit_string_const(t, line),
-            None => chunks[current].emit_op(Op::NULL, line),
-        }
+            None => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
         match return_type {
             Some(t) => chunks[current].emit_string_const(t, line),
-            None => chunks[current].emit_op(Op::NULL, line),
-        }
+            None => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
         for param_type in param_types {
             chunks[current].emit_string_const(param_type, line);
         }
@@ -5003,7 +5129,7 @@ pub fn emit_stamp_class_members(
     chunks[current].emit_op_u16(Op::LOCAL_SET, fields_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fields_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_SET, fields_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, fields_key, line);
     chunks[current].emit_op(Op::DROP, line);
 
     for (name, param_count, return_type, param_types, modifiers) in methods {
@@ -5025,7 +5151,7 @@ pub fn emit_stamp_class_members(
     chunks[current].emit_op_u16(Op::LOCAL_SET, methods_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, methods_slot, line);
-    chunks[current].emit_op_u16(Op::STRUCT_SET, methods_key, line);
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, methods_key, line);
     chunks[current].emit_op(Op::DROP, line);
 }
 
@@ -5063,7 +5189,7 @@ pub fn emit_stamp_class_mro(
     chunks[current].emit_op(Op::DROP, line);
     // ctor.__mro__ = arr
     let key = chunks[current].add_constant(Value::String(Arc::from("__mro__")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, key, line); // [ctor]
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line); // [ctor]
     chunks[current].emit_op(Op::DROP, line);
 }
 
@@ -5095,7 +5221,7 @@ pub fn emit_stamp_class_bases(
         }
     }
     let key = chunks[current].add_constant(Value::String(Arc::from("__bases__")));
-    chunks[current].emit_op_u16(Op::STRUCT_SET, key, line); // [ctor]
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line); // [ctor]
     chunks[current].emit_op(Op::DROP, line);
 }
 
@@ -5142,7 +5268,7 @@ pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if(line);
     c.emit_op(Op::DROP, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
     // mro = cls.__mro__; return null if absent
@@ -5152,7 +5278,7 @@ pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if(line);
     c.emit_op(Op::DROP, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c.emit_end(line);
     c.emit_op_u16(Op::LOCAL_SET, mro, line);
@@ -5169,7 +5295,7 @@ pub fn ensure_super_lookup_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_SET, i, line);
     c.emit_i32_const(0, line);
     c.emit_op_u16(Op::LOCAL_SET, passed, line);
-    c.emit_op(Op::NULL, line);
+    c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op_u16(Op::LOCAL_SET, found, line);
 
     let block_patch = c.emit_block(line);
@@ -5250,7 +5376,7 @@ fn push_array_value_local(chunks: &mut [Chunk], current: usize, slot: u16, line:
 /// Push a minimal `object` class stand-in carrying `__name__ = "object"`, for the
 /// tail of every class's `__mro__`. Stack: `[] -> [obj]`.
 fn emit_object_base_stub(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
     crate::primitives::object::set_string_field(chunk, "__name__", "object", line);
     chunk.emit_dup(line);
@@ -5311,9 +5437,9 @@ pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &st
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // obj for struct_set
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // obj for struct_get
     let prop_idx = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::STRUCT_GET, prop_idx, line); // val = this.method (parent version)
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, prop_idx, line); // val = this.method (parent version)
     let base_idx = chunk.add_constant(Value::String(Arc::from(base_name.as_str())));
-    chunk.emit_op_u16(Op::STRUCT_SET, base_idx, line); // this.__base_method = val
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, base_idx, line); // this.__base_method = val
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -5324,7 +5450,7 @@ pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, li
     let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
     chunk.emit_op_u16(Op::GLOBAL_GET, parent_c, line);
     let super_key = chunk.add_constant(Value::String(Arc::from("__super")));
-    chunk.emit_op_u16(Op::STRUCT_SET, super_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, super_key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -5456,7 +5582,7 @@ pub fn emit_attach_static_method_kinded(
         chunk.emit_dup(line);
         chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
         let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
-        chunk.emit_op_u16(Op::STRUCT_SET, receiver_key, line);
+        chunk.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key, line);
         chunk.emit_op(Op::DROP, line);
     }
     if let Some(fixed_count) = rest_fixed_count {
@@ -5467,10 +5593,10 @@ pub fn emit_attach_static_method_kinded(
     chunk.emit_dup(line);
     chunk.emit_string_const(method_name, line);
     let name_key = chunk.add_constant(Value::String(Arc::from("name")));
-    chunk.emit_op_u16(Op::STRUCT_SET, name_key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
     crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(chunk, line);
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -5556,9 +5682,9 @@ pub fn emit_store_constructor_with_upvalues(
 /// Stack: unchanged
 pub fn emit_init_field_null(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    chunk.emit_op(Op::NULL, line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -5573,7 +5699,7 @@ pub fn emit_init_field_start(chunk: &mut Chunk, this_slot: u16, line: u32) {
 /// Stack before: [this, value]. Stack after: [].
 pub fn emit_init_field_end(chunk: &mut Chunk, field_name: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -5581,7 +5707,7 @@ pub fn emit_init_field_end(chunk: &mut Chunk, field_name: &str, line: u32) {
 pub fn emit_get_field(chunk: &mut Chunk, this_slot: u16, field_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     let key = chunk.add_constant(Value::String(Arc::from(field_name)));
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 /// Set a field value on `this` from a value already on the stack.
@@ -5618,7 +5744,7 @@ pub fn register_type(
     // distinct types in case-sensitive languages (`B` and `b`). The VM
     // matches names exactly; case-insensitivity is entirely a
     // compile-time concern via `canon()`.
-    chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
+    let entry = vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
         parent: parent.to_string(),
@@ -5627,8 +5753,48 @@ pub fn register_type(
         is_interface,
         implements,
         constructor_chunk,
-        field_descriptors,
-    });
+        field_descriptors };
+    // Fill a slot RESERVED by `reserve_type_slot` if there is one, so the type
+    // keeps the table position its constructor already baked into its
+    // `struct.new_default $T` immediate. Pushing a second entry under the same
+    // name would leave the reserved (empty) one in front of it, and
+    // `load_type_table` registers the FIRST occurrence of a name — the
+    // instance would allocate against a type with no fields.
+    match chunks[0].types.iter_mut().find(|t| t.name == name) {
+        Some(slot) => *slot = entry,
+        None => chunks[0].types.push(entry) }
+}
+
+/// Reserve this class's entry in chunk 0's type table **before** its
+/// constructor is compiled, returning the **1-based table index** — the value
+/// a `struct.new_default $T` immediate must carry.
+///
+/// Registration used to happen at the END of `compile_class`, so while the
+/// constructor was being emitted the class had no table position yet and the
+/// allocation could not name its own type. That is the whole reason identity
+/// was stamped *after* allocation (`SET_TYPE_ID`, a custom opcode) instead of
+/// at it. Reserving here closes the gap without changing what finally gets
+/// registered — `register_type` fills this same entry in.
+///
+/// 1-based, and deliberately NOT the runtime registry id: the host
+/// pre-registers its builtin types ahead of the module's, so the VM recovers
+/// the name via `module_type_names[imm - 1]` and resolves it by name
+/// (`resolve_gc_rtt`). Same convention as `register_gc_array_type`.
+pub fn reserve_type_slot(chunks: &mut [Chunk], name: &str) -> u16 {
+    if let Some(pos) = chunks[0].types.iter().position(|t| t.name == name) {
+        return pos as u16 + 1;
+    }
+    chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
+        name: name.to_string(),
+        kind: vybe_runtime::chunk::CompositeKind::Struct,
+        parent: String::new(),
+        fields: Vec::new(),
+        methods: Vec::new(),
+        is_interface: false,
+        implements: Vec::new(),
+        constructor_chunk: None,
+        field_descriptors: std::collections::HashMap::new() });
+    chunks[0].types.len() as u16
 }
 
 /// Register a WASM GC `(array …)` defined type in chunk 0's type table and
@@ -5663,8 +5829,7 @@ pub fn register_gc_array_type(chunks: &mut [Chunk], name: &str, elem_type: &str)
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new(),
-    });
+        field_descriptors: std::collections::HashMap::new() });
     type_index
 }
 
@@ -5689,8 +5854,7 @@ pub fn register_interface(
         is_interface: true,
         implements: parent_interfaces,
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new(),
-    });
+        field_descriptors: std::collections::HashMap::new() });
 }
 
 /// Register a class that implements one or more interfaces.
@@ -5744,7 +5908,7 @@ pub fn emit_auto_init_component(chunk: &mut Chunk, this_slot: u16, line: u32) {
 pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [this]
     let name_idx = chunk.add_constant(Value::String(Arc::from(method_name.to_lowercase())));
-    chunk.emit_op_u16(Op::STRUCT_GET, name_idx, line); // [method_ref]
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_idx, line); // [method_ref]
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [method_ref, this]
     chunk.emit_op_u8(Op::CALL_REF, 1, line); // call(1) → [result]
     chunk.emit_op(Op::DROP, line); // []

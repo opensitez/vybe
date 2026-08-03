@@ -32,16 +32,14 @@ use vybe_widgets::{
     WidgetCommand,
     WidgetEvent,
     fill_background,
-    run_app,
-};
+    run_app };
 
 #[cfg(feature = "gui_forms")]
 use vybe_widgets::{
     BindingNavigator, Button, Checkbox, ContextMenu, DataGrid, DateTimePicker, FlowLayoutPanel,
     Form as WidgetForm, GroupBox, Label, ListBox, ListView, MaskedTextBox, MenuStrip,
     MonthCalendar, NumericUpDown, Panel, PictureBox, ProgressBar, Radio, ScrollBar, Select, Slider,
-    SplitContainer, StatusStrip, TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView,
-};
+    SplitContainer, StatusStrip, TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView };
 
 // ── Data binding types ─────────────────────────────────────────────────
 
@@ -50,28 +48,24 @@ struct DataBindingEntry {
     control_name: String,
     property: String,
     source_name: String,
-    column: String,
-}
+    column: String }
 
 #[derive(Clone, Debug)]
 struct BindingSourceInfo {
     name: String,
     data_adapter_name: String,
-    data_member: String,
-}
+    data_member: String }
 
 #[derive(Clone, Debug)]
 struct NavigatorInfo {
     navigator_name: String,
-    binding_source_name: String,
-}
+    binding_source_name: String }
 
 #[allow(dead_code)]
 struct DataStore {
     columns: Vec<String>,
     rows: Vec<std::collections::HashMap<String, String>>,
-    position: i32,
-}
+    position: i32 }
 
 // ── Control type → Widget mapping (designer forms only) ────────────────
 
@@ -256,8 +250,7 @@ struct FormApp {
     initialised: bool,
     /// Last time each GUI timer fired, keyed by control name — used by `on_tick`
     /// to decide when a timer's interval has elapsed.
-    timer_last_fire: std::collections::HashMap<String, std::time::Instant>,
-}
+    timer_last_fire: std::collections::HashMap<String, std::time::Instant> }
 
 impl Application for FormApp {
     fn on_init(&mut self, width: f32, height: f32, _scale: f32) {
@@ -288,8 +281,7 @@ impl Application for FormApp {
             pixmap,
             font_system: &mut self.font_system,
             swash_cache: &mut self.swash_cache,
-            scale,
-        };
+            scale };
         g.form.render(&mut ctx);
     }
 
@@ -352,8 +344,7 @@ impl Application for FormApp {
             let _ = match fn_arity(&handler) {
                 0 => vm.invoke(&handler, &[]),
                 1 => vm.invoke(&handler, &[me.clone()]),
-                _ => vm.invoke(&handler, &[me.clone(), vybe_runtime::Value::Null]),
-            };
+                _ => vm.invoke(&handler, &[me.clone(), vybe_runtime::Value::Null]) };
         }
     }
 }
@@ -388,8 +379,7 @@ impl FormApp {
                 _ => vm.invoke(
                     &cb,
                     &[me, vybe_runtime::Value::Null, vybe_runtime::Value::Null],
-                ),
-            };
+                ) };
             if let Err(e) = result {
                 eprintln!("[LOAD] Error: {e}");
             }
@@ -451,8 +441,7 @@ impl FormApp {
             1 => vm.invoke(cb, &[value]),
             // .NET/VB `(sender, e)` — unchanged.
             2 => vm.invoke(cb, &[me, sender]),
-            _ => vm.invoke(cb, &[me, sender, value]),
-        };
+            _ => vm.invoke(cb, &[me, sender, value]) };
         if let Err(e) = result {
             eprintln!("Event handler error: {e}");
         }
@@ -482,8 +471,7 @@ impl FormApp {
             0 => vm.invoke(cb, &[]),
             1 => vm.invoke(cb, &[me]),
             2 => vm.invoke(cb, &[me, sender]),
-            _ => vm.invoke(cb, &[me, sender, vybe_runtime::Value::Null]),
-        };
+            _ => vm.invoke(cb, &[me, sender, vybe_runtime::Value::Null]) };
         if Self::gui_trace_enabled() {
             eprintln!(
                 "[gui] callback elapsed={:.1}ms control={}",
@@ -643,8 +631,7 @@ impl FormApp {
                     let store = DataStore {
                         columns: columns.clone(),
                         rows: rows.clone(),
-                        position: if rows.is_empty() { -1 } else { 0 },
-                    };
+                        position: if rows.is_empty() { -1 } else { 0 } };
                     self.data_store.insert(bs_info.name.to_lowercase(), store);
                     self.sync_bound_controls(&bs_info.name);
                 }
@@ -655,8 +642,7 @@ impl FormApp {
                         DataStore {
                             columns: Vec::new(),
                             rows: Vec::new(),
-                            position: -1,
-                        },
+                            position: -1 },
                     );
                 }
             }
@@ -696,8 +682,7 @@ impl FormApp {
         let bs_lower = bs_name.to_lowercase();
         let store = match self.data_store.get(&bs_lower) {
             Some(s) => s,
-            None => return,
-        };
+            None => return };
         if store.position < 0 || store.position as usize >= store.rows.len() {
             return;
         }
@@ -756,8 +741,7 @@ impl FormApp {
         let new_pos = {
             let store = match self.data_store.get(&bs_lower) {
                 Some(s) => s,
-                None => return,
-            };
+                None => return };
             let count = store.rows.len() as i32;
             if count == 0 {
                 return;
@@ -767,8 +751,7 @@ impl FormApp {
                 "prev" => (store.position - 1).max(0),
                 "next" => (store.position + 1).min(count - 1),
                 "last" => count - 1,
-                _ => store.position,
-            }
+                _ => store.position }
         };
         if let Some(store) = self.data_store.get_mut(&bs_lower) {
             store.position = new_pos;
@@ -784,10 +767,8 @@ pub(crate) fn fn_arity(val: &vybe_runtime::Value) -> usize {
     match val {
         vybe_runtime::Value::Object(obj) => match &obj.lock().unwrap().kind {
             vybe_runtime::value::ObjectKind::Function(f) => f.arity as usize,
-            _ => 0,
-        },
-        _ => 0,
-    }
+            _ => 0 },
+        _ => 0 }
 }
 
 // ── Dialog registration ────────────────────────────────────────────────
@@ -876,8 +857,7 @@ fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
                     }
                 }
                 "ColorDialog" | "FontDialog" => Value::I32(1),
-                _ => Value::I32(0),
-            }
+                _ => Value::I32(0) }
         }),
     );
 
@@ -934,8 +914,7 @@ fn extract_binding_info(
                 binding_sources.push(BindingSourceInfo {
                     name: ctrl.name.clone(),
                     data_adapter_name: data_source,
-                    data_member,
-                });
+                    data_member });
             }
         }
 
@@ -948,8 +927,7 @@ fn extract_binding_info(
             if !bs.is_empty() {
                 navigators.push(NavigatorInfo {
                     navigator_name: ctrl.name.clone(),
-                    binding_source_name: bs,
-                });
+                    binding_source_name: bs });
             }
         }
 
@@ -969,8 +947,7 @@ fn extract_binding_info(
                                     control_name: ctrl.name.clone(),
                                     property: prop.to_string(),
                                     source_name: bs_name.clone(),
-                                    column: column.to_string(),
-                                });
+                                    column: column.to_string() });
                             }
                         }
                     }
@@ -1056,8 +1033,7 @@ pub fn launch_vybewidget_form(
         navigators,
         data_store: std::collections::HashMap::new(),
         initialised: false,
-        timer_last_fire: std::collections::HashMap::new(),
-    };
+        timer_last_fire: std::collections::HashMap::new() };
 
     run_app(&form.text, form.width as u32, form.height as u32, 1.0, app);
 }
@@ -1085,8 +1061,7 @@ pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
         navigators: Vec::new(),
         data_store: std::collections::HashMap::new(),
         initialised: false,
-        timer_last_fire: std::collections::HashMap::new(),
-    };
+        timer_last_fire: std::collections::HashMap::new() };
 
     run_app(&title, width, height, 1.0, app);
 }
@@ -1172,11 +1147,9 @@ mod tests {
                             .map(|value| format!("{}", value).to_lowercase())
                             .unwrap_or_else(|| field_name.to_string())
                     }
-                    _ => field_name.to_string(),
-                }
+                    _ => field_name.to_string() }
             }
-            _ => field_name.to_string(),
-        }
+            _ => field_name.to_string() }
     }
 
     fn collection_count(value: &Value) -> usize {
@@ -1185,11 +1158,9 @@ mod tests {
                 let obj = obj.lock().unwrap();
                 match &obj.kind {
                     ObjectKind::Array(items) => items.len(),
-                    _ => 0,
-                }
+                    _ => 0 }
             }
-            _ => 0,
-        }
+            _ => 0 }
     }
 
     fn collection_contains(collection: &Value, needle: &Value) -> bool {
@@ -1198,11 +1169,9 @@ mod tests {
                 let obj = obj.lock().unwrap();
                 match &obj.kind {
                     ObjectKind::Array(items) => items.iter().any(|item| item.eq(needle)),
-                    _ => false,
-                }
+                    _ => false }
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     #[test]
@@ -1228,8 +1197,7 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
-            timer_last_fire: std::collections::HashMap::new(),
-        };
+            timer_last_fire: std::collections::HashMap::new() };
 
         app.on_init(300.0, 400.0, 1.0);
 
@@ -1239,16 +1207,14 @@ mod tests {
             kind: MouseEventKind::Press(MouseButton::Left),
             cmd: false,
             shift: false,
-            alt: false,
-        };
+            alt: false };
         let release = MouseEvent {
             x: 20.0,
             y: 70.0,
             kind: MouseEventKind::Release(MouseButton::Left),
             cmd: false,
             shift: false,
-            alt: false,
-        };
+            alt: false };
 
         assert!(app.handle_mouse(press));
         assert!(app.handle_mouse(release));
@@ -1268,8 +1234,7 @@ mod tests {
                 .send_command(&display_name, &WidgetCommand::GetText)
             {
                 CommandValue::Text(text) => text,
-                other => panic!("Expected txtdisplay widget text, got {:?}", other),
-            }
+                other => panic!("Expected txtdisplay widget text, got {:?}", other) }
         };
 
         assert_eq!(display_text, "7");
@@ -1295,8 +1260,7 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
-            timer_last_fire: std::collections::HashMap::new(),
-        };
+            timer_last_fire: std::collections::HashMap::new() };
 
         app.on_init(340.0, 280.0, 1.0);
 
@@ -1318,8 +1282,7 @@ mod tests {
                 .send_command(&txtcalc_name, &WidgetCommand::GetText)
             {
                 CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other),
-            }
+                other => panic!("Expected txtcalc widget text, got {:?}", other) }
         };
 
         assert_eq!(text, "85");
@@ -1345,8 +1308,7 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
-            timer_last_fire: std::collections::HashMap::new(),
-        };
+            timer_last_fire: std::collections::HashMap::new() };
 
         app.on_init(340.0, 280.0, 1.0);
 
@@ -1366,8 +1328,7 @@ mod tests {
                 .send_command(&txtcalc_name, &WidgetCommand::GetText)
             {
                 CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other),
-            }
+                other => panic!("Expected txtcalc widget text, got {:?}", other) }
         };
 
         assert_eq!(initial_text, "");
@@ -1381,8 +1342,7 @@ mod tests {
                 .send_command(&txtcalc_name, &WidgetCommand::GetText)
             {
                 CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other),
-            }
+                other => panic!("Expected txtcalc widget text, got {:?}", other) }
         };
 
         assert_eq!(updated_text, "8");
@@ -1449,8 +1409,7 @@ End Module
                     form.properties.get("bs1").cloned().expect("bs1 field"),
                 )
             }
-            _ => panic!("expected form object"),
-        };
+            _ => panic!("expected form object") };
 
         assert!(collection_count(&controls) > 0);
         assert!(collection_count(&components) > 0);

@@ -239,8 +239,7 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
             "A plain object's slots come from its class, and a user class always \
              wins over a built-in (§2d). Binding `object` would invert that."
         }
-        _ => return None,
-    })
+        _ => return None })
 }
 
 /// Why [`Compiler::builtin_type_of`] can never NAME this type, independent of
@@ -284,8 +283,7 @@ pub fn unresolvable_reason(ty: BuiltinType) -> Option<&'static str> {
              literal substring `dictionary`, so it catches .NET but not Dart's \
              `Map<String,int>` nor a Python dict."
         }
-        _ => return None,
-    })
+        _ => return None })
 }
 
 #[cfg(test)]

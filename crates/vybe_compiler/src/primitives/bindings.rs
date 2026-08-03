@@ -6,14 +6,16 @@
 use super::*;
 
 impl Compiler {
-    pub(super) fn maybe_promote_pascal_array_literal_to_set(
+    /// An array literal assigned to a `set`-typed binding builds a SET.
+    ///
+    /// No language check: `hint_is_builtin_set` consults
+    /// `profile.builtin_type_spellings`, so only a language that DECLARES a set
+    /// spelling can reach the body at all.
+    pub(super) fn maybe_promote_array_literal_to_set(
         &mut self,
         type_hint: Option<&str>,
         value: &Expression,
     ) {
-        if self.profile.name != "pascal" {
-            return;
-        }
         if !type_hint.is_some_and(|h| self.hint_is_builtin_set(h)) {
             return;
         }
@@ -67,8 +69,7 @@ impl Compiler {
             {
                 self.expr_is_builtin_set(left) && self.expr_is_builtin_set(right)
             }
-            _ => false,
-        }
+            _ => false }
     }
 
     pub(crate) fn emit_var_get(&mut self, name: &str) {
@@ -92,19 +93,6 @@ impl Compiler {
                 );
             }
             return;
-        }
-        if !self.case_sensitive {
-            if let Some(slot) = self.scope().resolve_ci(name) {
-                self.emit_u16(Op::LOCAL_GET, slot);
-                if self.binding_uses_pointer_cell(name) {
-                    crate::primitives::references::emit_cell_load(
-                        &mut self.chunks,
-                        self.current,
-                        self.line,
-                    );
-                }
-                return;
-            }
         }
         if self.scopes.len() > 1 {
             if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
@@ -136,7 +124,7 @@ impl Compiler {
                     })
                     .unwrap_or_else(|| self.canon(name));
                 let idx = self.str_const(&cname);
-                self.emit_u16(Op::STRUCT_GET, idx);
+                self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
                 return;
             }
         }
@@ -149,7 +137,7 @@ impl Compiler {
             let class_idx = self.global_name_const_idx(&class_name);
             self.emit_u16(Op::GLOBAL_GET, class_idx);
             let field_idx = self.str_const(&self.canon(name));
-            self.emit_u16(Op::STRUCT_GET, field_idx);
+            self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
             return;
         }
         // Bare static method in class scope — `Double(x)` inside
@@ -158,7 +146,7 @@ impl Compiler {
             let class_idx = self.global_name_const_idx(&class_name);
             self.emit_u16(Op::GLOBAL_GET, class_idx);
             let method_idx = self.str_const(&self.canon(name));
-            self.emit_u16(Op::STRUCT_GET, method_idx);
+            self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
             return;
         }
         let cname = self.canon(name);
@@ -243,17 +231,21 @@ impl Compiler {
             self.emit_u16(Op::GLOBAL_GET, idx);
             return;
         }
-        if self.php_inside_function()
-            && !self.php_current_function_declares_global(name)
+        // A CLOSED scope does not chain outward: the name is not a local, so it
+        // reads null rather than resolving to a module global. Functions and
+        // classes stay reachable (they live in one flat namespace, not the
+        // variable one), as do compiler internals and use-aliases.
+        //
+        // `use const Lib\LEVEL;` imported names read the qualified global from
+        // inside a closed scope too — fall through to the use-alias consult
+        // below instead of the undeclared-null.
+        if !self.scope().is_open(&cname)
             && !self.defined_functions.contains(&cname)
             && !self.defined_classes.contains(&cname)
             && !cname.starts_with("__")
-            // `use const Lib\LEVEL;` imported names read the qualified
-            // global from inside functions too — fall through to the
-            // use-alias consult below instead of PHP's undeclared-null.
             && !self.source_type_aliases.contains_key(&cname)
         {
-            self.emit(Op::NULL);
+            self.emit_null();
             return;
         }
         // Global — canonicalize name for case-insensitive languages
@@ -282,9 +274,7 @@ impl Compiler {
                 Some(q) => q,
                 None => match self.source_type_aliases.get(&cname) {
                     Some(target) => self.canon(target),
-                    None => self.resolve_source_namespace_value(&cname).unwrap_or(cname),
-                },
-            }
+                    None => self.resolve_source_namespace_value(&cname).unwrap_or(cname) } }
         } else {
             cname
         };
@@ -317,6 +307,11 @@ impl Compiler {
         // (`program_lexical_names`) that is unresolvable here is provably an
         // out-of-scope *user* binding, never an untracked host global, so it
         // throws in sloppy mode too.
+        // MEASURED: dropping the strict/lexical-name half for a non-ECMA
+        // profile cost 47 python tests (basics/classes/control_flow/
+        // comprehensions/closure_extended went 130/7 → 83/54). The carve-out is
+        // not an ECMA quirk — plenty of names resolve at runtime that the
+        // compiler never saw bound, in every language. Left as it was.
         if self.profile.unresolved_reference_throws
             && (self.in_strict || self.program_lexical_names.contains(&cname))
             && !self.in_typeof_operand
@@ -338,14 +333,22 @@ impl Compiler {
             )
         {
             let line = self.line;
-            self.emit_u16(Op::STRUCT_NEW, 0);
+            self.emit_struct_new(0, 0);
             inst!(self, core_wasm::dup);
-            self.emit_const(Value::String(Arc::from(
-                format!("{name} is not defined").as_str(),
-            )));
+            // Exception type and message text come from the profile — JS
+            // `ReferenceError: x is not defined`, Python
+            // `NameError: name 'x' is not defined`. The structured-exception
+            // machinery in `primitives/errors.rs` already takes the kind as a
+            // parameter; only these two literals were hardcoded.
+            let message = self
+                .profile
+                .unresolved_reference_message
+                .replace("{}", name);
+            let error_kind = self.profile.unresolved_reference_error.clone();
+            self.emit_const(Value::String(Arc::from(message.as_str())));
             crate::primitives::errors::emit_exception_new_finalize(
                 self.chunk(),
-                "ReferenceError",
+                &error_kind,
                 line,
             );
             crate::primitives::errors::emit_throw(self.chunk(), line);
@@ -359,6 +362,119 @@ impl Compiler {
                 self.line,
             );
         }
+    }
+
+    /// Same as `emit_ensure_global_map` but for an ARRAY-valued global.
+    pub(super) fn emit_ensure_global_list(&mut self, name: &str) {
+        let key = self.shared_global_slot(name);
+        self.emit_u16(Op::GLOBAL_GET, key);
+        inst!(self, core_wasm::dup);
+        self.emit(Op::REF_IS_NULL);
+        let line = self.line;
+        self.chunk().emit_if(line);
+
+        self.emit(Op::DROP);
+        common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
+        inst!(self, core_wasm::dup);
+        self.emit_u16(Op::GLOBAL_SET, key);
+
+        self.chunk().emit_end(line);
+        self.emit(Op::DROP);
+    }
+
+    /// Run every `register_shutdown_function` callback, in registration order,
+    /// then clear the list so a later `exit` cannot run them twice.
+    ///
+    /// Emitted at the normal end of a PHP program AND immediately before
+    /// `exit`/`die` terminate it — real php runs shutdown handlers on both
+    /// paths, which is what makes a check registered this way survive an
+    /// `exit(1)` in the middle of a script.
+    pub(super) fn emit_php_run_shutdown_fns(&mut self) {
+        let key = self.shared_global_slot("__php_shutdown_fns");
+        let line = self.line;
+
+        // `REF_IS_NULL` leaves a RAW i32; running the boxed `dyn_not` /
+        // `dyn_to_bool` on it corrupts the stack (measured: the handlers ran,
+        // then the program threw `RuntimeError: [object]`). Branch on it
+        // directly and put the work in the ELSE arm, the way
+        // `emit_ensure_global_map` does.
+        self.emit_u16(Op::GLOBAL_GET, key);
+        self.emit(Op::REF_IS_NULL);
+        self.chunk().emit_if(line);
+        self.chunk().emit_else(line);
+
+        // `alloc_scratch`, NOT `define_local`: this helper runs from the
+        // module EPILOGUE, after the scope's slot count is settled, so a
+        // scope-allocated local is never reserved in the call frame and reads
+        // back garbage. Raw chunk slots are folded into the frame size by the
+        // `max` the epilogue takes right after.
+        let list = self.chunk().alloc_scratch(1);
+        self.emit_u16(Op::GLOBAL_GET, key);
+        self.emit_u16(Op::LOCAL_SET, list);
+        // Clear FIRST: a handler that itself calls `exit` would otherwise
+        // re-enter this and run the whole list again.
+        self.emit_null();
+        self.emit_u16(Op::GLOBAL_SET, key);
+
+        let idx = self.chunk().alloc_scratch(1);
+        self.emit_const(Value::F64(0.0));
+        self.emit_u16(Op::LOCAL_SET, idx);
+
+        let block = self.chunk().emit_block(line);
+        let (loop_patch, _) = self.chunk().emit_loop_s(line);
+
+        self.emit_u16(Op::LOCAL_GET, idx);
+        self.emit_u16(Op::LOCAL_GET, list);
+        common::collections::emit_len(&mut self.chunks, self.current, line);
+        crate::primitives::ops::emit_dyn_lt(self.chunk(), line);
+        crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+        self.chunk().emit_br_if(1, line);
+
+        // entry = list[i]; call entry[0] with entry[1..]
+        let entry = self.chunk().alloc_scratch(1);
+        self.emit_u16(Op::LOCAL_GET, list);
+        self.emit_u16(Op::LOCAL_GET, idx);
+        common::collections::emit_get(&mut self.chunks, self.current, line);
+        self.emit_u16(Op::LOCAL_SET, entry);
+
+        // `apply(fn, thisArg, argsArray)` — THREE arguments, as every other
+        // call site emits. Passing two consumed the argument array as
+        // `thisArg`, so a handler registered with extra arguments
+        // (`register_shutdown_function($fn, "ARG")`) was called with none:
+        // `SHUTDOWN ` where php prints `SHUTDOWN ARG`.
+        self.emit_u16(Op::LOCAL_GET, entry);
+        self.emit_const(Value::F64(0.0));
+        common::collections::emit_get(&mut self.chunks, self.current, line);
+        self.emit_null();
+        self.emit_u16(Op::LOCAL_GET, entry);
+        self.emit_const(Value::F64(1.0));
+        let slice = self.import("ecma:array", "slice");
+        self.emit_host_call(slice, 2);
+        let apply = self.import("ecma:function", "apply");
+        self.emit_host_call(apply, 3);
+        self.emit(Op::DROP);
+
+        self.emit_u16(Op::LOCAL_GET, idx);
+        self.emit_const(Value::F64(1.0));
+        crate::primitives::ops::emit_dyn_add(self.chunk(), line);
+        self.emit_u16(Op::LOCAL_SET, idx);
+
+        self.chunk().emit_br(0, line);
+
+        // THREE structural regions are open here — the `if`, the `block` and
+        // the `loop` — so three `end`s close them. `patch_loop`/`patch_block`
+        // are no-ops (the block table replaced size-header patching), so they
+        // do NOT close anything; emitting one `end` for three regions left the
+        // `if` unterminated, and its else-arm then ran unconditionally. That
+        // made every program in every language execute this php-only runner
+        // over an absent `__php_shutdown_fns`, ending in
+        // `ecma:object.keys(undefined)` — `RuntimeError: [object]` after
+        // otherwise-correct output.
+        self.chunk().emit_end(line); // close loop
+        self.chunk().patch_loop(loop_patch);
+        self.chunk().emit_end(line); // close block
+        self.chunk().patch_block(block);
+        self.chunk().emit_end(line); // close if/else
     }
 
     pub(super) fn emit_ensure_global_map(&mut self, name: &str) {
@@ -395,10 +511,8 @@ impl Compiler {
                         }
                         // Another directive — keep scanning the prologue.
                     }
-                    _ => break,
-                },
-                _ => break,
-            }
+                    _ => break },
+                _ => break }
         }
         false
     }
@@ -418,7 +532,7 @@ impl Compiler {
                     || self.const_globals.contains(&self.canon(name)));
             if is_const_local || is_const_global {
                 let line = self.line;
-                self.emit_u16(Op::STRUCT_NEW, 0);
+                self.emit_struct_new(0, 0);
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::String(Arc::from("Assignment to constant variable.")));
                 crate::primitives::errors::emit_exception_new_finalize(
@@ -466,35 +580,6 @@ impl Compiler {
             }
             return;
         }
-        if !self.case_sensitive {
-            if let Some(slot) = self.scope().resolve_ci(name) {
-                if self.binding_uses_pointer_cell(name) {
-                    let value_slot = self.define_local("__ref_cell_set_value");
-                    self.emit_u16(Op::LOCAL_SET, value_slot);
-                    self.emit_u16(Op::LOCAL_GET, slot);
-                    crate::primitives::references::emit_cell_store(
-                        &mut self.chunks,
-                        self.current,
-                        value_slot,
-                        self.line,
-                    );
-                    self.emit(Op::DROP);
-                } else if let Some((args_slot, index)) = self.js_arguments_alias_for_name(name) {
-                    let value_slot = self.define_local("__js_arguments_alias_value_ci");
-                    self.emit_u16(Op::LOCAL_SET, value_slot);
-                    self.emit_u16(Op::LOCAL_GET, value_slot);
-                    self.emit_u16(Op::LOCAL_SET, slot);
-                    self.emit_u16(Op::LOCAL_GET, args_slot);
-                    self.emit_const(Value::F64(index as f64));
-                    self.emit_u16(Op::LOCAL_GET, value_slot);
-                    common::collections::emit_set(&mut self.chunks, self.current, self.line);
-                    self.emit(Op::DROP);
-                } else {
-                    self.emit_u16(Op::LOCAL_SET, slot);
-                }
-                return;
-            }
-        }
         if self.scopes.len() > 1 {
             if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, name) {
                 let env = self.closure_env_slot();
@@ -523,7 +608,7 @@ impl Compiler {
                     })
                     .unwrap_or_else(|| self.canon(name));
                 let idx = self.str_const(&cname);
-                self.emit_u16(Op::STRUCT_SET, idx);
+                self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
                 self.emit(Op::DROP);
                 return;
             }
@@ -540,7 +625,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, value_slot);
             let bare_name = self.canon(name);
             let field_idx = self.str_const(&bare_name);
-            self.emit_u16(Op::STRUCT_SET, field_idx);
+            self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
             self.emit(Op::DROP);
             if self.defined_globals.contains(&bare_name) {
                 let global_idx = self.global_name_const_idx(&bare_name);
@@ -573,7 +658,7 @@ impl Compiler {
             )
         {
             let line = self.line;
-            self.emit_u16(Op::STRUCT_NEW, 0);
+            self.emit_struct_new(0, 0);
             inst!(self, core_wasm::dup);
             self.emit_const(Value::String(Arc::from(
                 format!("{name} is not defined").as_str(),
@@ -589,8 +674,9 @@ impl Compiler {
         if !shadows_named_global && self.emit_with_target_set(name) {
             return;
         }
-        if self.php_inside_function()
-            && !self.php_current_function_declares_global(name)
+        // Closed scope: an assignment to a name that isn't open CREATES a local
+        // here rather than writing the module global.
+        if !self.scope().is_open(&cname)
             && !self.defined_functions.contains(&cname)
             && !self.defined_classes.contains(&cname)
             && !cname.starts_with("__")
@@ -669,13 +755,7 @@ impl Compiler {
         }
         let parent = scope_idx - 1;
         // Check parent's locals
-        let found_local = if self.case_sensitive {
-            self.scopes[parent].resolve(name)
-        } else {
-            self.scopes[parent]
-                .resolve(name)
-                .or_else(|| self.scopes[parent].resolve_ci(name))
-        };
+        let found_local = self.scopes[parent].resolve(name);
         if let Some(slot) = found_local {
             self.scopes[parent].mark_captured(slot);
             return Some(self.scopes[scope_idx].add_upvalue(slot, true));

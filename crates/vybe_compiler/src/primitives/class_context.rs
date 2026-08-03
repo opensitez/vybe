@@ -161,7 +161,6 @@ impl Compiler {
         if let Some(self_slot) = self
             .scope()
             .resolve(&self_kw)
-            .or_else(|| self.scope().resolve_ci(&self_kw))
         {
             self.emit_u16(Op::LOCAL_GET, self_slot);
             return true;
@@ -186,10 +185,6 @@ impl Compiler {
         self.profile.class_method_dispatch == "prototype"
     }
 
-    pub(super) fn is_python_profile(&self) -> bool {
-        self.profile.name == "python"
-    }
-
     /// REMAINING language-name check, kept here beside `is_python_profile`
     /// rather than in a `php_lang` module of its own — a file named after a
     /// language in shared code invites more of the same, and the whole point
@@ -200,19 +195,55 @@ impl Compiler {
         self.profile.name == "php"
     }
 
+    /// Do STATIC methods carry a leading receiver slot (the class object)?
+    ///
+    /// This is late static binding: `static::` and `get_called_class()` resolve
+    /// against the class the call was made THROUGH, not the one the method was
+    /// declared in, so the callee cannot recover it and the caller has to pass
+    /// it. Languages whose statics are plain functions answer false.
+    ///
+    /// Still a name check, but now ONE — it was five, each re-deriving the same
+    /// condition inline. It wants to become a class-shape trait declared by the
+    /// frontend, the way `explicit_self_param` already is in seven of them.
+    pub(crate) fn static_methods_take_receiver(&self) -> bool {
+        self.profile.name == "php"
+    }
+
+    /// Must a method CALL pass the receiver as an explicit leading argument?
+    ///
+    /// Three models, and this predicate picks the third:
+    /// - prototype dispatch (JS/Dart) rides `__js_this` and a bound-receiver
+    ///   marker on the callable — see `class_prototype_dispatch`;
+    /// - bind-on-access (Python) burns the receiver into a fresh bound method
+    ///   when the method is READ — see `methods_bind_on_access`;
+    /// - otherwise the callable is the raw function off the class struct and
+    ///   carries no receiver, so the call site supplies one.
+    ///
+    /// NOT `explicit_method_receiver_argument`, which is Lua's and means the
+    /// opposite — the walker ALREADY passed a receiver, so shared code must not
+    /// add a second one.
+    ///
+    /// The declaration side already records this per callee as
+    /// `chunk.is_method` (`classes.rs`, `has_receiver`); nothing reads it back,
+    /// because `CallSignature` carries no receiver flag and a dynamic callee
+    /// slot cannot reach its chunk. Thread it there and this predicate goes.
+    pub(crate) fn call_supplies_receiver(&self) -> bool {
+        self.profile.name == "php"
+    }
+
     /// True for profiles whose comparison/equality operators dispatch to a
     /// user-defined dunder (`__eq__`/`__lt__`/… and their cross-language
     /// aliases) — i.e. the same profiles the `<`/`>` sites already route
     /// through `emit_rich_compare_locals` (Python, Ruby, Dart, C#, VB, …).
     /// Excludes JS (ECMA coercion), PHP (loose comparison) and Pascal.
     ///
-    /// PHP is excluded by `string_aware_relational` — it declares that flag and
-    /// registers a `relational_compare` hook, so it never reaches the rich path.
-    /// A separate PHP name check here would be redundant.
+    /// Dispatch goes through the `Eq`/`Lt`/`Compare` SLOTS: a language that
+    /// binds them gets its own semantics, one that binds nothing falls back to
+    /// primitive comparison. Declaring nothing IS the opt-out, so no language
+    /// needs excluding here — pascal was, by name, and did not need to be.
+    /// PHP stays out via `string_aware_relational`, which it declares anyway.
     pub(crate) fn uses_rich_comparison(&self) -> bool {
-        !self.profile.ecma_operator_coercion
-            && !self.profile.string_aware_relational
-            && self.profile.name != "pascal"
+        !self.profile.ecma_operator_coercion && !self.profile.string_aware_relational
     }
 
     /// Operator overloading on the arithmetic/unary operators: a user
@@ -237,7 +268,7 @@ impl Compiler {
         // `isset()` call sites via the Map-aware emitter, but the dead branch
         // outlived both. `emit_dyn_to_bool` is correct for every language that
         // is not Python.
-        if !self.is_python_profile() {
+        if !self.profile.truthiness_via_dunder_or_length {
             {
                 let line = self.line;
                 crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -379,8 +410,7 @@ impl Compiler {
                 }
                 parts
             }
-            _ => Vec::new(),
-        }
+            _ => Vec::new() }
     }
 
     /// Extract plain expressions from Argument slice.

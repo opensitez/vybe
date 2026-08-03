@@ -8,25 +8,21 @@
 use std::collections::HashMap;
 use vybe_ast::{
     GenericArg, GenericBound, GenericConstraint, GenericParam, GenericRuntimeMode, GenericVariance,
-    TypePath, TypeRef, TypeRefKind,
-};
+    TypePath, TypeRef, TypeRefKind };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CanonicalType {
-    pub name: String,
-}
+    pub name: String }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GenericKey {
     pub owner_path: String,
     pub args: Vec<CanonicalType>,
-    pub mode: GenericRuntimeMode,
-}
+    pub mode: GenericRuntimeMode }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GenericSignature {
-    pub params: Vec<GenericParam>,
-}
+    pub params: Vec<GenericParam> }
 
 impl GenericSignature {
     pub fn new(params: Vec<GenericParam>) -> Self {
@@ -80,8 +76,7 @@ fn sanitize_generic_runtime_name(name: &str) -> String {
 
 #[derive(Debug, Clone, Default)]
 pub struct GenericContext {
-    substitutions: HashMap<String, TypeRef>,
-}
+    substitutions: HashMap<String, TypeRef> }
 
 impl GenericContext {
     pub fn new() -> Self {
@@ -95,8 +90,7 @@ impl GenericContext {
 
     pub fn from_pairs(pairs: impl IntoIterator<Item = (String, TypeRef)>) -> Self {
         Self {
-            substitutions: pairs.into_iter().collect(),
-        }
+            substitutions: pairs.into_iter().collect() }
     }
 
     pub fn get(&self, name: &str) -> Option<&TypeRef> {
@@ -107,13 +101,11 @@ impl GenericContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenericError {
     ArityMismatch { expected: usize, actual: usize },
-    ConstraintViolation { param: String, reason: String },
-}
+    ConstraintViolation { param: String, reason: String } }
 
 pub fn canonical_type_ref(type_ref: &TypeRef) -> CanonicalType {
     CanonicalType {
-        name: display_type_ref(type_ref),
-    }
+        name: display_type_ref(type_ref) }
 }
 
 pub fn canonical_generic_key(
@@ -124,8 +116,7 @@ pub fn canonical_generic_key(
     GenericKey {
         owner_path: owner_path.into(),
         args: args.iter().map(canonical_type_ref).collect(),
-        mode,
-    }
+        mode }
 }
 
 pub fn erased_type_name(type_name: &str) -> String {
@@ -155,8 +146,7 @@ pub fn first_generic_argument_leaf_name(type_name: &str) -> Option<String> {
 
 pub fn open_generic_type_name(type_name: &str) -> String {
     let Some(TypeRef {
-        kind: TypeRefKind::Named { path, args },
-    }) = parse_type_ref_hint(type_name)
+        kind: TypeRefKind::Named { path, args } }) = parse_type_ref_hint(type_name)
     else {
         return erased_type_name(type_name);
     };
@@ -177,16 +167,13 @@ pub fn generic_argument_type_refs(type_name: &str) -> Vec<TypeRef> {
     }
     match parse_type_ref_hint(type_name) {
         Some(TypeRef {
-            kind: TypeRefKind::Named { args, .. },
-        }) => args
+            kind: TypeRefKind::Named { args, .. } }) => args
             .into_iter()
             .filter_map(|arg| match arg {
                 GenericArg::Type(ty) => Some(ty),
-                GenericArg::Const(_) => None,
-            })
+                GenericArg::Const(_) => None })
             .collect(),
-        _ => Vec::new(),
-    }
+        _ => Vec::new() }
 }
 
 pub fn generic_argument_display_names(type_name: &str) -> Vec<String> {
@@ -201,57 +188,38 @@ pub fn erase_type(type_ref: &TypeRef) -> TypeRef {
         TypeRefKind::Named { path, .. } => TypeRef {
             kind: TypeRefKind::Named {
                 path: path.clone(),
-                args: Vec::new(),
-            },
-        },
+                args: Vec::new() } },
         TypeRefKind::Array { element, rank } => TypeRef {
             kind: TypeRefKind::Array {
                 element: Box::new(erase_type(element)),
-                rank: *rank,
-            },
-        },
+                rank: *rank } },
         TypeRefKind::Nullable { inner } => TypeRef {
             kind: TypeRefKind::Nullable {
-                inner: Box::new(erase_type(inner)),
-            },
-        },
+                inner: Box::new(erase_type(inner)) } },
         TypeRefKind::Pointer { inner } => TypeRef {
             kind: TypeRefKind::Pointer {
-                inner: Box::new(erase_type(inner)),
-            },
-        },
+                inner: Box::new(erase_type(inner)) } },
         TypeRefKind::Reference { inner } => TypeRef {
             kind: TypeRefKind::Reference {
-                inner: Box::new(erase_type(inner)),
-            },
-        },
+                inner: Box::new(erase_type(inner)) } },
         TypeRefKind::Tuple { elements } => TypeRef {
             kind: TypeRefKind::Tuple {
-                elements: elements.iter().map(erase_type).collect(),
-            },
-        },
+                elements: elements.iter().map(erase_type).collect() } },
         TypeRefKind::Function { params, result } => TypeRef {
             kind: TypeRefKind::Function {
                 params: params.iter().map(erase_type).collect(),
-                result: Box::new(erase_type(result)),
-            },
-        },
+                result: Box::new(erase_type(result)) } },
         TypeRefKind::Union { members } => TypeRef {
             kind: TypeRefKind::Union {
-                members: members.iter().map(erase_type).collect(),
-            },
-        },
+                members: members.iter().map(erase_type).collect() } },
         TypeRefKind::Intersection { members } => TypeRef {
             kind: TypeRefKind::Intersection {
-                members: members.iter().map(erase_type).collect(),
-            },
-        },
+                members: members.iter().map(erase_type).collect() } },
         TypeRefKind::Wildcard { .. }
         | TypeRefKind::GenericParam { .. }
         | TypeRefKind::SelfType
         | TypeRefKind::Infer
-        | TypeRefKind::Error => type_ref.clone(),
-    }
+        | TypeRefKind::Error => type_ref.clone() }
 }
 
 pub fn substitute_type(type_ref: &TypeRef, ctx: &GenericContext) -> TypeRef {
@@ -262,58 +230,37 @@ pub fn substitute_type(type_ref: &TypeRef, ctx: &GenericContext) -> TypeRef {
         TypeRefKind::Named { path, args } => TypeRef {
             kind: TypeRefKind::Named {
                 path: path.clone(),
-                args: args.iter().map(|arg| substitute_arg(arg, ctx)).collect(),
-            },
-        },
+                args: args.iter().map(|arg| substitute_arg(arg, ctx)).collect() } },
         TypeRefKind::Array { element, rank } => TypeRef {
             kind: TypeRefKind::Array {
                 element: Box::new(substitute_type(element, ctx)),
-                rank: *rank,
-            },
-        },
+                rank: *rank } },
         TypeRefKind::Tuple { elements } => TypeRef {
             kind: TypeRefKind::Tuple {
-                elements: elements.iter().map(|ty| substitute_type(ty, ctx)).collect(),
-            },
-        },
+                elements: elements.iter().map(|ty| substitute_type(ty, ctx)).collect() } },
         TypeRefKind::Function { params, result } => TypeRef {
             kind: TypeRefKind::Function {
                 params: params.iter().map(|ty| substitute_type(ty, ctx)).collect(),
-                result: Box::new(substitute_type(result, ctx)),
-            },
-        },
+                result: Box::new(substitute_type(result, ctx)) } },
         TypeRefKind::Union { members } => TypeRef {
             kind: TypeRefKind::Union {
-                members: members.iter().map(|ty| substitute_type(ty, ctx)).collect(),
-            },
-        },
+                members: members.iter().map(|ty| substitute_type(ty, ctx)).collect() } },
         TypeRefKind::Intersection { members } => TypeRef {
             kind: TypeRefKind::Intersection {
-                members: members.iter().map(|ty| substitute_type(ty, ctx)).collect(),
-            },
-        },
+                members: members.iter().map(|ty| substitute_type(ty, ctx)).collect() } },
         TypeRefKind::Nullable { inner } => TypeRef {
             kind: TypeRefKind::Nullable {
-                inner: Box::new(substitute_type(inner, ctx)),
-            },
-        },
+                inner: Box::new(substitute_type(inner, ctx)) } },
         TypeRefKind::Pointer { inner } => TypeRef {
             kind: TypeRefKind::Pointer {
-                inner: Box::new(substitute_type(inner, ctx)),
-            },
-        },
+                inner: Box::new(substitute_type(inner, ctx)) } },
         TypeRefKind::Reference { inner } => TypeRef {
             kind: TypeRefKind::Reference {
-                inner: Box::new(substitute_type(inner, ctx)),
-            },
-        },
+                inner: Box::new(substitute_type(inner, ctx)) } },
         TypeRefKind::Wildcard { bound } => TypeRef {
             kind: TypeRefKind::Wildcard {
-                bound: bound.as_ref().map(|bound| substitute_bound(bound, ctx)),
-            },
-        },
-        TypeRefKind::SelfType | TypeRefKind::Infer | TypeRefKind::Error => type_ref.clone(),
-    }
+                bound: bound.as_ref().map(|bound| substitute_bound(bound, ctx)) } },
+        TypeRefKind::SelfType | TypeRefKind::Infer | TypeRefKind::Error => type_ref.clone() }
 }
 
 pub fn check_arity(args: &[TypeRef], params: &[GenericParam]) -> Result<(), GenericError> {
@@ -324,8 +271,7 @@ pub fn check_arity(args: &[TypeRef], params: &[GenericParam]) -> Result<(), Gene
     if args.len() < required || args.len() > params.len() {
         return Err(GenericError::ArityMismatch {
             expected: params.len(),
-            actual: args.len(),
-        });
+            actual: args.len() });
     }
     Ok(())
 }
@@ -387,15 +333,12 @@ pub fn display_type_ref(type_ref: &TypeRef) -> String {
         TypeRefKind::Reference { inner } => format!("&{}", display_type_ref(inner)),
         TypeRefKind::Wildcard { bound: None } => "?".to_string(),
         TypeRefKind::Wildcard {
-            bound: Some(GenericBound::Extends(ty)),
-        } => format!("? extends {}", display_type_ref(ty)),
+            bound: Some(GenericBound::Extends(ty)) } => format!("? extends {}", display_type_ref(ty)),
         TypeRefKind::Wildcard {
-            bound: Some(GenericBound::Super(ty)),
-        } => format!("? super {}", display_type_ref(ty)),
+            bound: Some(GenericBound::Super(ty)) } => format!("? super {}", display_type_ref(ty)),
         TypeRefKind::SelfType => "Self".to_string(),
         TypeRefKind::Infer => "_".to_string(),
-        TypeRefKind::Error => "<error>".to_string(),
-    }
+        TypeRefKind::Error => "<error>".to_string() }
 }
 
 pub fn parse_type_ref_hint(text: &str) -> Option<TypeRef> {
@@ -415,22 +358,19 @@ pub fn parse_generic_params_hint(text: &str) -> Vec<GenericParam> {
 fn substitute_arg(arg: &GenericArg, ctx: &GenericContext) -> GenericArg {
     match arg {
         GenericArg::Type(ty) => GenericArg::Type(substitute_type(ty, ctx)),
-        GenericArg::Const(value) => GenericArg::Const(value.clone()),
-    }
+        GenericArg::Const(value) => GenericArg::Const(value.clone()) }
 }
 
 fn substitute_bound(bound: &GenericBound, ctx: &GenericContext) -> GenericBound {
     match bound {
         GenericBound::Extends(ty) => GenericBound::Extends(Box::new(substitute_type(ty, ctx))),
-        GenericBound::Super(ty) => GenericBound::Super(Box::new(substitute_type(ty, ctx))),
-    }
+        GenericBound::Super(ty) => GenericBound::Super(Box::new(substitute_type(ty, ctx))) }
 }
 
 fn display_generic_arg(arg: &GenericArg) -> String {
     match arg {
         GenericArg::Type(ty) => display_type_ref(ty),
-        GenericArg::Const(value) => value.clone(),
-    }
+        GenericArg::Const(value) => value.clone() }
 }
 
 fn generic_params_inner(text: &str) -> Option<&str> {
@@ -497,8 +437,7 @@ fn parse_generic_param(text: &str) -> Option<GenericParam> {
         constraints,
         variance,
         default,
-        runtime: GenericRuntimeMode::Erased,
-    })
+        runtime: GenericRuntimeMode::Erased })
 }
 
 fn split_generic_param_constraints(text: &str) -> (&str, Option<&str>) {
@@ -564,8 +503,7 @@ fn parse_generic_constraint(text: &str) -> Option<GenericConstraint> {
         "number" | "numeric" => Some(GenericConstraint::Numeric),
         "integer" | "int" => Some(GenericConstraint::Integer),
         "float" | "floating" | "double" => Some(GenericConstraint::Floating),
-        _ => parse_type_ref_inner(trimmed).map(GenericConstraint::Extends),
-    }
+        _ => parse_type_ref_inner(trimmed).map(GenericConstraint::Extends) }
 }
 
 fn split_constraint_list(text: &str) -> Vec<&str> {
@@ -588,37 +526,28 @@ fn parse_type_ref_inner(text: &str) -> Option<TypeRef> {
 
     if trimmed == "?" {
         return Some(TypeRef {
-            kind: TypeRefKind::Wildcard { bound: None },
-        });
+            kind: TypeRefKind::Wildcard { bound: None } });
     }
     if let Some(rest) = trimmed.strip_prefix("? extends ") {
         return Some(TypeRef {
             kind: TypeRefKind::Wildcard {
-                bound: Some(GenericBound::Extends(Box::new(parse_type_ref_inner(rest)?))),
-            },
-        });
+                bound: Some(GenericBound::Extends(Box::new(parse_type_ref_inner(rest)?))) } });
     }
     if let Some(rest) = trimmed.strip_prefix("? super ") {
         return Some(TypeRef {
             kind: TypeRefKind::Wildcard {
-                bound: Some(GenericBound::Super(Box::new(parse_type_ref_inner(rest)?))),
-            },
-        });
+                bound: Some(GenericBound::Super(Box::new(parse_type_ref_inner(rest)?))) } });
     }
     if let Some(inner) = trimmed.strip_suffix('?') {
         return Some(TypeRef {
             kind: TypeRefKind::Nullable {
-                inner: Box::new(parse_type_ref_inner(inner)?),
-            },
-        });
+                inner: Box::new(parse_type_ref_inner(inner)?) } });
     }
     if let Some(inner) = trimmed.strip_suffix("[]") {
         return Some(TypeRef {
             kind: TypeRefKind::Array {
                 element: Box::new(parse_type_ref_inner(inner)?),
-                rank: 1,
-            },
-        });
+                rank: 1 } });
     }
 
     if let Some((base, args)) = split_generic_application(trimmed) {
@@ -626,9 +555,7 @@ fn parse_type_ref_inner(text: &str) -> Option<TypeRef> {
         return Some(TypeRef {
             kind: TypeRefKind::Named {
                 path: TypePath::from_dotted(base.trim()),
-                args: parsed_args,
-            },
-        });
+                args: parsed_args } });
     }
 
     if let Some((base, args)) = split_vb_generic_application(trimmed) {
@@ -636,9 +563,7 @@ fn parse_type_ref_inner(text: &str) -> Option<TypeRef> {
         return Some(TypeRef {
             kind: TypeRefKind::Named {
                 path: TypePath::from_dotted(base.trim()),
-                args: parsed_args,
-            },
-        });
+                args: parsed_args } });
     }
 
     if let Some((base, args)) = split_square_generic_application(trimmed) {
@@ -646,17 +571,13 @@ fn parse_type_ref_inner(text: &str) -> Option<TypeRef> {
         return Some(TypeRef {
             kind: TypeRefKind::Named {
                 path: TypePath::from_dotted(base.trim()),
-                args: parsed_args,
-            },
-        });
+                args: parsed_args } });
     }
 
     Some(TypeRef {
         kind: TypeRefKind::Named {
             path: TypePath::from_dotted(trimmed),
-            args: Vec::new(),
-        },
-    })
+            args: Vec::new() } })
 }
 
 fn parse_generic_argument_list(text: &str) -> Option<Vec<TypeRef>> {
@@ -710,9 +631,7 @@ fn parse_pascal_array_type(text: &str) -> Option<TypeRef> {
     Some(TypeRef {
         kind: TypeRefKind::Array {
             element: Box::new(element),
-            rank,
-        },
-    })
+            rank } })
 }
 
 fn split_generic_application(text: &str) -> Option<(&str, &str)> {
@@ -759,8 +678,7 @@ fn strip_generic_application_text(text: &str) -> &str {
         (Some(a), None, None) => &trimmed[..a],
         (None, Some(b), None) => &trimmed[..b],
         (None, None, Some(c)) => &trimmed[..c],
-        (None, None, None) => trimmed,
-    }
+        (None, None, None) => trimmed }
 }
 
 fn matching_angle_end(text: &str, start: usize) -> Option<usize> {
@@ -849,9 +767,7 @@ mod tests {
         let ty = TypeRef {
             kind: TypeRefKind::Named {
                 path: TypePath::from_dotted("Box"),
-                args: vec![GenericArg::Type(TypeRef::generic_param("T"))],
-            },
-        };
+                args: vec![GenericArg::Type(TypeRef::generic_param("T"))] } };
         let ctx = GenericContext::new().with_substitution("T", TypeRef::named("String"));
 
         assert_eq!(display_type_ref(&substitute_type(&ty, &ctx)), "Box<String>");

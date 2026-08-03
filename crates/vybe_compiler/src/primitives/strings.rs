@@ -210,6 +210,48 @@ pub fn emit_str_reverse(chunk: &mut Chunk, line: u32) {
 ///
 /// **No coercion here.** PHP's `strlen(123)` is `3` because php coerces first;
 /// that belongs at the call site, not in the shared counter.
+/// Truncate a C string at its first NUL. Stack: [string] → [string]
+///
+/// C strings are NUL-TERMINATED: the byte is a terminator, not content. Vybe
+/// backs them with a JS string, where a `\0` is an ordinary code unit — so
+/// `char u[8] = "ab"; u[1] = '\0';` left `strlen` reporting 2 and `strcmp`
+/// comparing two characters, while `printf("%s")` correctly stopped at the
+/// NUL. Measured against `cc`, which reports 1.
+pub fn emit_cstr_truncate(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(2);
+    let (s, at) = (base, base + 1);
+
+    set(&mut chunks[current], s, line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_string_const("\0", line);
+    emit_index_of(&mut chunks[current], line);
+    set(&mut chunks[current], at, line);
+
+    // No NUL → the whole string is content.
+    get(&mut chunks[current], at, line);
+    chunks[current].emit_f64_const(0.0, line);
+    crate::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_f64_const(0.0, line);
+    get(&mut chunks[current], at, line);
+    emit_substring(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
+/// `strlen` — bytes up to the first NUL. The fourth string-length UNIT,
+/// alongside UTF-16 code units, code points and UTF-8 bytes; see
+/// `builtin_slots.rs`. Reachable as `common:str_cstr_length`, so a profile can
+/// declare it with `[builtin_slots.string] len` rather than reaching for an
+/// emitter directly.
+pub fn emit_cstr_length(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_cstr_truncate(chunks, current, line);
+    emit_byte_length(chunks, current, line);
+}
+
 pub fn emit_byte_length(chunks: &mut [Chunk], current: usize, line: u32) {
     let base = chunks[current].alloc_scratch(5);
     let (s, i, n, bytes, cp) = (base, base + 1, base + 2, base + 3, base + 4);
@@ -474,23 +516,20 @@ pub struct SplitOptions {
     pub limit_is_pieces: bool,
     /// A negative limit drops that many pieces off the END (php). Otherwise a
     /// negative limit means "no limit", which is python's `maxsplit=-1`.
-    pub negative_drops_tail: bool,
-}
+    pub negative_drops_tail: bool }
 
 impl SplitOptions {
     /// python `str.split(sep, maxsplit)`.
     pub const fn max_splits() -> SplitOptions {
         SplitOptions {
             limit_is_pieces: false,
-            negative_drops_tail: false,
-        }
+            negative_drops_tail: false }
     }
     /// php `explode(separator, string, limit)`.
     pub const fn max_pieces() -> SplitOptions {
         SplitOptions {
             limit_is_pieces: true,
-            negative_drops_tail: true,
-        }
+            negative_drops_tail: true }
     }
 }
 
@@ -635,8 +674,7 @@ pub enum PadSide {
     /// Left-align — python `ljust`, php `STR_PAD_RIGHT`.
     End,
     /// Centre — python `center`, php `STR_PAD_BOTH`.
-    Both,
-}
+    Both }
 
 /// Where the odd character goes when a centred pad does not divide evenly.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -645,8 +683,7 @@ pub enum CenterBias {
     Right,
     /// On the left when the margin AND the width are both odd, on the right
     /// otherwise — CPython `str.center`.
-    LeftWhenBothOdd,
-}
+    LeftWhenBothOdd }
 
 /// Pad `s` out to `width`. Stack: `[s, width]` or `[s, width, fill]` → `[string]`.
 ///
@@ -666,8 +703,7 @@ pub fn emit_pad(
     match side {
         PadSide::Start => pad_call(chunks, current, "padStart", line),
         PadSide::End => pad_call(chunks, current, "padEnd", line),
-        PadSide::Both => emit_pad_both(chunks, current, bias, line),
-    }
+        PadSide::Both => emit_pad_both(chunks, current, bias, line) }
 }
 
 fn pad_call(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
@@ -744,8 +780,7 @@ fn emit_margin(chunks: &mut [Chunk], current: usize, width: u16, len: u16, line:
 pub struct GlobOptions {
     /// Lower-case both pattern and subject before matching — python
     /// `fnmatch.fnmatch`. php `fnmatch` and python `fnmatchcase` do not.
-    pub fold_case: bool,
-}
+    pub fold_case: bool }
 
 impl GlobOptions {
     /// php `fnmatch`, python `fnmatchcase`.
@@ -931,7 +966,7 @@ pub fn emit_glob_match_flagged(chunks: &mut [Chunk], current: usize, line: u32) 
     get(&mut chunks[current], name, line);
     let exec = chunks[current].add_import("ecma:regexp", "exec");
     chunks[current].emit_call(exec, 2, line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     crate::primitives::ops::emit_dyn_ne(&mut chunks[current], line);
     // `emit_dyn_ne` leaves an i32, and the VM has no true/false — a real
     // boolean is `wasm:js-boolean.fromI32`. php never noticed (its `?:` coerces),
@@ -1116,6 +1151,48 @@ pub fn emit_group_digits(chunks: &mut [Chunk], current: usize, line: u32) {
     concat(chunks, current, line);
 }
 
+// ── splice ──────────────────────────────────────────────────────────────────
+//
+// Remove a run of characters and/or insert text at a position — the operation
+// behind pascal `Delete(var S; Index; Count)` and `Insert(Src; var Dst; Index)`,
+// VB `Mid$` replacement, and JS `String` splicing. Both pascal procedures are
+// the SAME splice with different arguments defaulted, which is why they share
+// an emitter rather than getting one global each.
+//
+// Previously these were runtime-helper GLOBALS (`__vybe_pascal_str_insert`,
+// `__vybe_pascal_str_remove_range`) reached by name through a bundle table.
+// That indirection is what let `pascal.str_insert` point at `__vybe_str_insert`
+// — a different helper with a different argument order — undetected.
+
+/// Splice a string: drop `count` characters at `index` and put `insert` there.
+/// Stack: `[s, index, count, insert]` → `[string]`. `index` is ZERO-based;
+/// a language with 1-based string positions subtracts before calling.
+pub fn emit_splice(chunks: &mut [Chunk], current: usize, line: u32) {
+    let base = chunks[current].alloc_scratch(4);
+    let (insert, count, index, s) = (base, base + 1, base + 2, base + 3);
+    set(&mut chunks[current], insert, line);
+    set(&mut chunks[current], count, line);
+    set(&mut chunks[current], index, line);
+    set(&mut chunks[current], s, line);
+
+    // s[0..index] ++ insert ++ s[index+count..]
+    get(&mut chunks[current], s, line);
+    i32c(&mut chunks[current], 0, line);
+    get(&mut chunks[current], index, line);
+    emit_substring(&mut chunks[current], line);
+
+    get(&mut chunks[current], insert, line);
+    concat(chunks, current, line);
+
+    get(&mut chunks[current], s, line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], count, line);
+    crate::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    i32c(&mut chunks[current], 0x7FFF_FFFF, line);
+    emit_substring(&mut chunks[current], line);
+    concat(chunks, current, line);
+}
+
 /// Which ends to trim, and what to strip when the caller passes no set.
 #[derive(Clone, Copy)]
 pub struct TrimOptions {
@@ -1127,30 +1204,26 @@ pub struct TrimOptions {
     /// whitespace definition, which is what JS, Python, Dart and VB want.
     /// PHP passes `Some(" \t\n\r\0\x0B")`: its default includes NUL and
     /// vertical tab, which ECMA's does not.
-    pub default_chars: Option<&'static str>,
-}
+    pub default_chars: Option<&'static str> }
 
 impl TrimOptions {
     pub const fn both(default_chars: Option<&'static str>) -> TrimOptions {
         TrimOptions {
             left: true,
             right: true,
-            default_chars,
-        }
+            default_chars }
     }
     pub const fn start(default_chars: Option<&'static str>) -> TrimOptions {
         TrimOptions {
             left: true,
             right: false,
-            default_chars,
-        }
+            default_chars }
     }
     pub const fn end(default_chars: Option<&'static str>) -> TrimOptions {
         TrimOptions {
             left: false,
             right: true,
-            default_chars,
-        }
+            default_chars }
     }
 }
 
@@ -1182,8 +1255,7 @@ pub fn emit_trim_chars(
                 }
                 return;
             }
-            Some(defaults) => chunks[current].emit_string_const(defaults, line),
-        }
+            Some(defaults) => chunks[current].emit_string_const(defaults, line) }
     }
 
     let base = chunks[current].alloc_scratch(4);
@@ -1261,4 +1333,42 @@ fn emit_char_in_set(
     chunk.emit_call(index_of, 2, line);
     i32c(chunk, 0, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
+}
+
+/// `sep.join(iterable)` — join ANY iterable, not only an array.
+///
+/// Most languages spell a join over a general iterable: Python's
+/// `sep.join(x)`, PHP's `implode`, Go's `strings.Join`, C#'s `string.Join`,
+/// Lua's `table.concat`. `ecma:array.join` is right to refuse a generator —
+/// one has no `length`, and node returns `""` for
+/// `Array.prototype.join.call(gen, sep)` exactly as vybex does. That is ECMA
+/// behaviour and is left alone; accepting the iterable is the LANGUAGE's rule,
+/// so it lives here as an adapter over the ECMA call rather than inside it.
+///
+/// Materialisation goes through `collections::emit_spread_iterable`, the shared
+/// helper spread and destructuring already use: it drains a generator through
+/// `generators.rs` stack-switching and everything else through the ECMA-262
+/// iterator protocol. `ecma:array.from` is NOT enough — it leaves a Vybe
+/// generator empty (verified with `vybex -d`).
+///
+/// Stack: `[iterable, separator]` → `[string]`.
+pub fn emit_join_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let sep = chunk.alloc_scratch(2);
+    let iterable = sep + 1;
+    chunk.emit_op_u16(Op::LOCAL_SET, sep, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, iterable, line);
+
+    chunk.emit_op_u16(Op::LOCAL_GET, iterable, line);
+    crate::primitives::collections::emit_spread_iterable(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, sep, line);
+    call_host(&mut chunks[current], "ecma:array", "join", 2, line);
+}
+
+/// Register the import on the CURRENT chunk so `normalize_import_table` remaps
+/// it through that chunk's own table.
+fn call_host(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
+    let idx = chunk.add_import(module, name);
+    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
+    chunk.emit(argc, line);
 }

@@ -21,22 +21,19 @@ pub enum EntryPoint {
     /// top-level expression. A language-agnostic feature (used by Python
     /// `eval`, JS `eval`, a REPL) — applied on the common AST, so it works
     /// for any front-end. See the `completion_value` eval attribute.
-    EvalCompletion,
-}
+    EvalCompletion }
 
 /// A source file within a bundle.
 #[derive(Debug, Clone)]
 pub struct SourceFile {
     pub path: PathBuf,
-    pub code: String,
-}
+    pub code: String }
 
 /// A pre-compiled WASM binary to link alongside source files.
 #[derive(Debug, Clone)]
 pub struct WasmFile {
     pub path: PathBuf,
-    pub data: Vec<u8>,
-}
+    pub data: Vec<u8> }
 
 /// Everything needed to compile and run.
 pub struct Bundle {
@@ -44,16 +41,14 @@ pub struct Bundle {
     pub language: Language,
     pub sources: Vec<SourceFile>,
     pub wasm_files: Vec<WasmFile>,
-    pub entry_point: EntryPoint,
-}
+    pub entry_point: EntryPoint }
 
 /// What `Bundle::compile_full` returns — chunks + ESM import metadata
 /// so the VM setup can install globals for read-as-value imports and
 /// synthesize namespace objects for wildcard imports.
 pub struct CompiledBundle {
     pub chunks: Vec<vybe_runtime::Chunk>,
-    pub host_imports: crate::primitives::HostImportMetadata,
-}
+    pub host_imports: crate::primitives::HostImportMetadata }
 
 impl Bundle {
     /// Parse all sources into the common AST and apply the same
@@ -145,11 +140,9 @@ impl Bundle {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident(class_name)),
                             field: method_name.clone(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: vec![],
-                        optional: false,
-                    },
+                        optional: false },
                 ))));
         }
 
@@ -159,18 +152,15 @@ impl Bundle {
         if let EntryPoint::Form(ref name) = self.entry_point {
             let new_expr = Expression::new(ExprKind::New {
                 class: Box::new(Expression::ident(name)),
-                args: vec![],
-            });
+                args: vec![] });
             module.body.push(Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident("__f".to_string()),
                     type_hint: None,
                     init: Some(new_expr),
                     array_bounds: None,
-                    with_events: false,
-                }],
-                kind: VarDeclKind::Dim,
-            }));
+                    with_events: false }],
+                kind: VarDeclKind::Dim }));
             module
                 .body
                 .push(Statement::new(StmtKind::Expr(Expression::new(
@@ -178,16 +168,13 @@ impl Bundle {
                         callee: Box::new(Expression::new(ExprKind::Member {
                             object: Box::new(Expression::ident("Application")),
                             field: "Run".to_string(),
-                            null_safe: false,
-                        })),
+                            null_safe: false })),
                         args: vec![Argument {
                             value: Expression::ident("__f"),
                             name: None,
                             spread: false,
-                            by_ref: false,
-                        }],
-                        optional: false,
-                    },
+                            by_ref: false }],
+                        optional: false },
                 ))));
         }
 
@@ -327,8 +314,7 @@ impl Bundle {
 
         Ok(CompiledBundle {
             chunks,
-            host_imports,
-        })
+            host_imports })
     }
 }
 
@@ -337,21 +323,18 @@ enum PhpIncludeKind {
     Include,
     IncludeOnce,
     Require,
-    RequireOnce,
-}
+    RequireOnce }
 
 #[derive(Debug, Clone)]
 struct ExpandedPhpBlock {
     path: PathBuf,
     start_line: usize,
-    end_line: usize,
-}
+    end_line: usize }
 
 #[derive(Debug, Clone, Default)]
 struct ExpandedPhpSource {
     lines: Vec<String>,
-    blocks: Vec<ExpandedPhpBlock>,
-}
+    blocks: Vec<ExpandedPhpBlock> }
 
 impl ExpandedPhpSource {
     fn into_code(self) -> String {
@@ -372,8 +355,7 @@ fn record_expanded_line(expanded: &mut ExpandedPhpSource, path: &Path, line: Str
     expanded.blocks.push(ExpandedPhpBlock {
         path: path.to_path_buf(),
         start_line: line_no,
-        end_line: line_no,
-    });
+        end_line: line_no });
 }
 
 fn merge_expanded_block(blocks: &mut Vec<ExpandedPhpBlock>, block: ExpandedPhpBlock) {
@@ -543,8 +525,7 @@ fn expand_php_source_file(
                 PhpIncludeKind::IncludeOnce | PhpIncludeKind::RequireOnce => {
                     included_once.insert(canonical.clone())
                 }
-                PhpIncludeKind::Include | PhpIncludeKind::Require => true,
-            };
+                PhpIncludeKind::Include | PhpIncludeKind::Require => true };
 
             if should_expand {
                 let include_source = match std::fs::read_to_string(&canonical) {
@@ -1260,8 +1241,7 @@ fn normalize_php_include_for_inlining(source: &str) -> String {
             }
             MixedPhpIncludeSegment::Echo {
                 expr,
-                has_close_tag,
-            } => {
+                has_close_tag } => {
                 let expr = expr.trim();
                 if !expr.is_empty() {
                     if !in_php {
@@ -1281,8 +1261,7 @@ fn normalize_php_include_for_inlining(source: &str) -> String {
             }
             MixedPhpIncludeSegment::Code {
                 code,
-                has_close_tag,
-            } => {
+                has_close_tag } => {
                 if !in_php {
                     out.push_str("<?php");
                     in_php = true;
@@ -1313,8 +1292,7 @@ fn php_include_contains_inline_html(source: &str) -> bool {
         .into_iter()
         .any(|segment| match segment {
             MixedPhpIncludeSegment::Html(html) => !html.trim().is_empty(),
-            _ => false,
-        })
+            _ => false })
 }
 
 fn php_include_contains_top_level_return(source: &str) -> bool {
@@ -1325,8 +1303,7 @@ fn php_include_contains_top_level_return(source: &str) -> bool {
             | MixedPhpIncludeSegment::Echo { expr: code, .. } => {
                 php_code_contains_top_level_return(code)
             }
-            MixedPhpIncludeSegment::Html(_) => false,
-        })
+            MixedPhpIncludeSegment::Html(_) => false })
 }
 
 fn php_code_contains_top_level_return(code: &str) -> bool {
@@ -1336,8 +1313,7 @@ fn php_code_contains_top_level_return(code: &str) -> bool {
         SingleQuote,
         DoubleQuote,
         LineComment,
-        BlockComment,
-    }
+        BlockComment }
 
     fn is_ident_byte(byte: u8) -> bool {
         matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
@@ -1394,8 +1370,7 @@ fn php_code_contains_top_level_return(code: &str) -> bool {
                         }
                         index += 1;
                     }
-                    _ => index += 1,
-                }
+                    _ => index += 1 }
             }
             ScanState::SingleQuote => {
                 if bytes[index] == b'\\' {
@@ -1452,8 +1427,7 @@ fn rewrite_php_magic_constants(source: &str, source_path: &Path) -> String {
             MixedPhpIncludeSegment::Html(html) => out.push_str(html),
             MixedPhpIncludeSegment::Echo {
                 expr,
-                has_close_tag,
-            } => {
+                has_close_tag } => {
                 out.push_str("<?=");
                 out.push_str(&rewrite_php_magic_constants_in_code(expr, source_path));
                 if has_close_tag {
@@ -1462,8 +1436,7 @@ fn rewrite_php_magic_constants(source: &str, source_path: &Path) -> String {
             }
             MixedPhpIncludeSegment::Code {
                 code,
-                has_close_tag,
-            } => {
+                has_close_tag } => {
                 out.push_str("<?php");
                 out.push_str(&rewrite_php_magic_constants_in_code(code, source_path));
                 if has_close_tag {
@@ -1482,8 +1455,7 @@ fn rewrite_php_magic_constants_in_code(code: &str, source_path: &Path) -> String
         SingleQuote,
         DoubleQuote,
         LineComment,
-        BlockComment,
-    }
+        BlockComment }
 
     fn is_ident_byte(byte: u8) -> bool {
         matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_')
@@ -1602,8 +1574,7 @@ fn rewrite_php_magic_constants_in_code(code: &str, source_path: &Path) -> String
 enum MixedPhpIncludeSegment<'a> {
     Html(&'a str),
     Code { code: &'a str, has_close_tag: bool },
-    Echo { expr: &'a str, has_close_tag: bool },
-}
+    Echo { expr: &'a str, has_close_tag: bool } }
 
 fn php_code_block_needs_terminator(code: &str) -> bool {
     let trimmed = code.trim_end();
@@ -1637,13 +1608,11 @@ fn split_mixed_php_include_source(source: &str) -> Vec<MixedPhpIncludeSegment<'_
         if is_echo {
             segments.push(MixedPhpIncludeSegment::Echo {
                 expr: code,
-                has_close_tag,
-            });
+                has_close_tag });
         } else {
             segments.push(MixedPhpIncludeSegment::Code {
                 code,
-                has_close_tag,
-            });
+                has_close_tag });
         }
         cursor = if has_close_tag {
             (close + 2).min(source.len())
@@ -1679,8 +1648,7 @@ fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
             index += 1;
             Some(q)
         }
-        _ => None,
-    };
+        _ => None };
 
     let tag_start = index;
     if !matches!(
@@ -1717,8 +1685,7 @@ fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
                 }
                 break;
             }
-            _ => index += 1,
-        }
+            _ => index += 1 }
     }
 
     while index < bytes.len() {
@@ -1746,8 +1713,7 @@ fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
                             }
                             break;
                         }
-                        _ => after += 1,
-                    }
+                        _ => after += 1 }
                 }
                 return Some(after);
             }
@@ -1767,8 +1733,7 @@ fn skip_php_heredoc(bytes: &[u8], start: usize) -> Option<usize> {
                     }
                     break;
                 }
-                _ => index += 1,
-            }
+                _ => index += 1 }
         }
     }
 
@@ -1782,8 +1747,7 @@ fn find_php_include_close_tag(source: &str, start: usize) -> Option<usize> {
         SingleQuote,
         DoubleQuote,
         LineComment,
-        BlockComment,
-    }
+        BlockComment }
 
     let bytes = source.as_bytes();
     let mut index = start;
@@ -1854,8 +1818,7 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
         Bare,
         OpenOnly,
         CloseOnly,
-        Wrapped,
-    }
+        Wrapped }
 
     fn split_line_comment<'a>(line: &'a str) -> (&'a str, &'a str) {
         if let Some((head, tail)) = line.split_once("//") {
@@ -1911,8 +1874,7 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
                     TagMode::Wrapped => format!("{}<?php {} ?>{}", indent, combined, close_suffix),
                     TagMode::OpenOnly => format!("{}<?php {}{}", indent, combined, comment_suffix),
                     TagMode::CloseOnly => format!("{}{} ?>{}", indent, combined, close_suffix),
-                    TagMode::Bare => format!("{}{}{}", indent, combined, comment_suffix),
-                };
+                    TagMode::Bare => format!("{}{}{}", indent, combined, comment_suffix) };
             }
         }
     }
@@ -1928,24 +1890,21 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
                 TagMode::Wrapped => format!("{}<?php {} {{ ?>{}", indent, prefix, close_suffix),
                 TagMode::OpenOnly => format!("{}<?php {} {{{}", indent, prefix, comment_suffix),
                 TagMode::CloseOnly => format!("{}{} {{ ?>{}", indent, prefix, close_suffix),
-                TagMode::Bare => format!("{}{} {{{}", indent, prefix, comment_suffix),
-            };
+                TagMode::Bare => format!("{}{} {{{}", indent, prefix, comment_suffix) };
         }
         if prefix.starts_with("elseif ") {
             return match tag_mode {
                 TagMode::Wrapped => format!("{}<?php }} {} {{ ?>{}", indent, prefix, close_suffix),
                 TagMode::OpenOnly => format!("{}<?php }} {} {{{}", indent, prefix, comment_suffix),
                 TagMode::CloseOnly => format!("{}}} {} {{ ?>{}", indent, prefix, close_suffix),
-                TagMode::Bare => format!("{}}} {} {{{}", indent, prefix, comment_suffix),
-            };
+                TagMode::Bare => format!("{}}} {} {{{}", indent, prefix, comment_suffix) };
         }
         if prefix == "else" {
             return match tag_mode {
                 TagMode::Wrapped => format!("{}<?php }} else {{ ?>{}", indent, close_suffix),
                 TagMode::OpenOnly => format!("{}<?php }} else {{{}", indent, comment_suffix),
                 TagMode::CloseOnly => format!("{}}} else {{ ?>{}", indent, close_suffix),
-                TagMode::Bare => format!("{}}} else {{{}", indent, comment_suffix),
-            };
+                TagMode::Bare => format!("{}}} else {{{}", indent, comment_suffix) };
         }
     }
 
@@ -1958,8 +1917,7 @@ fn normalize_php_alternative_control_syntax(line: &str) -> String {
             TagMode::Wrapped => format!("{}<?php }} ?>{}", indent, close_suffix),
             TagMode::OpenOnly => format!("{}<?php }}{}", indent, comment_suffix),
             TagMode::CloseOnly => format!("{}}} ?>{}", indent, close_suffix),
-            TagMode::Bare => format!("{}}}{}", indent, comment_suffix),
-        };
+            TagMode::Bare => format!("{}}}{}", indent, comment_suffix) };
     }
 
     line.to_string()
@@ -2111,8 +2069,7 @@ fn normalize_php_source_for_parser(source: &str) -> String {
 
     let mixed_normalized = match vybe_runtime::registry::hooks("php").normalize_source {
         Some(f) => f(&normalized),
-        None => normalized,
-    };
+        None => normalized };
     let mut normalized = mixed_normalized
         .lines()
         .map(normalize_php_alternative_control_syntax)
@@ -2131,8 +2088,7 @@ fn rewrite_php_execution_operator(source: &str) -> String {
         SingleQuoted,
         DoubleQuoted,
         LineComment,
-        BlockComment,
-    }
+        BlockComment }
 
     let bytes = source.as_bytes();
     // Accumulate raw bytes so multibyte UTF-8 sequences survive verbatim; the
@@ -2253,8 +2209,7 @@ fn resolve_imports(module: &mut Module, lang: &Language, base_dir: &Path) {
             ImportKind::Named { path, .. } => path.clone(),
             ImportKind::Default { path, .. } => path.clone(),
             ImportKind::Simple { path, .. } => path.clone(),
-            ImportKind::Wildcard { path, .. } => path.clone(),
-        };
+            ImportKind::Wildcard { path, .. } => path.clone() };
         // Host Component Model namespaces (`wasi:*`, `wasm:*`, `vybe:*`,
         // `node:*`) are not source files — the compiler binds them at
         // compile time from `module.imports` directly via
@@ -2330,8 +2285,7 @@ mod tests {
                     0 => String::new(),
                     1 => format!("{}", args[0]),
                     2 => format!("{}", args[1]),
-                    _ => format!("{}", args[2]),
-                };
+                    _ => format!("{}", args[2]) };
                 captured.lock().unwrap().push(msg);
                 Value::Null
             }),
@@ -2363,11 +2317,9 @@ mod tests {
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "shared_helper")));
@@ -2394,11 +2346,9 @@ mod tests {
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let outputs = run_php_bundle_prints(&bundle);
         assert_eq!(
@@ -2445,11 +2395,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let combined = rewrite_cobol_assign_paths(&bundle.sources[0].code, &bundle.sources[0].path);
         assert!(combined.contains(&format!(
@@ -2485,11 +2433,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "shared_constant_helper")));
@@ -2532,11 +2478,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: std::fs::read_to_string(&entry_path).expect("read entry"),
-            }],
+                code: std::fs::read_to_string(&entry_path).expect("read entry") }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let expanded =
             expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
@@ -2577,11 +2521,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::ClassDecl { name, .. } if name == "IssueController")));
@@ -2625,11 +2567,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let expanded =
             expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
@@ -2659,11 +2599,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "load_dynamic")));
@@ -2698,11 +2636,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let expanded =
             expand_php_bundle_sources_with_map(&bundle.sources).expect("expand php bundle");
@@ -2741,11 +2677,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "db_error_helper")));
@@ -2772,11 +2706,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_optional_include")));
@@ -2803,11 +2735,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_optional_file")));
@@ -2834,11 +2764,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "load_runtime")));
@@ -2866,11 +2794,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "load_runtime")));
@@ -2898,11 +2824,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_locale_include")));
@@ -2929,11 +2853,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -2959,11 +2881,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_helper_include")));
@@ -2990,11 +2910,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_defined_guard")));
@@ -3021,11 +2939,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         assert!(module.body.iter().any(|stmt| matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name == "after_plugin_guard")));
@@ -3051,11 +2967,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3082,11 +2996,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3112,11 +3024,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3142,11 +3052,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3172,11 +3080,9 @@ PROCEDURE DIVISION.
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3226,11 +3132,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3257,11 +3161,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3291,11 +3193,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         let echoed_text: String = module
@@ -3346,11 +3246,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let module = bundle.prepared_module().expect("prepared module");
         let echoed_text: String = module
@@ -3396,11 +3294,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         let expanded = expand_php_bundle_sources(&bundle.sources).expect("expand php bundle");
         assert!(expanded.contains("<?xml version=\"1.0\"?>"));
@@ -3429,11 +3325,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3460,11 +3354,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: kses_path,
-                code: entry_src,
-            }],
+                code: entry_src }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
     }
@@ -3488,11 +3380,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: index_path,
-                code: entry_src,
-            }],
+                code: entry_src }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
     }
@@ -3516,11 +3406,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: widgets_path,
-                code: source,
-            }],
+                code: source }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
     }
@@ -3545,11 +3433,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: media_template_path,
-                code: source,
-            }],
+                code: source }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
     }
@@ -3573,11 +3459,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3603,11 +3487,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3633,11 +3515,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3663,11 +3543,9 @@ $notesTree = [
             language: lang,
             sources: vec![SourceFile {
                 path: entry_path.clone(),
-                code: entry_src.to_string(),
-            }],
+                code: entry_src.to_string() }],
             wasm_files: vec![],
-            entry_point: EntryPoint::Auto,
-        };
+            entry_point: EntryPoint::Auto };
 
         bundle.prepared_module().expect("prepared module");
 
@@ -3763,8 +3641,7 @@ pub fn flatten_module_value_exports(
                             cur_mod = from;
                             cur_name = target;
                         }
-                        _ => break,
-                    }
+                        _ => break }
                 }
                 result
             };
@@ -3802,8 +3679,7 @@ pub fn validate_imports_against_modules(
     // Imports live on chunk[0] by convention.
     let imports_chunk = match chunks.first() {
         Some(c) => c,
-        None => return unresolved,
-    };
+        None => return unresolved };
     for imp in &imports_chunk.imports {
         if imp.module == "*" || imp.module == "env" || imp.module == "wasm:string-constants" {
             continue;
@@ -3874,9 +3750,7 @@ fn resolve_export(
         }
         ExportEntry::Indirect {
             from,
-            name: src_name,
-        } => resolve_export(modules, from, src_name, visited),
-    }
+            name: src_name } => resolve_export(modules, from, src_name, visited) }
 }
 
 /// Add shared vybe namespace to all language profiles.
@@ -3895,7 +3769,6 @@ fn add_shared_gui_namespace(profile: &mut crate::profile::LanguageProfile) {
     if !already_has_vybe {
         profile.esm_defaults.push(EsmDefault::PackageRoot {
             prefix: "vybe".to_string(),
-            module_root: "vybe".to_string(),
-        });
+            module_root: "vybe".to_string() });
     }
 }

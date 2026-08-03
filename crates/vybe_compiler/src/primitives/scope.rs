@@ -12,8 +12,7 @@ pub struct Local {
     /// `emit_var_set` assignment path consults this — declaration init
     /// and direct loop-variable rebinds use `LOCAL_SET` directly, so
     /// they are unaffected.
-    pub is_const: bool,
-}
+    pub is_const: bool }
 
 #[derive(Debug, Clone)]
 pub struct UpvalueDesc {
@@ -21,36 +20,114 @@ pub struct UpvalueDesc {
     /// `Local.slot` — chunks routinely exceed 255 locals). Otherwise:
     /// the parent's upvalue-list position.
     pub index: u16,
-    pub is_local: bool,
-}
+    pub is_local: bool }
+
+/// What a name lookup that misses this scope's own locals does.
+///
+/// This is a property of the SCOPE, not of a language: `Scope::new_function`
+/// already existed as a distinct constructor but carried no behaviour, so the
+/// one language whose function scopes differ (PHP) had the rule spread across
+/// five `profile.name == "php"` checks and a `php_function_globals` field on
+/// the shared compiler. It lives here now, and languages declare it through
+/// `ScopeDeclKind::Closed` like any other scope statement.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ScopeResolution {
+    /// A miss falls through to the enclosing/module scope. Every language
+    /// except PHP, and PHP's own module scope — the behaviour before this
+    /// existed, hence the default.
+    #[default]
+    Chain,
+    /// A miss resolves to nothing: reads are null, assignments create a local
+    /// here. PHP function bodies.
+    Closed }
 
 #[derive(Debug)]
 pub struct Scope {
     pub locals: Vec<Local>,
     pub upvalues: Vec<UpvalueDesc>,
+    /// See [`ScopeResolution`].
+    pub resolution: ScopeResolution,
+    /// Names re-opened to an outer scope regardless of `resolution` — PHP
+    /// `global $x;` and its superglobals, Python `global`/`nonlocal`. Empty
+    /// under [`ScopeResolution::Chain`], where everything is open anyway.
+    pub open_names: std::collections::HashSet<String>,
+    /// Whether two names differing only in ASCII case are the SAME name here.
+    /// True for vb, pascal, cobol and fortran; false everywhere else.
+    ///
+    /// This is a resolution POLICY and belongs beside `resolution`, for the
+    /// same reason: it used to be a bare `resolve_ci` scan with the
+    /// `case_sensitive` flag living on the compiler, so all 33 call sites had
+    /// to remember to write `!self.case_sensitive &&` themselves. 23 of them
+    /// did not, and two of those silently broke go — a local `ab` matched the
+    /// class `AB`, so `ab.Get()` stopped resolving as a class reference and
+    /// compiled to a call that passed no receiver.
+    ///
+    /// Folding is per NAME KIND, not per language: PHP variables are
+    /// case-sensitive while its function and class names are not, which is why
+    /// this covers locals only. Callable/type folding is
+    /// `LanguageProfile::fold_callable_names`.
+    pub fold_case: bool,
     pub depth: u32,
     pub next_slot: u16,
     /// Debug accumulator: every `(slot, name)` ever defined in this function,
     /// NOT popped by `end_scope`. Copied into `Chunk.local_names` at finalize
     /// so the debugger can resolve variable names ↔ slots. Inspection only.
-    pub defined_names: Vec<(u16, String)>,
-}
+    pub defined_names: Vec<(u16, String)> }
 
 impl Scope {
-    pub fn new() -> Self {
+    /// `fold_case` is required rather than defaulted: a scope that silently
+    /// stopped folding would mis-resolve every vb/pascal/cobol/fortran local,
+    /// and the compiler cannot catch that. Passing it makes a missed
+    /// construction site a build error instead.
+    pub fn new(fold_case: bool) -> Self {
         Self {
             locals: Vec::new(),
             upvalues: Vec::new(),
+            resolution: ScopeResolution::Chain,
+            open_names: std::collections::HashSet::new(),
+            fold_case,
             depth: 0,
             next_slot: 0,
-            defined_names: Vec::new(),
+            defined_names: Vec::new() }
+    }
+
+    pub fn new_function(fold_case: bool) -> Self {
+        // WASM convention: slot 0 is the first argument (not a reserved callee).
+        // User-visible locals (params and additional locals) start at slot 0.
+        Self::new(fold_case)
+    }
+
+    /// A function scope that inherits the enclosing scope's resolution.
+    ///
+    /// A closure resolves names the way the body containing it does — a PHP
+    /// closure sees no more of the module than the function it sits in. Its own
+    /// `open_names` start empty: `global $x;` binds one function, not the
+    /// lambdas nested inside it.
+    pub fn new_function_like(enclosing: ScopeResolution, fold_case: bool) -> Self {
+        Scope {
+            resolution: enclosing,
+            ..Self::new_function(fold_case)
         }
     }
 
-    pub fn new_function() -> Self {
-        // WASM convention: slot 0 is the first argument (not a reserved callee).
-        // User-visible locals (params and additional locals) start at slot 0.
-        Self::new()
+    /// True when `name` may resolve outside this scope's own locals.
+    ///
+    /// Under [`ScopeResolution::Chain`] everything may, which is why every
+    /// language but PHP is unaffected by this whole mechanism.
+    pub fn is_open(&self, name: &str) -> bool {
+        self.resolution == ScopeResolution::Chain || self.open_names.contains(name)
+    }
+
+    /// Apply a `ScopeDeclKind::Closed` declaration: close the scope and seed
+    /// the names that stay open regardless (PHP's superglobals).
+    pub fn close(&mut self, always_open: &[String]) {
+        self.resolution = ScopeResolution::Closed;
+        self.open_names.extend(always_open.iter().cloned());
+    }
+
+    /// Apply a `global` / `nonlocal` declaration.
+    pub fn open(&mut self, names: &[String]) {
+        self.open_names.extend(names.iter().cloned());
     }
 
     pub fn define(&mut self, name: &str) -> u16 {
@@ -65,8 +142,7 @@ impl Scope {
             slot,
             is_captured: false,
             type_hint,
-            is_const: false,
-        });
+            is_const: false });
         self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
         slot
@@ -85,8 +161,7 @@ impl Scope {
             slot,
             is_captured: false,
             type_hint,
-            is_const: false,
-        });
+            is_const: false });
         self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
         slot
@@ -113,37 +188,58 @@ impl Scope {
         false
     }
 
+    /// Exact match first, THEN a folded pass — never one folded scan.
+    ///
+    /// Every call site this replaced was exact-then-folded (`resolve()
+    /// .or_else(resolve_ci)`, or an `if !case_sensitive` block after the exact
+    /// lookup returned), so two passes reproduce all of them. A single folded
+    /// scan would not: the compiler defines its own locals beside the user's,
+    /// so a scope can hold both `Result` (pascal's `result_slot_name`) and a
+    /// user's `result`, and one pass would return whichever sits later.
     pub fn resolve(&self, name: &str) -> Option<u16> {
         for l in self.locals.iter().rev() {
             if l.name == name {
                 return Some(l.slot);
             }
         }
+        if self.fold_case {
+            for l in self.locals.iter().rev() {
+                if l.name.eq_ignore_ascii_case(name) {
+                    return Some(l.slot);
+                }
+            }
+        }
         None
     }
 
-    pub fn resolve_ci(&self, name: &str) -> Option<u16> {
+    /// Case-EXACT, whatever the folding policy.
+    ///
+    /// For the one decision that legitimately distinguishes an exact match from
+    /// a folded one: a name that only matches when folded loses to a
+    /// type-qualified interpretation (`expressions.rs`). Everything else wants
+    /// [`Scope::resolve`] — reach for this only when "did it match exactly?" is
+    /// itself the question.
+    pub fn resolve_exact(&self, name: &str) -> Option<u16> {
         for l in self.locals.iter().rev() {
-            if l.name.eq_ignore_ascii_case(name) {
+            if l.name == name {
                 return Some(l.slot);
             }
         }
         None
     }
 
+    /// Exact-then-folded, for the same reason as [`Scope::resolve`].
     pub fn resolve_type(&self, name: &str) -> Option<&str> {
         for l in self.locals.iter().rev() {
             if l.name == name {
                 return l.type_hint.as_deref();
             }
         }
-        None
-    }
-
-    pub fn resolve_type_ci(&self, name: &str) -> Option<&str> {
-        for l in self.locals.iter().rev() {
-            if l.name.eq_ignore_ascii_case(name) {
-                return l.type_hint.as_deref();
+        if self.fold_case {
+            for l in self.locals.iter().rev() {
+                if l.name.eq_ignore_ascii_case(name) {
+                    return l.type_hint.as_deref();
+                }
             }
         }
         None
