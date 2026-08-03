@@ -19,7 +19,7 @@ pub fn emit_get_property(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     if argc >= 2 {
         chunk.emit_op_u16(Op::LOCAL_SET, default_slot, line);
     } else {
-        chunk.emit_op(Op::NULL, line);
+        chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunk.emit_op_u16(Op::LOCAL_SET, default_slot, line);
     }
     chunk.emit_op_u16(Op::LOCAL_SET, key_slot, line);

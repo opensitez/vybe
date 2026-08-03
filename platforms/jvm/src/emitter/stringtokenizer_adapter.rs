@@ -1,8 +1,8 @@
 //! JVM `java.util.StringTokenizer` adapter.
 
 use vybe_compiler::primitives::{instructions::host, ops};
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 const TOKENS_KEY: &str = "__tokens";
 const INDEX_KEY: &str = "__index";
@@ -18,14 +18,14 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 fn prop_get(chunk: &mut Chunk, obj: u16, key_name: &str, line: u32) {
     let key = chunk.add_constant(vybe_runtime::Value::String(key_name.into()));
     get(chunk, obj, line);
-    chunk.emit_op_u16(Op::STRUCT_GET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
 }
 
 fn prop_set_from_slot(chunk: &mut Chunk, obj: u16, key_name: &str, value: u16, line: u32) {
     let key = chunk.add_constant(vybe_runtime::Value::String(key_name.into()));
     get(chunk, obj, line);
     get(chunk, value, line);
-    chunk.emit_op_u16(Op::STRUCT_SET, key, line);
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -56,7 +56,7 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let tokens = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], tokens, line);
 
-    chunks[current].emit_op_u16(Op::STRUCT_NEW, 0, line);
+    chunks[current].emit_struct_new(0, 0, line);
     let tokenizer = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], tokenizer, line);
     prop_set_from_slot(&mut chunks[current], tokenizer, TOKENS_KEY, tokens, line);

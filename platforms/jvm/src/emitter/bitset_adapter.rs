@@ -2,8 +2,7 @@
 
 use vybe_compiler::primitives::{
     collections,
-    instructions::{core_wasm, host},
-};
+    instructions::{core_wasm, host} };
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -136,7 +135,7 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         set_local(&mut chunks[current], index, line);
         set_local(&mut chunks[current], bs, line);
         set_add(chunks, current, bs, index, line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         return;
     }
 
@@ -174,7 +173,7 @@ pub fn emit_set(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         },
     );
     chunks[current].emit_end(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_clear(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -203,7 +202,7 @@ pub fn emit_clear(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     } else {
         set_delete(chunks, current, bs, start, line);
     }
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_flip(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -228,7 +227,7 @@ pub fn emit_flip(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     } else {
         flip_one(chunks, current, bs, start, line);
     }
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn flip_one(chunks: &mut [Chunk], current: usize, bs: u16, index: u16, line: u32) {
@@ -488,7 +487,7 @@ fn mutate_with_other<F: Fn(&mut [Chunk], usize, u16, u16, u16, u32)>(
         set_local(&mut chunks[current], value, line);
         body(chunks, current, target, other, value, line);
     });
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 fn mutate_from_other<F: Fn(&mut [Chunk], usize, u16, u16, u32)>(
@@ -518,7 +517,7 @@ fn mutate_from_other<F: Fn(&mut [Chunk], usize, u16, u16, u32)>(
         set_local(&mut chunks[current], value, line);
         body(chunks, current, target, value, line);
     });
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_intersects(chunks: &mut [Chunk], current: usize, line: u32) {

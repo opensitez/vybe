@@ -52,13 +52,13 @@ fn lset(chunks: &mut [Chunk], c: usize, s: u16, line: u32) {
 /// Stack: `[obj]` → `[value]`.
 fn sget(chunks: &mut [Chunk], c: usize, key: &str, line: u32) {
     let k = chunks[c].add_constant(Value::String(Arc::from(key)));
-    chunks[c].emit_op_u16(Op::STRUCT_GET, k, line);
+    chunks[c].emit_struct_field_op(Op::STRUCT_GET, 0, k, line);
 }
 
 /// Stack: `[obj, value]` → `[]`.
 fn sset(chunks: &mut [Chunk], c: usize, key: &str, line: u32) {
     let k = chunks[c].add_constant(Value::String(Arc::from(key)));
-    chunks[c].emit_op_u16(Op::STRUCT_SET, k, line);
+    chunks[c].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
     chunks[c].emit_op(Op::DROP, line);
 }
 
@@ -549,7 +549,7 @@ pub fn emit_nullable_getter(chunks: &mut [Chunk], c: usize, field: UrlField, lin
         u,
         field,
         line,
-        |ch, c, line| ch[c].emit_op(Op::NULL, line),
+        |ch, c, line| ch[c].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
         |ch, c, v, line| lget(ch, c, v, line),
     );
 }
@@ -615,7 +615,7 @@ pub fn emit_user_info(chunks: &mut [Chunk], c: usize, line: u32) {
     lget(chunks, c, user, line);
     is_empty(chunks, c, line);
     chunks[c].emit_if_value(line);
-    chunks[c].emit_op(Op::NULL, line);
+    chunks[c].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[c].emit_else(line);
     lget(chunks, c, pass, line);
     is_empty(chunks, c, line);

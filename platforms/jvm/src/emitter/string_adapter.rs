@@ -1,0 +1,61 @@
+//! JVM `java.lang.String` and `java.util.Objects` adapters.
+
+use vybe_compiler::primitives::collections;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
+
+pub fn emit_join(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let elem_count = argc.saturating_sub(1);
+    let first_elem = chunks[current].alloc_scratch(elem_count as u16);
+    let delimiter = chunks[current].alloc_scratch(1);
+    for k in (0..elem_count).rev() {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, first_elem + k as u16, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_SET, delimiter, line);
+
+    if elem_count == 1 {
+        let elem = first_elem;
+        chunks[current].emit_op_u16(Op::LOCAL_GET, elem, line);
+        let len = chunks[current].add_import("ecma:array", "length");
+        chunks[current].emit_call(len, 1, line);
+        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_if(line);
+        collections::emit_array_new(chunks, current, 0, line);
+        let array = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, array, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, array, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, elem, line);
+        let push = chunks[current].add_import("ecma:array", "push");
+        chunks[current].emit_call(push, 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, array, line);
+        chunks[current].emit_else(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, elem, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, delimiter, line);
+        let join = chunks[current].add_import("ecma:array", "join");
+        chunks[current].emit_call(join, 2, line);
+        return;
+    }
+
+    collections::emit_array_new(chunks, current, 0, line);
+    let array = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, array, line);
+    let push = chunks[current].add_import("ecma:array", "push");
+    for k in 0..elem_count {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, array, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, first_elem + k as u16, line);
+        chunks[current].emit_call(push, 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_op_u16(Op::LOCAL_GET, array, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, delimiter, line);
+    let join = chunks[current].add_import("ecma:array", "join");
+    chunks[current].emit_call(join, 2, line);
+}
+
+pub fn emit_require_non_null(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc > 1 {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+}

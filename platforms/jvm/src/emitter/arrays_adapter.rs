@@ -4,7 +4,7 @@
 //! always match the lower-level ECMA array helpers, so keep those translations
 //! in the JVM platform adapter.
 
-use vybe_compiler::primitives::{collections, instructions::host, object};
+use vybe_compiler::primitives::{collections, instructions::host, object, ops, strings};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -46,9 +46,25 @@ pub fn emit_sort(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         get(&mut chunks[current], slice, line);
         collections::emit_insert_range(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
-        chunks[current].emit_op(Op::NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     } else if argc == 2 {
+        let comparator = chunks[current].alloc_scratch(1);
+        let array = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], comparator, line);
+        set(&mut chunks[current], array, line);
+        get(&mut chunks[current], comparator, line);
+        chunks[current].emit_string_const("__java_reverse_order", line);
+        host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        get(&mut chunks[current], array, line);
+        collections::emit_sort(chunks, current, line);
+        collections::emit_reverse(chunks, current, line);
+        chunks[current].emit_else(line);
+        get(&mut chunks[current], array, line);
+        get(&mut chunks[current], comparator, line);
         collections::emit_sort_with_comparator(chunks, current, line);
+        chunks[current].emit_end(line);
     } else {
         collections::emit_sort(chunks, current, line);
     }
@@ -114,7 +130,7 @@ pub fn emit_copy_of(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if_value(line);
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
     let default_slot = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], default_slot, line);
@@ -227,11 +243,20 @@ fn emit_binary_search_range(
     get(&mut chunks[current], from_slot, line);
     set(&mut chunks[current], index_slot, line);
 
+    get(&mut chunks[current], from_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0, line);
+    get(&mut chunks[current], to_slot, line);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_else(line);
     chunks[current].emit_i32_const(0, line);
     get(&mut chunks[current], to_slot, line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_op(Op::I32_SUB, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     let outer_block = chunks[current].emit_block(line);
@@ -524,7 +549,7 @@ pub fn emit_set_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_parallel_prefix(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -584,7 +609,7 @@ pub fn emit_parallel_prefix(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunks[current].patch_loop(loop_id);
     chunks[current].emit_end(line);
     chunks[current].patch_block(outer);
-    chunks[current].emit_op(Op::NULL, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
 pub fn emit_deep_equals(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -659,16 +684,66 @@ pub fn emit_deep_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
-    let joined_slot = chunks[current].alloc_scratch(1);
-    chunks[current].emit_string_const(", ", line);
-    collections::emit_join(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, joined_slot, line);
-
+    let items = chunks[current].alloc_scratch(1);
+    let len = chunks[current].alloc_scratch(1);
+    let index = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let elem = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], items, line);
+    get(&mut chunks[current], items, line);
+    collections::emit_len(chunks, current, line);
+    set(&mut chunks[current], len, line);
     chunks[current].emit_string_const("[", line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, joined_slot, line);
-    vybe_compiler::primitives::strings::emit_str_concat(&mut chunks[current], line);
+    set(&mut chunks[current], out, line);
+    chunks[current].emit_i32_const(0, line);
+    set(&mut chunks[current], index, line);
+    let outer = chunks[current].emit_block(line);
+    let (loop_id, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], index, line);
+    get(&mut chunks[current], len, line);
+    chunks[current].emit_op(Op::I32_LT_S, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], index, line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_op(Op::I32_GT_S, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], out, line);
+    chunks[current].emit_string_const(", ", line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    set(&mut chunks[current], out, line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], items, line);
+    get(&mut chunks[current], index, line);
+    collections::emit_get(chunks, current, line);
+    set(&mut chunks[current], elem, line);
+    get(&mut chunks[current], elem, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("null", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("", line);
+    get(&mut chunks[current], elem, line);
+    strings::emit_str_concat_coercing(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    let elem_text = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], elem_text, line);
+    get(&mut chunks[current], out, line);
+    get(&mut chunks[current], elem_text, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    set(&mut chunks[current], out, line);
+    get(&mut chunks[current], index, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::I32_ADD, line);
+    set(&mut chunks[current], index, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].patch_loop(loop_id);
+    chunks[current].emit_end(line);
+    chunks[current].patch_block(outer);
+    get(&mut chunks[current], out, line);
     chunks[current].emit_string_const("]", line);
-    vybe_compiler::primitives::strings::emit_str_concat(&mut chunks[current], line);
+    strings::emit_str_concat(&mut chunks[current], line);
 }
 
 pub fn emit_equals(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -700,7 +775,19 @@ pub fn emit_hash_code(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], items, line);
     get(&mut chunks[current], index, line);
     collections::emit_get(chunks, current, line);
+    let elem = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], elem, line);
+    get(&mut chunks[current], elem, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("number", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], elem, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], elem, line);
     object::emit_hash_code(&mut chunks[current], line);
+    chunks[current].emit_end(line);
     chunks[current].emit_op(Op::I32_ADD, line);
     set(&mut chunks[current], hash, line);
 
