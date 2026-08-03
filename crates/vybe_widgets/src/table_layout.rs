@@ -253,6 +253,14 @@ impl TableLayoutPanel {
 }
 
 impl PanelWidget for TableLayoutPanel {
+    
+    fn find_rect(&self, name: &str) -> Option<LayoutRect> {
+        if self.name() == name { return Some(self.rect()); }
+        for child in &self.children {
+            if let Some(r) = child.widget.find_rect(name) { return Some(r); }
+        }
+        None
+    }
     fn name(&self) -> &str {
         &self.name
     }

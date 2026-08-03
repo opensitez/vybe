@@ -603,6 +603,106 @@ mod canvas_impl {
                 }),
             );
         }
+        
+        {
+            let gui = gui.clone();
+            vm.register_host_fn(
+                "vybe:gui",
+                "sdlFillRect",
+                Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                    let name = handle_name(args.first());
+                    let mut use_full = false;
+                    let mut x = 0.0;
+                    let mut y = 0.0;
+                    let mut w = 0.0;
+                    let mut h = 0.0;
+
+                    if let Some(rect) = args.get(1) {
+                        if matches!(rect, Value::Null) || matches!(rect, Value::I32(0)) || matches!(rect, Value::F64(0.0)) {
+                            use_full = true;
+                        } else if let Value::Object(obj) = rect {
+                            let obj_lock = obj.lock().unwrap();
+                            if let Some(Value::Object(base_obj)) = obj_lock.properties.get("__base") {
+                                let base_lock = base_obj.lock().unwrap();
+                                if let vybe_runtime::value::ObjectKind::Array(ref arr) = base_lock.kind {
+                                    x = arr.get(0).map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                    y = arr.get(1).map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                    w = arr.get(2).map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                    h = arr.get(3).map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                } else {
+                                    x = base_lock.properties.get("x").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                    y = base_lock.properties.get("y").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                    w = base_lock.properties.get("w").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                    h = base_lock.properties.get("h").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                }
+                            } else {
+                                x = obj_lock.properties.get("x").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                y = obj_lock.properties.get("y").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                w = obj_lock.properties.get("w").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                                h = obj_lock.properties.get("h").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                            }
+                        }
+                    } else {
+                        use_full = true;
+                    }
+
+                    let mut state = gui.lock().unwrap();
+                    if use_full {
+                        let w_str = state.get_property(&name, "width");
+                        w = w_str.parse().unwrap_or(0.0);
+                        let h_str = state.get_property(&name, "height");
+                        h = h_str.parse().unwrap_or(0.0);
+                    }
+
+                    if let Some(c) = args.get(2) {
+                        let c_val = c.as_i32() as u32;
+                        let r = ((c_val >> 16) & 0xFF) as u8;
+                        let g = ((c_val >> 8) & 0xFF) as u8;
+                        let b = (c_val & 0xFF) as u8;
+                        let a = ((c_val >> 24) & 0xFF) as u8;
+                        let color = vybe_widgets::canvas::Color::rgba(r, g, b, if a == 0 { 255 } else { a });
+                        state.find_canvas_mut(&name).set_fill_color(color);
+                    }
+
+                    state.find_canvas_mut(&name).fill_rect(x, y, w, h);
+                    Value::Null
+                }),
+            );
+        }
+        
+        {
+            let gui = gui.clone();
+            vm.register_host_fn(
+                "vybe:gui",
+                "sdlDrawLine",
+                Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                    let name = handle_name(args.first());
+                    let x1 = f32_arg(args, 1);
+                    let y1 = f32_arg(args, 2);
+                    let x2 = f32_arg(args, 3);
+                    let y2 = f32_arg(args, 4);
+
+                    let mut state = gui.lock().unwrap();
+                    if let Some(c) = args.get(5) {
+                        let c_val = c.as_i32() as u32;
+                        let r = ((c_val >> 16) & 0xFF) as u8;
+                        let g = ((c_val >> 8) & 0xFF) as u8;
+                        let b = (c_val & 0xFF) as u8;
+                        let a = ((c_val >> 24) & 0xFF) as u8;
+                        let color = vybe_widgets::canvas::Color::rgba(r, g, b, if a == 0 { 255 } else { a });
+                        state.find_canvas_mut(&name).set_stroke_color(color);
+                        state.find_canvas_mut(&name).set_line_width(1.0);
+                    }
+                    
+                    let canvas = state.find_canvas_mut(&name);
+                    canvas.begin_path();
+                    canvas.move_to(x1, y1);
+                    canvas.line_to(x2, y2);
+                    canvas.stroke();
+                    Value::Null
+                }),
+            );
+        }
     }
 
     // ─── Argument helpers ──────────────────────────────────────────────────────
@@ -611,14 +711,28 @@ mod canvas_impl {
         args.get(idx).map(|v| v.as_f64() as f32).unwrap_or(0.0)
     }
 
+    /// Control name for a canvas target, accepting either shape a caller can
+    /// hold: a CanvasContext handle from `getContext`, or the control NAME
+    /// itself.
+    ///
+    /// The name form is what `getContext` already accepts (it stringifies its
+    /// argument), and it is what SDL passes — `SDL_CreateWindow` stores the
+    /// `<window>_surface` Canvas control's NAME as `sdl_surface`. Rejecting it
+    /// here returned an empty string, so `find_canvas_mut("")` recorded every
+    /// `sdlDrawLine` into a canvas belonging to no control, which nothing
+    /// paints: the call succeeded and the line never appeared.
     fn handle_name(arg: Option<&Value>) -> String {
-        if let Some(Value::Object(obj)) = arg {
-            let o = obj.lock().unwrap();
-            if let Some(v) = o.properties.get("__control_name") {
-                return format!("{}", v).to_lowercase();
+        match arg {
+            Some(Value::Object(obj)) => {
+                let o = obj.lock().unwrap();
+                o.properties
+                    .get("__control_name")
+                    .map(|v| format!("{}", v).to_lowercase())
+                    .unwrap_or_default()
             }
+            Some(Value::Null) | Some(Value::Undefined) | None => String::new(),
+            Some(other) => format!("{}", other).to_lowercase(),
         }
-        String::new()
     }
 
     fn parse_line_cap(s: &str) -> LineCap {

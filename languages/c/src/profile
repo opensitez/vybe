@@ -44,6 +44,8 @@ uses_common_resolver = true
 
 [builtins]
 
+# ── SDL (via platforms/libc adapter) ────────────────────────────────────────────
+
 # ── stdio ────────────────────────────────────────────────────────────────────
 # Walker normalizations (in walker.rs):
 #   printf(fmt, args...)    → libc printf emitter / C fputs lowering
@@ -188,6 +190,40 @@ uses_common_resolver = true
 # ────────────────────────────────────────────────────────────────────────────
 # VALUE METHODS — instance methods (rare in C; structs carry no methods)
 # ────────────────────────────────────────────────────────────────────────────
+
+# SDL resolves through the NAMESPACE TREE, not per-function builtins.
+# `platforms/libc` declares every `sdl.*` leaf at plugin init
+# (`emitter/tree_register.rs`), exactly as the dotnet platform declares
+# `dotnet.system.*`. Mounting the root here makes a bare `SDL_DrawLine(...)`
+# resolve through `resolver.rs`'s ambient roots, so ADDING an SDL function is
+# one leaf in libc and nothing here — the 16 `"SDL_*"` builtin lines this
+# replaced had to be kept in sync with the tree by hand.
+# SDL — restored. The `[[esm_default]] tree-ambient` mount below is the
+# INTENDED end state (leaves are declared once by the libc plugin at init), but
+# C's bare-call path does not consult the resolver's ambient roots yet, so
+# removing these silently unresolved every SDL_* call. Keep both until the C
+# call path reads the tree; then delete this block, not the mount.
+"SDL_Init" = { emit = "common:libc.sdl.SDL_Init", min_args = 1, max_args = 1 }
+"SDL_InitSubSystem" = { emit = "common:libc.sdl.SDL_InitSubSystem", min_args = 1, max_args = 1 }
+"SDL_Quit" = { emit = "common:libc.sdl.SDL_Quit", min_args = 0, max_args = 0 }
+"SDL_CreateWindow" = { emit = "common:libc.sdl.SDL_CreateWindow", min_args = 6, max_args = 6 }
+"SDL_DestroyWindow" = { emit = "common:libc.sdl.SDL_DestroyWindow", min_args = 1, max_args = 1 }
+"SDL_GetWindowSurface" = { emit = "common:libc.sdl.SDL_GetWindowSurface", min_args = 1, max_args = 1 }
+"SDL_FillRect" = { emit = "common:libc.sdl.SDL_FillRect", min_args = 3, max_args = 3 }
+"SDL_UpdateWindowSurface" = { emit = "common:libc.sdl.SDL_UpdateWindowSurface", min_args = 1, max_args = 1 }
+"SDL_DrawText" = { emit = "common:libc.sdl.SDL_DrawText", min_args = 4, max_args = 4 }
+"SDL_DrawLine" = { emit = "common:libc.sdl.SDL_DrawLine", min_args = 6, max_args = 6 }
+"SDL_Delay" = { emit = "common:libc.sdl.SDL_Delay", min_args = 1, max_args = 1 }
+"SDL_MapRGB" = { emit = "common:libc.sdl.SDL_MapRGB", min_args = 4, max_args = 4 }
+"SDL_MapRGBA" = { emit = "common:libc.sdl.SDL_MapRGBA", min_args = 5, max_args = 5 }
+"SDL_ShowWindow" = { emit = "common:libc.sdl.SDL_ShowWindow", min_args = 1, max_args = 1 }
+"SDL_HideWindow" = { emit = "common:libc.sdl.SDL_HideWindow", min_args = 1, max_args = 1 }
+"SDL_ShowSimpleMessageBox" = { emit = "common:libc.sdl.SDL_ShowSimpleMessageBox", min_args = 4, max_args = 4 }
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "sdl"
+
 
 [value_methods]
 

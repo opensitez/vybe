@@ -179,6 +179,52 @@ impl Form {
             None => None }
     }
 
+    /// Get the layout rect of a named control (recursively searching containers).
+    pub fn get_control_rect(&self, name: &str) -> Option<LayoutRect> {
+        for w in &self.controls {
+            if let Some(r) = w.find_rect(name) {
+                return Some(r);
+            }
+        }
+        None
+    }
+
+    /// Render host overlays on top of controls (owner-draw).
+    pub fn render_overlays(
+        &self,
+        ctx: &mut RenderContext,
+        overlays: &std::collections::HashMap<String, crate::canvas::RecordingCanvas>,
+    ) {
+        use crate::canvas::{Canvas as _CanvasTrait, TinySkiaCanvas};
+        for (name, canvas) in overlays {
+            // A name that matches no CHILD control is drawn against the FORM
+            // itself, in form coordinates. `find_canvas_mut` documents the
+            // overlay path as covering "Button, Label, Form, …", but
+            // `get_control_rect` only searches children, so a form-level
+            // recording used to be dropped here without a trace — the drawing
+            // calls all succeeded and the window came up blank. That is the
+            // whole point of owner-draw for a window surface: SDL draws on the
+            // window, not on a child widget.
+            let rect = self.get_control_rect(name).unwrap_or(self.rect);
+            {
+                let r = rect;
+                let scale = ctx.scale;
+                let mut overlay = TinySkiaCanvas::with_text(
+                    &mut ctx.pixmap,
+                    ctx.font_system,
+                    ctx.swash_cache,
+                );
+                overlay.translate(r.x * scale, r.y * scale);
+                if (scale - 1.0).abs() > f32::EPSILON {
+                    overlay.scale(scale, scale);
+                }
+                
+                // Replay ops!
+                canvas.replay(&mut overlay);
+            }
+        }
+    }
+
     /// Mutable access to the form's child controls slice. Used by the
     /// host bridge to walk widgets and downcast them when looking up a
     /// `Canvas` widget by name.

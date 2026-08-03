@@ -653,25 +653,19 @@ pub trait PanelWidget: Send + Sync {
     /// Get the current layout rectangle.
     fn rect(&self) -> LayoutRect;
 
+    /// Recursively search for a widget by name and return its layout rect.
+    fn find_rect(&self, name: &str) -> Option<LayoutRect> {
+        if self.name() == name {
+            Some(self.rect())
+        } else {
+            None
+        }
+    }
+
     /// Render the widget into the pixmap.
     fn render(&mut self, ctx: &mut RenderContext);
 
-    /// Paint a user-provided overlay on top of the widget, AFTER its
-    /// normal `render`. Default-empty.
-    ///
-    /// This is the hook framework wrappers (`.NET System.Drawing`,
-    /// Flutter `Canvas`, JS `getContext('2d')`, …) use to layer custom
-    /// drawing on top of any widget — Button, Label, Panel, custom user
-    /// controls. The implementor receives a `&mut dyn Canvas` borrowing
-    /// the same pixmap the widget was rendered into, with the canvas
-    /// origin already translated to the widget's top-left.
-    ///
-    /// The `Canvas` widget itself doesn't override this — it has no
-    /// chrome to overlay; its entire painting happens in `render` from
-    /// its own `RecordingCanvas`. Custom user controls (e.g. a
-    /// `PaintBox` exposing `OnPaint`) override this to call back into
-    /// user code.
-    fn paint_overlay(&mut self, _canvas: &mut dyn crate::canvas::Canvas) {}
+
 
     /// Downcast hook for the host bridge.
     ///
@@ -998,31 +992,7 @@ impl FocusManager {
     pub fn render_all(&self, widgets: &mut [Box<dyn PanelWidget>], ctx: &mut RenderContext) {
         for (i, w) in widgets.iter_mut().enumerate() {
             w.render(ctx);
-            // After the widget's normal render, give it a chance to
-            // paint a user-supplied overlay on top via the canvas
-            // trait. Most widgets default-no-op here; framework
-            // wrappers (.NET PaintBox, JS canvas element, etc.) use
-            // this to call back into user paint code.
-            //
-            // We construct a fresh TinySkiaCanvas borrowing the same
-            // pixmap, with the canvas origin pre-translated to the
-            // widget's top-left so user paint code uses widget-local
-            // coordinates.
-            {
-                use crate::canvas::Canvas as _CanvasTrait;
-                let r = w.rect();
-                let scale = ctx.scale;
-                let mut overlay = crate::canvas::TinySkiaCanvas::with_text(
-                    &mut ctx.pixmap,
-                    ctx.font_system,
-                    ctx.swash_cache,
-                );
-                overlay.translate(r.x * scale, r.y * scale);
-                if (scale - 1.0).abs() > f32::EPSILON {
-                    overlay.scale(scale, scale);
-                }
-                w.paint_overlay(&mut overlay);
-            }
+
             if self.focused == Some(i) {
                 Self::draw_focus_ring(ctx, w.rect());
             }

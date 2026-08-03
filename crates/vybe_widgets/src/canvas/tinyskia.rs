@@ -408,8 +408,10 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
         // we replicate the relevant bits inline so this module
         // doesn't depend on `super::super::ide_text` (which would
         // create a circular module dependency).
+        // create a circular module dependency).
+        let scale = self.state.transform.sx;
         let size = self.state.font.size;
-        let metrics = Metrics::new(size, size * 1.3);
+        let metrics = Metrics::new(size, size * 1.3).scale(scale);
         let mut buf = Buffer::new(tc.font_system, metrics);
         let attrs = build_attrs(&self.state.font);
         buf.set_text(tc.font_system, text, &attrs, Shaping::Advanced, None);
@@ -417,6 +419,10 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
 
         let fill = apply_alpha(self.state.fill, self.state.global_alpha);
         let cosmic_color = CosmicColor::rgba(fill.r, fill.g, fill.b, fill.a);
+
+        // Apply transform to the coordinates
+        let px = x * self.state.transform.sx + self.state.transform.tx;
+        let py = y * self.state.transform.sy + self.state.transform.ty;
 
         // cosmic-text positions glyphs relative to the buffer's
         // top-left. .NET (and HTML5 canvas) `fill_text(x, y)` positions
@@ -429,8 +435,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
             tc.font_system,
             tc.swash_cache,
             &buf,
-            x,
-            y,
+            px,
+            py,
             cosmic_color,
         );
     }

@@ -194,6 +194,14 @@ impl TabPanel {
 }
 
 impl PanelWidget for TabPanel {
+    
+    fn find_rect(&self, name: &str) -> Option<LayoutRect> {
+        if self.name() == name { return Some(self.rect()); }
+        for tab in &self.tabs {
+            if let Some(r) = tab.widget.find_rect(name) { return Some(r); }
+        }
+        None
+    }
     fn set_rect(&mut self, rect: LayoutRect) {
         self.rect = rect;
         self.relayout();
