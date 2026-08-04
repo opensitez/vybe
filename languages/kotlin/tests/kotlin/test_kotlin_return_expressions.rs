@@ -115,7 +115,7 @@ kotlin_run_test!(
     test_return_from_function_with_named_arguments,
     r#"
         fun join(prefix: String, value: Int): String {
-            return "${'$'}prefix${'$'}value"
+            return "$prefix$value"
         }
 
         fun main() {

@@ -78,7 +78,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val values = sequenceOf(1, 2, 3, 4).zipWithNext()
-            println(values.toList().joinToString("|") { "${'$'}{it.first}-${'$'}{it.second}" })
+            println(values.toList().joinToString("|") { "${it.first}-${it.second}" })
         }
     "#,
     &["1-2|2-3|3-4"]

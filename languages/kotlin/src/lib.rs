@@ -16,7 +16,21 @@ pub(crate) struct KotlinParser;
 
 /// Parse Kotlin source into the common AST.
 pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
-    walker::parse(source)
+    // Parse on a thread with a LARGE stack. The expression grammar is ~17
+    // levels deep and `walk_expr`'s frames are big in debug builds, so a
+    // moderately nested expression (`(xs.zip(listOf(1))).toString()`) walks a
+    // pair tree deep enough to blow the default 8 MiB main stack — measured
+    // as a hard overflow, not a hang. The documented alternative (flattening
+    // the precedence chain) caps how faithful the grammar can be; a worker
+    // thread with headroom does not.
+    let source = source.to_string();
+    std::thread::Builder::new()
+        .name("kotlin-parse".into())
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || walker::parse(&source))
+        .map_err(|e| format!("parse thread: {e}"))?
+        .join()
+        .map_err(|_| "Kotlin parse thread panicked".to_string())?
 }
 
 /// Embedded profile TOML source.
@@ -33,6 +47,7 @@ pub fn register() {
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: Some(tree_register::register_namespace_tree),
+        expand_source: None,
     });
 }
 

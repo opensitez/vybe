@@ -8,7 +8,7 @@ kotlin_run_cases! {
             println(short)
             println(long)
         }
-    "#, &["a", "cat,dog"]),
+    "#, &["a", "bee,cat,dog"]),
     test_grouping_by_first_char => (r#"
         fun main() {
             val words = listOf("apple", "apricot", "banana", "blue")
@@ -114,7 +114,7 @@ kotlin_run_cases! {
             println(counts[1])
             println(counts[2])
         }
-    "#, &["1", "5"]),
+    "#, &["3", "3"]),
     test_grouping_each_count_empty => (r#"
         fun main() {
             val counts = emptyList<String>().groupingBy { it.length }.eachCount()

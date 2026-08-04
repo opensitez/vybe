@@ -137,7 +137,7 @@ kotlin_run_test!(
             val a = listOf(1 to 2)
             val b = listOf(3 to 4)
             val combined = a + b
-            val out = combined.joinToString(",") { "${'$'}{it.first}=${'$'}{it.second}" }
+            val out = combined.joinToString(",") { "${it.first}=${it.second}" }
             println(out)
         }
     "#,

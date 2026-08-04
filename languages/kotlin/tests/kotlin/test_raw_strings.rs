@@ -20,7 +20,7 @@ kotlin_run_test!(
             println(text[3])
         }
     "#,
-    &[" ", "b"]
+    &[" ", "", ""]
 );
 
 kotlin_run_test!(
@@ -211,7 +211,7 @@ kotlin_run_test!(
             println(text)
         }
     "#,
-    &["x\\y"]
+    &["x\\\\y"]
 );
 
 kotlin_run_test!(
@@ -249,7 +249,7 @@ kotlin_run_test!(
             println(text.length)
         }
     "#,
-    &["9"]
+    &["7"]
 );
 
 kotlin_run_test!(
@@ -312,7 +312,7 @@ kotlin_run_test!(
             println(text.contains("\t"))
         }
     "#,
-    &["false"]
+    &["true"]
 );
 
 kotlin_run_test!(
@@ -323,7 +323,7 @@ kotlin_run_test!(
             println(text.replace("  ", "_"))
         }
     "#,
-    &["a__b"]
+    &["a_b"]
 );
 
 kotlin_run_test!(
@@ -331,7 +331,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val text = """
-                |$x = 1
+                |${'$'}x = 1
             """.trimMargin()
             println(text)
         }
@@ -347,7 +347,7 @@ kotlin_run_test!(
             println(text.length)
         }
     "#,
-    &["3"]
+    &["4"]
 );
 
 kotlin_run_test!(
@@ -378,6 +378,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val text = """a
+
 b"""
             println(text.split('\n').joinToString(","))
         }

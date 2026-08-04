@@ -515,6 +515,21 @@ pub fn emit_is_empty(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u
     let value = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], value, line);
 
+    // Strings answer by length — the dict probe below STRUCT_GETs, which
+    // traps on a primitive.
+    get(&mut chunks[current], value, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], value, line);
+    vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+
     get(&mut chunks[current], value, line);
     host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -543,10 +558,113 @@ pub fn emit_is_empty(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u
     ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_is_not_empty(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     emit_is_empty(chunks, current, argc, line);
     ops::emit_dyn_not(&mut chunks[current], line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// One `Map.Entry`: the `[k, v]` array, with `key`/`value` properties stamped
+/// on it so both spellings work — `for ((k, v) in …)` destructures the array
+/// positionally, `it.key`/`it.value` read the properties. Kotlin passes
+/// entries to every map lambda (`filter`, `map`, `count`, `forEach`) and
+/// yields them from `entries`, so the shape is built in ONE place.
+/// Stack: `[k, v]` → `[entry]`.
+pub fn emit_make_entry(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    let k = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], v, line);
+    set(&mut chunks[current], k, line);
+    get(&mut chunks[current], k, line);
+    get(&mut chunks[current], v, line);
+    common_collections::emit_array_new(chunks, current, 2, line);
+    for (prop, slot) in [("key", k), ("value", v)] {
+        chunks[current].emit_dup(line);
+        get(&mut chunks[current], slot, line);
+        let key_idx = chunks[current].add_constant(Value::String(Arc::from(prop)));
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+}
+
+/// A LIST view of a dict receiver: a Set's elements, a Map's entries.
+/// Arrays pass through untouched. This is what lets one predicate loop serve
+/// `list.count { }`, `set.count { }` and `map.count { it.value > 0 }` — in
+/// Kotlin the Map overloads iterate ENTRIES, and the entry shape is
+/// [`emit_make_entry`]'s.
+/// Stack: `[receiver]` → `[list]`.
+pub fn emit_dict_as_list(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], v, line);
+    get(&mut chunks[current], v, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    // A string iterates as its characters (`"ab".first()`, `s.count()`).
+    get(&mut chunks[current], v, line);
+    chunks[current].emit_string_const("", line);
+    host::emit(&mut chunks[current], "ecma:string", "split", 2, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], v, line);
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], v, line);
+    chunks[current].emit_else(line);
+
+    // A Set is its keys; a Map is its entries.
+    get(&mut chunks[current], v, line);
+    let marker = chunks[current].add_constant(Value::String(Arc::from(
+        crate::emitter::tostring::SET_MARKER,
+    )));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, marker, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    // The VALUES view, not `__keys`: a set literal's `__keys` also carries the
+    // marker itself, and keys are the STRING spellings of the elements.
+    emit_collection_values_array(chunks, current, v, line);
+    chunks[current].emit_else(line);
+    emit_entries_list(chunks, current, v, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// Kotlin `map.entries` — insertion-ordered entry objects.
+/// Stack: `[map]` → `[list of entries]`.
+pub fn emit_entries(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], v, line);
+    emit_entries_list(chunks, current, v, line);
+}
+
+fn emit_entries_list(chunks: &mut Vec<Chunk>, current: usize, v: u16, line: u32) {
+    let keys = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    get(&mut chunks[current], v, line);
+    dict::emit_keys(chunks, current, line);
+    set(&mut chunks[current], keys, line);
+    common_collections::emit_array_new(chunks, current, 0, line);
+    set(&mut chunks[current], out, line);
+    let state = vybe_compiler::primitives::loops::emit_for_in_start(chunks, current, keys, idx, line);
+    set(&mut chunks[current], key, line);
+    get(&mut chunks[current], out, line);
+    get(&mut chunks[current], key, line);
+    get(&mut chunks[current], v, line);
+    get(&mut chunks[current], key, line);
+    dict::emit_get_dynamic(chunks, current, line);
+    emit_make_entry(chunks, current, line);
+    common_collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    vybe_compiler::primitives::loops::emit_for_in_end(chunks, current, idx, state, line);
+    get(&mut chunks[current], out, line);
 }

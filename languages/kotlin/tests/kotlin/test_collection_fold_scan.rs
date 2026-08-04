@@ -192,8 +192,8 @@ fn test_fold_order_non_commutative() {
         r#"
         fun main() {
             val values = listOf("a", "b", "c")
-            val left = values.fold("") { acc, value -> "${'$'}acc${'$'}{value}" }
-            val right = values.foldRight("") { value, acc -> "${'$'}value${'$'}{acc}" }
+            val left = values.fold("") { acc, value -> "$acc${value}" }
+            val right = values.foldRight("") { value, acc -> "$value${acc}" }
             println(left)
             println(right)
         }

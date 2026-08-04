@@ -104,7 +104,7 @@ kotlin_run_test!(
             val name = "k"
             val count = 2
             println("$name$count")
-            println("${'$'}{name.uppercase()}${'$'}count")
+            println("${name.uppercase()}$count")
         }
     "#,
     &["k2", "K2"]

@@ -106,7 +106,7 @@ kotlin_run_test!(
             val label = "root"
             inner class Node {
                 val label = "node"
-                fun describe(): String = "${'$'}{this@Context.label}/${'$'}{label}"
+                fun describe(): String = "${this@Context.label}/${label}"
             }
         }
 
@@ -160,7 +160,7 @@ kotlin_run_test!(
         class Host {
             fun transform(): String {
                 val f: Host.() -> String = {
-                    "${'$'}{this::class.simpleName}"
+                    "${this::class.simpleName}"
                 }
                 return f()
             }

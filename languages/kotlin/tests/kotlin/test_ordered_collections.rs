@@ -317,7 +317,7 @@ fn test_list_sorted_by_comparator_stable() {
         fun main() {
             val list = listOf(Pair(1, 2), Pair(1, 1), Pair(0, 3))
             val sorted = list.sortedWith(compareBy<Pair> { it.left }.thenBy { it.right })
-            println(sorted.map { "${'$'}{it.left}:${'$'}{it.right}" }.joinToString("|"))
+            println(sorted.map { "${it.left}:${it.right}" }.joinToString("|"))
         }
     "#,
     );
@@ -392,7 +392,7 @@ fn test_map_to_list_round_trip_order() {
             val map = linkedMapOf<String, Int>()
             map.putAll(list.toMap())
             val rebuilt = map.toList()
-            println(rebuilt.joinToString("|") { "${'$'}{it.first}:${'$'}{it.second}" })
+            println(rebuilt.joinToString("|") { "${it.first}:${it.second}" })
         }
     "#,
     );

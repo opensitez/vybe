@@ -111,7 +111,7 @@ kotlin_run_test!(
         fun main() {
             val events = mutableListOf<String>()
             var value by Delegates.observable(10) { _, old, new ->
-                events.add("${'$'}old/${'$'}new")
+                events.add("$old/$new")
             }
             value = 12
             value = 12

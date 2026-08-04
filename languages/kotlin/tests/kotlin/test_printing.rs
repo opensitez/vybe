@@ -169,7 +169,7 @@ fn test_printing_dollar_sign_escape() {
     let out = run_prints(
         r#"
         fun main() {
-            println("cost: ${'$'}5")
+            println("cost: $5")
         }
     "#,
     );

@@ -74,7 +74,7 @@ fn test_sorted_with_custom_tie_breaker() {
             data class Item(val first: Int, val second: String)
             val values = listOf(Item(2, "b"), Item(1, "c"), Item(2, "a"))
             val out = values.sortedWith(compareBy<Item> { it.first }.thenBy { it.second })
-            println(out.joinToString(",") { "${'$'}{it.first}${'$'}{it.second}" })
+            println(out.joinToString(",") { "${it.first}${it.second}" })
         }
     "#,
     );
@@ -89,7 +89,7 @@ fn test_sorted_with_then_by_secondary() {
             data class Item(val first: Int, val second: Int)
             val values = listOf(Item(1, 9), Item(1, 2), Item(2, 5))
             val out = values.sortedWith(compareBy<Item> { it.first }.thenByDescending { it.second })
-            println(out.joinToString(",") { "${'$'}{it.first}-${'$'}{it.second}" })
+            println(out.joinToString(",") { "${it.first}-${it.second}" })
         }
     "#,
     );
@@ -313,7 +313,7 @@ fn test_reduce_with_indexed_variant() {
         fun main() {
             val values = listOf(4, 5, 6).sorted()
             val out = values.foldIndexed("") { index, acc, value ->
-                if (index == 0) value.toString() else "${'$'}{acc}-${'$'}value"
+                if (index == 0) value.toString() else "${acc}-$value"
             }
             println(out)
         }
@@ -386,7 +386,7 @@ fn test_map_indexed_sorting_preserves_indexed_payload() {
         r#"
         fun main() {
             val values = listOf("c", "a", "b").withIndex().toList().sortedBy { it.value }
-            println(values.map { "${'$'}{it.index}:${'$'}{it.value}" }.joinToString(","))
+            println(values.map { "${it.index}:${it.value}" }.joinToString(","))
         }
     "#,
     );

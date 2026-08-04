@@ -3,7 +3,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             fun format(v: Int): String {
-                return "v=${'$'}v"
+                return "v=$v"
             }
             println(format(7))
         }
@@ -100,7 +100,7 @@ kotlin_run_test!(
                 bump()
                 value += 2
             }.run {
-                "${'$'}value"
+                "$value"
             }
             println(b)
         }

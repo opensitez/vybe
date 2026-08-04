@@ -88,7 +88,7 @@ kotlin_run_test!(
             run {
                 val source = Holder(9, 10)
                 val (x, y) = source
-                out = "${'$'}x,${'$'}y"
+                out = "$x,$y"
             }
             println(out)
         }

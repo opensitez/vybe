@@ -3,7 +3,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val value = 5
-            val msg = "value is ${'$'}{if (value > 3) "high" else "low"} and ${'$'}value"
+            val msg = "value is ${if (value > 3) "high" else "low"} and $value"
             println(msg)
         }
     "#,
@@ -15,7 +15,7 @@ kotlin_run_test!(
     r#"
         fun decorate(input: String): String = input.uppercase()
         fun main() {
-            println("${'$'}{decorate("kotlin")}")
+            println("${decorate("kotlin")}")
         }
     "#,
     &["KOTLIN"]
@@ -29,7 +29,7 @@ kotlin_run_test!(
             for (i in 1..4) {
                 total += i
             }
-            println("sum=${'$'}total")
+            println("sum=$total")
         }
     "#,
     &["sum=10"]
@@ -40,7 +40,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val values = listOf("ab", "cd", "ef")
-            println("first=${'$'}{values[0]} len=${'$'}{values[0].length}")
+            println("first=${values[0]} len=${values[0].length}")
         }
     "#,
     &["first=ab len=2"]
@@ -62,7 +62,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val ok = true
-            println("state=${'$'}{ok && true}")
+            println("state=${ok && true}")
         }
     "#,
     &["state=true"]
@@ -72,7 +72,7 @@ kotlin_run_test!(
     test_interpolation_with_nullable_value,
     r#"
         fun label(value: String?): String {
-            return "${'$'}{value ?: "none"}"
+            return "${value ?: "none"}"
         }
         fun main() {
             println(label(null))
@@ -90,7 +90,7 @@ kotlin_run_test!(
                 a
                 b
             """.trimIndent()
-            println("${'$'}{lines.lines().size}")
+            println("${lines.lines().size}")
             println(lines[0])
         }
     "#,
@@ -102,7 +102,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val count = 4
-            println("${'$'}count items")
+            println("$count items")
         }
     "#,
     &["4 items"]
@@ -114,7 +114,7 @@ kotlin_run_test!(
         fun value(a: Int) = a * 2
         fun main() {
             val x = 3
-            println("doubled=${'$'}{value(x)}")
+            println("doubled=${value(x)}")
         }
     "#,
     &["doubled=6"]
@@ -125,7 +125,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val ch = 'A'
-            println("${'$'}ch-${'$'}{ch.code}")
+            println("$ch-${ch.code}")
         }
     "#,
     &["A-65"]

@@ -7,7 +7,7 @@ fn test_zip_aligns_minimum_length() {
         fun main() {
             val left = listOf(1, 2, 3, 4)
             val right = listOf("a", "b")
-            println(left.zip(right).joinToString("|") { "${'$'}{it.first}${'$'}{it.second}" })
+            println(left.zip(right).joinToString("|") { "${it.first}${it.second}" })
             println(left.zip(right).size)
         }
     "#,
@@ -36,7 +36,7 @@ fn test_zip_with_next_neighbor_pairs() {
         r#"
         fun main() {
             val nums = listOf(1, 2, 3, 4)
-            val pairs = nums.zipWithNext().joinToString("|") { "${'$'}{it.first}:${'$'}{it.second}" }
+            val pairs = nums.zipWithNext().joinToString("|") { "${it.first}:${it.second}" }
             println(pairs)
         }
     "#,
@@ -108,7 +108,7 @@ fn test_sequence_zip_with_extra_source() {
     let out = run_prints(
         r#"
         fun main() {
-            val zipped = (1..5).asSequence().zip(listOf("a", "b", "c")) { n, s -> "${'$'}n${'$'}s" }.toList()
+            val zipped = (1..5).asSequence().zip(listOf("a", "b", "c")) { n, s -> "$n$s" }.toList()
             println(zipped.joinToString(","))
         }
     "#,
@@ -136,7 +136,7 @@ fn test_product_via_zip() {
         r#"
         fun main() {
             val names = listOf("a", "b", "c")
-            val out = names.zip(generateSequence(0) { it + 1 }) { name, i -> "${'$'}name${'$'}i" }
+            val out = names.zip(generateSequence(0) { it + 1 }) { name, i -> "$name$i" }
             println(out.joinToString(","))
         }
     "#,
@@ -151,7 +151,7 @@ fn test_zip_with_shorter_right_iterable() {
         fun main() {
             val words = listOf("one", "two", "three", "four")
             val nums = listOf(10)
-            val zipped = words.zip(nums).joinToString(",") { "${'$'}{it.first}:${'$'}{it.second}" }
+            val zipped = words.zip(nums).joinToString(",") { "${it.first}:${it.second}" }
             println(zipped)
         }
     "#,

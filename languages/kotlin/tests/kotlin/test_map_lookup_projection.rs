@@ -167,7 +167,7 @@ fn test_map_entries_projection_with_indexed_map() {
         r#"
         fun main() {
             val source = linkedMapOf("a" to 1, "b" to 2, "c" to 3)
-            val indexed = source.entries.mapIndexed { index, e -> "${'$'}{index}:${'$'}{e.key}:${'$'}{e.value}" }
+            val indexed = source.entries.mapIndexed { index, e -> "${index}:${e.key}:${e.value}" }
             println(indexed.joinToString("|"))
         }
     "#,

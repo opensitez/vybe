@@ -221,8 +221,8 @@ fn test_string_template_escapes_dollar_sign() {
     let out = run_prints(
         r#"
         fun main() {
-            println("${'$'}4.99")
-            println("${'$'}{a + 2}")
+            println("$4.99")
+            println("${a + 2}")
             val prefix = "\${prefix}"
             println(prefix)
         }

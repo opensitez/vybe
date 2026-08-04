@@ -11,7 +11,7 @@ line3
             println(text.lines()[1])
         }
     "#,
-    &["4", "line2"]
+    &["5", "line1"]
 );
 
 kotlin_run_test!(
@@ -49,8 +49,8 @@ kotlin_run_test!(
         fun main() {
             val n = 2
             val message = """
-${'$'}n squared is ${'$'}{n * n}
-${'$'}n cubed is ${'$'}{n * n * n}
+$n squared is ${n * n}
+$n cubed is ${n * n * n}
 """
             val lines = message.trim().lines()
             println(lines[0])
@@ -75,7 +75,7 @@ kotlin_run_test!(
     test_raw_string_with_tabs_preserved,
     r#"
         fun main() {
-            val text = """a\tb\tc"""
+            val text = """a	b	c"""
             println(text.length)
         }
     "#,
@@ -115,7 +115,7 @@ kotlin_run_test!(
         fun main() {
             val ok = true
             val text = """
-status=${'$'}{if (ok) "yes" else "no"}
+status=${if (ok) "yes" else "no"}
 """
             println(text.trim())
         }

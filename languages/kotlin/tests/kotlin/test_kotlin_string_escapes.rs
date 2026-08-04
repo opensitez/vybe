@@ -1,7 +1,7 @@
 kotlin_run_cases! {
     test_backslash_escape => (r#"
         fun main() {
-            println("path:" + "c\\\\temp")
+            println("path:" + "c\\temp")
             println("quote:" + "\"")
         }
     "#, vec!["path:c\\temp", "quote:\"".into()]),

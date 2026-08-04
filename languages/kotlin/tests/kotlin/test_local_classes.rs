@@ -175,7 +175,7 @@ fn test_local_class_object_expression() {
         fun main() {
             val o = object {
                 val v = 4
-                fun text() = "v${'$'}{v}"
+                fun text() = "v${v}"
             }
             println(o.text())
         }

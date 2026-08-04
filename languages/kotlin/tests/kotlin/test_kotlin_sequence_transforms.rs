@@ -68,7 +68,7 @@ kotlin_run_cases! {
     test_sequence_transform_with_index => (r##"
         fun main() {
             val seq = sequenceOf("a", "b", "c")
-            val withIndex = seq.withIndex().map { "${'$'}{it.index}:${'$'}{it.value}" }
+            val withIndex = seq.withIndex().map { "${it.index}:${it.value}" }
             println(withIndex.toList().joinToString(","))
         }
     "##, vec![String::from("0:a,1:b,2:c")]),

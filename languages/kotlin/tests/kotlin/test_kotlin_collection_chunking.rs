@@ -54,7 +54,7 @@ kotlin_run_cases! {
         fun main() {
             val nums = listOf(1, 2, 3)
             val chars = listOf("a", "b", "c")
-            val out = nums.zip(chars) { n, c -> "$c${'$'}n" }
+            val out = nums.zip(chars) { n, c -> "$c$n" }
             println(out.joinToString(","))
         }
     "##, vec![String::from("a1,b2,c3")]),

@@ -96,7 +96,7 @@ fn test_nested_lambda_shadowing_chain() {
         fun main() {
             val prefix = "A"
             val f = { prefix: String ->
-                { prefix: Int -> "${'$'}{prefix}_${'$'}{prefix + 1}" }
+                { prefix: Int -> "${prefix}_${prefix + 1}" }
             }
             val g = f("B")
             println(g(3))
@@ -331,7 +331,7 @@ fn test_nested_local_function_shadowing() {
                     val value = "inner"
                     return value
                 }
-                return "${'$'}{inner()}|${'$'}value"
+                return "${inner()}|$value"
             }
             println(outer())
         }

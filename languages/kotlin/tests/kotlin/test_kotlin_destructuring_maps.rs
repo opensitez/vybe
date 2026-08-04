@@ -46,7 +46,7 @@ kotlin_run_test!(
     r#"
         fun main() {
             val entries = listOf(Pair("a", 3), Pair("b", 4))
-            val keys = entries.map { (k, v) -> "${'$'}k${'$'}v" }
+            val keys = entries.map { (k, v) -> "$k$v" }
             println(keys.joinToString("|"))
         }
     "#,

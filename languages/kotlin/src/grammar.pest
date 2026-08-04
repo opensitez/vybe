@@ -283,7 +283,13 @@ and_op = { "&&" }
 equality = { comparison ~ (eq_op ~ comparison)* }
 eq_op = { "===" | "!==" | "==" | "!=" }
 
-comparison = { range_expr ~ (comp_op ~ range_expr)* }
+comparison = { infix_lvl ~ (comp_op ~ infix_lvl)* }
+
+// Named infix calls — `a to b`, `0 until n`, `x shl 2` — sit between the
+// comparisons and the range operator, per Kotlin's own precedence table:
+// `it to it * 10` is `it to (it * 10)`, and `1..10 step 2` groups the range
+// first.
+infix_lvl = { range_expr ~ (infix_op ~ range_expr)* }
 comp_op = { in_kw | not_in_kw | is_kw | not_is_kw | "<=" | ">=" | "<" | ">" }
 
 range_expr = { additive ~ (range_op ~ additive)* }
@@ -296,10 +302,22 @@ multiplicative = { type_cast ~ (mult_op ~ type_cast)* }
 mult_op = { "*" | "/" | "%" }
 
 type_cast = { infix_expr ~ (cast_op ~ type_ref)* }
+// Kept as a unary wrapper so existing pest rule names (and their walkers)
+// survive: the LEVEL moved to `infix_lvl` above.
 cast_op = { safe_as_kw | as_kw }
 
-infix_expr = { unary ~ (infix_op ~ unary)* }
-infix_op = { to_kw | "until" | "downTo" | "step" | "and" | "or" | "xor" | "shl" | "shr" | "ushr" | "matches" | "zip" | "union" | "intersect" | "plus" | "minus" }
+infix_expr = { unary }
+// Every alternative is ATOMIC with a word boundary — the documented pest
+// pitfall: a bare string in a non-atomic rule lets pest skip whitespace
+// mid-check, and a word that is also a METHOD name (`zip`, `union`) sent the
+// parser into pathological backtracking on `(x.zip(y)).m()` shapes (measured:
+// stack overflow).
+infix_op = { to_kw | infix_word }
+infix_word = @{
+    ("until" | "downTo" | "step" | "and" | "or" | "xor" | "shl" | "shr" | "ushr"
+        | "matches" | "zip" | "union" | "intersect" | "plus" | "minus")
+        ~ !(ASCII_ALPHANUMERIC | "_")
+}
 
 unary = { prefix_op* ~ postfix }
 prefix_op = { "++" | "--" | "!" | "-" | "+" }
@@ -420,14 +438,23 @@ float_literal = @{
 
 string_literal = ${ raw_string_literal | plain_string_literal }
 raw_string_literal = ${ "\"\"\"" ~ raw_string_content* ~ "\"\"\"" }
-raw_string_content = ${ str_interpolated_expr | str_interpolated_var | raw_str_text }
-raw_str_text = @{ !"\"\"\"" ~ ANY }
+raw_string_content = ${ str_interpolated_expr | str_interpolated_var | str_lone_dollar | raw_str_text }
+// A `"` belongs to the CONTENT when the quote-run continues past three —
+// `"""He said "hello""""` closes on the LAST three quotes (Kotlin's rule),
+// so `!("\"\"\"" ~ !"\"")` only treats a run-terminal `"""` as the close.
+raw_str_text = @{ !("\"\"\"" ~ !"\"") ~ ANY }
 
 plain_string_literal = ${ "\"" ~ string_content* ~ "\"" }
-string_content = ${ str_interpolated_expr | str_interpolated_var | str_escaped | str_text }
+string_content = ${ str_interpolated_expr | str_interpolated_var | str_escaped | str_lone_dollar | str_text }
+// `"costs 5$"` — a dollar NOT followed by an identifier or `{` is a literal.
+str_lone_dollar = @{ "$" ~ !(ASCII_ALPHA | "_" | "{") }
 str_escaped = @{ "\\u" ~ ASCII_HEX_DIGIT{4} | "\\" ~ ANY }
 str_interpolated_var = ${ "$" ~ identifier }
-str_interpolated_expr = ${ "${" ~ (!"}" ~ ANY)* ~ "}" }
+str_interpolated_expr = ${ "${" ~ interp_body ~ "}" }
+// Balanced braces so `${when(x) { … }}` and `${map { it }}` reach their OWN
+// closing brace instead of stopping at the first `}`.
+interp_body = @{ (interp_braced | (!"}" ~ !"{" ~ ANY))* }
+interp_braced = @{ "{" ~ interp_body ~ "}" }
 str_text = @{ (!"\"" ~ !"\\" ~ !"$") ~ ANY }
 
 char_literal = ${ "'" ~ (char_escaped | char_text) ~ "'" }

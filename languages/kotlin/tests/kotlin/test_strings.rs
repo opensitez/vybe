@@ -377,7 +377,7 @@ fn test_string_template_braces_complex_expression() {
             val width = 4
             val height = 5
             println("${width}x${height}=${width * height}")
-            println("${'$'}${width + height}")
+            println("$${width + height}")
         }
     "#,
     );
