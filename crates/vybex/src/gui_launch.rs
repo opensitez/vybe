@@ -290,18 +290,66 @@ impl Application for FormApp {
         if Self::gui_trace_enabled() {
             eprintln!("[gui] formapp.handle_mouse event={:?}", event);
         }
+        // SDL input queue (sdlplan.md Tier 1) — every raw mouse event, in
+        // SDL's own vocabulary, alongside (not instead of) widget dispatch.
+        {
+            use vybe_platform_vybe::gui_state::SdlInputEvent;
+            use vybe_widgets::layout::{MouseButton, MouseEventKind};
+            let button = |b: &MouseButton| match b {
+                MouseButton::Left => 1u32,
+                MouseButton::Middle => 2,
+                MouseButton::Right => 3 };
+            let (event_type, btn) = match &event.kind {
+                MouseEventKind::Press(b) => (0x401u32, button(b)),
+                MouseEventKind::Release(b) => (0x402, button(b)),
+                MouseEventKind::Move => (0x400, 0),
+                // Scroll arrives via handle_scroll; the Move fallback here
+                // only fires if a scroll is ever routed through handle_mouse.
+                MouseEventKind::Scroll(_) => (0x400, 0) };
+            let mut sdl = SdlInputEvent::empty(event_type);
+            sdl.x = event.x as i32;
+            sdl.y = event.y as i32;
+            sdl.button = btn;
+            self.gui.lock().unwrap().push_input_event(sdl);
+        }
         self.gui.lock().unwrap().form.handle_mouse(&event);
         self.process_widget_events();
         true
     }
 
     fn handle_key(&mut self, event: KeyEvent) -> bool {
+        // SDL input queue: both edges, mapped winit → SDL numbering.
+        {
+            use vybe_platform_vybe::gui_state::SdlInputEvent;
+            let pressed = event.state == vybe_widgets::winit::event::ElementState::Pressed;
+            let (sym, scancode) = sdl_key_numbers(&event.key_without_modifiers);
+            let mut sdl = SdlInputEvent::empty(if pressed { 0x300 } else { 0x301 });
+            sdl.sym = sym;
+            sdl.scancode = scancode;
+            sdl.mod_state = (if event.shift { 0x1u32 } else { 0 })
+                | (if event.cmd { 0x40 } else { 0 })
+                | (if event.alt { 0x100 } else { 0 });
+            self.gui.lock().unwrap().push_input_event(sdl);
+            // Widget dispatch is pressed-only — releases exist solely for the
+            // SDL queue, so typing/focus behavior is unchanged.
+            if !pressed {
+                return false;
+            }
+        }
         self.gui.lock().unwrap().form.handle_key(&event);
         self.process_widget_events();
         true
     }
 
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
+        {
+            use vybe_platform_vybe::gui_state::SdlInputEvent;
+            let mut sdl = SdlInputEvent::empty(0x403); // SDL_MOUSEWHEEL
+            sdl.x = x as i32;
+            sdl.y = y as i32;
+            sdl.wheel_y = if delta > 0.0 { 1 } else if delta < 0.0 { -1 } else { 0 };
+            self.gui.lock().unwrap().push_input_event(sdl);
+        }
         self.gui.lock().unwrap().form.handle_scroll(delta, x, y)
     }
 
@@ -773,6 +821,68 @@ pub(crate) fn fn_arity(val: &vybe_runtime::Value) -> usize {
 }
 
 // ── Dialog registration ────────────────────────────────────────────────
+
+/// winit key → SDL `(SDLK_* sym, SDL_SCANCODE_*)`.
+///
+/// SDL's rule, applied rather than tabulated where possible: printable keys'
+/// sym IS the ASCII code; special keys' sym is `0x40000000 | scancode`.
+/// Letters map to scancodes 4..29, digits to 30..39 per the USB HID table.
+fn sdl_key_numbers(key: &vybe_widgets::winit::keyboard::Key) -> (i32, i32) {
+    use vybe_widgets::winit::keyboard::{Key, NamedKey};
+    match key {
+        Key::Character(text) => {
+            let Some(c) = text.chars().next().map(|c| c.to_ascii_lowercase()) else {
+                return (0, 0);
+            };
+            let sym = c as i32;
+            let scancode = match c {
+                'a'..='z' => 4 + (c as i32 - 'a' as i32),
+                '1'..='9' => 30 + (c as i32 - '1' as i32),
+                '0' => 39,
+                '-' => 45,
+                '=' => 46,
+                _ => 0 };
+            (sym, scancode)
+        }
+        Key::Named(named) => {
+            // (sym, scancode); sym for specials = 0x40000000 | scancode.
+            let special = |scancode: i32| (0x4000_0000 | scancode, scancode);
+            match named {
+                NamedKey::Enter => (13, 40),
+                NamedKey::Escape => (27, 41),
+                NamedKey::Backspace => (8, 42),
+                NamedKey::Tab => (9, 43),
+                NamedKey::Space => (32, 44),
+                NamedKey::Delete => (127, 76),
+                NamedKey::ArrowRight => special(79),
+                NamedKey::ArrowLeft => special(80),
+                NamedKey::ArrowDown => special(81),
+                NamedKey::ArrowUp => special(82),
+                NamedKey::Home => special(74),
+                NamedKey::End => special(77),
+                NamedKey::PageUp => special(75),
+                NamedKey::PageDown => special(78),
+                NamedKey::Insert => special(73),
+                NamedKey::CapsLock => special(57),
+                NamedKey::F1 => special(58),
+                NamedKey::F2 => special(59),
+                NamedKey::F3 => special(60),
+                NamedKey::F4 => special(61),
+                NamedKey::F5 => special(62),
+                NamedKey::F6 => special(63),
+                NamedKey::F7 => special(64),
+                NamedKey::F8 => special(65),
+                NamedKey::F9 => special(66),
+                NamedKey::F10 => special(67),
+                NamedKey::F11 => special(68),
+                NamedKey::F12 => special(69),
+                NamedKey::Control => special(224),
+                NamedKey::Shift => special(225),
+                NamedKey::Alt => special(226),
+                _ => (0, 0) }
+        }
+        _ => (0, 0) }
+}
 
 fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
     use std::sync::Arc;

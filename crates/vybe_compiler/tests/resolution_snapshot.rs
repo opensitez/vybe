@@ -61,6 +61,7 @@ fn resolution_snapshots_are_stable() {
             language: lang_enum(lang.name),
             body: Vec::new(),
             imports: Vec::new(),
+        scheduling: Default::default(),
         };
         let lines = Compiler::with_profile(profile).linked_resolution_snapshot(&module);
         let mut text = lines.join("\n");

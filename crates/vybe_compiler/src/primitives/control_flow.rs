@@ -1264,7 +1264,7 @@ impl Compiler {
 
     /// Same as `define_local` but with a type hint — sugar around
     /// `Scope::define_typed`. Keeps the sync invariant.
-    pub(crate) fn define_local_typed(&mut self, name: &str, type_hint: Option<String>) -> u16 {
+    pub(crate) fn define_local_typed(&mut self, name: &str, type_hint: Option<vybe_ast::TypeHint>) -> u16 {
         {
             let scope = self.scopes.last_mut().unwrap();
             let chunk_locals = self.chunks[self.current].local_count;

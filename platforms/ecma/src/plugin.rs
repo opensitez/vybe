@@ -21,6 +21,9 @@ impl vybe_runtime::Plugin for Plugin {
         if let Some(vm) = fw.vm.as_deref_mut() {
             // ECMA-262 host functions.
             crate::register(vm);
+            // The §9.5 job scheduler — policy moves to the layer whose spec
+            // defines it; the VM keeps only mechanism (JSPI suspend/resume).
+            vm.set_scheduler(std::sync::Arc::new(crate::scheduler::EcmaScheduler));
             // wasm:js-* CG proposals (js-string / js-primitive builtins) — the
             // WASM-level JS primitives the ecma runtime is built on.
             vybe_runtime::js_builtins::register(vm);

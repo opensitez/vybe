@@ -18,21 +18,55 @@ use std::sync::Arc;
 
 impl VM {
     pub(crate) fn run_event_loop(&mut self) -> Result<(), VMError> {
+        // The INSTALLED scheduler drives when a host registered one — the
+        // inversion: policy (which callback next) lives with the host spec
+        // that defines it, the VM supplies mechanism. The body below survives
+        // only as the bare-VM fallback so `vybe_runtime`'s own tests run
+        // without any platform.
+        if let Some(scheduler) = self.scheduler.clone() {
+            while scheduler.has_pending(self) {
+                scheduler.turn(self)?;
+            }
+            return Ok(());
+        }
         loop {
             let has_pending = self.event_loop.borrow().has_pending();
             if !has_pending {
                 break;
             }
 
-            // 1. Drain all microtasks — loop until none remain.
-            // Microtask callbacks can schedule new microtasks (e.g.
-            // .then() → .finally()), so drain iteratively per the
-            // HTML spec microtask checkpoint algorithm.
+            // 1. Run the job queue under the module's DECLARED discipline.
+            //
+            // `TieredJobs` (ECMA-262 §9.5 + the HTML microtask checkpoint):
+            // drain to EMPTY before any task — a job may enqueue another
+            // (`.then()` → `.finally()`), and all of them run first.
+            //
+            // `SingleReadyQueue` (asyncio): there is no second tier. The loop
+            // takes the callbacks that were ready at the START of this
+            // iteration and runs those; anything they schedule waits for the
+            // next turn, which is what `call_soon` guarantees.
+            //
+            // The VM does not decide this — the walker declared it and the
+            // policy rode in on the script chunk. Suspending and resuming a
+            // fiber is WASM (JSPI); which callback runs next is host policy.
+            let drain_to_empty = matches!(
+                self.scheduling.queues,
+                vybe_ast::QueueDiscipline::TieredJobs
+            );
+            let mut ready_at_turn_start = if drain_to_empty {
+                usize::MAX
+            } else {
+                self.event_loop.borrow().immediate.len()
+            };
             loop {
-                let task = self.event_loop.borrow_mut().next_microtask();
+                if ready_at_turn_start == 0 {
+                    break;
+                }
+                ready_at_turn_start = ready_at_turn_start.saturating_sub(1);
+                let task = self.event_loop.borrow_mut().next_immediate();
                 let Some(task) = task else { break };
                 match task {
-                    Task::Microtask { callback, value } => {
+                    Task::Callback { callback, value } => {
                         self.invoke(&callback, &[value])?;
                     }
                     Task::ResumeFiber(fiber) => {
@@ -384,7 +418,7 @@ impl VM {
                     el.resolve_promise(id, value)
                 };
                 if let Some(fiber) = woken {
-                    el.microtasks.push_back(Task::ResumeFiber(fiber));
+                    el.immediate.push_back(Task::ResumeFiber(fiber));
                 }
             } else {
                 self.pending_settled_await = Some((id, value, is_exception));
@@ -457,7 +491,7 @@ impl VM {
             let stack = &self.stack;
             use crate::value::{ObjectKind, UpvalueLocation};
             let el_ref = self.event_loop.borrow();
-            for task in el_ref.macrotasks.iter() {
+            for task in el_ref.deferred.iter() {
                 let callback = match task {
                     crate::event_loop::Task::Timer { callback, .. } => callback,
                     _ => continue };

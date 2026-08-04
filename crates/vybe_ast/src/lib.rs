@@ -30,7 +30,48 @@ pub struct Module {
     pub name: String,
     pub language: Lang,
     pub body: Vec<Statement>,
-    pub imports: Vec<Import> }
+    pub imports: Vec<Import>,
+    /// How this module's async work is scheduled. Set by the WALKER, which is
+    /// the only component that knows its own language's contract; shared code
+    /// reads the fact and never asks whose language it is. Defaults to the
+    /// ECMA-262 model, which is what every language got implicitly before this
+    /// existed.
+    pub scheduling: SchedulingPolicy }
+
+/// A language's async scheduling contract.
+///
+/// These contracts genuinely differ and are not interchangeable — `await` on
+/// an already-settled value defers in JS and may resume synchronously in .NET;
+/// asyncio has no microtask tier at all. Encoding that as a declared fact is
+/// what lets ONE runtime serve all of them: the VM only suspends and resumes
+/// (JSPI / stack-switching, which is WASM), and the host applies the policy
+/// (ECMA-262 §9.5 jobs, HTML task queues).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SchedulingPolicy {
+    pub continuation: ContinuationTiming,
+    pub queues: QueueDiscipline }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContinuationTiming {
+    /// `await` on an ALREADY-SETTLED value still resumes on a later turn —
+    /// ECMA-262 §27.7.5.3 enqueues a job unconditionally. JS, Dart.
+    #[default]
+    AlwaysDeferred,
+    /// A completed antecedent may resume its continuation SYNCHRONOUSLY, on
+    /// the completing thread. .NET Tasks do this unless told otherwise, which
+    /// is why the same source can be correct with two different orderings.
+    SyncIfSettled }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueueDiscipline {
+    /// Two tiers: the job queue (ECMA-262 §9.5) drains to EMPTY before the
+    /// next task from the host's task queue (HTML). JS; Dart's microtask /
+    /// event split.
+    #[default]
+    TieredJobs,
+    /// One ready queue, FIFO, drained per loop iteration — asyncio's
+    /// `call_soon`. No microtask tier exists to drain.
+    SingleReadyQueue }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
@@ -964,6 +1005,12 @@ pub enum ExprKind {
     Spread(Box<Expression>),
 
     // ── Async (compiler_common::functions) ───────────────────────────────
+    /// A normalized async-model operation — see [`AsyncOp`]. One vocabulary
+    /// for every language's spelling (`Promise.resolve` / `Task.FromResult` /
+    /// `Future.value` …), produced by WALKERS at parse and lowered ONCE in the
+    /// compiler onto the ECMA-262 §27.2 host surface + the JSPI suspend
+    /// mechanism. Languages differ only in normalization; the tree is common.
+    Async(AsyncOp),
     Await(Box<Expression>),
     Yield(Option<Box<Expression>>),
     YieldFrom(Box<Expression>),
@@ -1051,7 +1098,7 @@ pub enum Literal {
 #[derive(Debug, Clone)]
 pub struct VarDeclarator {
     pub pattern: BindingPattern,
-    pub type_hint: Option<String>,
+    pub type_hint: Option<TypeHint>,
     pub init: Option<Expression>,
     pub array_bounds: Option<Vec<Expression>>,
     pub with_events: bool }
@@ -1083,12 +1130,119 @@ pub enum ArrayPatternElem {
     Rest(String),
     Hole }
 
+// ── Declared types ──────────────────────────────────────────────────────────
+
+/// Whether binding a value to a declared type CONVERTS it.
+///
+/// This is a property of the DECLARATION, not of the language, and it is set by
+/// the walker that parsed it — the only component that legitimately knows its
+/// own language's rules. Shared code reads the fact and never asks whose
+/// language produced it.
+///
+/// # Why it cannot live on the profile
+///
+/// It was a per-compilation boolean (`coerces_value_to_type_hint`) defaulting
+/// to `true`, which no language declared. Python inherited it by omission and
+/// its annotations were being narrowed — `x: int = 3.7` gave `3` where real
+/// python gives `3.7`. A per-language switch also cannot express a language
+/// that has both, and it puts a language question in shared code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeBinding {
+    /// Binding CONVERTS the value to the declared type. C `unsigned char c =
+    /// 300` is 44; PHP weak mode coerces `"5"` to `5`. The common case, so it
+    /// is the default a walker gets by writing a bare spelling.
+    #[default]
+    Converting,
+    /// The declaration DOCUMENTS the value and never mutates it. Python's
+    /// PEP 484 annotations; a type hint a dynamic language INFERRED for
+    /// dispatch, which must not change what is stored.
+    Descriptive,
+}
+
+/// A declared type: its source spelling plus whether binding converts.
+///
+/// Derefs to `str`, so `Option<TypeHint>::as_deref()` still yields
+/// `Option<&str>` and the several hundred sites that only want the spelling
+/// keep working untouched. Only sites that care about binding say so.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TypeHint {
+    spelling: String,
+    pub binding: TypeBinding,
+}
+
+impl TypeHint {
+    /// A declared type that converts on binding.
+    pub fn converting(spelling: impl Into<String>) -> Self {
+        TypeHint {
+            spelling: spelling.into(),
+            binding: TypeBinding::Converting,
+        }
+    }
+
+    /// A type that documents but never mutates — an annotation, or a hint a
+    /// dynamic language inferred for dispatch.
+    pub fn descriptive(spelling: impl Into<String>) -> Self {
+        TypeHint {
+            spelling: spelling.into(),
+            binding: TypeBinding::Descriptive,
+        }
+    }
+
+    pub fn spelling(&self) -> &str {
+        &self.spelling
+    }
+
+    /// Rewrite the spelling, KEEPING the binding.
+    ///
+    /// Walkers normalize spellings in place — trimming whitespace, folding VB's
+    /// `Char` onto `String`, appending `()` for an array. None of that changes
+    /// whether the declaration converts, so the binding must survive.
+    pub fn set_spelling(&mut self, spelling: impl Into<String>) {
+        self.spelling = spelling.into();
+    }
+
+    /// Append to the spelling, keeping the binding — the `()` array suffix.
+    pub fn push_str(&mut self, suffix: &str) {
+        self.spelling.push_str(suffix);
+    }
+
+    /// Does binding a value to this declaration convert it?
+    pub fn converts(&self) -> bool {
+        self.binding == TypeBinding::Converting
+    }
+}
+
+impl std::ops::Deref for TypeHint {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.spelling
+    }
+}
+
+impl From<String> for TypeHint {
+    fn from(spelling: String) -> Self {
+        TypeHint::converting(spelling)
+    }
+}
+
+impl From<&str> for TypeHint {
+    fn from(spelling: &str) -> Self {
+        TypeHint::converting(spelling)
+    }
+}
+
+impl std::fmt::Display for TypeHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.spelling)
+    }
+}
+
 // ── Parameters ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
-    pub type_hint: Option<String>,
+    pub type_hint: Option<TypeHint>,
     pub default: Option<Expression>,
     pub pass_by: PassBy,
     pub is_rest: bool,
@@ -1467,6 +1621,10 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
         | ExprKind::Await(expr)
         | ExprKind::Void(expr)
         | ExprKind::Delete(expr) => expr_contains_yield_outside_nested_scopes(expr),
+        ExprKind::Async(op) => op
+            .children()
+            .into_iter()
+            .any(expr_contains_yield_outside_nested_scopes),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
@@ -1707,6 +1865,129 @@ pub enum BinOp {
     Is,
     IsNot }
 
+/// The async model — one set of concepts behind seventeen spellings.
+///
+/// | op | JS | C# | Python | Dart |
+/// |---|---|---|---|---|
+/// | `Resolved` | `Promise.resolve` | `Task.FromResult`, `Task.CompletedTask` | `asyncio.ensure_future` / `create_task`¹ | `Future.value` |
+/// | `Rejected` | `Promise.reject` | `Task.FromException` | — | `Future.error` |
+/// | `Continue` | `.then` | `.ContinueWith` | — | `.then` |
+/// | `Cleanup` | `.finally` | — | — | `.whenComplete` |
+/// | `Join` | `all`/`allSettled`/`race`/`any` | `WhenAll` | `asyncio.gather` | `Future.wait` |
+/// | `Spawn` | — | `Task.Run` | `loop.run_in_executor` | — |
+/// | `Sleep` | — | `Task.Delay` | `asyncio.sleep` | `Future.delayed` |
+/// | `BlockOn` | — | `.GetAwaiter().GetResult()` | `asyncio.run` | — |
+/// | `AwaitEager` | — | `await` (continuation may be synchronous) | — | — |
+///
+/// ¹ `PromiseResolve` (§27.2.4.7) adopts a thenable, which is exactly
+/// `ensure_future`'s contract for an already-started coroutine.
+///
+/// Deliberately NOT mapped: `Task.WhenAny` — it settles with the completed
+/// TASK where `Promise.race` settles with its VALUE; a wrong mapping is worse
+/// than a missing one. Channels (`go`/Rust/Kotlin) are the NEXT vocabulary —
+/// CSP is its own model and is not forced into promises.
+///
+/// The lowering (`primitives/async_ops.rs`) targets `ecma:promise` (§27.2) and
+/// the JSPI await import — under the hood wasm/ecma, per module policy
+/// (`SchedulingPolicy`).
+#[derive(Debug, Clone)]
+pub enum AsyncOp {
+    /// §27.2.4.7 PromiseResolve: an already-settled (or adopted) async value.
+    Resolved(Box<Expression>),
+    /// §27.2.4.6 Promise.reject.
+    Rejected(Box<Expression>),
+    /// §27.2.5.4 then — chain a continuation (and optionally a handler).
+    Continue {
+        source: Box<Expression>,
+        on_fulfilled: Option<Box<Expression>>,
+        on_rejected: Option<Box<Expression>> },
+    /// §27.2.5.3 finally — runs on settle, passes the outcome through.
+    Cleanup {
+        source: Box<Expression>,
+        on_settled: Box<Expression> },
+    /// §27.2.4.1-4.5: combine many async values into one.
+    Join {
+        mode: JoinMode,
+        sources: Vec<Expression> },
+    /// Run a callable as scheduled work; the result is an async value.
+    Spawn(Box<Expression>),
+    /// An async value that settles after a duration (milliseconds) — one
+    /// concept behind `Task.Delay`, `asyncio.sleep`, `Future.delayed`. Time
+    /// itself comes from the HOST's timer surface at lowering; the vocabulary
+    /// only says "later".
+    Sleep(Box<Expression>),
+    /// Await with EAGER continuation: if the antecedent is already settled,
+    /// continue synchronously with its value (throw its rejection); suspend
+    /// only when pending. This is .NET's contract — a completed Task may run
+    /// its continuation on the completing thread — and it is a DIFFERENT
+    /// OPERATION from `ExprKind::Await`, which is ECMA-262 §6.2.3.1 and
+    /// always yields one turn. The distinction lives HERE, on the node,
+    /// normalized by the walker — never in a runtime-consulted property —
+    /// so any consumer of the tree (an exporter to Java, another backend)
+    /// reads the semantics off the operation itself.
+    AwaitEager(Box<Expression>),
+    /// Synchronously drive the loop until `source` settles; yield its value
+    /// (throw its rejection). The sync↔async boundary: `GetAwaiter().GetResult()`,
+    /// `asyncio.run`. Lowers to the JSPI suspend at an async-capable boundary.
+    BlockOn(Box<Expression>) }
+
+impl AsyncOp {
+    /// Every child expression, in evaluation order — for the structural
+    /// traversals (yield detection, span walks) that must not skip async
+    /// operands.
+    pub fn children(&self) -> Vec<&Expression> {
+        match self {
+            AsyncOp::Resolved(e)
+            | AsyncOp::Rejected(e)
+            | AsyncOp::Spawn(e)
+            | AsyncOp::Sleep(e)
+            | AsyncOp::AwaitEager(e)
+            | AsyncOp::BlockOn(e) => {
+                vec![e]
+            }
+            AsyncOp::Continue { source, on_fulfilled, on_rejected } => {
+                let mut v: Vec<&Expression> = vec![source];
+                v.extend(on_fulfilled.iter().map(|b| &**b));
+                v.extend(on_rejected.iter().map(|b| &**b));
+                v
+            }
+            AsyncOp::Cleanup { source, on_settled } => vec![source, on_settled],
+            AsyncOp::Join { sources, .. } => sources.iter().collect() }
+    }
+
+    /// Mutable [`AsyncOp::children`], for walker rewrite passes.
+    pub fn children_mut(&mut self) -> Vec<&mut Expression> {
+        match self {
+            AsyncOp::Resolved(e)
+            | AsyncOp::Rejected(e)
+            | AsyncOp::Spawn(e)
+            | AsyncOp::Sleep(e)
+            | AsyncOp::AwaitEager(e)
+            | AsyncOp::BlockOn(e) => {
+                vec![e]
+            }
+            AsyncOp::Continue { source, on_fulfilled, on_rejected } => {
+                let mut v: Vec<&mut Expression> = vec![source];
+                v.extend(on_fulfilled.iter_mut().map(|b| &mut **b));
+                v.extend(on_rejected.iter_mut().map(|b| &mut **b));
+                v
+            }
+            AsyncOp::Cleanup { source, on_settled } => vec![source, on_settled],
+            AsyncOp::Join { sources, .. } => sources.iter_mut().collect() }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinMode {
+    /// First rejection rejects (§27.2.4.1 all).
+    All,
+    /// Never rejects; outcomes recorded (§27.2.4.2 allSettled).
+    AllSettled,
+    /// First SETTLED wins with its value (§27.2.4.5 race).
+    Race,
+    /// First FULFILLED wins; all-rejected → AggregateError (§27.2.4.3 any).
+    Any }
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     Neg,
@@ -1721,8 +2002,7 @@ pub enum UnaryOp {
     Void,
     Delete,
     Deref,
-    AddrOf,
-    Await }
+    AddrOf }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CompoundOp {
@@ -2621,6 +2901,341 @@ fn statement_has_yield(stmt: &Statement) -> bool {
         _ => false }
 }
 
+impl Expression {
+    /// Post-order mutable visitor: children first, then `f` on this node.
+    ///
+    /// THE traversal facility for normalization passes. Before this, every
+    /// rewrite pass hand-rolled its own full `ExprKind` recursion inside a
+    /// walker (the reason those files run to tens of thousands of lines), and
+    /// each new `ExprKind` variant had to be added to every copy. Passes match
+    /// on the shapes they care about inside `f` and ignore the rest.
+    ///
+    /// Coverage mirrors `expr_has_yield` — the best-exercised container map in
+    /// the tree. Contract: a NEW container variant must be added here (and
+    /// there); statement-carrying bodies (`Lambda`, `FunctionExpr`,
+    /// `ClassExpr`) are NOT descended into — statement slots are the driving
+    /// pass's job, exactly as they are for every existing pass.
+    pub fn walk_exprs_mut(&mut self, f: &mut dyn FnMut(&mut Expression)) {
+        match &mut self.kind {
+            ExprKind::Unary { expr, .. }
+            | ExprKind::IsType { expr, .. }
+            | ExprKind::Cast { expr, .. }
+            | ExprKind::TypeOf(expr)
+            | ExprKind::Spread(expr)
+            | ExprKind::Await(expr)
+            | ExprKind::YieldFrom(expr)
+            | ExprKind::RefLoad(expr)
+            | ExprKind::Void(expr)
+            | ExprKind::Delete(expr) => expr.walk_exprs_mut(f),
+            ExprKind::Yield(inner) => {
+                if let Some(expr) = inner {
+                    expr.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::Async(op) => {
+                for child in op.children_mut() {
+                    child.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::Binary { left, right, .. }
+            | ExprKind::NullCoalesce { left, right }
+            | ExprKind::Assign { target: left, value: right }
+            | ExprKind::Walrus { target: left, value: right }
+            | ExprKind::Range { start: left, end: right, .. } => {
+                left.walk_exprs_mut(f);
+                right.walk_exprs_mut(f);
+            }
+            ExprKind::StaticAccess { class, member } => {
+                class.walk_exprs_mut(f);
+                member.walk_exprs_mut(f);
+            }
+            ExprKind::Ternary { cond, then, else_ } => {
+                cond.walk_exprs_mut(f);
+                then.walk_exprs_mut(f);
+                else_.walk_exprs_mut(f);
+            }
+            ExprKind::Member { object, .. } => object.walk_exprs_mut(f),
+            ExprKind::Index { object, index, .. } => {
+                object.walk_exprs_mut(f);
+                index.walk_exprs_mut(f);
+            }
+            ExprKind::Call { callee, args, .. } => {
+                callee.walk_exprs_mut(f);
+                for arg in args {
+                    arg.value.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::New { class, args } => {
+                class.walk_exprs_mut(f);
+                for arg in args {
+                    arg.value.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::SuperCall { args, .. } => {
+                for arg in args {
+                    arg.value.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::Array(items) => {
+                for item in items {
+                    if let Some(key) = &mut item.key {
+                        key.walk_exprs_mut(f);
+                    }
+                    item.value.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::Tuple(items)
+            | ExprKind::Set(items)
+            | ExprKind::Sequence(items)
+            | ExprKind::Zip { iterables: items, .. } => {
+                for item in items {
+                    item.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::NamedTuple { fields, .. } => {
+                for (_, value) in fields {
+                    value.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::Object(props) => {
+                for prop in props {
+                    match prop {
+                        ObjectProperty::KeyValue { key, value }
+                        | ObjectProperty::Computed { key, value } => {
+                            key.walk_exprs_mut(f);
+                            value.walk_exprs_mut(f);
+                        }
+                        ObjectProperty::Spread(expr) => expr.walk_exprs_mut(f),
+                        _ => {}
+                    }
+                }
+            }
+            ExprKind::Interpolation(parts) => {
+                for part in parts {
+                    match part {
+                        InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
+                            expr.walk_exprs_mut(f)
+                        }
+                        InterpolPart::Text(_) => {}
+                    }
+                }
+            }
+            ExprKind::Match { subject, arms } => {
+                subject.walk_exprs_mut(f);
+                for arm in arms {
+                    if let Some(conditions) = &mut arm.conditions {
+                        for c in conditions {
+                            c.walk_exprs_mut(f);
+                        }
+                    }
+                    arm.body.walk_exprs_mut(f);
+                }
+            }
+            ExprKind::Comprehension { element, generators, .. } => {
+                element.walk_exprs_mut(f);
+                for g in generators {
+                    g.target.walk_exprs_mut(f);
+                    g.iter.walk_exprs_mut(f);
+                    for c in &mut g.conditions {
+                        c.walk_exprs_mut(f);
+                    }
+                }
+            }
+            ExprKind::Slice { lower, upper, step } => {
+                for slot in [lower, upper, step] {
+                    if let Some(expr) = slot {
+                        expr.walk_exprs_mut(f);
+                    }
+                }
+            }
+            // Unlike the yield traversals (which stop at function boundaries
+            // because yield SCOPES to its function), a normalization pass must
+            // reach nested bodies: the shapes being normalized appear inside
+            // `async () => …` and function expressions.
+            ExprKind::Lambda { body, .. } => match body {
+                LambdaBody::Expr(expr) => expr.walk_exprs_mut(f),
+                LambdaBody::Block(stmts) => {
+                    for stmt in stmts {
+                        stmt.walk_exprs_mut(f);
+                    }
+                }
+            },
+            ExprKind::FunctionExpr(decl) => decl.walk_exprs_mut(f),
+            _ => {}
+        }
+        f(self);
+    }
+}
+
+impl Statement {
+    /// Statement half of [`Expression::walk_exprs_mut`]: visit every
+    /// expression slot in this statement, recursing through nested statement
+    /// bodies INCLUDING function and class declarations. Coverage mirrors
+    /// `statement_has_yield` plus the declaration bodies it deliberately
+    /// skips. Together the pair make a normalization pass one callback,
+    /// instead of a hand-rolled recursion per pass per walker.
+    pub fn walk_exprs_mut(&mut self, f: &mut dyn FnMut(&mut Expression)) {
+        fn body(stmts: &mut [Statement], f: &mut dyn FnMut(&mut Expression)) {
+            for stmt in stmts {
+                stmt.walk_exprs_mut(f);
+            }
+        }
+        match &mut self.kind {
+            StmtKind::Expr(expr) => expr.walk_exprs_mut(f),
+            StmtKind::Block(stmts) => body(stmts, f),
+            StmtKind::FunctionDecl { body: b, params, .. } => {
+                for param in params {
+                    if let Some(default) = &mut param.default {
+                        default.walk_exprs_mut(f);
+                    }
+                }
+                body(b, f);
+            }
+            StmtKind::ClassDecl { members, .. }
+            | StmtKind::StructDecl { members, .. }
+            | StmtKind::ModuleDecl { members, .. } => {
+                for member in members {
+                    match member {
+                        ClassMember::Field { init, .. } => {
+                            if let Some(expr) = init {
+                                expr.walk_exprs_mut(f);
+                            }
+                        }
+                        ClassMember::Method(decl) | ClassMember::NestedType(decl) => {
+                            decl.walk_exprs_mut(f)
+                        }
+                        ClassMember::Constructor { body: b, .. } => body(b, f),
+                        ClassMember::Property { getter, setter, .. } => {
+                            if let Some(stmts) = getter {
+                                body(stmts, f);
+                            }
+                            if let Some(prop_setter) = setter {
+                                body(&mut prop_setter.body, f);
+                            }
+                        }
+                        ClassMember::Const { value, .. } => value.walk_exprs_mut(f),
+                        _ => {}
+                    }
+                }
+            }
+            // InterfaceDecl members are SIGNATURES — no bodies to walk.
+            StmtKind::NamespaceDecl { body: b, .. } => body(b, f),
+            StmtKind::VarDecl { declarations, .. } => {
+                for decl in declarations {
+                    if let Some(init) = &mut decl.init {
+                        init.walk_exprs_mut(f);
+                    }
+                }
+            }
+            StmtKind::If { cond, then_body, elifs, else_body } => {
+                cond.walk_exprs_mut(f);
+                body(then_body, f);
+                for (c, b) in elifs {
+                    c.walk_exprs_mut(f);
+                    body(b, f);
+                }
+                if let Some(b) = else_body {
+                    body(b, f);
+                }
+            }
+            StmtKind::For { init, cond, update, body: b } => {
+                if let Some(stmt) = init {
+                    stmt.walk_exprs_mut(f);
+                }
+                for slot in [cond, update] {
+                    if let Some(expr) = slot {
+                        expr.walk_exprs_mut(f);
+                    }
+                }
+                body(b, f);
+            }
+            StmtKind::ForIn { iter, body: b, else_body, .. } => {
+                iter.walk_exprs_mut(f);
+                body(b, f);
+                if let Some(eb) = else_body {
+                    body(eb, f);
+                }
+            }
+            StmtKind::While { cond, body: b, else_body } => {
+                cond.walk_exprs_mut(f);
+                body(b, f);
+                if let Some(eb) = else_body {
+                    body(eb, f);
+                }
+            }
+            StmtKind::DoWhile { body: b, cond, .. } => {
+                body(b, f);
+                cond.walk_exprs_mut(f);
+            }
+            StmtKind::Switch { expr, cases, default } => {
+                expr.walk_exprs_mut(f);
+                for case in cases {
+                    body(&mut case.body, f);
+                }
+                if let Some(b) = default {
+                    body(b, f);
+                }
+            }
+            StmtKind::Try { body: b, catches, else_body, finally } => {
+                body(b, f);
+                for catch in catches {
+                    if let Some(when) = &mut catch.when_clause {
+                        when.walk_exprs_mut(f);
+                    }
+                    body(&mut catch.body, f);
+                }
+                for slot in [else_body, finally] {
+                    if let Some(stmts) = slot {
+                        body(stmts, f);
+                    }
+                }
+            }
+            StmtKind::With { items, body: b, .. } => {
+                for item in items {
+                    item.expr.walk_exprs_mut(f);
+                }
+                body(b, f);
+            }
+            StmtKind::Using { resource, body: b, .. } => {
+                resource.walk_exprs_mut(f);
+                body(b, f);
+            }
+            StmtKind::Lock { expr, body: b } => {
+                expr.walk_exprs_mut(f);
+                body(b, f);
+            }
+            StmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    expr.walk_exprs_mut(f);
+                }
+            }
+            StmtKind::Throw { expr, cause } => {
+                for slot in [expr, cause] {
+                    if let Some(expr) = slot {
+                        expr.walk_exprs_mut(f);
+                    }
+                }
+            }
+            StmtKind::Assign { targets, value, .. } => {
+                for target in targets {
+                    target.walk_exprs_mut(f);
+                }
+                value.walk_exprs_mut(f);
+            }
+            StmtKind::CompoundAssign { target, value, .. } => {
+                target.walk_exprs_mut(f);
+                value.walk_exprs_mut(f);
+            }
+            StmtKind::RaiseEvent { args, .. } | StmtKind::Delete(args) | StmtKind::Echo(args) => {
+                for arg in args {
+                    arg.walk_exprs_mut(f);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn expr_has_yield(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Yield(_) | ExprKind::YieldFrom(_) => true,
@@ -2633,6 +3248,7 @@ fn expr_has_yield(expr: &Expression) -> bool {
         | ExprKind::Await(expr)
         | ExprKind::Void(expr)
         | ExprKind::Delete(expr) => expr_has_yield(expr),
+        ExprKind::Async(op) => op.children().into_iter().any(expr_has_yield),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {

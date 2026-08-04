@@ -902,7 +902,7 @@ impl Compiler {
                                 .map(str::to_string)
                         });
                         let var_slot = if let Some(type_hint) = value_type_hint {
-                            self.define_local_typed(var, Some(type_hint))
+                            self.define_local_typed(var, Some(type_hint.into()))
                         } else {
                             self.define_local(var)
                         };
@@ -2173,7 +2173,7 @@ impl Compiler {
                     .infer_expr_type_hint(resource)
                     .map(|type_hint| self.resolve_source_type_alias(&type_hint));
                 self.compile_expr(resource)?;
-                let slot = self.define_local_typed(var, resource_type_hint);
+                let slot = self.define_local_typed(var, resource_type_hint.map(Into::into));
                 self.emit_u16(Op::LOCAL_SET, slot);
 
                 let line = self.line;
@@ -4051,7 +4051,7 @@ impl Compiler {
                     .init
                     .as_ref()
                     .and_then(|expr| self.infer_expr_type_hint(expr));
-                let declared_type_hint = decl.type_hint.clone();
+                let declared_type_hint = decl.type_hint.as_deref().map(str::to_string);
                 let mut inferred_type_hint = declared_type_hint
                     .clone()
                     .or_else(|| init_type_hint.clone());
@@ -4094,6 +4094,21 @@ impl Compiler {
                         }
                     }
                 }
+                // The spelling above is derived textually (alias resolution, the
+                // VB `As Object` refinement, the `()` array suffix), so it is
+                // carried as a plain String. Re-attach the DECLARATION's binding
+                // here: a hint that came from the source keeps what the walker
+                // said about it, and one this pass inferred takes the default.
+                let declared_binding = decl
+                    .type_hint
+                    .as_ref()
+                    .map(|declared| declared.binding)
+                    .unwrap_or_default();
+                let inferred_type_hint = inferred_type_hint.map(|spelling| {
+                    let mut declared = vybe_ast::TypeHint::from(spelling);
+                    declared.binding = declared_binding;
+                    declared
+                });
                 let is_pascal_type_alias_decl = self.profile.const_without_init_is_type_alias
                     && *kind == VarDeclKind::Const
                     && decl.init.is_none()
@@ -4119,7 +4134,7 @@ impl Compiler {
                 {
                     let array_type_hint = resolved_type_hint
                         .clone()
-                        .or_else(|| inferred_type_hint.clone());
+                        .or_else(|| inferred_type_hint.as_deref().map(str::to_string));
                     let pascal_bounds = array_type_hint
                         .as_deref()
                         .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint));
@@ -4150,7 +4165,7 @@ impl Compiler {
 
                 if *kind == VarDeclKind::Static {
                     let binding =
-                        self.ensure_static_local_binding(name, inferred_type_hint.clone())?;
+                        self.ensure_static_local_binding(name, inferred_type_hint.as_deref().map(str::to_string))?;
                     self.emit_global_read(&binding.init_flag_name);
                     {
                         let line = self.line;

@@ -1475,7 +1475,45 @@ fn register_access(vm: &mut VM) {
         "get",
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                let key_raw = args.get(1).cloned().unwrap_or(Value::Undefined);
                 let key = args.get(1).map(key_string).unwrap_or_default();
+                // ECMA-262 §10.4.5.4 [[Get]] on an Integer-Indexed exotic
+                // object — the mirror of the §10.4.5.5 arm in `set` below.
+                // A CANONICAL NUMERIC key reads the typed buffer; an invalid
+                // index answers `undefined` WITHOUT walking the prototype
+                // chain. Without this arm, a TypedArray subscript through the
+                // dynamic path proto-walked and answered `undefined` even for
+                // a valid index.
+                {
+                    let o = obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        let canonical: Option<f64> = match &key_raw {
+                            Value::I32(n) => Some(*n as f64),
+                            Value::I64(n) => Some(*n as f64),
+                            Value::F64(n) => Some(*n),
+                            Value::String(s) => {
+                                if s.as_ref() == "-0" {
+                                    Some(-0.0)
+                                } else {
+                                    s.parse::<f64>()
+                                        .ok()
+                                        .filter(|n| Value::F64(*n).to_string() == s.as_ref())
+                                }
+                            }
+                            _ => None };
+                        if let Some(n) = canonical {
+                            let valid = n.fract() == 0.0
+                                && n >= 0.0
+                                && !(n == 0.0 && n.is_sign_negative())
+                                && (n as usize) < crate::typedarray::ta_live_length(ta)
+                                && n.is_finite();
+                            if valid {
+                                return crate::typedarray::read_element(ta, n as usize);
+                            }
+                            return Value::Undefined;
+                        }
+                    }
+                }
                 if let Some(v) = proto_walk_get(&obj, &key) {
                     return v;
                 }
@@ -1496,6 +1534,51 @@ fn register_access(vm: &mut VM) {
                 let key_raw = args.get(1).cloned().unwrap_or(Value::Undefined);
                 let key = args.get(1).map(key_string).unwrap_or_default();
                 let val = args.get(2).cloned().unwrap_or(Value::Undefined);
+                // ECMA-262 §10.4.5.5 [[Set]] on an Integer-Indexed exotic
+                // object: a CANONICAL NUMERIC key never reaches OrdinarySet.
+                // A valid index stores through the typed buffer
+                // (§10.4.5.16 — truncate/wrap/clamp per element kind); an
+                // invalid one (out of bounds, fractional, negative, -0,
+                // non-finite) is IGNORED — no expando property, no throw.
+                // Before this arm existed, `u[1] = 5` landed in the property
+                // bag while reads hit the typed buffer, so every indexed
+                // write silently read back 0.
+                {
+                    let o = obj.lock().unwrap();
+                    if let ObjectKind::TypedArray(ref ta) = o.kind {
+                        // §7.1.21 CanonicalNumericIndexString, over the raw
+                        // key value: numbers are canonical by construction;
+                        // a string is canonical iff it round-trips through
+                        // ToNumber → ToString ("1" yes, "01" no, "1.5" yes).
+                        let canonical: Option<f64> = match &key_raw {
+                            Value::I32(n) => Some(*n as f64),
+                            Value::I64(n) => Some(*n as f64),
+                            Value::F64(n) => Some(*n),
+                            Value::String(s) => {
+                                if s.as_ref() == "-0" {
+                                    Some(-0.0)
+                                } else {
+                                    // `Value`'s Display IS the §6.1.6.1.20
+                                    // ToString surface — round-trip through it.
+                                    s.parse::<f64>()
+                                        .ok()
+                                        .filter(|n| Value::F64(*n).to_string() == s.as_ref())
+                                }
+                            }
+                            _ => None };
+                        if let Some(n) = canonical {
+                            let valid = n.fract() == 0.0
+                                && n >= 0.0
+                                && !(n == 0.0 && n.is_sign_negative())
+                                && (n as usize) < crate::typedarray::ta_live_length(ta)
+                                && n.is_finite();
+                            if valid {
+                                crate::typedarray::write_element(ta, n as usize, &val);
+                            }
+                            return Value::Null;
+                        }
+                    }
+                }
                 // ECMA-262 §10.1.5 OrdinarySet — three gates:
                 //   1. Frozen → writes fail: silently in loose mode,
                 //      TypeError in strict (§13.15.2, caller passes the

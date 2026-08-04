@@ -6,7 +6,7 @@ pub struct Local {
     pub depth: u32,
     pub slot: u16,
     pub is_captured: bool,
-    pub type_hint: Option<String>,
+    pub type_hint: Option<vybe_ast::TypeHint>,
     /// `true` for bindings introduced by `const` (ECMA-262 immutable
     /// bindings). Reassigning one is a runtime `TypeError`. Only the
     /// `emit_var_set` assignment path consults this — declaration init
@@ -134,7 +134,7 @@ impl Scope {
         self.define_typed(name, None)
     }
 
-    pub fn define_typed(&mut self, name: &str, type_hint: Option<String>) -> u16 {
+    pub fn define_typed(&mut self, name: &str, type_hint: Option<vybe_ast::TypeHint>) -> u16 {
         let slot = self.next_slot;
         self.locals.push(Local {
             name: name.to_string(),
@@ -153,7 +153,7 @@ impl Scope {
     /// which are function-scoped (ECMA-262 §10.2.11) — the binding must
     /// outlive the block it was declared in. Without this, `end_scope`
     /// would pop the binding when the enclosing block exits.
-    pub fn define_at_function_scope(&mut self, name: &str, type_hint: Option<String>) -> u16 {
+    pub fn define_at_function_scope(&mut self, name: &str, type_hint: Option<vybe_ast::TypeHint>) -> u16 {
         let slot = self.next_slot;
         self.locals.push(Local {
             name: name.to_string(),
@@ -239,6 +239,25 @@ impl Scope {
             for l in self.locals.iter().rev() {
                 if l.name.eq_ignore_ascii_case(name) {
                     return l.type_hint.as_deref();
+                }
+            }
+        }
+        None
+    }
+
+    /// The full declared type, not just its spelling — the caller needs
+    /// [`vybe_ast::TypeBinding`], which `resolve_type` drops on the way to
+    /// `&str`. Same exact-then-folded order as [`Scope::resolve_type`].
+    pub fn resolve_declared(&self, name: &str) -> Option<&vybe_ast::TypeHint> {
+        for l in self.locals.iter().rev() {
+            if l.name == name {
+                return l.type_hint.as_ref();
+            }
+        }
+        if self.fold_case {
+            for l in self.locals.iter().rev() {
+                if l.name.eq_ignore_ascii_case(name) {
+                    return l.type_hint.as_ref();
                 }
             }
         }

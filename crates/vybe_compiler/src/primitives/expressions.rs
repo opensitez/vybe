@@ -1588,7 +1588,6 @@ impl Compiler {
                                 self.emit(Op::DROP);
                                 inst!(self, core_wasm::bool_const, true);
                             }
-                            UnaryOp::Await => {} // handled below in ExprKind::Await
                             _ => {}              // PreInc etc handled above
                         }
                     }
@@ -6083,6 +6082,11 @@ impl Compiler {
             }
 
             // ── Await ───────────────────────────────────────────────────
+            // The async model — one vocabulary for every language's
+            // spelling, one lowering (`primitives/async_ops.rs`).
+            ExprKind::Async(op) => {
+                self.emit_async(op)?;
+            }
             ExprKind::Await(inner) => {
                 // ECMA-262 §27.2: WASM JSPI suspend point, lowered to the spec
                 // stack-switching `suspend` (AWAIT_SUSPEND_TAG). The VM unwraps

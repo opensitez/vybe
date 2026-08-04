@@ -2458,20 +2458,11 @@ pub fn byte_array(bytes: &[u8]) -> Value {
 }
 
 pub fn bytes_from_value(value: &Value) -> Vec<u8> {
-    match value {
-        Value::String(text) => text.as_bytes().to_vec(),
-        Value::Object(array) => {
-            let array = array.lock().unwrap();
-            if let vybe_runtime::value::ObjectKind::Array(elems) = &array.kind {
-                elems
-                    .iter()
-                    .map(|elem| elem.as_i32().clamp(0, 255) as u8)
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        }
-        _ => Vec::new() }
+    // One owner: ECMA (§23.2) answers what a value's bytes are. The
+    // local copy this replaced CLAMPED to 0..255 where node truncated —
+    // same Array, different bytes per platform — and neither handled a
+    // TypedArray, so a Python `bytes` written to a socket sent NOTHING.
+    vybe_platform_ecma::typedarray::bytes_from_value(value)
 }
 
 pub fn read_stream_bytes(stream: &Arc<Mutex<Object>>, len: usize, blocking: bool) -> Value {

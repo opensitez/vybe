@@ -7,24 +7,10 @@ use vybe_runtime::VM;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 
 fn bytes_from_value(v: &Value) -> Vec<u8> {
-    match v {
-        Value::String(s) => s.as_bytes().to_vec(),
-        Value::Object(obj) => {
-            let obj = obj.lock().unwrap();
-            match &obj.kind {
-                ObjectKind::Array(elems) => elems
-                    .iter()
-                    .map(|e| match e {
-                        Value::I32(n) => *n as u8,
-                        Value::F64(f) => *f as u8,
-                        _ => 0,
-                    })
-                    .collect(),
-                _ => vec![],
-            }
-        }
-        _ => vec![],
-    }
+    // One owner: TypedArray is ECMA's type (§23.2), so ECMA answers
+    // what a value's bytes are. The local copy this replaced ignored
+    // TypedArray entirely — a Python `bytes` decoded as EMPTY here.
+    vybe_platform_ecma::typedarray::bytes_from_value(v)
 }
 
 fn buf_from_bytes(bytes: Vec<u8>) -> Value {

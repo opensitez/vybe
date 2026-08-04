@@ -1,9 +1,15 @@
-//! Event loop — processes async tasks, timers, and promise callbacks.
-//! Follows the browser/Node.js model:
-//!   1. Run synchronous code
-//!   2. Drain microtask queue (Promise.then callbacks)
-//!   3. Process one macrotask (setTimeout callback)
-//!   4. Repeat until all queues empty
+//! Work queues — the MECHANISM a host schedules on.
+//!
+//! Deliberately free of host vocabulary. "Microtask", "macrotask", "job" and
+//! "task" are ECMA-262 §9.5 and HTML concepts; naming VM state after them is
+//! what made one language's contract everyone's. This layer owns two things
+//! WASM can justify: ordered queues of pending work, and monotonic fire times.
+//! WHICH tier a callback belongs in, and how far each is drained per turn, is
+//! the host's policy — declared as `SchedulingPolicy` and applied by the drain
+//! loop.
+//!
+//! The storage stays here because it holds `Fiber`s, which are VM state
+//! (JSPI / stack-switching). Only the naming moved.
 //!
 //! Timer scheduling uses a monotonic clock (wasi:clocks/monotonic-clock
 //! semantics) so fire times are immune to wall-clock jumps.
@@ -63,16 +69,19 @@ pub enum Task {
         callback: Value,
         fire_at_ms: f64,
         id: u64 },
-    /// A microtask — Promise.then/catch callback with a value.
-    Microtask { callback: Value, value: Value } }
+    /// A callback with its argument, queued on some tier. The host decides
+    /// what a tier MEANS (an ECMA job, an HTML task); the VM only orders them.
+    Callback { callback: Value, value: Value } }
 
 /// The event loop — manages pending async work.
 #[derive(Debug)]
 pub struct EventLoop {
-    /// Microtask queue (Promise callbacks) — higher priority.
-    pub microtasks: VecDeque<Task>,
-    /// Macrotask queue (setTimeout callbacks).
-    pub macrotasks: VecDeque<Task>,
+    /// Tier 0 — drained first, and (under a tiered discipline) to empty
+    /// before tier 1. ECMA-262 calls what goes here a *job*; the VM does not.
+    pub immediate: VecDeque<Task>,
+    /// Tier 1 — at most one item per turn. HTML calls what goes here a *task*;
+    /// the VM does not.
+    pub deferred: VecDeque<Task>,
     /// Suspended fibers waiting for Promise resolution.
     pub waiting_fibers: Vec<(u64, Fiber)>, // (promise_id, fiber)
     /// Next promise ID.
@@ -93,8 +102,8 @@ pub struct EventLoop {
 impl EventLoop {
     pub fn new() -> Self {
         EventLoop {
-            microtasks: VecDeque::new(),
-            macrotasks: VecDeque::new(),
+            immediate: VecDeque::new(),
+            deferred: VecDeque::new(),
             waiting_fibers: Vec::new(),
             next_promise_id: 1,
             next_timer_id: 1,
@@ -113,10 +122,10 @@ impl EventLoop {
         id
     }
 
-    /// Schedule a microtask (Promise.then callback).
-    pub fn queue_microtask(&mut self, callback: Value, value: Value) {
-        self.microtasks
-            .push_back(Task::Microtask { callback, value });
+    /// Enqueue on tier 0. Named for the tier, not for what the host puts there.
+    pub fn queue_immediate(&mut self, callback: Value, value: Value) {
+        self.immediate
+            .push_back(Task::Callback { callback, value });
     }
 
     /// Schedule a macrotask (setTimeout callback). Does not return an ID.
@@ -124,7 +133,7 @@ impl EventLoop {
         let id = self.next_timer_id;
         self.next_timer_id += 1;
         let now = current_time_ms();
-        self.macrotasks.push_back(Task::Timer {
+        self.deferred.push_back(Task::Timer {
             callback,
             fire_at_ms: now + delay_ms,
             id });
@@ -136,7 +145,7 @@ impl EventLoop {
         let id = self.next_timer_id;
         self.next_timer_id += 1;
         let now = current_time_ms();
-        self.macrotasks.push_back(Task::Timer {
+        self.deferred.push_back(Task::Timer {
             callback,
             fire_at_ms: now + delay_ms,
             id });
@@ -146,11 +155,11 @@ impl EventLoop {
     /// Cancel a timer by ID. Returns true if the timer was found and removed.
     pub fn cancel_timer(&mut self, id: u64) -> bool {
         if let Some(pos) = self
-            .macrotasks
+            .deferred
             .iter()
             .position(|t| matches!(t, Task::Timer { id: tid, .. } if *tid == id))
         {
-            self.macrotasks.remove(pos);
+            self.deferred.remove(pos);
             true
         } else {
             false
@@ -194,19 +203,19 @@ impl EventLoop {
     }
 
     /// Get the next ready microtask.
-    pub fn next_microtask(&mut self) -> Option<Task> {
-        self.microtasks.pop_front()
+    pub fn next_immediate(&mut self) -> Option<Task> {
+        self.immediate.pop_front()
     }
 
     /// Get the next ready macrotask (timer whose fire time has passed).
     pub fn next_ready_timer(&mut self) -> Option<Task> {
         let now = current_time_ms();
         if let Some(pos) = self
-            .macrotasks
+            .deferred
             .iter()
             .position(|t| matches!(t, Task::Timer { fire_at_ms, .. } if *fire_at_ms <= now))
         {
-            Some(self.macrotasks.remove(pos).unwrap())
+            Some(self.deferred.remove(pos).unwrap())
         } else {
             None
         }
@@ -352,17 +361,17 @@ impl EventLoop {
 
     /// Check if there's any pending work.
     pub fn has_pending(&self) -> bool {
-        !self.microtasks.is_empty() || !self.macrotasks.is_empty()
+        !self.immediate.is_empty() || !self.deferred.is_empty()
     }
 
     /// Sleep until the next timer fires (or return immediately if microtasks pending).
     /// Uses the monotonic clock for accurate scheduling.
     pub fn wait_for_next(&self) {
-        if !self.microtasks.is_empty() {
+        if !self.immediate.is_empty() {
             return; // microtasks are processed immediately
         }
         if let Some(earliest) = self
-            .macrotasks
+            .deferred
             .iter()
             .filter_map(|t| {
                 if let Task::Timer { fire_at_ms, .. } = t {

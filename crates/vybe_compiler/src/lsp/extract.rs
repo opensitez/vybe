@@ -173,7 +173,7 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 let name = match &decl.pattern {
                     BindingPattern::Ident(n) => n.clone(),
                     _ => continue };
-                let detail = decl.type_hint.clone().unwrap_or_default();
+                let detail = decl.type_hint.as_deref().unwrap_or_default().to_string();
                 out.push(Symbol {
                     name,
                     kind: sym_kind,

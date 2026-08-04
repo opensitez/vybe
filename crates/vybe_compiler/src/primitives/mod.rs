@@ -115,7 +115,7 @@ mod metadata;
 pub mod namespaces;
 mod operators;
 mod overloads;
-pub mod promises;
+pub mod async_ops;
 pub mod prototypes;
 pub mod references;
 pub mod reflection;
@@ -2435,6 +2435,17 @@ impl Compiler {
             scope.fold_case = !self.case_sensitive;
         }
         self.current_module_imports = module.imports.clone();
+        // The scheduling contract: the LANGUAGE's declaration lives in its
+        // profile (`[async]`), the MODULE may override (synthetic modules,
+        // tests). A module carrying the default defers to the profile — the
+        // two values are identical in that case anyway, so "explicitly
+        // declared the default" and "didn't declare" cannot diverge.
+        self.chunks[0].scheduling = if module.scheduling == vybe_ast::SchedulingPolicy::default()
+        {
+            self.profile.scheduling
+        } else {
+            module.scheduling
+        };
 
         // Pre-scan: detect `new Proxy(...)` anywhere in the module so the
         // Member / Index emit sites can route through the proxy dispatcher

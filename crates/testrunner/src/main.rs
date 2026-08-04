@@ -52,6 +52,10 @@ fn main() -> Result<()> {
                  --json          write the timestamped JSON report + regression diff\n  \
                  --save          write the plain test log to results/<dir>/saved/<target>.txt\n  \
                  --verbose       stream every failure as it happens (default: report only)\n\n\
+                 `extract --out DIR` writes DIR/<lang>/<category>/<test>. Pass\n\
+                 the PARENT (`--out tests`), not the language directory — \n\
+                 `--out tests/cobol` writes tests/cobol/cobol/… and merges a\n\
+                 second copy of every category into the real corpus.\n\n\
                  `summary` reads a log written by `run --save` and groups the\n\
                  failures by category, worst first. `dashboard` totals EVERY\n\
                  saved log, one row per language.\n\n\
@@ -831,10 +835,32 @@ fn print_saved_summary(target: &str, paths: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// Say which binary is being driven, and say it loudly when it is a debug one.
+///
+/// A debug `vybex` is roughly an order of magnitude slower to COMPILE a
+/// program, and the deadline is per test, so the difference does not show up as
+/// "slower" — it shows up as TIMEOUT on whichever tests happen to sit near the
+/// line. Measured 2026-08-04: all 148 Pascal timeouts were tests that inject
+/// the Generics.Collections prelude, 27–56s each under `target/debug/vybex` and
+/// ~5s under release. Zero of them time out on the release binary. A verdict
+/// that flips with the profile is worse than a slow run, so name the binary.
+fn warn_if_debug_binary(vybex: &std::path::Path) {
+    let looks_debug = vybex.components().any(|c| c.as_os_str() == "debug");
+    let release = std::path::Path::new("target/release/vybex");
+    if looks_debug && release.exists() {
+        eprintln!(
+            "note: driving {} — a DEBUG build. Compile-bound tests can TIME OUT \
+             here and pass under --vybex target/release/vybex.",
+            vybex.display()
+        );
+    }
+}
+
 // ── run ─────────────────────────────────────────────────────────────────────
 
 fn cmd_run(args: &[String]) -> Result<()> {
     let vybex = PathBuf::from(flag(args, "--vybex").unwrap_or("target/debug/vybex"));
+    warn_if_debug_binary(&vybex);
     let runtime: Option<Vec<String>> = flag(args, "--runtime")
         .map(|cmd| cmd.split_whitespace().map(str::to_string).collect());
     let verbose = args.iter().any(|a| a == "--verbose");

@@ -569,7 +569,7 @@ fn promoted(
             .map(|param| param.name.clone())
             .unwrap_or_else(|| "self".to_string());
         if let Some(param) = out.params.first_mut() {
-            param.type_hint = Some(outer_class.to_string());
+            param.type_hint = Some(outer_class.into());
         }
         (Expression::ident(&name), 1)
     } else {

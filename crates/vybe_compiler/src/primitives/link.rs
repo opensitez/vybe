@@ -434,7 +434,7 @@ impl Compiler {
                             self.function_param_types
                                 .entry(function_name.clone())
                                 .or_insert_with(|| {
-                                    params.iter().map(|param| param.type_hint.clone()).collect()
+                                    params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect()
                                 });
                             self.function_min_arity
                                 .entry(function_name.clone())
@@ -487,7 +487,7 @@ impl Compiler {
                 .or_insert_with(|| params.iter().map(|param| param.pass_by).collect());
             self.function_param_types
                 .entry(cname.clone())
-                .or_insert_with(|| params.iter().map(|param| param.type_hint.clone()).collect());
+                .or_insert_with(|| params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect());
             self.function_min_arity
                 .entry(cname.clone())
                 .or_insert_with(|| {

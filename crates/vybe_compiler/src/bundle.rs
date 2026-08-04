@@ -86,6 +86,20 @@ impl Bundle {
                     .join("\n"),
                 None,
             )
+        } else if let Some(expand) = self.language.expand_source {
+            // Textual-inclusion languages (C `#include "x.h"`; later COBOL
+            // COPY, Fortran INCLUDE, Pascal `{$I}`) expand each source
+            // against its real path BEFORE concatenation — the bundle is the
+            // only layer that knows the paths. Purely static; PHP's dynamic
+            // `include $var` stays in the runtime compiler service.
+            (
+                self.sources
+                    .iter()
+                    .map(|s| expand(&s.path, &s.code))
+                    .collect::<Result<Vec<_>, String>>()?
+                    .join("\n"),
+                None,
+            )
         } else {
             (
                 self.sources

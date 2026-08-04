@@ -867,7 +867,7 @@ impl Compiler {
         );
         self.function_param_types.insert(
             cname.clone(),
-            params.iter().map(|param| param.type_hint.clone()).collect(),
+            params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect(),
         );
         self.function_min_arity.insert(
             cname.clone(),
@@ -1046,7 +1046,7 @@ impl Compiler {
                     &p.name,
                     ArrayBindingMetadata {
                         is_fixed: false,
-                        type_hint: p.type_hint.clone(),
+                        type_hint: p.type_hint.as_deref().map(str::to_string),
                         pascal_bounds: p
                             .type_hint
                             .as_deref()
@@ -1181,7 +1181,7 @@ impl Compiler {
         let result_slot =
             if return_type.is_some() && self.profile.function_return == ReturnStyle::ResultSlot {
                 let slot_name = self.profile.result_slot_name.clone();
-                let rs = self.define_local_typed(&slot_name, return_type.clone());
+                let rs = self.define_local_typed(&slot_name, return_type.clone().map(Into::into));
                 self.emit_null();
                 self.emit_u16(Op::LOCAL_SET, rs);
                 Some(rs)
@@ -2289,7 +2289,7 @@ impl Compiler {
                         &p.name,
                         ArrayBindingMetadata {
                             is_fixed: false,
-                            type_hint: p.type_hint.clone(),
+                            type_hint: p.type_hint.as_deref().map(str::to_string),
                             pascal_bounds: p.type_hint.as_deref().and_then(|type_hint| {
                                 cc.pascal_array_type_hint_metadata(type_hint)
                             }) },
@@ -4597,7 +4597,7 @@ impl Compiler {
                         m.return_type.clone(),
                         m.params
                             .iter()
-                            .map(|p| p.type_hint.clone().unwrap_or_default())
+                            .map(|p| p.type_hint.as_deref().unwrap_or_default().to_string())
                             .collect(),
                         0,
                     )

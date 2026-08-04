@@ -1975,6 +1975,27 @@ fn insert_java_text_buffer_methods(root: &mut Subtree) {
         "tostring".to_string(),
         common_method("jvm.java.sb_to_string", 0, 0),
     );
+    for (name, emit, min_args, max_args) in [
+        ("length", "jvm.java.sb_length", 0, 0),
+        ("count", "jvm.java.sb_length", 0, 0),
+        ("capacity", "jvm.java.sb_length", 0, 0),
+        ("insert", "jvm.java.sb_insert", 2, 2),
+        ("delete", "jvm.java.sb_delete", 2, 2),
+        ("deleteat", "jvm.java.sb_delete", 1, 1),
+        ("deletecharat", "jvm.java.sb_delete", 1, 1),
+        ("reverse", "jvm.java.sb_reverse", 0, 0),
+        ("setlength", "jvm.java.sb_set_length", 1, 1),
+        ("clear", "jvm.java.sb_clear", 0, 0),
+        ("setcharat", "jvm.java.sb_set_char_at", 2, 2),
+        ("set", "jvm.java.sb_set_char_at", 2, 2),
+        ("get", "jvm.java.sb_char_at", 1, 1),
+        ("charat", "jvm.java.sb_char_at", 1, 1),
+        ("appendcodepoint", "jvm.java.sb_append_code_point", 1, 1),
+        ("isempty", "jvm.java.sb_is_empty", 0, 0),
+        ("isnotempty", "jvm.java.sb_is_not_empty", 0, 0),
+    ] {
+        builder.insert(name.to_string(), common_method(emit, min_args, max_args));
+    }
     ensure_type_node(root, "lang.stringbuilder");
     merge_type_methods(root, "lang.stringbuilder", builder);
     merge_type_member_returns(

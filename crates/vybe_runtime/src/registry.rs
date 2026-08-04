@@ -15,6 +15,13 @@ use crate::Chunk;
 
 /// Parse source → common AST.
 pub type ParseFn = fn(&str) -> Result<Module, String>;
+/// Pre-parse source expansion for languages with TEXTUAL inclusion
+/// (C `#include "x.h"`, COBOL `COPY`, Fortran `INCLUDE`, Pascal `{$I}`).
+/// Called by the bundle — the only layer that knows real paths — with each
+/// source's path and text, BEFORE concatenation and parse. Purely static:
+/// dynamic inclusion (PHP `include $var`) stays in the runtime compiler
+/// service and never uses this hook.
+pub type ExpandSourceFn = fn(&std::path::Path, &str) -> Result<String, String>;
 /// Emit a `common:<lang>.*` op inline. Returns `false` if unhandled.
 pub type EmitDispatchFn = fn(&str, &mut Vec<Chunk>, usize, u8, u32) -> bool;
 /// Per-language class normalisation (walker → language-agnostic `NormalClass`).
@@ -40,6 +47,7 @@ pub struct LanguageDef {
     pub emit_dispatch: Option<EmitDispatchFn>,
     pub normalize_class: Option<NormalizeClassFn>,
     pub register_tree: Option<fn()>,
+    pub expand_source: Option<ExpandSourceFn>,
 }
 
 fn registry() -> &'static Mutex<Vec<LanguageDef>> {

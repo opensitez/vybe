@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+vybe_platform_ecma = { workspace = true }
 inventory = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_platform_wasi = { workspace = true } # node:crypto reuses wasi:crypto md5/sha256

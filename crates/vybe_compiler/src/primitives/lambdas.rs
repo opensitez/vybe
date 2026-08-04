@@ -85,7 +85,7 @@ impl Compiler {
         self.current = factory_idx;
 
         for (capture_name, capture_type) in &capture_bindings {
-            self.define_local_typed(capture_name, capture_type.clone());
+            self.define_local_typed(capture_name, capture_type.clone().map(Into::into));
         }
 
         // Compile the actual lambda body inside the factory. The inner lambda

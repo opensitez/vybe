@@ -7,6 +7,7 @@ pub mod js_string_builtins; // wasm:js-string (merged js-string-builtins)
 pub mod opcode;
 pub mod type_recorder;
 pub mod value;
+pub mod scheduler;
 pub mod vm;
 // `impl VM` partials — extracted from vm.rs for readability. Each file is
 // its own `impl VM { ... }` block operating on the same struct defined in

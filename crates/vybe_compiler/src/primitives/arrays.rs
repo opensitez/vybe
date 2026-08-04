@@ -700,7 +700,22 @@ impl Compiler {
             // string type) is left exactly alone. This is what lets C#
             // `int x` and `dynamic y` differ WITHOUT a per-declaration flag.
             let normalized = Self::normalize_type_hint(&hint);
-            if vybe_ast::builtin_types::int_width_of(&normalized).is_none() {
+            let Some(width) = vybe_ast::builtin_types::int_width_of(&normalized) else {
+                continue;
+            };
+            // `int`/`uint32` are NOT the same size in every language — C's
+            // `int` is 32-bit, Go's is 64-bit — and the table resolves by
+            // SPELLING, so it cannot tell them apart. Narrowing a Go `int`
+            // parameter to 32 bits destroyed microsecond timestamps
+            // (`time_unix_micro_roundtrip` and 7 siblings).
+            //
+            // The 8- and 16-bit spellings are unambiguous across languages, so
+            // they narrow here. The 32-bit ones wait until width travels ON the
+            // declaration rather than being looked up from its spelling.
+            if matches!(
+                width,
+                vybe_ast::builtin_types::IntWidth::I32 | vybe_ast::builtin_types::IntWidth::U32
+            ) {
                 continue;
             }
             let Some(slot) = self.scope().resolve(&p.name) else {

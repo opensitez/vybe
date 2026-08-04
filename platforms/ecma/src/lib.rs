@@ -17,6 +17,7 @@
 //! `crates/vybe_runtime/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 // ── ECMA-262 spec types (one file per spec chapter) ──────────────────
+pub mod scheduler;
 pub mod array; // §23.1  Array
 pub mod arraybuffer; // §25.1 ArrayBuffer + §25.3 DataView + SharedArrayBuffer
 pub mod atomics; // §25.4  Atomics

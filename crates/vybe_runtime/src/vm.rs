@@ -199,7 +199,7 @@ impl<'a> HostContext<'a> {
     /// ECMA-262 §27.2.1.3 EnqueueJob("PromiseJobs", ...).
     pub fn queue_microtask(&mut self, callback: Value, value: Value) {
         if let Some(ref el) = self.event_loop {
-            el.borrow_mut().queue_microtask(callback, value);
+            el.borrow_mut().queue_immediate(callback, value);
         }
     }
 
@@ -237,7 +237,7 @@ impl<'a> HostContext<'a> {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.resolve_promise(promise_id, value) {
                 el_mut
-                    .microtasks
+                    .immediate
                     .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
@@ -249,7 +249,7 @@ impl<'a> HostContext<'a> {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.reject_promise(promise_id, reason) {
                 el_mut
-                    .microtasks
+                    .immediate
                     .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
@@ -280,7 +280,7 @@ impl<'a> HostContext<'a> {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.resolve_future(future_id, value) {
                 el_mut
-                    .microtasks
+                    .immediate
                     .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
@@ -292,7 +292,7 @@ impl<'a> HostContext<'a> {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.reject_future(future_id, reason) {
                 el_mut
-                    .microtasks
+                    .immediate
                     .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
@@ -321,7 +321,7 @@ impl<'a> HostContext<'a> {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.stream_push(stream_id, item) {
                 el_mut
-                    .microtasks
+                    .immediate
                     .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
@@ -333,7 +333,7 @@ impl<'a> HostContext<'a> {
             let mut el_mut = el.borrow_mut();
             if let Some(fiber) = el_mut.stream_close(stream_id) {
                 el_mut
-                    .microtasks
+                    .immediate
                     .push_back(crate::event_loop::Task::ResumeFiber(fiber));
             }
         }
@@ -442,7 +442,11 @@ pub enum ImportTarget {
     /// the engine) implements the suspension itself rather than dispatching to a
     /// host fn — fulfilled → unwrap, rejected → throw, pending → suspend the
     /// fiber on the event loop until the Promise settles.
-    JspiSuspend }
+    JspiSuspend,
+    /// `jspi.await_eager` — the eager-continuation await (`AsyncOp::AwaitEager`):
+    /// settled antecedents continue synchronously, pending ones suspend. The
+    /// instruction chose the semantics; the VM just implements both.
+    JspiSuspendEager }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallFrame {
@@ -587,6 +591,11 @@ pub struct VM {
     pub(crate) imported_tag_registry: HashMap<String, usize>,
     /// Event loop for async operations (shared with host functions).
     pub event_loop: Rc<RefCell<EventLoop>>,
+    /// The installed host scheduler (see [`crate::scheduler::Scheduler`]).
+    /// `None` = the VM's own mechanism-preserving fallback loop — bare-VM
+    /// tests run without any platform. Installed at plugin registration,
+    /// like host functions; deliberately NOT part of snapshots.
+    pub scheduler: Option<std::sync::Arc<dyn crate::scheduler::Scheduler>>,
     /// WASM GC-style type definitions with vtable method dispatch.
     pub type_registry: crate::typedef::TypeRegistry,
     /// Names of the running module's own defined types, in `chunk.types` order.
@@ -607,6 +616,9 @@ pub struct VM {
     /// `test_type` early-returns on `type_id > 0`, a WRONG rtt is worse than
     /// none: it suppresses every fallback.
     pub(crate) chunk_type_base: Vec<usize>,
+    /// The running module's declared scheduling contract. Read by the drain
+    /// loop; the VM's own suspend/resume path never consults it.
+    pub scheduling: vybe_ast::SchedulingPolicy,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
     /// This is memory index 0 for backward compatibility.
     pub memory: SharedMemory,
@@ -934,10 +946,12 @@ impl VM {
             try_group_counter: 0,
             imported_tag_registry: HashMap::from([("vybe:exception".to_string(), 0usize)]),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
+            scheduler: None,
             type_registry: crate::typedef::TypeRegistry::new(),
             module_type_names: Vec::new(),
             module_type_ids: Vec::new(),
             chunk_type_base: Vec::new(),
+            scheduling: vybe_ast::SchedulingPolicy::default(),
             memory: SharedMemory::default(),
             extra_memories: Vec::new(),
             extra_memory_max_pages: Vec::new(),
@@ -1369,7 +1383,7 @@ impl VM {
             let idxs: Vec<usize> = fib.frames.iter().map(|f| f.chunk_index).collect();
             out.push((idxs, format!("await stream {sid}")));
         }
-        for task in el.microtasks.iter().chain(el.macrotasks.iter()) {
+        for task in el.immediate.iter().chain(el.deferred.iter()) {
             if let crate::event_loop::Task::ResumeFiber(fib) = task {
                 let idxs: Vec<usize> = fib.frames.iter().map(|f| f.chunk_index).collect();
                 out.push((idxs, "queued resume".to_string()));
@@ -1408,7 +1422,7 @@ impl VM {
                 set.insert(sf.chunk_index);
             }
         }
-        for task in el.microtasks.iter().chain(el.macrotasks.iter()) {
+        for task in el.immediate.iter().chain(el.deferred.iter()) {
             if let crate::event_loop::Task::ResumeFiber(fib) = task {
                 for sf in &fib.frames {
                     set.insert(sf.chunk_index);
@@ -2171,6 +2185,9 @@ impl VM {
                 ImportTarget::JspiSuspend => {
                     self.import_table.push(ImportTarget::JspiSuspend);
                 }
+                ImportTarget::JspiSuspendEager => {
+                    self.import_table.push(ImportTarget::JspiSuspendEager);
+                }
                 ImportTarget::StringConst(s) => {
                     self.import_table.push(ImportTarget::StringConst(s));
                 }
@@ -2416,6 +2433,10 @@ impl VM {
                 self.import_table.push(ImportTarget::JspiSuspend);
                 continue;
             }
+            if import.module == "jspi" && import.name == "await_eager" {
+                self.import_table.push(ImportTarget::JspiSuspendEager);
+                continue;
+            }
             // 1. js-string-builtins: imported string constants
             if import.module == "wasm:string-constants" {
                 self.import_table
@@ -2467,6 +2488,8 @@ impl VM {
             // are numbered from 1 against the table loaded just below.
             let type_base = self.module_type_ids.len();
             self.set_chunk_type_base(script_idx, type_base);
+            // The module's declared scheduling contract, for the drain loop.
+            self.scheduling = self.chunks[script_idx].scheduling;
             let types = self.chunks[script_idx].types.clone();
             if !types.is_empty() {
                 // `array.new` immediates index the module's own types in this
@@ -2778,6 +2801,31 @@ impl VM {
         }
     }
 
+    /// Install the host scheduler — the policy half of async. Called at
+    /// plugin registration (the ecma platform installs the ECMA-262 §9.5 job
+    /// discipline); the VM itself never decides which callback runs next.
+    pub fn set_scheduler(&mut self, scheduler: std::sync::Arc<dyn crate::scheduler::Scheduler>) {
+        self.scheduler = Some(scheduler);
+    }
+
+    /// Mechanism surface for host schedulers: run one scheduled callback.
+    pub fn run_scheduled_callback(
+        &mut self,
+        callback: &Value,
+        args: &[Value],
+    ) -> Result<Value, VMError> {
+        self.invoke(callback, args)
+    }
+
+    /// Mechanism surface for host schedulers: resume a suspended fiber and
+    /// record its completion (top-level await surfaces the program's final
+    /// value through this).
+    pub fn resume_scheduled_fiber(&mut self, fiber: crate::fiber::Fiber) -> Result<(), VMError> {
+        let completion = self.resume_fiber(fiber)?;
+        self.last_fiber_completion = Some(completion);
+        Ok(())
+    }
+
     /// Create the globals declared by the module's **global imports**.
     ///
     /// js-string-builtins § String constants: when a namespace is designated
@@ -2823,6 +2871,9 @@ impl VM {
 
         if import.module == "jspi" && import.name == "await" {
             return Ok(Some(ImportTarget::JspiSuspend));
+        }
+        if import.module == "jspi" && import.name == "await_eager" {
+            return Ok(Some(ImportTarget::JspiSuspendEager));
         }
 
         // js-string-builtins: imported string constants (§ String constants).

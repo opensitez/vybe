@@ -487,7 +487,7 @@ impl VM {
             el.resolve_promise(id, value)
         };
         if let Some(fiber) = woken {
-            el.microtasks
+            el.immediate
                 .push_back(crate::event_loop::Task::ResumeFiber(fiber));
         }
         err
@@ -521,7 +521,17 @@ impl VM {
     /// promise whose value is *another* promise is awaited again. This loop
     /// keeps unwrapping fulfilled-promise chains; it suspends the moment it
     /// reaches a pending link and throws the moment it reaches a rejected one.
-    fn do_await(&mut self, val: Value) -> Result<(), VMError> {
+    /// Does an await on an ALREADY-SETTLED value still cost a turn? That is
+    /// the `eager` parameter — and it was decided at COMPILE time, not here:
+    /// `jspi.await` (ECMA-262 §6.2.3.1 / §27.7.5.3: `Await` performs
+    /// `PromiseResolve` and resumes as a JOB, so even `await 1` yields one
+    /// tick) passes `eager = false`; `jspi.await_eager` (.NET's contract: a
+    /// Task whose antecedent is already complete may run its continuation
+    /// synchronously) passes `eager = true`. The walker normalized the
+    /// language's `await` to one of two AST operations, the compiler lowered
+    /// each to its own import, and the VM implements both — it never consults
+    /// a per-module property to pick semantics.
+    fn do_await(&mut self, val: Value, eager: bool) -> Result<(), VMError> {
         let mut val = val;
         loop {
             // Clone the Arc so `val` is free to be reassigned for the next
@@ -534,7 +544,7 @@ impl VM {
                 // boundary, suspend and schedule the immediate resume; at
                 // top level (no boundary) keep the direct return.
                 _ => {
-                    if !self.async_floors.is_empty() {
+                    if !self.async_floors.is_empty() && !eager {
                         let id = self.event_loop.borrow_mut().next_promise_id();
                         self.pending_settled_await = Some((id, val, false));
                         return Err(VMError::new(format!("__jspi__:{}", id)));
@@ -554,7 +564,7 @@ impl VM {
                 .unwrap_or_default();
             if ty == "Task" {
                 drop(o);
-                return self.await_task_object(arc);
+                return self.await_task_object(arc, eager);
             }
             if ty != "Promise" {
                 // Raw thenable (callable `then`): §27.2.1.3.2 PromiseResolve
@@ -589,7 +599,7 @@ impl VM {
                     // non-thenable handling below (passthrough/tick).
                 }
                 // Non-thenable object: same one-tick rule as primitives.
-                if !self.async_floors.is_empty() {
+                if !self.async_floors.is_empty() && !eager {
                     let id = self.event_loop.borrow_mut().next_promise_id();
                     self.pending_settled_await = Some((id, val, false));
                     return Err(VMError::new(format!("__jspi__:{}", id)));
@@ -627,7 +637,7 @@ impl VM {
                 // and schedule the rejection to be thrown into the resumed
                 // fiber as a microtask (its captured try/catch handlers fire
                 // there). No synchronous shortcut.
-                if !self.async_floors.is_empty() {
+                if !self.async_floors.is_empty() && !eager {
                     drop(o);
                     let id = self.event_loop.borrow_mut().next_promise_id();
                     self.pending_settled_await = Some((id, value, true));
@@ -660,7 +670,7 @@ impl VM {
             // runner. Inside an async boundary, suspend (bounded) and schedule
             // an immediate microtask resume with the fulfilled value — the
             // spec "await always yields one tick" ordering, no sync shortcut.
-            if !self.async_floors.is_empty() {
+            if !self.async_floors.is_empty() && !eager {
                 let id = self.event_loop.borrow_mut().next_promise_id();
                 self.pending_settled_await = Some((id, value, false));
                 return Err(VMError::new(format!("__jspi__:{}", id)));
@@ -673,7 +683,11 @@ impl VM {
         }
     }
 
-    fn await_task_object(&mut self, task_obj: Arc<Mutex<Object>>) -> Result<(), VMError> {
+    fn await_task_object(
+        &mut self,
+        task_obj: Arc<Mutex<Object>>,
+        eager: bool,
+    ) -> Result<(), VMError> {
         self.join_task_object_if_needed(&task_obj);
 
         let delay_token_cancelled = self.task_delay_token_cancelled(&task_obj);
@@ -704,7 +718,7 @@ impl VM {
                     Value::String(Arc::from("Task faulted"))
                 }
             });
-            if !self.async_floors.is_empty() {
+            if !self.async_floors.is_empty() && !eager {
                 let id = self.event_loop.borrow_mut().next_promise_id();
                 self.pending_settled_await = Some((id, reason, true));
                 return Err(VMError::new(format!("__jspi__:{}", id)));
@@ -715,7 +729,7 @@ impl VM {
             return self.raise_exception_value(reason);
         }
 
-        if !self.async_floors.is_empty() {
+        if !self.async_floors.is_empty() && !eager {
             let id = self.event_loop.borrow_mut().next_promise_id();
             self.pending_settled_await = Some((id, result, false));
             return Err(VMError::new(format!("__jspi__:{}", id)));
@@ -2565,7 +2579,7 @@ impl VM {
                                 )));
                             }
                         }
-                        ImportTarget::JspiSuspend => {
+                        ImportTarget::JspiSuspend | ImportTarget::JspiSuspendEager => {
                             let val = if argc == 0 {
                                 Value::Undefined
                             } else {
@@ -2574,7 +2588,9 @@ impl VM {
                             for _ in 1..argc {
                                 self.pop();
                             }
-                            self.do_await(val)?;
+                            let eager =
+                                matches!(target, ImportTarget::JspiSuspendEager);
+                            self.do_await(val, eager)?;
                         }
                         ImportTarget::StringConst(ref s) => {
                             for _ in 0..argc {
@@ -7473,7 +7489,7 @@ impl VM {
                     if let Some(stream_id) = stream_id {
                         let mut el = self.event_loop.borrow_mut();
                         if let Some(fiber) = el.stream_push(stream_id, item) {
-                            el.microtasks
+                            el.immediate
                                 .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
@@ -7489,7 +7505,7 @@ impl VM {
                             drop(o);
                             let mut el = self.event_loop.borrow_mut();
                             if let Some(fiber) = el.stream_close(stream_id) {
-                                el.microtasks
+                                el.immediate
                                     .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                             }
                         }
@@ -7536,7 +7552,7 @@ impl VM {
                         if let Some(fiber) =
                             el.reject_future(fid, Value::String(Arc::from("cancelled")))
                         {
-                            el.microtasks
+                            el.immediate
                                 .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
@@ -7640,7 +7656,7 @@ impl VM {
                         // Close the stream so waiting writers don't block forever.
                         let mut el = self.event_loop.borrow_mut();
                         if let Some(fiber) = el.stream_close(sid) {
-                            el.microtasks
+                            el.immediate
                                 .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
@@ -7655,7 +7671,7 @@ impl VM {
                         // Closing the write end signals EOF to the reader.
                         let mut el = self.event_loop.borrow_mut();
                         if let Some(fiber) = el.stream_close(sid) {
-                            el.microtasks
+                            el.immediate
                                 .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }
@@ -7691,7 +7707,7 @@ impl VM {
                         if let Some(fiber) =
                             el.reject_future(fid, Value::String(Arc::from("future dropped")))
                         {
-                            el.microtasks
+                            el.immediate
                                 .push_back(crate::event_loop::Task::ResumeFiber(fiber));
                         }
                     }

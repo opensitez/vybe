@@ -113,7 +113,7 @@ impl Compiler {
             } else {
                 let param_modes: Vec<PassBy> = params.iter().map(|param| param.pass_by).collect();
                 let param_types: Vec<Option<String>> =
-                    params.iter().map(|param| param.type_hint.clone()).collect();
+                    params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect();
                 let min_arity = params
                     .iter()
                     .take_while(|param| param.default.is_none() && !param.is_rest)
@@ -158,7 +158,7 @@ impl Compiler {
                         .iter()
                         .take_while(|param| param.default.is_none() && !param.is_rest)
                         .count(),
-                    param_types: params.iter().map(|param| param.type_hint.clone()).collect() };
+                    param_types: params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect() };
 
                 if let Some(symbol) = operator_symbol.as_ref() {
                     let overloads = self

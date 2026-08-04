@@ -119,6 +119,67 @@ pub fn ta_live_length(ta: &TypedArrayState) -> usize {
 
 // ── Byte-level element access ─────────────────────────────────────────
 
+/// A `Value`'s contents as raw BYTES — the ONE owner of that conversion.
+///
+/// TypedArray is this platform's type (§23.2), so this platform answers what
+/// its bytes are. Before this existed the answer lived in FIVE places —
+/// node/{crypto,zlib,buffer}, wasi/sockets, vybe/canvas — with THREE behaviors
+/// (truncate vs clamp vs f64-cast) and NONE of them handled a TypedArray at
+/// all: a Python `bytes` (a real Uint8Array) handed to zlib or a socket
+/// silently decoded as EMPTY.
+///
+/// Conversion is §7.1.10 ToUint8 (truncate toward zero, wrap mod 2^8) — the
+/// same rule a `Uint8Array` store applies, so an Array of numbers and the
+/// typed array holding those numbers yield identical bytes.
+pub fn bytes_from_value(v: &Value) -> Vec<u8> {
+    match v {
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Object(obj) => {
+            let o = obj.lock().unwrap();
+            match &o.kind {
+                ObjectKind::TypedArray(ta) => {
+                    let len = ta_live_length(ta);
+                    // Byte-shaped views copy straight out of the buffer.
+                    if ta.elem.bytes_per_element() == 1 {
+                        let buf = ta.buffer.lock().unwrap();
+                        let start = ta.byte_offset.min(buf.len());
+                        let end = (ta.byte_offset + len).min(buf.len());
+                        return buf[start..end].to_vec();
+                    }
+                    (0..len)
+                        .map(|i| (read_element(ta, i).as_i32() & 0xFF) as u8)
+                        .collect()
+                }
+                ObjectKind::ArrayBuffer(ab) => ab.bytes.lock().unwrap().clone(),
+                ObjectKind::Array(elems) => elems
+                    .iter()
+                    .map(|e| (e.as_i32() & 0xFF) as u8)
+                    .collect(),
+                _ => Vec::new() }
+        }
+        _ => Vec::new() }
+}
+
+/// A `Value`'s contents as f64s — same ownership story as
+/// [`bytes_from_value`], for consumers whose elements exceed a byte
+/// (palette entries, rect coordinates).
+pub fn numbers_from_value(v: &Value) -> Vec<f64> {
+    match v {
+        Value::Object(obj) => {
+            let o = obj.lock().unwrap();
+            match &o.kind {
+                ObjectKind::TypedArray(ta) => (0..ta_live_length(ta))
+                    .map(|i| read_element(ta, i).as_f64())
+                    .collect(),
+                ObjectKind::ArrayBuffer(ab) => {
+                    ab.bytes.lock().unwrap().iter().map(|b| *b as f64).collect()
+                }
+                ObjectKind::Array(elems) => elems.iter().map(|e| e.as_f64()).collect(),
+                _ => Vec::new() }
+        }
+        _ => Vec::new() }
+}
+
 pub fn read_element(ta: &TypedArrayState, i: usize) -> Value {
     let bpe = ta.elem.bytes_per_element();
     let buf = ta.buffer.lock().unwrap();

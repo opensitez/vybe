@@ -209,7 +209,13 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
+                // BOTH edges are forwarded — `KeyEvent.state` says which.
+                // Releases used to be dropped right here, which made a
+                // key-UP event unobservable anywhere downstream (SDL's
+                // `SDL_KEYUP` needs it; a game holds a key and must see the
+                // release). Widget dispatch stays pressed-only at the app
+                // layer, so focus/typing behavior is unchanged.
+                {
                     #[cfg(target_os = "macos")]
                     let key_without_mods = {
                         use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -226,7 +232,7 @@ impl<A: Application> ApplicationHandler for AppWindowInner<A> {
                         shift: mods.shift_key(),
                         alt: mods.alt_key(),
                         text: event.text.as_ref().map(|t| t.to_string()) };
-                    if self.app.handle_key(key_event) {
+                    if self.app.handle_key(key_event) && event.state == ElementState::Pressed {
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
