@@ -9,6 +9,11 @@ name = "php"
 extensions = ["php", "phtml"]
 
 [compiler]
+# Declared types CONVERT the value they bind (assignment, declaration and
+# parameter entry alike). Stated explicitly rather than inherited: the platform
+# default is `true`, and inheriting it silently gave Python coercive semantics
+# it never chose.
+coerces_value_to_type_hint = true
 # Global namespace spelling — see crates/vybe_compiler/src/primitives/globals.rs
 global_namespace = "$GLOBALS"
 separate_property_method_namespace = true   # $o->foo (property) and $o->foo() (method) coexist

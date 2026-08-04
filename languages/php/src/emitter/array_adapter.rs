@@ -69,14 +69,12 @@ const JSON_PRESERVE_ZERO_FRACTION: i32 = 1024;
 const JSON_THROW_ON_ERROR: i32 = 4194304;
 
 fn global_set_i32(chunk: &mut Chunk, key: &str, value: i32, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_i32_const(value, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, key, line);
 }
 
 fn global_get_json_error(chunk: &mut Chunk, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(PHP_JSON_LAST_ERROR)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, PHP_JSON_LAST_ERROR, line);
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if_value(line);
@@ -3403,8 +3401,7 @@ fn emit_generator_yield_value_from_slot(
 
     chunk.emit_else(line);
 
-    let store_key = chunk.add_constant(Value::String(Arc::from("__vybe_generator_payloads")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, store_key, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_generator_payloads", line);
     lget(chunk, payload_id_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
 

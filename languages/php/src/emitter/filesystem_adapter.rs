@@ -298,8 +298,7 @@ pub fn emit_filesize(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     {
         let chunk = &mut chunks[current];
         lset(chunk, path_slot, line);
-        let key = chunk.add_constant(Value::String(Arc::from("__php_stream_registry")));
-        chunk.emit_op_u16(Op::GLOBAL_GET, key, line);
+        vybe_compiler::primitives::globals::emit_read(chunk, "__php_stream_registry", line);
         lset(chunk, reg_slot, line);
         // if registry != null && registry.has(path)
         lget(chunk, reg_slot, line);
@@ -1213,8 +1212,7 @@ pub fn emit_disk_total_space(chunks: &mut [Chunk], current: usize, _argc: u8, li
 
 fn emit_stream_registry(chunks: &mut [Chunk], current: usize, line: u32) {
     // pushes the registry map, creating+storing it on first use.
-    let key = chunks[current].add_constant(Value::String(Arc::from("__php_stream_registry")));
-    chunks[current].emit_op_u16(Op::GLOBAL_GET, key, line);
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__php_stream_registry", line);
     let chunk = &mut chunks[current];
     chunk.emit_dup(line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -1227,9 +1225,8 @@ fn emit_stream_registry(chunks: &mut [Chunk], current: usize, line: u32) {
     call_import(chunks, current, "ecma:map", "new", 0, line);
     let chunk = &mut chunks[current];
     chunk.emit_dup(line);
-    let key2 = chunk.add_constant(Value::String(Arc::from("__php_stream_registry")));
     // GLOBAL_SET pops its value, so the dup we kept stays on the stack.
-    chunk.emit_op_u16(Op::GLOBAL_SET, key2, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_stream_registry", line);
     chunk.emit_end(line);
 }
 

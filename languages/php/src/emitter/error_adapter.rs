@@ -70,13 +70,11 @@ fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
 }
 
 fn global_get(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, key, line);
 }
 
 fn global_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(key)));
-    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, key, line);
 }
 
 /// Set one string→value entry on the map in `map_slot` (`ecma:map.set` returns

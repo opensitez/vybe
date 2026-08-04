@@ -79,7 +79,6 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     let running_key = chunk.add_constant(Value::String(Arc::from("__running")));
     let terminated_key = chunk.add_constant(Value::String(Arc::from("__terminated")));
     let return_key = chunk.add_constant(Value::String(Arc::from("__return")));
-    let current_key = chunk.add_constant(Value::String(Arc::from("__php_current_fiber")));
 
     lset(chunk, value_slot, line); // [$fiber]
     chunk.emit_op_u16(Op::LOCAL_TEE, fiber_slot, line); // [$fiber]
@@ -99,7 +98,7 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
     chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, current_key, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
 
     let block_p = chunk.emit_block_typed(line, 1);
     lget(chunk, fiber_slot, line);
@@ -111,7 +110,7 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     // Completion arm: RESUME fell through because the fiber returned.
     chunk.emit_op_u16(Op::LOCAL_TEE, ret_slot, line); // [ret]
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, current_key, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
@@ -134,7 +133,7 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     let handler_ip = chunk.code.len();
     chunk.emit_op_u16(Op::LOCAL_TEE, ret_slot, line); // [yielded]
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, current_key, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
@@ -181,7 +180,6 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
     }
     let exn_slot = alloc_local(chunk);
     let fiber_slot = alloc_local(chunk);
-    let current_key = chunk.add_constant(Value::String(Arc::from("__php_current_fiber")));
     let running_key = chunk.add_constant(Value::String(Arc::from("__running")));
     let suspended_key = chunk.add_constant(Value::String(Arc::from("__suspended")));
     let return_key = chunk.add_constant(Value::String(Arc::from("__return")));
@@ -195,7 +193,7 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
     chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, current_key, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
     lget(chunk, exn_slot, line);
     let tag = 0;
@@ -203,7 +201,7 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
     let ret_slot = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_TEE, ret_slot, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, current_key, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);

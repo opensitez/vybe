@@ -5449,36 +5449,83 @@ pub fn emit_fnmatch(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     strings::emit_glob_match_flagged(chunks, current, line);
 }
 
+const STRTOK_SUBJECT: &str = "__php_strtok_subject";
+const STRTOK_CURSOR: &str = "__php_strtok_cursor";
+const STRTOK_SCAN_CHUNK: &str = "__php_strtok_scan";
+
 // ── strtok ────────────────────────────────────────────────────────────────
-// Stateful strtok uses module-level globals: global 0 = subject, global 1 = cursor.
-pub fn emit_strtok_init(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+// Stateful strtok keeps its subject and cursor in module globals.
+//
+// These used to be written as `emit_op_u16(Op::GLOBAL_SET, 0, line)` under a
+// comment reading "global 0 = subject, global 1 = cursor". That operand is a
+// CONSTANT-POOL index, not a global slot: the VM resolves it with
+// `constant_str(idx)` and uses the resulting STRING as the global's name. So
+// strtok's state landed in a global named after whatever string happened to be
+// interned first in the calling chunk — stable only while `strtok()` and its
+// follow-up calls compiled into the SAME chunk, and colliding with a real user
+// global whenever that first constant happened to name one.
+/// The scan, emitted ONCE per program as a callable chunk.
+///
+/// It used to be inlined at every `strtok()` site: two loops plus a
+/// `charAt`+`indexOf` pair per character, measured at **~6,376 bytes of
+/// bytecode per additional call site** (1 call → 15,475 instructions in
+/// `<script>`, 5 calls → 40,979). Memoised by chunk name, the same pattern
+/// `sprintf` and python's `repr_adapter` use.
+///
+/// Params: slot 0 = subject, slot 1 = delimiters, slot 2 = start offset.
+/// Returns the token, or `false` at end of input, and updates the cursor.
+fn strtok_scan_chunk(chunks: &mut Vec<Chunk>) -> usize {
+    if let Some(idx) = chunks.iter().position(|c| c.name == STRTOK_SCAN_CHUNK) {
+        return idx;
+    }
+    let mut c = Chunk::new(STRTOK_SCAN_CHUNK);
+    c.arity = 3;
+    c.local_count = 3;
+    chunks.push(c);
+    let idx = chunks.len() - 1;
+    emit_strtok_scan(chunks, idx, 0, 1, 2, 0);
+    chunks[idx].emit_op(Op::RETURN, 0);
+    idx
+}
+
+/// `helper(subject, delims, start)` — CALL_REF wants [callee, args…].
+fn emit_strtok_call(chunks: &mut Vec<Chunk>, current: usize, s_slot: u16, delim_slot: u16, line: u32) {
+    let helper = strtok_scan_chunk(chunks);
+    let chunk = &mut chunks[current];
+    chunk.emit_op_u16(Op::REF_FUNC, helper as u16, line);
+    chunk.emit(0u8, line); // upvalue count
+    lget(chunk, s_slot, line);
+    lget(chunk, delim_slot, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, STRTOK_CURSOR, line);
+    chunk.emit_op(Op::CALL_REF, line);
+    chunk.emit(3u8, line);
+}
+
+pub fn emit_strtok_init(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let delim_slot = alloc_local(chunk);
     let s_slot = alloc_local(chunk);
-    let start_slot = alloc_local(chunk);
     lset(chunk, delim_slot, line);
     coerce_to_str(chunk, line);
     lset(chunk, s_slot, line);
     lget(chunk, s_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, 0, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, STRTOK_SUBJECT, line);
+    // A fresh subject restarts at 0 — the cursor is the helper's third
+    // argument, so seed it before the call rather than passing a literal.
     push_const(chunk, Value::F64(0.0), line);
-    lset(chunk, start_slot, line);
-    let _ = chunk;
-    emit_strtok_scan(chunks, current, s_slot, delim_slot, start_slot, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, STRTOK_CURSOR, line);
+    chunk.emit_op(Op::DROP, line);
+    emit_strtok_call(chunks, current, s_slot, delim_slot, line);
 }
 
-pub fn emit_strtok_next(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_strtok_next(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let delim_slot = alloc_local(chunk);
     let s_slot = alloc_local(chunk);
-    let start_slot = alloc_local(chunk);
     lset(chunk, delim_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_GET, 0, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, STRTOK_SUBJECT, line);
     lset(chunk, s_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_GET, 1, line);
-    lset(chunk, start_slot, line);
-    let _ = chunk;
-    emit_strtok_scan(chunks, current, s_slot, delim_slot, start_slot, line);
+    emit_strtok_call(chunks, current, s_slot, delim_slot, line);
 }
 
 fn emit_strtok_scan(
@@ -5534,7 +5581,7 @@ fn emit_strtok_scan(
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if_value(line);
     lget(chunk, n_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, 1, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, STRTOK_CURSOR, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_else(line);
     lget(chunk, i_slot, line);
@@ -5577,7 +5624,7 @@ fn emit_strtok_scan(
     chunk.emit_else(line);
     lget(chunk, i_slot, line);
     chunk.emit_end(line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, 1, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, STRTOK_CURSOR, line);
     lget(chunk, s_slot, line);
     lget(chunk, token_start_slot, line);
     lget(chunk, i_slot, line);
@@ -5783,10 +5830,9 @@ pub fn emit_mb_setting(
     line: u32,
 ) {
     let chunk = &mut chunks[current];
-    let key_idx = chunk.add_constant(Value::String(Arc::from(key)));
     let old_slot = alloc_local(chunk);
     if argc == 0 {
-        chunk.emit_op_u16(Op::GLOBAL_GET, key_idx, line);
+        vybe_compiler::primitives::globals::emit_read(chunk, key, line);
         chunk.emit_dup(line);
         chunk.emit_op(Op::REF_IS_NULL, line);
         chunk.emit_if(line);
@@ -5796,7 +5842,7 @@ pub fn emit_mb_setting(
         return;
     }
 
-    chunk.emit_op_u16(Op::GLOBAL_GET, key_idx, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, key, line);
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
@@ -5804,7 +5850,7 @@ pub fn emit_mb_setting(
     push_str(chunk, default, line);
     chunk.emit_end(line);
     lset(chunk, old_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, key_idx, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, key, line);
     lget(chunk, old_slot, line);
 }
 

@@ -240,10 +240,11 @@ fn emit_apply_header(
 /// source `$_SERVER` reads.
 pub fn emit_php_sapi_name(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let chunk = &mut chunks[current];
-    let request = chunk.add_constant(Value::String(Arc::from(
+    vybe_compiler::primitives::globals::emit_read(
+        chunk,
         vybe_compiler::primitives::http_request_env::REQUEST_GLOBAL,
-    )));
-    chunk.emit_op_u16(Op::GLOBAL_GET, request, line);
+        line,
+    );
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     push_str(chunk, "cli", line);
@@ -482,39 +483,36 @@ pub fn emit_php_phpinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let map_new_import = chunks[0].add_import("ecma:map".to_string(), "new".to_string());
     let chunk = &mut chunks[current];
-    let needs_cookie = chunk.add_constant(Value::String(Arc::from("__php_session_needs_cookie")));
-    let session_id = chunk.add_constant(Value::String(Arc::from("__php_session_id")));
-    let started = chunk.add_constant(Value::String(Arc::from("__php_session_started")));
-    let destroyed = chunk.add_constant(Value::String(Arc::from("__php_session_destroyed")));
-    let session = chunk.add_constant(Value::String(Arc::from("$_SESSION")));
 
     push_const(chunk, Value::Bool(true), line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, started, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_started", line);
     push_const(chunk, Value::Bool(false), line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, destroyed, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_destroyed", line);
 
     // Mirror the lifecycle into the SHARED session primitive's global so
     // `session_status()` — which dispatches to `common:http_session.status` —
     // reports ACTIVE. Without this it kept answering "not started" right after
     // a successful `session_start()`.
-    let status = chunk.add_constant(Value::String(Arc::from(
-        vybe_compiler::primitives::http_session::SESSION_STATUS_GLOBAL,
-    )));
+
     push_const(
         chunk,
         Value::I32(vybe_compiler::primitives::http_session::STATUS_ACTIVE),
         line,
     );
-    chunk.emit_op_u16(Op::GLOBAL_SET, status, line);
+    vybe_compiler::primitives::globals::emit_write(
+        chunk,
+        vybe_compiler::primitives::http_session::SESSION_STATUS_GLOBAL,
+        line,
+    );
 
-    chunk.emit_op_u16(Op::GLOBAL_GET, session, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "$_SESSION", line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     chunk.emit_call(map_new_import, 0, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, session, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "$_SESSION", line);
     chunk.emit_end(line);
 
-    chunk.emit_op_u16(Op::GLOBAL_GET, needs_cookie, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__php_session_needs_cookie", line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
 
@@ -522,14 +520,14 @@ pub fn emit_php_session_start(chunks: &mut [Chunk], current: usize, _argc: u8, l
     // and an encoded cookie would disagree with what `session_id()` returns —
     // the value apps compare against and put in URLs.
     push_str(chunk, "PHPSESSID", line);
-    chunk.emit_op_u16(Op::GLOBAL_GET, session_id, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__php_session_id", line);
     // No expiry: a session cookie lives until the browser closes.
     vybe_compiler::primitives::http_cookie::emit_serialize(chunks, current, 2, line);
     emit_send_cookie(chunks, current, line);
 
     let chunk = &mut chunks[current];
     push_const(chunk, Value::Bool(false), line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_needs_cookie", line);
     chunk.emit_end(line);
     push_const(chunk, Value::Bool(true), line);
 }
@@ -560,8 +558,7 @@ fn emit_send_cookie(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_php_session_unset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     call_import(chunks, current, "ecma:map", "new", 0, line);
     let chunk = &mut chunks[current];
-    let session = chunk.add_constant(Value::String(Arc::from("$_SESSION")));
-    chunk.emit_op_u16(Op::GLOBAL_SET, session, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "$_SESSION", line);
     push_const(chunk, Value::Bool(true), line);
 }
 
@@ -570,26 +567,25 @@ pub fn emit_php_session_destroy(chunks: &mut [Chunk], current: usize, _argc: u8,
     let chunk = &mut chunks[current];
     // Close the session in the shared primitive too, so `session_status()`
     // stops reporting ACTIVE.
-    let status = chunk.add_constant(Value::String(Arc::from(
-        vybe_compiler::primitives::http_session::SESSION_STATUS_GLOBAL,
-    )));
+
     push_const(
         chunk,
         Value::I32(vybe_compiler::primitives::http_session::STATUS_NONE),
         line,
     );
-    chunk.emit_op_u16(Op::GLOBAL_SET, status, line);
-    let started = chunk.add_constant(Value::String(Arc::from("__php_session_started")));
-    let destroyed = chunk.add_constant(Value::String(Arc::from("__php_session_destroyed")));
-    let needs_cookie = chunk.add_constant(Value::String(Arc::from("__php_session_needs_cookie")));
+    vybe_compiler::primitives::globals::emit_write(
+        chunk,
+        vybe_compiler::primitives::http_session::SESSION_STATUS_GLOBAL,
+        line,
+    );
 
     chunk.emit_op(Op::DROP, line);
     push_const(chunk, Value::Bool(false), line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, started, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_started", line);
     push_const(chunk, Value::Bool(true), line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, destroyed, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_destroyed", line);
     push_const(chunk, Value::Bool(false), line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, needs_cookie, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__php_session_needs_cookie", line);
 
     // Deleting a cookie means expiring it in the past (RFC 6265 §3.1) — an
     // empty value alone leaves the cookie in the jar. The date formatting is
@@ -1702,7 +1698,12 @@ pub fn emit_php_empty(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     chunk.emit_else(line);
 
     push_const(chunk, Value::Bool(false), line);
-    chunk.emit_end(line);
+    // Exactly one `end` per `if_value` opened above — 12 of each, and
+    // `if_value` is the only frame this function opens. There was a 13th here,
+    // which closed the CALLER's frame: inside a `try` that is the try's own
+    // frame, so a later `throw` found no handler and escaped it. Since php's
+    // walker rewrites every `if ($x)` to `if (!empty($x))`, that made a throw
+    // in the else-branch of any php conditional uncatchable.
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_end(line);
