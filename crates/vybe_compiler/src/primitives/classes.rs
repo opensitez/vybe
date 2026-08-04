@@ -151,8 +151,7 @@ impl Compiler {
                     type_name.clone()
                 }
             };
-            let idx = self.str_const(&ctor_global);
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(&ctor_global);
             self.emit_u8(Op::CALL_REF, 0);
         } else if is_value_type {
             self.emit_default_value_for_type_hint(type_hint);
@@ -275,32 +274,27 @@ impl Compiler {
             && common::errors::is_exception_type(parent_name)
             && !self.shadows_builtin_type(parent_name)
         {
-            let key = self.str_const(&format!("__ctor_{parent_name}"));
-            self.emit_u16(Op::GLOBAL_GET, key);
+            self.emit_global_read(&format!("__ctor_{parent_name}"));
         } else if !bound
             && self.profile.has_ecma_globals
             && Self::is_ecma_typed_array_ctor_name(parent_name)
             && !self.shadows_builtin_type(parent_name)
         {
-            let key = self.str_const(&format!("__ctor_{parent_name}"));
-            self.emit_u16(Op::GLOBAL_GET, key);
+            self.emit_global_read(&format!("__ctor_{parent_name}"));
         } else if !bound
             && self.profile.has_ecma_globals
             && Self::is_ecma_array_buffer_ctor_name(parent_name)
             && !self.shadows_builtin_type(parent_name)
         {
-            let key = self.str_const(&format!("__ctor_{parent_name}"));
-            self.emit_u16(Op::GLOBAL_GET, key);
+            self.emit_global_read(&format!("__ctor_{parent_name}"));
         } else if !bound
             && self.profile.has_ecma_globals
             && Self::is_ecma_collection_ctor_name(parent_name)
             && !self.shadows_builtin_type(parent_name)
         {
-            let key = self.str_const(&format!("__ctor_{parent_name}"));
-            self.emit_u16(Op::GLOBAL_GET, key);
+            self.emit_global_read(&format!("__ctor_{parent_name}"));
         } else if !want_class_object && self.defined_globals.contains(&default_ctor) {
-            let key = self.str_const(&default_ctor);
-            self.emit_u16(Op::GLOBAL_GET, key);
+            self.emit_global_read(&default_ctor);
         } else {
             self.emit_var_get(&pname);
         }
@@ -695,13 +689,12 @@ impl Compiler {
         if !self.profile.ecma_new_dispatch {
             return;
         }
-        let nt_key = self.str_const("__js_new_target");
-        self.emit_u16(Op::GLOBAL_GET, nt_key);
+        self.emit_global_read("__js_new_target");
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
         self.chunks[self.current].emit_if(line);
         self.emit_var_get(name);
-        self.emit_u16(Op::GLOBAL_SET, nt_key);
+        self.emit_global_write("__js_new_target");
         self.chunks[self.current].emit_end(line);
     }
 
@@ -711,15 +704,13 @@ impl Compiler {
     /// `this.constructor` resolves to the *invoked* class even while a
     /// parent constructor body runs under `super()`.
     fn emit_load_instance_proto(&mut self, class_name: &str) {
-        let nt_key = self.str_const("__js_new_target");
-        self.emit_u16(Op::GLOBAL_GET, nt_key);
+        self.emit_global_read("__js_new_target");
         inst!(self, core_wasm::dup);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
         self.chunks[self.current].emit_if(line);
         self.emit(Op::DROP);
-        let class_global = self.str_const(class_name);
-        self.emit_u16(Op::GLOBAL_GET, class_global);
+        self.emit_global_read(class_name);
         self.chunks[self.current].emit_end(line);
         let prototype_key = self.str_const("prototype");
         self.emit_struct_field_op(Op::STRUCT_GET, 0, prototype_key);
@@ -768,8 +759,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, this_slot);
             if let Some(class_name) = &proto_class {
                 let cname = self.canon(class_name);
-                let class_idx = self.global_name_const_idx(&cname);
-                self.emit_u16(Op::GLOBAL_GET, class_idx);
+                self.emit_global_read(&cname);
                 let proto_key = self.str_const("prototype");
                 self.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key);
                 let mkey = self.str_const(method_name);
@@ -1135,18 +1125,16 @@ impl Compiler {
                     // (function chunk, parameter index).
                     let cache = format!("__vybe_dflt_{}_{}", self.current, param_index);
                     let inited = format!("__vybe_dflt_init_{}_{}", self.current, param_index);
-                    let cache_idx = self.global_name_const_idx(&cache);
-                    let inited_idx = self.global_name_const_idx(&inited);
-                    self.emit_u16(Op::GLOBAL_GET, inited_idx);
+                    self.emit_global_read(&inited);
                     self.emit(Op::REF_IS_NULL); // uninitialised global reads null
                     let init_line = self.line;
                     self.chunks[self.current].emit_if(init_line);
                     self.compile_expr(default)?;
-                    self.emit_u16(Op::GLOBAL_SET, cache_idx);
+                    self.emit_global_write(&cache);
                     self.emit_const(Value::Bool(true));
-                    self.emit_u16(Op::GLOBAL_SET, inited_idx);
+                    self.emit_global_write(&inited);
                     self.chunks[self.current].emit_end(init_line);
-                    self.emit_u16(Op::GLOBAL_GET, cache_idx);
+                    self.emit_global_read(&cache);
                     self.emit_u16(Op::LOCAL_SET, slot);
                 } else {
                     self.compile_expr(default)?;
@@ -1162,6 +1150,10 @@ impl Compiler {
             }
             self.maybe_initialize_fortran_out_param(p);
         }
+
+        // A parameter is a declared binding like any other — narrow it here,
+        // AFTER defaults, so it holds the value it actually ends up with.
+        self.emit_param_type_bindings(params)?;
 
         // Promote address-taken params to a pointer cell once, at entry. A later
         // `&param` (e.g. inside a loop) then reuses this cell instead of
@@ -1229,8 +1221,7 @@ impl Compiler {
         if self.profile.ambient_this_binding
             && crate::primitives::closures_in_body_reference_this(body)
         {
-            let this_idx = self.str_const("__js_this");
-            self.emit_u16(Op::GLOBAL_GET, this_idx);
+            self.emit_global_read("__js_this");
             let this_local = self.define_local("__js_this");
             self.emit_u16(Op::LOCAL_SET, this_local);
             self.current_closure_captured_locals
@@ -1431,13 +1422,10 @@ impl Compiler {
         } else if has_rest {
             self.emit_stamp_rest_metadata_on_stack(params.len().saturating_sub(1));
         }
-        let idx = self.str_const(name);
-        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit_global_write(name);
         if let Some(callable_global) = self.source_function_callable_global_name(name) {
-            let fn_idx = self.str_const(name);
-            self.emit_u16(Op::GLOBAL_GET, fn_idx);
-            let callable_idx = self.str_const(&callable_global);
-            self.emit_u16(Op::GLOBAL_SET, callable_idx);
+            self.emit_global_read(name);
+            self.emit_global_write(&callable_global);
         }
 
         if self.profile.has_function_prototype_bind {
@@ -2347,8 +2335,7 @@ impl Compiler {
             }
             if ambient_this && !is_static && mname.starts_with('#') {
                 let this_slot = cc.define_local("__js_private_method_this");
-                let js_this = cc.str_const("__js_this");
-                cc.emit_u16(Op::GLOBAL_GET, js_this);
+                cc.emit_global_read("__js_this");
                 cc.emit_u16(Op::LOCAL_SET, this_slot);
                 cc.emit_js_private_brand_check(this_slot, &bound_name)?;
             }
@@ -2421,8 +2408,7 @@ impl Compiler {
                 && !is_static
                 && crate::primitives::closures_in_body_reference_this(&m.body)
             {
-                let this_idx = cc.str_const("__js_this");
-                cc.emit_u16(Op::GLOBAL_GET, this_idx);
+                cc.emit_global_read("__js_this");
                 let this_local = cc.define_local(&self_kw);
                 cc.emit_u16(Op::LOCAL_SET, this_local);
                 cc.current_closure_captured_locals.insert(self_kw.clone());
@@ -2699,8 +2685,7 @@ impl Compiler {
                 } => {
                     self.compile_expr(value)?;
                     let global_name = self.canon(&format!("{}.{}", name, cname));
-                    let idx = self.str_const(&global_name);
-                    self.emit_u16(Op::GLOBAL_SET, idx);
+                    self.emit_global_write(&global_name);
                     self.defined_globals.insert(global_name);
                 }
                 ClassMember::Event { .. } => { /* type-level only */ }
@@ -2725,18 +2710,15 @@ impl Compiler {
                         _ => (String::new(), String::new()) };
                     self.compile_stmt(&nested)?;
                     if !qualified_nested.is_empty() && qualified_nested != leaf_nested {
-                        let qualified_idx = self.str_const(&qualified_nested);
-                        let leaf_idx = self.str_const(&leaf_nested);
-                        self.emit_u16(Op::GLOBAL_GET, qualified_idx);
-                        self.emit_u16(Op::GLOBAL_SET, leaf_idx);
+
+                        self.emit_global_read(&qualified_nested);
+                        self.emit_global_write(&leaf_nested);
                         for arity in 0..=IMPLICIT_CTOR_FORWARD_ARGS {
                             let qualified_ctor = ctor_global_for(&qualified_nested, arity as usize);
                             if self.defined_globals.contains(&qualified_ctor) {
                                 let leaf_ctor = ctor_global_for(&leaf_nested, arity as usize);
-                                let qualified_idx = self.str_const(&qualified_ctor);
-                                let leaf_idx = self.str_const(&leaf_ctor);
-                                self.emit_u16(Op::GLOBAL_GET, qualified_idx);
-                                self.emit_u16(Op::GLOBAL_SET, leaf_idx);
+                                self.emit_global_read(&qualified_ctor);
+                                self.emit_global_write(&leaf_ctor);
                                 self.defined_globals.insert(leaf_ctor);
                             }
                         }
@@ -3092,8 +3074,7 @@ impl Compiler {
             self.define_local(&self_kw);
             let this_slot = user_arity as u16;
             if self.profile.ambient_this_binding {
-                let js_this = self.str_const("__js_this");
-                self.emit_u16(Op::GLOBAL_GET, js_this);
+                self.emit_global_read("__js_this");
                 self.emit_u16(Op::LOCAL_SET, this_slot);
             }
             // §9.1.1.3.4 (JS): derived-constructor `this` TDZ context.
@@ -3769,10 +3750,9 @@ impl Compiler {
                     //    path gets this via the prototype chain instead.
                     //  - `__type` + WASM GC type_id, so instanceof
                     //    (REF_TEST fast path) sees the runtime class.
-                    let class_global = self.str_const(name);
                     let ctor_key = self.str_const("constructor");
                     self.emit_u16(Op::LOCAL_GET, this_slot);
-                    self.emit_u16(Op::GLOBAL_GET, class_global);
+                    self.emit_global_read(name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
                     self.emit(Op::DROP);
                     let canon_name = self.canon(name);
@@ -3790,10 +3770,9 @@ impl Compiler {
                     // / `type(obj).__name__` work). Re-stamped derived-last,
                     // like the PHP `constructor` block above, so `type(child)`
                     // is the child class even after a parent ctor ran.
-                    let class_global = self.str_const(name);
                     let class_key = self.str_const("__class__");
                     self.emit_u16(Op::LOCAL_GET, this_slot);
-                    self.emit_u16(Op::GLOBAL_GET, class_global);
+                    self.emit_global_read(name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, class_key);
                     self.emit(Op::DROP);
                 }
@@ -4017,8 +3996,7 @@ impl Compiler {
         for (arity, _, helper_idx, helper_captures, named) in &ctor_helpers {
             emit_helper_ref(self, *helper_idx, helper_captures)?;
             let helper_global = ctor_global_for(&ctor_global_prefix, *arity);
-            let helper_idx_const = self.str_const(&helper_global);
-            self.emit_u16(Op::GLOBAL_SET, helper_idx_const);
+            self.emit_global_write(&helper_global);
             // A named constructor (`Point.origin()`) is reached through the
             // class rather than by arity — several of them commonly share an
             // arity with each other and with the unnamed ctor. The helper
@@ -4348,8 +4326,7 @@ impl Compiler {
         for const_name in &static_const_names {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             let global_name = self.canon(&format!("{}.{}", name, const_name));
-            let global_idx = self.str_const(&global_name);
-            self.emit_u16(Op::GLOBAL_GET, global_idx);
+            self.emit_global_read(&global_name);
             let field_idx = self.str_const(const_name);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
             self.emit(Op::DROP);
@@ -4389,8 +4366,7 @@ impl Compiler {
                         continue;
                     }
                     self.emit_u16(Op::LOCAL_GET, ctor_local);
-                    let parent_idx = self.str_const(pname);
-                    self.emit_u16(Op::GLOBAL_GET, parent_idx);
+                    self.emit_global_read(pname);
                     let field_idx = self.str_const(field_name);
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
@@ -4410,13 +4386,12 @@ impl Compiler {
             .unwrap_or_default();
         for nested in nested_types {
             let nested_canon = self.canon(&nested);
-            let nested_idx = self.str_const(&nested_canon);
             for key_name in [
                 nested_canon.clone(),
                 self.canon(nested.rsplit('.').next().unwrap_or(&nested)),
             ] {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
-                self.emit_u16(Op::GLOBAL_GET, nested_idx);
+                self.emit_global_read(&nested_canon);
                 let key = self.str_const(&key_name);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
                 self.emit(Op::DROP);
@@ -5177,9 +5152,9 @@ pub fn emit_stamp_class_mro(
     push_array_value_local(chunks, current, self_ctor_slot, line);
     // push each base by global name
     for g in base_globals {
-        let gk = chunks[current].add_constant(Value::String(Arc::from(g.as_str())));
+
         chunks[current].emit_dup(line); // [ctor, arr, arr]
-        chunks[current].emit_op_u16(Op::GLOBAL_GET, gk, line); // [ctor, arr, arr, base]
+        crate::primitives::globals::emit_read(&mut chunks[current], g.as_str(), line); // [ctor, arr, arr, base]
         crate::primitives::collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     }
@@ -5214,9 +5189,9 @@ pub fn emit_stamp_class_bases(
         chunks[current].emit_op(Op::DROP, line);
     } else {
         for g in base_globals {
-            let gk = chunks[current].add_constant(Value::String(Arc::from(g.as_str())));
+    
             chunks[current].emit_dup(line);
-            chunks[current].emit_op_u16(Op::GLOBAL_GET, gk, line);
+            crate::primitives::globals::emit_read(&mut chunks[current], g.as_str(), line);
             crate::primitives::collections::emit_push(chunks, current, line);
             chunks[current].emit_op(Op::DROP, line);
         }
@@ -5448,8 +5423,7 @@ pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &st
 /// Stack: unchanged
 pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-    let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, parent_c, line);
+    crate::primitives::globals::emit_read(chunk, parent_name, line);
     let super_key = chunk.add_constant(Value::String(Arc::from("__super")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, super_key, line);
     chunk.emit_op(Op::DROP, line);
@@ -5460,8 +5434,7 @@ pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, li
 /// Stack before: [constructor]  Stack after: [constructor]
 pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
     chunk.emit_dup(line);
-    let parent_c = chunk.add_constant(Value::String(Arc::from(parent_name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, parent_c, line);
+    crate::primitives::globals::emit_read(chunk, parent_name, line);
     let assign_fn = chunk.add_import("ecma:object", "assign");
     chunk.emit_call(assign_fn, 2, line);
     chunk.emit_op(Op::DROP, line);
@@ -5477,8 +5450,7 @@ pub fn emit_inherit_statics(chunk: &mut Chunk, parent_name: &str, line: u32) {
 /// calls (set by `new` chains), so the guard is a simple null check at the
 /// constructor body's start.
 pub fn emit_class_requires_new_guard(chunk: &mut Chunk, class_name: &str, line: u32) {
-    let nt_key = chunk.add_constant(Value::String(Arc::from("__js_new_target")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, nt_key, line);
+    crate::primitives::globals::emit_read(chunk, "__js_new_target", line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
     chunk.emit_string_const(
@@ -5662,8 +5634,7 @@ pub fn emit_store_constructor_with_upvalues(
     }
     chunk.emit_op_u16(Op::LOCAL_TEE, local_slot, line);
     // Store under original name (case-sensitive lookup)
-    let global_name = chunk.add_constant(Value::String(Arc::from(class_name)));
-    chunk.emit_op_u16(Op::GLOBAL_SET, global_name, line);
+    crate::primitives::globals::emit_write(chunk, class_name, line);
     // Also store under lowercase alias for cross-language lookup (VB is case-insensitive).
     // Skip in case-sensitive profiles (JS): a `class Range` must NOT overwrite a hoisted
     // `function* range` — the two names are distinct in a case-sensitive language.
@@ -5671,8 +5642,7 @@ pub fn emit_store_constructor_with_upvalues(
         let lower = class_name.to_lowercase();
         if lower != class_name {
             chunk.emit_op_u16(Op::LOCAL_GET, local_slot, line);
-            let lower_name = chunk.add_constant(Value::String(Arc::from(lower.as_str())));
-            chunk.emit_op_u16(Op::GLOBAL_SET, lower_name, line);
+            crate::primitives::globals::emit_write(chunk, lower.as_str(), line);
         }
     }
 }
@@ -5758,6 +5728,15 @@ pub fn register_type(
     } else {
         reserve_type_slot(chunks, parent)
     };
+    // Same story for interfaces: declare each one, link by index. This was a
+    // NAME resolved at load, which is why an interface declared in another
+    // module — or spelled differently from its declaration — could never
+    // match in `is_subtype`.
+    let implements: Vec<u16> = implements
+        .iter()
+        .filter(|iface| !iface.is_empty())
+        .map(|iface| reserve_type_slot(chunks, iface))
+        .collect();
     let entry = vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
@@ -5886,16 +5865,28 @@ pub fn register_interface(
 ) {
     // Names arrive pre-canonicalised by the walker — see [`register_type`].
     let method_entries: Vec<(String, usize)> = methods.into_iter().map(|m| (m, 0usize)).collect();
-    chunks[0].types.push(vybe_runtime::chunk::TypeEntry {
+    // An interface extending other interfaces links to them by index, exactly
+    // as a class links to its supertype.
+    let implements: Vec<u16> = parent_interfaces
+        .iter()
+        .filter(|iface| !iface.is_empty())
+        .map(|iface| reserve_type_slot(chunks, iface))
+        .collect();
+    let entry = vybe_runtime::chunk::TypeEntry {
         name: name.to_string(),
         kind: vybe_runtime::chunk::CompositeKind::Struct,
         parent_index: 0,
         fields: Vec::new(),
         methods: method_entries,
         is_interface: true,
-        implements: parent_interfaces,
+        implements,
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new() });
+        field_descriptors: std::collections::HashMap::new() };
+    // Fill a reserved slot when one exists — a class that named this
+    // interface before it was compiled already declared it.
+    match chunks[0].types.iter_mut().find(|t| t.name == name) {
+        Some(slot) => *slot = entry,
+        None => chunks[0].types.push(entry) }
 }
 
 /// Register a class that implements one or more interfaces.

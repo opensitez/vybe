@@ -141,8 +141,7 @@ pub fn emit_exception_constructor(
 pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
     // err.__proto__ = <kind ctor>.prototype
     crate::primitives::instructions::core_wasm::dup(chunk, line); // [err, err]
-    let ctor_key = chunk.add_constant(Value::String(Arc::from(format!("__ctor_{kind}").as_str())));
-    chunk.emit_op_u16(Op::GLOBAL_GET, ctor_key, line); // [err, err, ctor]
+    crate::primitives::globals::emit_read(chunk, format!("__ctor_{kind}").as_str(), line); // [err, err, ctor]
     let proto_key = chunk.add_constant(Value::String(Arc::from("prototype")));
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key, line); // [err, err, proto]
     let link_key = chunk.add_constant(Value::String(Arc::from("__proto__")));

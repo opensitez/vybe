@@ -345,7 +345,11 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget("BottomSheet", "StatefulWidget", "Panel", F_BOTTOMSHEET),
     FlutterClass::widget("TabBar", "StatefulWidget", "tabcontrol", F_TABBAR),
     FlutterClass::widget("TabBarView", "StatefulWidget", "FlowLayoutPanel", F_TABBARVIEW),
-    FlutterClass::widget("Tab", "StatelessWidget", "Label", F_TAB),
+    // `Tab` contributes a LABEL to the tabcontrol's own header — it must not
+    // realize a widget of its own, or each tab renders a second time on top of
+    // the strip the tabcontrol already drew. Same idiom as `DropdownMenuItem`,
+    // which maps to `Panel` so its text becomes an item rather than a control.
+    FlutterClass::widget("Tab", "StatelessWidget", "Panel", F_TAB),
     FlutterClass::widget("FlexibleSpaceBar", "StatefulWidget", "Panel", F_FLEXSPACEBAR),
     FlutterClass::widget("LinearProgressIndicator", "StatefulWidget", "progressbar", F_LINEARPROG),
     FlutterClass::widget("CircularProgressIndicator", "StatefulWidget", "progressbar", F_CIRCPROG),

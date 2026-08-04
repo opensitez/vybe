@@ -98,7 +98,6 @@ impl Compiler {
         else_body: Option<&[Statement]>,
     ) -> Result<(), String> {
         let line = self.line;
-        let js_this = self.str_const("__js_this");
         let _iterator_key = self.str_const("iterator");
         let _next_key_c = self.str_const("next");
         let done_key_c = self.str_const("done");
@@ -124,7 +123,7 @@ impl Compiler {
 
         // Call iterator() with __js_this = iter_slot
         self.emit_u16(Op::LOCAL_GET, iter_slot);
-        self.emit_u16(Op::GLOBAL_SET, js_this);
+        self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, iter_fn_slot);
         self.emit_u8(Op::CALL_REF, 0);
         self.emit_u16(Op::LOCAL_SET, it_slot);
@@ -142,7 +141,7 @@ impl Compiler {
 
         // Call next() with __js_this = it
         self.emit_u16(Op::LOCAL_GET, it_slot);
-        self.emit_u16(Op::GLOBAL_SET, js_this);
+        self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, next_method_slot);
         self.emit_u8(Op::CALL_REF, 0);
         self.emit_u16(Op::LOCAL_SET, step_slot);
@@ -713,8 +712,7 @@ impl Compiler {
 
         if !self.binding_uses_pointer_cell(name) {
             let value_slot = self.define_local("__ref_global_value");
-            let idx = self.str_const(&canon_name);
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(&canon_name);
             self.emit_u16(Op::LOCAL_SET, value_slot);
             crate::primitives::references::emit_cell_new(
                 &mut self.chunks,
@@ -722,7 +720,7 @@ impl Compiler {
                 value_slot,
                 self.line,
             );
-            self.emit_u16(Op::GLOBAL_SET, idx);
+            self.emit_global_write(&canon_name);
             self.mark_pointer_cell_binding(name);
         }
 
@@ -856,8 +854,7 @@ impl Compiler {
                     return Ok(());
                 }
                 if self.promote_global_binding_to_pointer_cell(name) {
-                    let idx = self.str_const(&canon_name);
-                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    self.emit_global_read(&canon_name);
                     return Ok(());
                 }
             }
@@ -1392,7 +1389,6 @@ impl Compiler {
         let line = self.line;
         let return_key = self.str_const("return");
         let _function_str = self.str_const("function");
-        let js_this = self.str_const("__js_this");
         let return_fn_slot = self.define_local("__iterator_close_return");
 
         self.emit_u16(Op::LOCAL_GET, iterator_slot);
@@ -1405,7 +1401,7 @@ impl Compiler {
         crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
         self.chunk().emit_if(line);
         self.emit_u16(Op::LOCAL_GET, iterator_slot);
-        self.emit_u16(Op::GLOBAL_SET, js_this);
+        self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, return_fn_slot);
         self.emit_u8(Op::CALL_REF, 0);
         self.emit(Op::DROP);

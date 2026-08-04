@@ -164,10 +164,10 @@ const MAPPINGS: &[(&str, &str)] = &[
 pub fn emit_runtime_helper_preamble(script: &mut Chunk, stdlib_base: usize) {
     for (i, &(_chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
         let ci = stdlib_base + i;
-        let name_c = script.add_constant(Value::String(Arc::from(global_name)));
+
 
         // Check if global is already set: global_get + ref_is_null
-        script.emit_op_u16(Op::GLOBAL_GET, name_c, 0);
+        crate::primitives::globals::emit_read(script, global_name, 0);
         script.emit_op(Op::REF_IS_NULL, 0);
         let install_block = script.emit_block(0);
         script.emit_op(Op::I32_EQZ, 0);
@@ -176,7 +176,7 @@ pub fn emit_runtime_helper_preamble(script: &mut Chunk, stdlib_base: usize) {
         // Install: ref_func + global_set + drop
         script.emit_op_u16(Op::REF_FUNC, ci as u16, 0);
         script.emit(0, 0); // 0 upvalues
-        script.emit_op_u16(Op::GLOBAL_SET, name_c, 0);
+        crate::primitives::globals::emit_write(script, global_name, 0);
 
         script.emit_end(0);
         script.patch_block(install_block);
@@ -201,8 +201,7 @@ pub fn append_runtime_helper_chunks(program_chunks: &mut Vec<Chunk>) {
 ///   compile_expr(arg0);                               // push array
 ///   emit_call_invoke(chunk, 1, 0);                    // call_ref 1
 pub fn emit_call_push_func(chunk: &mut Chunk, global_name: &str, line: u32) {
-    let name_c = chunk.add_constant(Value::String(Arc::from(global_name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name_c, line);
+    crate::primitives::globals::emit_read(chunk, global_name, line);
 }
 
 /// Emit call_ref after func + args are on stack.
@@ -268,8 +267,7 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
 /// MUST push args AFTER calling this (which means this only works for 0-arg calls).
 /// For multi-arg calls, use the push_func/invoke pair.
 pub fn emit_call(chunk: &mut Chunk, global_name: &str, argc: u8, line: u32) {
-    let name_c = chunk.add_constant(Value::String(Arc::from(global_name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name_c, line);
+    crate::primitives::globals::emit_read(chunk, global_name, line);
     chunk.emit_op_u8(Op::CALL_REF, argc, line);
 }
 

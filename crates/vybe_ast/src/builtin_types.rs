@@ -54,6 +54,67 @@ pub enum Match {
     Contains,
 }
 
+/// The storage WIDTH an integer spelling declares.
+///
+/// `BuiltinType::Int` answers "is this an integer?" — it deliberately collapses
+/// every width into one variant, because slot binding does not care whether a
+/// receiver is 8 or 64 bits. Value narrowing does: assigning to a `byte` must
+/// wrap at 256, to an `int` at 2^32.
+///
+/// Without this, the only place that knows a width is the narrowing emitter,
+/// which re-derived it by matching raw spellings (`"unsigned char"`,
+/// `"longint"`, `"system.int32"`) — a per-language table in shared compiler
+/// code, which is the thing this module exists to remove.
+///
+/// # Only the widths the platform actually narrows
+///
+/// `short`, `long`, `int64`, `uint`, `ulong` … are INTENTIONALLY absent. The
+/// narrowing emitter has never handled them, so giving them a width here would
+/// silently start coercing values that are untouched today. Neutral by
+/// construction, exactly like the spelling move this module documents; adding a
+/// width is a behaviour change that wants its own measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntWidth {
+    I8,
+    U8,
+    I16,
+    I32,
+    U32,
+}
+
+impl IntWidth {
+    /// Inclusive range of exactly representable values.
+    pub const fn range(self) -> (i64, i64) {
+        match self {
+            IntWidth::I8 => (i8::MIN as i64, i8::MAX as i64),
+            IntWidth::U8 => (0, u8::MAX as i64),
+            IntWidth::I16 => (i16::MIN as i64, i16::MAX as i64),
+            IntWidth::I32 => (i32::MIN as i64, i32::MAX as i64),
+            IntWidth::U32 => (0, u32::MAX as i64),
+        }
+    }
+
+    /// The modulus the value wraps at — `2^bits`.
+    pub const fn modulus(self) -> f64 {
+        match self {
+            IntWidth::I8 | IntWidth::U8 => 256.0,
+            IntWidth::I16 => 65_536.0,
+            IntWidth::I32 | IntWidth::U32 => 4_294_967_296.0,
+        }
+    }
+
+    /// For a signed width, the value at or above which the wrapped result is
+    /// negative and one modulus must be subtracted. `None` when unsigned.
+    pub const fn sign_threshold(self) -> Option<f64> {
+        match self {
+            IntWidth::I8 => Some(128.0),
+            IntWidth::I16 => Some(32_768.0),
+            IntWidth::I32 => Some(2_147_483_648.0),
+            IntWidth::U8 | IntWidth::U32 => None,
+        }
+    }
+}
+
 /// One spelling and how to match it.
 ///
 /// `pattern` is a [`Cow`] so the platform table stays a `const` of borrowed
@@ -73,6 +134,76 @@ const fn s(pattern: &'static str, how: Match, ty: BuiltinType) -> Spelling {
         how,
         ty,
     }
+}
+
+/// One integer spelling and the storage width it declares.
+///
+/// # Why this is a SECOND table and not a field on [`Spelling`]
+///
+/// The spelling sets genuinely differ. C's `unsigned char` has a width, but it
+/// must NOT become `BuiltinType::Int`: `is_numeric` feeds
+/// `expr_prefers_numeric_add`, and flipping `unsigned char` to numeric would
+/// change what `+` means for C's char buffers — which are modelled as strings.
+///
+/// Same split the module already makes between [`matches_type`] and
+/// [`classify_with`]: one spelling store, and a separate question gets a
+/// separate answer rather than a field that is wrong for half its rows.
+#[derive(Debug, Clone, Copy)]
+pub struct WidthSpelling {
+    pub pattern: &'static str,
+    pub how: Match,
+    pub width: IntWidth,
+}
+
+const fn w(pattern: &'static str, how: Match, width: IntWidth) -> WidthSpelling {
+    WidthSpelling {
+        pattern,
+        how,
+        width,
+    }
+}
+
+/// The integer spellings the platform NARROWS, and to what width.
+///
+/// Transcribed from the arms of the narrowing emitter in
+/// `vybe_compiler::primitives::arrays::coerce_c_value_for_type_hint`, which is
+/// where these per-language spellings used to live inline. The list is
+/// deliberately identical to what that function matched — see [`IntWidth`] for
+/// why `short`/`long`/`int64` are absent.
+pub const PLATFORM_INT_WIDTHS: &[WidthSpelling] = &[
+    // 8-bit unsigned. `char` is here because a C `char` is an 8-bit integer;
+    // a language whose `char` holds a CHARACTER is filtered by the caller's
+    // `[builtin_types]` check BEFORE the width is consulted.
+    w("char", Match::Exact, IntWidth::U8),
+    w("uint8", Match::Exact, IntWidth::U8),
+    w("unsigned char", Match::Exact, IntWidth::U8),
+    w("byte", Match::Exact, IntWidth::U8),
+    // 8-bit signed.
+    w("signed char", Match::Exact, IntWidth::I8),
+    w("int8", Match::Exact, IntWidth::I8),
+    w("sbyte", Match::Exact, IntWidth::I8),
+    // 16-bit signed.
+    w("int16", Match::Exact, IntWidth::I16),
+    // 32-bit unsigned.
+    w("uint32", Match::Exact, IntWidth::U32),
+    w("unsigned int", Match::Exact, IntWidth::U32),
+    // 32-bit signed.
+    w("int", Match::Exact, IntWidth::I32),
+];
+
+/// The storage width `hint` declares, or `None` if the platform does not narrow
+/// it. Matching is on a normalised hint, like every other lookup here.
+pub fn int_width_of(hint: &str) -> Option<IntWidth> {
+    let normalized = normalize(hint);
+    PLATFORM_INT_WIDTHS
+        .iter()
+        .find(|sp| match sp.how {
+            Match::Exact => normalized == sp.pattern,
+            Match::Suffix => normalized.ends_with(sp.pattern),
+            Match::Prefix => normalized.starts_with(sp.pattern),
+            Match::Contains => normalized.contains(sp.pattern),
+        })
+        .map(|sp| sp.width)
 }
 
 impl Spelling {

@@ -1,4 +1,5 @@
-//! The module's global namespace as ONE object.
+//! The module's global namespace as ONE object — and the logistics that go
+//! with it: which names the module OWNS, and which it merely reads.
 //!
 //! Four languages spell the same thing:
 //!
@@ -211,5 +212,135 @@ impl Compiler {
                     if names_global_namespace_call(&self.profile, n))
             }
             _ => false }
+    }
+}
+
+/// Emit a read of module global `name` into a chunk.
+///
+/// **The one place a global access is encoded.** It used to be
+/// `str_const(name)` + `emit_u16(GLOBAL_GET, idx)` open-coded at ~320 sites
+/// across the shared primitives and the fifteen languages' emitter adapters.
+/// Each site was free to intern its own constant for a name another site had
+/// already interned, or to spell it differently — divergence whose symptom is
+/// a global that reads `undefined` for no visible reason.
+///
+/// Language emitter adapters call this exactly as the primitives do: they are
+/// emit layers, and this is what emitting a global means.
+pub fn emit_read(chunk: &mut Chunk, name: &str, line: u32) {
+    let idx = chunk.intern_string_constant(name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+}
+
+/// Emit a write of module global `name`. See [`emit_read`].
+pub fn emit_write(chunk: &mut Chunk, name: &str, line: u32) {
+    let idx = chunk.intern_string_constant(name);
+    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+}
+
+impl Compiler {
+    /// Read module global `name` — the compiler-side entry point.
+    ///
+    /// Routes through `global_name_const_idx` so the shared-global slot map is
+    /// honoured. That map existed while only **16** of the ~320 emit sites
+    /// consulted it; every other site interned its own constant and could
+    /// refer to a different slot for the same name.
+    pub(crate) fn emit_global_read(&mut self, name: &str) {
+        let idx = self.global_name_const_idx(name);
+        self.emit_u16(Op::GLOBAL_GET, idx);
+    }
+
+    /// Write module global `name`. See [`Compiler::emit_global_read`].
+    pub(crate) fn emit_global_write(&mut self, name: &str) {
+        let idx = self.global_name_const_idx(name);
+        self.emit_u16(Op::GLOBAL_SET, idx);
+    }
+}
+
+/// Declare the module's FREE globals as imports.
+///
+/// Lives here because it is global-namespace logistics, which is what this
+/// module is for. It reads the emitted bytecode rather than a record kept
+/// during emission for one reason, stated plainly: only 16 of the 193
+/// `GLOBAL_GET`/`GLOBAL_SET` emit sites funnel through
+/// `global_name_const_idx`, so a per-site record would be INCOMPLETE and an
+/// incomplete import list is worse than none. Funnelling every global read and
+/// write through this module would let the record replace the walk — that is
+/// the real fix, and it is a separate sweep.
+///
+/// A free global is a name the module reads but never writes and never
+/// defines — `globalThis`, `undefined`, `__ctor_TypeError`, the runtime
+/// helper anchors. In WASM a module may only touch globals it declared, so
+/// these are imports, and saying so is what makes the module
+/// self-describing instead of relying on whatever the host happens to have
+/// left in a shared map.
+///
+/// Measured 2026-08-04: 7 free names for a Python class program, 6 for
+/// PHP, 19 for JS. An import section, not a problem — the earlier estimate
+/// of "hundreds" was wrong.
+///
+/// Computed from the emitted bytecode rather than threaded through the 193
+/// `GLOBAL_GET` emit sites, exactly as `normalize_import_table` walks the
+/// code for `CALL_IMPORT`. String constants are skipped: they are already
+/// declared imports of their own.
+///
+/// The test is "no chunk WRITES it", not `defined_globals`. Measured
+/// 2026-08-04: `defined_globals` records what the SOURCE declares, and the
+/// prelude declares `globalThis`, `undefined`, `Function`, `__ctor_Error`
+/// — names whose values the host supplies and no chunk ever assigns.
+/// Subtracting it emptied the set entirely. Whoever writes a global is its
+/// definition; that is a fact about the bytecode.
+pub fn declare_free_globals(chunks: &mut [Chunk]) {
+    if chunks.is_empty() {
+        return;
+    }
+    let mut read: Vec<String> = Vec::new();
+    let mut written: HashSet<String> = HashSet::new();
+
+    for chunk in chunks.iter() {
+        let code = &chunk.code;
+        let mut ip = 0usize;
+        while ip + 3 < code.len() {
+            let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+            let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+            let Some(op) = Op::decode(group, sub) else {
+                ip += 4;
+                continue;
+            };
+            let operand_start = ip + 4;
+            if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 1 < code.len()
+            {
+                let idx =
+                    u16::from_be_bytes([code[operand_start], code[operand_start + 1]]) as usize;
+                if let Some(vybe_runtime::Value::String(name)) = chunk.constants.get(idx) {
+                    let name = name.to_string();
+                    if !name.starts_with(vybe_runtime::chunk::STRING_CONSTANTS_MODULE) {
+                        if op == Op::GLOBAL_SET {
+                            written.insert(name);
+                        } else if !read.contains(&name) {
+                            read.push(name);
+                        }
+                    }
+                }
+            }
+            ip = operand_start + op.operand_format().size_in(code, operand_start);
+        }
+    }
+
+    let mut declared = 0usize;
+    for name in read {
+        // A name this module writes is its own storage, not an import.
+        if written.contains(&name) {
+            continue;
+        }
+        chunks[0].add_global_import(vybe_runtime::chunk::HOST_GLOBALS_MODULE, &name);
+        declared += 1;
+    }
+    if std::env::var("VYBE_DEBUG_IMPORTS").is_ok() {
+        eprintln!(
+            "[free-globals] {} declared, {} written, {} chunks",
+            declared,
+            written.len(),
+            chunks.len()
+        );
     }
 }

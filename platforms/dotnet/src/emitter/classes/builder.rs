@@ -200,8 +200,7 @@ pub fn build_method_thunk_chunk(
             // Discard `this` (slot 0) — factory-style methods don't pass
             // it to the target ctor. Push the target class global, then
             // the user args (slots 1..=arity-1), then call.
-            let target_const = chunk.add_constant(Value::String(Arc::from(target_class)));
-            chunk.emit_op_u16(Op::GLOBAL_GET, target_const, line);
+            vybe_compiler::primitives::globals::emit_read(&mut chunk, target_class, line);
             // User args only — skip slot 0 (this).
             for slot in 1..method.arity as u16 {
                 chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -348,8 +347,7 @@ fn compile_body_offset(
                 chunk.emit(argc, line);
             }
             MethodOp::NewDotnet { class, argc } => {
-                let global_const = chunk.add_constant(Value::String(Arc::from(class)));
-                chunk.emit_op_u16(Op::GLOBAL_GET, global_const, line);
+                vybe_compiler::primitives::globals::emit_read(chunk, class, line);
                 // Note: global_get pushes the ctor; the args are
                 // expected to already be on the stack BELOW it from
                 // earlier `Push*` ops. Real .NET ctor convention here
@@ -572,8 +570,7 @@ pub fn build_constructor_chunk(
     // ── Step 1: get `this` ──────────────────────────────────────────────────
     if let Some(parent_name) = class.parent {
         // this = <Parent>()  — global_get parent ; call(0) ; local_set this ; drop
-        let parent_const = chunk.add_constant(Value::String(Arc::from(parent_name)));
-        chunk.emit_op_u16(Op::GLOBAL_GET, parent_const, line);
+        vybe_compiler::primitives::globals::emit_read(&mut chunk, parent_name, line);
         chunk.emit_op_u8(Op::CALL_REF, 0, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     } else {
@@ -739,15 +736,13 @@ pub fn emit_install_class_global(
     // Original case
     script_chunk.emit_op_u16(Op::REF_FUNC, ctor_chunk_idx as u16, line);
     script_chunk.emit(0, line); // 0 upvalues
-    let name_const = script_chunk.add_constant(Value::String(Arc::from(class_name)));
-    script_chunk.emit_op_u16(Op::GLOBAL_SET, name_const, line);
+    vybe_compiler::primitives::globals::emit_write(script_chunk, class_name, line);
 
     // Lowercase alias (skip if already lowercase)
     let lower = class_name.to_lowercase();
     if lower != class_name {
         script_chunk.emit_op_u16(Op::REF_FUNC, ctor_chunk_idx as u16, line);
         script_chunk.emit(0, line);
-        let lower_const = script_chunk.add_constant(Value::String(Arc::from(lower.as_str())));
-        script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_const, line);
+        vybe_compiler::primitives::globals::emit_write(script_chunk, lower.as_str(), line);
     }
 }

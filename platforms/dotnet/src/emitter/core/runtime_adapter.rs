@@ -170,8 +170,7 @@ fn emit_tostring_runtime(chunk: &mut Chunk, argc: u8, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, is_numeric, line);
     chunk.emit_if_value(line);
     // Numeric: render via the shared `__vybe_dotnet_numeric_format(v, fmt, 0)`.
-    let helper = chunk.add_constant(Value::String(Arc::from("__vybe_dotnet_numeric_format")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, helper, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_dotnet_numeric_format", line);
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fmt, line);
     chunk.emit_f64_const(0.0, line);

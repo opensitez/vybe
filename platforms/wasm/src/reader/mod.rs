@@ -2166,19 +2166,21 @@ fn translate_wasm_to_chunk(
             }
             0xD1 => chunk.emit_op(Op::REF_IS_NULL, 0),
 
-            // global.get/set — WASM globals mapped to global_get/set with index as name
+            // global.get/set — a DECODED module's globals, named by index.
+            // Not routed through `primitives::globals`: that is the compiler's
+            // funnel for a module's own global namespace, and this crate sits
+            // BELOW the compiler. Decoding someone else's module is not the
+            // same operation.
             0x23 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                let name = format!("__wasm_global_{}", idx);
-                let ci = chunk.add_constant(Value::String(Arc::from(name.as_str())));
+                let ci = chunk.intern_string_constant(&format!("__wasm_global_{}", idx));
                 chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             }
             0x24 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                let name = format!("__wasm_global_{}", idx);
-                let ci = chunk.add_constant(Value::String(Arc::from(name.as_str())));
+                let ci = chunk.intern_string_constant(&format!("__wasm_global_{}", idx));
                 chunk.emit_op_u16(Op::GLOBAL_SET, ci, 0);
             }
 

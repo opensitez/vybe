@@ -45,8 +45,7 @@ fn emit_dotnet_format_value_call(
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
 
-    let helper = chunk.add_constant(Value::String(Arc::from("__vybe_dotnet_numeric_format")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, helper, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_dotnet_numeric_format", line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);

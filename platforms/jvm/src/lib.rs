@@ -12,6 +12,7 @@
 //! have to declare the whole surface again.
 
 pub mod emitter;
+pub mod lang_enum;
 
 /// Embedded `java.*` profile fragment — the DATA the namespace tree is built
 /// from. A platform ships its own declarations for the same reason a language

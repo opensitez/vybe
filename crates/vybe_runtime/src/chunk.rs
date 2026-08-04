@@ -22,10 +22,12 @@ pub fn imported_global_key(module: &str, name: &str) -> String {
 /// The namespace a module declares its HOST-provided global bindings under.
 ///
 /// A free global — a name the module reads but never writes — is an import,
-/// and this is the module it comes from: the embedder. Distinct from
-/// [`STRING_CONSTANTS_MODULE`], which the js-string-builtins spec designates
-/// and whose field name IS its value.
-pub const HOST_GLOBALS_MODULE: &str = "vybe:globals";
+/// and this is the module it comes from: the embedder. `env` rather than a
+/// Vybe-specific name because the codebase already recognises it as one of the
+/// embedder-provided namespaces (`bundle.rs` groups `"*"`, `"env"` and
+/// `"wasm:string-constants"`), and because it is the de-facto WASM convention
+/// a JS host already supplies without being taught anything.
+pub const HOST_GLOBALS_MODULE: &str = "env";
 
 /// A host function import declaration — (module, name).
 /// Like WASM: (import "vybe:math" "floor" (func ...))
@@ -203,6 +205,15 @@ pub struct StackSwitchHandler {
 pub struct Chunk {
     pub code: Vec<u8>,
     pub constants: Vec<Value>,
+    /// `string → position in `constants`` for [`Chunk::intern_string_constant`].
+    ///
+    /// The pool is APPEND-ONLY — `add_constant` only pushes, and nothing
+    /// removes, reorders or rewrites it — so a position recorded here stays
+    /// valid for the life of the chunk. Without this the interner scanned the
+    /// whole pool on every call, and since every global access and every
+    /// string constant now routes through it, that was quadratic in the
+    /// number of constants.
+    string_constants: std::collections::HashMap<String, u16>,
     pub lines: Vec<u32>,
     pub name: String,
     pub arity: u8,
@@ -344,6 +355,7 @@ impl Chunk {
         Chunk {
             code: Vec::new(),
             constants: Vec::new(),
+            string_constants: std::collections::HashMap::new(),
             lines: Vec::new(),
             name: name.into(),
             arity: 0,
@@ -416,14 +428,12 @@ impl Chunk {
     /// constants reference theirs once per emit site and there are ~1,455 of
     /// them in a large module.
     pub fn intern_string_constant(&mut self, s: &str) -> u16 {
-        if let Some(i) = self
-            .constants
-            .iter()
-            .position(|c| matches!(c, Value::String(existing) if existing.as_ref() == s))
-        {
-            return i as u16;
+        if let Some(&i) = self.string_constants.get(s) {
+            return i;
         }
-        self.add_constant(Value::String(std::sync::Arc::from(s)))
+        let idx = self.add_constant(Value::String(std::sync::Arc::from(s)));
+        self.string_constants.insert(s.to_string(), idx);
+        idx
     }
 
     /// Declare a spec EH tag (exception-handling proposal tag section) and

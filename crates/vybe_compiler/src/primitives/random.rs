@@ -24,10 +24,6 @@ use vybe_runtime::opcode::Op;
 
 const RNG_GLOBAL: &str = "__vybe_rng";
 
-fn rng_global(chunk: &mut Chunk) -> u16 {
-    chunk.add_constant(Value::String(Arc::from(RNG_GLOBAL)))
-}
-
 /// `seed(n)` / `srand(n)` — set the global PRNG state deterministically from
 /// `n` (mixed and forced non-zero so xorshift never sticks at 0). Same seed →
 /// same subsequent stream. Stack: `[n]` → `[]`.
@@ -44,8 +40,7 @@ pub fn emit_seed(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::I32_XOR, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op(Op::I32_OR, line);
-    let g = rng_global(&mut chunks[current]);
-    chunks[current].emit_op_u16(Op::GLOBAL_SET, g, line);
+    crate::primitives::globals::emit_write(&mut chunks[current], RNG_GLOBAL, line);
 }
 
 /// One PRNG step → uniform `f64` in `[0, 1)`. Lazily seeds the global cell from
@@ -55,8 +50,7 @@ pub fn emit_next_unit(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].alloc_scratch(1);
     let s = base;
     // s = global
-    let g = rng_global(&mut chunks[current]);
-    chunks[current].emit_op_u16(Op::GLOBAL_GET, g, line);
+    crate::primitives::globals::emit_read(&mut chunks[current], RNG_GLOBAL, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, s, line);
     // if null → seed from ecma:math:random: s = floor(random() * 2^30) | 1
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
@@ -82,8 +76,7 @@ pub fn emit_next_unit(chunks: &mut [Chunk], current: usize, line: u32) {
     }
     // store back
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
-    let g2 = rng_global(&mut chunks[current]);
-    chunks[current].emit_op_u16(Op::GLOBAL_SET, g2, line);
+    crate::primitives::globals::emit_write(&mut chunks[current], RNG_GLOBAL, line);
     // (s & 0x7FFFFF) / 2^23  → [0, 1) with 23 bits of entropy
     chunks[current].emit_op_u16(Op::LOCAL_GET, s, line);
     core_wasm::i32_const(&mut chunks[current], line, 0x7FFFFF);

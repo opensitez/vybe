@@ -24,10 +24,9 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 
 fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32) -> u16 {
     let chunk = &mut chunks[current];
-    let global = chunk.add_constant(Value::String(Arc::from(ENV_OVERRIDES_GLOBAL)));
     let object_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, ENV_OVERRIDES_GLOBAL, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     let create_block = chunk.emit_block(line);
@@ -40,7 +39,7 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op_u16(Op::CALL_IMPORT, object_new, line);
     chunk.emit(0, line);
     core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, global, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, ENV_OVERRIDES_GLOBAL, line);
     chunk.emit_end(line);
     chunk.patch_block(create_block);
 
@@ -68,10 +67,9 @@ pub fn emit_environment_version(chunks: &mut Vec<Chunk>, current: usize, line: u
 
 pub fn emit_environment_exit_code(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let global = chunk.add_constant(Value::String(Arc::from(ENV_EXIT_CODE_GLOBAL)));
     let value_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, ENV_OVERRIDES_GLOBAL, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
@@ -84,9 +82,8 @@ pub fn emit_environment_exit_code(chunks: &mut [Chunk], current: usize, line: u3
 
 pub fn emit_environment_set_exit_code(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let global = chunk.add_constant(Value::String(Arc::from(ENV_EXIT_CODE_GLOBAL)));
     core_wasm::dup(chunk, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, global, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, ENV_OVERRIDES_GLOBAL, line);
 }
 
 pub fn emit_environment_system_directory(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -150,8 +147,7 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, argc: u8, line
     }
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line);
 
-    let global = chunk.add_constant(Value::String(Arc::from(ENV_OVERRIDES_GLOBAL)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, ENV_OVERRIDES_GLOBAL, line);
     chunk.emit_op_u16(Op::LOCAL_SET, object_slot, line);
 
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -234,8 +230,7 @@ pub fn emit_environment_get_all(chunks: &mut [Chunk], current: usize, argc: u8, 
     host::emit(chunk, "ecma:map", "fromEntries", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
 
-    let global = chunk.add_constant(Value::String(Arc::from(ENV_OVERRIDES_GLOBAL)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, ENV_OVERRIDES_GLOBAL, line);
     chunk.emit_op_u16(Op::LOCAL_SET, object_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
@@ -331,10 +326,9 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
 
     vybe_compiler::primitives::loops::emit_for_in_end(chunks, current, idx_slot, state, line);
     let chunk = &mut chunks[current];
-    let global = chunk.add_constant(Value::String(Arc::from(ENV_OVERRIDES_GLOBAL)));
     let overrides_slot = reserve_slot(chunk);
     let override_entries_slot = reserve_slot(chunk);
-    chunk.emit_op_u16(Op::GLOBAL_GET, global, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, ENV_OVERRIDES_GLOBAL, line);
     chunk.emit_op_u16(Op::LOCAL_SET, overrides_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, overrides_slot, line);
     chunk.emit_op(Op::REF_IS_NULL, line);

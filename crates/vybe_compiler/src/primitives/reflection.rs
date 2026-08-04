@@ -2023,6 +2023,55 @@ pub fn emit_instanceof(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// Stack: `[] -> [i32]`. Is the value in `value_slot` an instance of the type
+/// spelled `type_name`?
+///
+/// **The one answer to that question.** Every asker — typed `catch` arms,
+/// `instanceof` / `is` / `isinstance` — routes here instead of emitting its own
+/// test, so a language cannot get a different answer depending on which
+/// construct asked.
+///
+/// Identity has two representations, and this unions them because neither is
+/// complete on its own:
+///
+/// * the **rtt** — `ref.test` against the declared type index, which resolves
+///   declared subtyping and `implements` by index (so it is the half that
+///   answers for interfaces), but only for an object that carries an rtt, and
+///   only when the most-derived class was the one that allocated it;
+/// * **`__types`** — the ancestry chain [`emit_instanceof_chain`] stamps and
+///   [`emit_instanceof`] reads, which every frontend writes and which survives
+///   a base constructor allocating the instance.
+///
+/// A bare `ref.test` is therefore not a safe spelling of this question: an
+/// object whose rtt is its PARENT's answers "no" to its own class while
+/// `__types` says "yes", and the negative rtt suppresses the string chain
+/// rather than deferring to it. Testing the rtt FIRST keeps it authoritative
+/// wherever it is present and correct; `__types` only ever adds matches.
+///
+/// Both halves are cross-language: the rtt resolves through the module type
+/// index space and `__types` holds canonical names, so a class from one
+/// frontend answers for a type declared by another.
+pub fn emit_is_instance_of(
+    chunks: &mut [Chunk],
+    current: usize,
+    value_slot: u16,
+    type_name: &str,
+    line: u32,
+) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    let ht = crate::primitives::classes::heaptype_for_name(chunks, type_name);
+    chunks[current].emit_ref_type_op(Op::REF_TEST, ht, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
+    chunks[current].emit_string_const(type_name, line);
+    emit_instanceof(chunks, current, line);
+    crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+}
+
 /// Stack: unchanged. Writes `object.__type = type_name`.
 pub fn emit_stamp_type(chunk: &mut Chunk, object_slot: u16, type_name: &str, line: u32) {
     emit_set_slot_string_field(chunk, object_slot, FIELD_TYPE, type_name, line);

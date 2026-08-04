@@ -18,6 +18,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::bitset_adapter as bitset;
     use crate::emitter::collection_adapter as collection;
     use crate::emitter::instant_adapter as instant;
+    use crate::emitter::enum_set_adapter as enum_set;
     use crate::emitter::io_adapter as io;
     use crate::emitter::map_adapter as map;
     use crate::emitter::math_adapter as math;
@@ -31,6 +32,40 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::url_adapter as url;
     use crate::emitter::uuid_adapter as uuid;
     match name {
+        // ── java.util.EnumSet ──
+        "jvm.java.enum_set_none_of" => enum_set::emit_none_of(chunks, current, line),
+        "jvm.java.enum_set_all_of" => enum_set::emit_all_of(chunks, current, line),
+        "jvm.java.enum_set_of" => enum_set::emit_of(chunks, current, argc, line),
+        "jvm.java.enum_set_copy_of" => enum_set::emit_copy_of(chunks, current, line),
+        "jvm.java.enum_set_complement_of" => enum_set::emit_complement_of(chunks, current, line),
+        "jvm.java.enum_set_range" => enum_set::emit_range(chunks, current, line),
+        "jvm.java.enum_set_add" => enum_set::emit_add(chunks, current, line),
+        "jvm.java.enum_set_add_all" => enum_set::emit_add_all(chunks, current, line),
+        "jvm.java.enum_set_contains" => enum_set::emit_contains(chunks, current, line),
+        "jvm.java.enum_set_contains_all" => enum_set::emit_contains_all(chunks, current, line),
+        "jvm.java.enum_set_remove" => enum_set::emit_remove(chunks, current, line),
+        "jvm.java.enum_set_equals" => enum_set::emit_equals(chunks, current, line),
+        "jvm.java.enum_set_hash_code" => enum_set::emit_hash_code(chunks, current, line),
+        "jvm.java.enum_set_iterator" => enum_set::emit_iterator(chunks, current, line),
+        "jvm.java.enum_set_get_class" => enum_set::emit_get_class(chunks, current, line),
+
+        // ── java.lang.Enum class metadata ──
+        // `Class.getEnumConstants()`, published by each enum's static
+        // initializer. `X.class` is a NAME, so this is how a leaf that is
+        // handed only that name reaches the constants.
+        "jvm.java.enum_declare" => {
+            crate::emitter::enum_adapter::emit_declare(chunks, current, line)
+        }
+        "jvm.java.enum_constants_of" => {
+            crate::emitter::enum_adapter::emit_constants_of(chunks, current, line)
+        }
+
+        // ── java.lang.Object ──
+        // `String.valueOf` / `println(Object)` / `"" + x` all render through
+        // one adapter, so a class's ToString slot is reached identically from
+        // every one of them.
+        "jvm.java.to_string" => crate::emitter::object_adapter::emit_to_string(chunks, current, line),
+
         // ── construction ──
         "jvm.java.net.url_new" => url::emit_url_new(chunks, current, argc, line),
         "jvm.java.net.uri_new" => url::emit_uri_new(chunks, current, argc, line),

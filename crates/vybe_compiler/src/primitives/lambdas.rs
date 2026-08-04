@@ -197,16 +197,14 @@ impl Compiler {
                         || self.resolve_upvalue(scope_idx, "__js_this").is_some()));
             if !this_reachable {
                 let slot = self.define_local("__js_this");
-                let js_this = self.str_const("__js_this");
-                self.emit_u16(Op::GLOBAL_GET, js_this);
+                self.emit_global_read("__js_this");
                 self.emit_u16(Op::LOCAL_SET, slot);
             }
             let nt_reachable = self.scope().resolve("__js_new_target").is_some()
                 || (scope_idx > 0 && self.resolve_upvalue(scope_idx, "__js_new_target").is_some());
             if !nt_reachable {
                 let slot = self.define_local("__js_new_target");
-                let js_nt = self.str_const("__js_new_target");
-                self.emit_u16(Op::GLOBAL_GET, js_nt);
+                self.emit_global_read("__js_new_target");
                 self.emit_u16(Op::LOCAL_SET, slot);
             }
         }
@@ -277,6 +275,9 @@ impl Compiler {
                 self.chunk().emit_end(line);
             }
         }
+        // A parameter is a declared binding like any other — narrow it here,
+        // AFTER defaults, so it holds the value it actually ends up with.
+        self.emit_param_type_bindings(params)?;
         // Snapshot __js_this as a local BEFORE shared env creation so inner
         // arrows can capture it via the shared env / upvalue chain.
         if self.profile.ambient_this_binding && self.scopes.len() > 1 {
@@ -289,8 +290,7 @@ impl Compiler {
                     LambdaBody::Block(stmts) => crate::primitives::body_contains_this(stmts),
                     LambdaBody::Expr(expr) => crate::primitives::expr_contains_this(expr) };
                 if body_has_this {
-                    let this_idx = self.str_const("__js_this");
-                    self.emit_u16(Op::GLOBAL_GET, this_idx);
+                    self.emit_global_read("__js_this");
                     let this_local = self.define_local("__js_this");
                     self.emit_u16(Op::LOCAL_SET, this_local);
                     self.current_closure_captured_locals

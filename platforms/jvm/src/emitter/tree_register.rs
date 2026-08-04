@@ -1104,6 +1104,96 @@ fn insert_java_io_methods(root: &mut Subtree) {
     }
 }
 
+/// `java.util.EnumSet` and `java.lang.Enum` — declared as TREE data, children
+/// and all.
+///
+/// This is what "migrated" means for a JDK class, and it is the difference
+/// between a platform surface and a code move. Fifteen `common:` emits sitting
+/// in `platforms/jvm` were still reached only through fifteen
+/// `__java_enum_set_*` rows in the Java profile plus a Java-walker rewrite, so
+/// `java.util.EnumSet.of(Color.RED)` from Kotlin resolved to nothing —
+/// measured with `--dump-ast`: the member chain stayed raw.
+///
+/// A type node alone would not fix that. The statics have to live under
+/// `statics`, the instance operations under `methods`, and the statics have to
+/// DECLARE that they return a `java.util.EnumSet` (`member_returns`) so
+/// `EnumSet.of(x).add(y)` — and a local typed by that call — resolves the
+/// second hop through the tree as well.
+fn insert_java_util_enum_set(root: &mut Subtree) {
+    const STATICS: &[(&str, &str, u8, u8)] = &[
+        ("noneof", "jvm.java.enum_set_none_of", 1, 1),
+        ("allof", "jvm.java.enum_set_all_of", 1, 1),
+        ("of", "jvm.java.enum_set_of", 1, 10),
+        ("copyof", "jvm.java.enum_set_copy_of", 1, 1),
+        ("complementof", "jvm.java.enum_set_complement_of", 1, 1),
+        ("range", "jvm.java.enum_set_range", 2, 2),
+    ];
+    const METHODS: &[(&str, &str, u8, u8)] = &[
+        ("add", "jvm.java.enum_set_add", 1, 1),
+        ("addall", "jvm.java.enum_set_add_all", 1, 1),
+        ("contains", "jvm.java.enum_set_contains", 1, 1),
+        ("containsall", "jvm.java.enum_set_contains_all", 1, 1),
+        ("remove", "jvm.java.enum_set_remove", 1, 1),
+        ("equals", "jvm.java.enum_set_equals", 1, 1),
+        ("hashcode", "jvm.java.enum_set_hash_code", 0, 0),
+        ("iterator", "jvm.java.enum_set_iterator", 0, 0),
+        ("getclass", "jvm.java.enum_set_get_class", 0, 0),
+    ];
+
+    for (member, emit, min_args, max_args) in STATICS {
+        insert_path(
+            root,
+            &format!("util.enumset.{member}"),
+            common_method(emit, *min_args, *max_args),
+        );
+    }
+    // AFTER the statics, never before: `ensure_type_node` PROMOTES an existing
+    // namespace and silently does nothing when the path is absent. Called
+    // first it left `enumset` a plain `Namespace`, so the statics still
+    // resolved by path walk while `find_type_node` — which matches `Type`
+    // nodes only — saw no type at all, and every instance method and declared
+    // return type was dropped without a word.
+    ensure_type_node(root, "util.enumset");
+    let mut methods = Subtree::new();
+    for (member, emit, min_args, max_args) in METHODS {
+        methods.insert(
+            (*member).to_string(),
+            common_method(emit, *min_args, *max_args),
+        );
+    }
+    merge_type_methods(root, "util.enumset", methods);
+    merge_type_member_returns(
+        root,
+        "util.enumset",
+        &[
+            ("noneOf", "java.util.EnumSet"),
+            ("allOf", "java.util.EnumSet"),
+            ("of", "java.util.EnumSet"),
+            ("copyOf", "java.util.EnumSet"),
+            ("complementOf", "java.util.EnumSet"),
+            ("range", "java.util.EnumSet"),
+            ("iterator", "java.util.Iterator"),
+        ],
+    );
+
+    // `Class.getEnumConstants()`, and the private hook each enum's static
+    // initializer calls to publish its own. Both live on `java.lang.Enum`
+    // because that is the class the metadata belongs to — and because
+    // reaching them by their real JDK path is exactly what makes them
+    // available to a frontend that declares nothing.
+    insert_path(
+        root,
+        "lang.enum.__vybe_declare",
+        common_method("jvm.java.enum_declare", 2, 2),
+    );
+    insert_path(
+        root,
+        "lang.enum.getenumconstants",
+        common_method("jvm.java.enum_constants_of", 1, 1),
+    );
+    ensure_type_node(root, "lang.enum");
+}
+
 fn insert_java_util_collection_statics(root: &mut Subtree) {
     for (type_path, member, emit) in [
         ("util.collections", "sort", "jvm.java.collections_sort"),
@@ -2853,6 +2943,7 @@ pub fn register_namespace_tree() {
         insert_java_net_url_uri(&mut root);
         insert_java_util_collection_methods(&mut root);
         insert_java_util_collection_statics(&mut root);
+        insert_java_util_enum_set(&mut root);
         insert_java_io_methods(&mut root);
         insert_java_util_uuid(&mut root);
         insert_java_util_random(&mut root);
@@ -3154,5 +3245,56 @@ mod tests {
             Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
                 if op == "jvm.java.bitset_value_of"
         ));
+    }
+
+    /// `java.util.EnumSet` is reachable from an arbitrary scope by PATH — no
+    /// `common:java.enum_set_*` profile row, no walker rewrite.
+    ///
+    /// The statics, the instance methods and the declared return type are
+    /// asserted separately on purpose: registering the leaves without
+    /// promoting the node to a `Type` left the statics resolving while
+    /// `find_type_node` — which matches `Type` nodes only — silently dropped
+    /// every method and every `member_returns` entry.
+    #[test]
+    fn java_util_enum_set_tree_is_platform_owned() {
+        super::register_namespace_tree();
+        let scopes = vec!["jvm".to_string()];
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.util.EnumSet",
+                "allOf"
+            ),
+            Some(node) if matches!(
+                vybe_runtime::namespaces::select_overload(&node, 1),
+                Some(vybe_runtime::namespaces::NamespaceNode::CommonEmit(op))
+                    if op == "jvm.java.enum_set_all_of"
+            )
+        ));
+        assert!(matches!(
+            vybe_runtime::namespaces::lookup_type_instance_target(
+                &scopes,
+                "java.util.EnumSet",
+                "contains",
+                1,
+            ),
+            Some(vybe_runtime::component_model::InstanceMethodTarget::Common { emit, .. })
+                if emit == "jvm.java.enum_set_contains"
+        ));
+        assert_eq!(
+            vybe_runtime::namespaces::lookup_type_member_return(&scopes, "EnumSet", "of")
+                .as_deref(),
+            Some("java.util.EnumSet"),
+        );
+        // `java.lang.Enum`'s metadata hook, which is what makes a leaf handed
+        // only `X.class` — a NAME — able to reach the constants.
+        assert!(
+            vybe_runtime::namespaces::lookup_type_static_member(
+                &scopes,
+                "java.lang.Enum",
+                "__vybe_declare"
+            )
+            .is_some()
+        );
     }
 }

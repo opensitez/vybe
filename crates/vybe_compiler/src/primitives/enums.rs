@@ -1,11 +1,26 @@
-//! .NET enum call compilation (GetName/GetNames/GetValues/Parse/TryParse/
-//! IsDefined/ToString/HasFlag/console-arg) — moved out of the former dotnet_calls.rs.
-//! The runtime value<->name machinery lives in `crate::primitives::r#enum`; this
-//! layer is the compile-time enum-type resolution + dispatch glue.
+//! Shared enum machinery — BOTH halves of the topic, in one file.
+//!
+//! The `impl Compiler` half is the compile-time enum-type resolution +
+//! dispatch glue (GetName/GetNames/GetValues/Parse/TryParse/IsDefined/
+//! ToString/HasFlag/console-arg), moved out of the former dotnet_calls.rs.
+//! The free `&mut Chunk` half at the bottom is the runtime value<->name
+//! machinery it emits through; it used to sit in a separate `enum.rs` that
+//! only this file called, which is the split `add_vybex_language.md` says a
+//! two-halved topic must not have (and which forced a `pub mod r#enum;` raw
+//! identifier, since `enum` is a keyword).
+//!
+//! **The enum object shape.** An enum compiles to a single object carrying
+//! BOTH directions: `{ Red: 0, Green: 1, "0": "Red", "1": "Green" }` — forward
+//! `name → value` (values stay bare ints, so flags/arithmetic/comparison/casts
+//! never break) plus a reverse `value → name` map. The free fns below
+//! implement the enum operations as generic RUNTIME reads on that object, so
+//! no language has to hand-roll compile-time ordinal tables. Any language
+//! whose enums use this shape (C#, VB, …) shares this one emitter.
 
 use super::*;
 use crate::primitives::calls::{
     extract_generic_type_name, resolve_receiver_type_hint, strip_generic_suffix, terminal_type_name };
+use crate::primitives::instructions::host;
 
 impl Compiler {
     pub(super) fn canonical_enum_type_from_runtime_type(
@@ -152,7 +167,7 @@ impl Compiler {
             self.compile_expr(&Expression::ident(enum_type))?;
             self.compile_expr(value_expr)?;
             let line = self.line;
-            crate::primitives::r#enum::emit_name_to_member_or_null(self.chunk(), line);
+            emit_name_to_member_or_null(self.chunk(), line);
             return Ok(());
         }
 
@@ -222,7 +237,7 @@ impl Compiler {
             self.compile_expr(&Expression::ident(enum_type))?;
             self.compile_expr(value_expr)?;
             let line = self.line;
-            crate::primitives::r#enum::emit_value_to_name(self.chunk(), line);
+            emit_value_to_name(self.chunk(), line);
             return Ok(());
         }
 
@@ -361,8 +376,7 @@ impl Compiler {
         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
         self.chunk().emit_if_value(line);
 
-        let helper = self.str_const("__vybe_dotnet_numeric_format");
-        self.emit_u16(Op::GLOBAL_GET, helper);
+        self.emit_global_read("__vybe_dotnet_numeric_format");
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_const(Value::String(Arc::from("F12")));
         self.emit_const(Value::F64(0.0));
@@ -383,7 +397,7 @@ impl Compiler {
         self.compile_expr(value_expr)?;
         self.compile_expr(flag_expr)?;
         let line = self.line;
-        crate::primitives::r#enum::emit_has_flag(self.chunk(), line);
+        emit_has_flag(self.chunk(), line);
         Ok(())
     }
 
@@ -566,4 +580,106 @@ impl Compiler {
             }
             _ => Ok(false) }
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Runtime half — free fns over `&mut Chunk`
+//
+// Reads use `ecma:object.get` (a raw property-bag read) rather than an index
+// expression: an enum object carries an index getter that does array-position
+// lookup, which only matches sequential values — the raw read hits the
+// reverse field directly.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// `value → name` (enum `ToString`, `Enum.GetName`, `Enum.Format("G")`).
+/// Stack: `[enumObj, value]` → `[string]`.
+///
+/// Only NUMERIC values map through the reverse field; a value that is already a
+/// name string (e.g. an `Enum.Parse` result flowing into `ToString`) passes
+/// through `String()` unchanged. Numeric values that aren't defined members
+/// fall back to `String(value)` (matches .NET's numeric `ToString`).
+pub fn emit_value_to_name(chunk: &mut Chunk, line: u32) {
+    let value = chunk.alloc_scratch(1);
+    let obj = chunk.alloc_scratch(1);
+    let name = chunk.alloc_scratch(1);
+    // Stack pushed as [enumObj, value]; pop value first.
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+
+    // typeof(value) === "number"
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "ecma:value", "typeof", 1, line);
+    chunk.emit_string_const("number", line);
+    crate::primitives::ops::emit_dyn_eq(chunk, line);
+    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+
+    // name = ecma:object.get(enumObj, "" + value)  (raw reverse-field read)
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_string_const("", line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    crate::primitives::ops::emit_dyn_add(chunk, line);
+    host::emit(chunk, "ecma:object", "get", 2, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, name, line);
+
+    // name undefined ? String(value) : name
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    host::emit(chunk, "wasm:js-undefined", "test", 1, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "ecma:string", "String", 1, line);
+    chunk.emit_else(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, name, line);
+    chunk.emit_end(line);
+
+    chunk.emit_else(line);
+    // Non-numeric (already a name string): pass through unchanged.
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(chunk, "ecma:string", "String", 1, line);
+    chunk.emit_end(line);
+}
+
+/// Case-sensitive `name → validated name or null` (enum `Parse` / `IsDefined` /
+/// `TryParse`). Stack: `[enumObj, input]` → `[string | null]`.
+///
+/// `input` names a member iff a raw read of the enum object yields its NUMERIC
+/// forward field. A numeric-string input would instead hit a reverse
+/// (value→name) field — a string — and is correctly rejected. Returns the
+/// input (== the canonical name on an exact match) or null.
+pub fn emit_name_to_member_or_null(chunk: &mut Chunk, line: u32) {
+    let input = chunk.alloc_scratch(1);
+    let obj = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, input, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, obj, line);
+    // Coerce input to a string once.
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    host::emit(chunk, "ecma:string", "String", 1, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, input, line);
+
+    // typeof(ecma:object.get(enumObj, input)) === "number" ? input : null
+    chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    host::emit(chunk, "ecma:object", "get", 2, line);
+    host::emit(chunk, "ecma:value", "typeof", 1, line);
+    chunk.emit_string_const("number", line);
+    crate::primitives::ops::emit_dyn_eq(chunk, line);
+    crate::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    chunk.emit_op_u16(Op::LOCAL_GET, input, line);
+    chunk.emit_else(line);
+    chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    chunk.emit_end(line);
+}
+
+/// `HasFlag` — `(value & flag) === flag`. Stack: `[value, flag]` → `[bool]`.
+pub fn emit_has_flag(chunk: &mut Chunk, line: u32) {
+    let flag = chunk.alloc_scratch(1);
+    let value = chunk.alloc_scratch(1);
+    chunk.emit_op_u16(Op::LOCAL_SET, flag, line);
+    chunk.emit_op_u16(Op::LOCAL_SET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, value, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, flag, line);
+    chunk.emit_op(Op::I32_AND, line);
+    chunk.emit_op_u16(Op::LOCAL_GET, flag, line);
+    crate::primitives::ops::emit_dyn_eq(chunk, line);
 }

@@ -18,9 +18,6 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-fn str_idx(chunk: &mut Chunk, value: &str) -> u16 {
-    chunk.add_constant(Value::String(Arc::from(value)))
-}
 
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
@@ -55,9 +52,8 @@ fn array_call(chunk: &mut Chunk, name: &str, argc: u8, line: u32) {
 /// Push the resolver array, creating and storing an empty one when the global
 /// is still undefined. Stack on exit: `[array]`.
 fn emit_stack_load(chunk: &mut Chunk, stack_global: &str, line: u32) {
-    let global_idx = str_idx(chunk, stack_global);
     let slot = alloc_local(chunk);
-    chunk.emit_op_u16(Op::GLOBAL_GET, global_idx, line);
+    crate::primitives::globals::emit_read(chunk, stack_global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -66,7 +62,7 @@ fn emit_stack_load(chunk: &mut Chunk, stack_global: &str, line: u32) {
     chunk.emit_array_new_fixed(0, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, global_idx, line);
+    crate::primitives::globals::emit_write(chunk, stack_global, line);
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -201,8 +197,7 @@ pub fn emit_resolver_stack_invoke(
 
     // Already resolved by an earlier resolver — stop.
     if let Some(global) = resolved_global {
-        let idx = str_idx(chunk, global);
-        chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+        crate::primitives::globals::emit_read(chunk, global, line);
         emit_undefined_test(chunk, line);
         chunk.emit_op(Op::I32_EQZ, line);
         chunk.emit_br_if(1, line);
@@ -274,9 +269,8 @@ pub fn emit_registered_global_ref(
     resolver: ResolverStack<'_>,
     line: u32,
 ) {
-    let global_idx = str_idx(chunk, global);
     let symbol_slot = alloc_local(chunk);
-    chunk.emit_op_u16(Op::GLOBAL_GET, global_idx, line);
+    crate::primitives::globals::emit_read(chunk, global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, symbol_slot, line);
@@ -286,7 +280,7 @@ pub fn emit_registered_global_ref(
     push_str(chunk, source_spelling, line);
     emit_resolver_stack_invoke(chunk, resolver, Some(global), line);
 
-    chunk.emit_op_u16(Op::GLOBAL_GET, global_idx, line);
+    crate::primitives::globals::emit_read(chunk, global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol_slot, line);
     chunk.emit_end(line);
     chunk.emit_op_u16(Op::LOCAL_GET, symbol_slot, line);
@@ -303,8 +297,7 @@ pub fn emit_registered_dynamic_global_ref(
     line: u32,
 ) {
     let symbol_slot = alloc_local(chunk);
-    let primary_idx = str_idx(chunk, primary_global);
-    chunk.emit_op_u16(Op::GLOBAL_GET, primary_idx, line);
+    crate::primitives::globals::emit_read(chunk, primary_global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol_slot, line);
 
     if let Some(fallback) = fallback_global {
@@ -318,7 +311,7 @@ pub fn emit_registered_dynamic_global_ref(
     push_str(chunk, source_spelling, line);
     emit_resolver_stack_invoke(chunk, resolver, Some(primary_global), line);
 
-    chunk.emit_op_u16(Op::GLOBAL_GET, primary_idx, line);
+    crate::primitives::globals::emit_read(chunk, primary_global, line);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol_slot, line);
     if let Some(fallback) = fallback_global {
         emit_fallback_if_undefined(chunk, symbol_slot, fallback, line);
@@ -332,8 +325,7 @@ fn emit_fallback_if_undefined(chunk: &mut Chunk, symbol_slot: u16, fallback: &st
     chunk.emit_op_u16(Op::LOCAL_GET, symbol_slot, line);
     emit_undefined_test(chunk, line);
     chunk.emit_if(line);
-    let fallback_idx = str_idx(chunk, fallback);
-    chunk.emit_op_u16(Op::GLOBAL_GET, fallback_idx, line);
+    crate::primitives::globals::emit_read(chunk, fallback, line);
     chunk.emit_op_u16(Op::LOCAL_SET, symbol_slot, line);
     chunk.emit_end(line);
 }
@@ -477,8 +469,7 @@ impl Compiler {
                 .constructor_ref_autoload
                 .unwrap()(self.chunk(), ctor_global, source_name, line);
         } else {
-            let idx = self.str_const(ctor_global);
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(ctor_global);
         }
     }
 
@@ -503,8 +494,7 @@ impl Compiler {
                 line,
             );
         } else {
-            let idx = self.str_const(primary_ctor_global);
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(primary_ctor_global);
         }
     }
 }

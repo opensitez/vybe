@@ -1302,9 +1302,49 @@ impl VM {
                                 // Task object was updated by child thread
                             }
                         }
-                        // Check for getter
+                        // §10.1.8.1 OrdinaryGet: an accessor is found by
+                        // walking the PROTOTYPE CHAIN, not just own properties,
+                        // and its getter is called with the ORIGINAL receiver
+                        // as `this` (step 7: Call(getter, Receiver)).
+                        //
+                        // This used to consult own properties only, which made
+                        // every inherited accessor unreachable — `Map.prototype.size`
+                        // (§24.1.3.10), `RegExp.prototype.flags`, the `%TypedArray%`
+                        // family. The host compensated by giving instances an own
+                        // data property and the JS prelude re-wrapped constructors
+                        // to install real getters; both are the shape that predates
+                        // having an ECMA host at all.
                         let getter_key = format!("__get_{}", name);
-                        let getter = o.lock().unwrap().properties.get(&getter_key).cloned();
+                        let mut current = Some(obj.clone());
+                        let mut getter = None;
+                        // Bounded like `proto_chain_has`: a corrupt cyclic chain
+                        // must not spin forever.
+                        for _ in 0..1024 {
+                            let Some(Value::Object(ref node)) = current else {
+                                break;
+                            };
+                            let found = {
+                                let n = node.lock().unwrap();
+                                if let Some(g) = n.properties.get(&getter_key) {
+                                    Some(g.clone())
+                                } else {
+                                    // A DATA property at this level shadows an
+                                    // accessor further up — stop looking.
+                                    if n.properties.contains_key(&name) {
+                                        break;
+                                    }
+                                    None
+                                }
+                            };
+                            if let Some(g) = found {
+                                getter = Some(g);
+                                break;
+                            }
+                            let next = node.lock().unwrap().properties.get("__proto__").cloned();
+                            current = match next {
+                                Some(Value::Object(p)) => Some(Value::Object(p)),
+                                _ => None };
+                        }
                         if let Some(getter_fn) = getter {
                             self.push(getter_fn)?;
                             self.push(obj)?;

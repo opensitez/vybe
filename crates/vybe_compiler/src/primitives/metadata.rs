@@ -1284,8 +1284,7 @@ impl Compiler {
                 .as_deref()
                 .is_some_and(|name| !name.eq_ignore_ascii_case(&self.profile.constructor_name))
         {
-            let idx = self.str_const("__js_this");
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read("__js_this");
             return;
         }
 
@@ -1314,8 +1313,7 @@ impl Compiler {
             let line = self.line;
             crate::primitives::closures::emit_env_get(self.chunk(), env, idx, line);
         } else if self.profile.ambient_this_binding {
-            let js_this = self.str_const("__js_this");
-            self.emit_u16(Op::GLOBAL_GET, js_this);
+            self.emit_global_read("__js_this");
         } else {
             self.emit_null();
         }

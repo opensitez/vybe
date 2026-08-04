@@ -275,8 +275,7 @@ pub fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
         Value::String(s) => chunk.emit_string_const(&s, line),
         // `Value::Undefined` has no literal form; it is the global.
         Value::Undefined => {
-            let idx = chunk.add_constant(Value::String(std::sync::Arc::from("undefined")));
-            chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+            crate::primitives::globals::emit_read(chunk, "undefined", line);
         }
         // AST bigint literals always fit i64 — oversize ones are normalized to
         // `BigInt("…")` by the walker — so the ToBigInt64 wrap is lossless.

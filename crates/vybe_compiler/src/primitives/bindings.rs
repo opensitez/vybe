@@ -105,8 +105,7 @@ impl Compiler {
         }
         if let Some(binding) = self.static_local_binding(name) {
             let global_name = binding.global_name.clone();
-            let idx = self.global_name_const_idx(&global_name);
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(&global_name);
             return;
         }
         // Implicit self field — when inside a class method and the name is a
@@ -134,8 +133,7 @@ impl Compiler {
         // returns null because the static field lives on the class
         // struct, not the module's global namespace.
         if let Some(class_name) = self.is_class_static_field(name) {
-            let class_idx = self.global_name_const_idx(&class_name);
-            self.emit_u16(Op::GLOBAL_GET, class_idx);
+            self.emit_global_read(&class_name);
             let field_idx = self.str_const(&self.canon(name));
             self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
             return;
@@ -143,8 +141,7 @@ impl Compiler {
         // Bare static method in class scope — `Double(x)` inside
         // `class Converter` resolves to `Converter.Double`.
         if let Some(class_name) = self.is_class_static_method(name) {
-            let class_idx = self.global_name_const_idx(&class_name);
-            self.emit_u16(Op::GLOBAL_GET, class_idx);
+            self.emit_global_read(&class_name);
             let method_idx = self.str_const(&self.canon(name));
             self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
             return;
@@ -227,8 +224,7 @@ impl Compiler {
             && !shadows_named_global
             && (is_js_builtin_ctor_value(&cname) || is_error_ctor_value)
         {
-            let idx = self.str_const(&format!("__ctor_{cname}"));
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(&format!("__ctor_{cname}"));
             return;
         }
         // A CLOSED scope does not chain outward: the name is not a local, so it
@@ -279,7 +275,6 @@ impl Compiler {
             cname
         };
         let global_key = self.variable_global_key(name, &cname);
-        let idx = self.global_name_const_idx(&global_key);
 
         // ECMA-262 §9.1.1.4.6 / §13.3.2.1 GetValue: reading an *unresolvable*
         // reference (a name bound nowhere in the scope chain or on the global
@@ -354,7 +349,7 @@ impl Compiler {
             crate::primitives::errors::emit_throw(self.chunk(), line);
             return;
         }
-        self.emit_u16(Op::GLOBAL_GET, idx);
+        self.emit_global_read(&global_key);
         if self.binding_uses_pointer_cell(name) {
             crate::primitives::references::emit_cell_load(
                 &mut self.chunks,
@@ -366,8 +361,7 @@ impl Compiler {
 
     /// Same as `emit_ensure_global_map` but for an ARRAY-valued global.
     pub(super) fn emit_ensure_global_list(&mut self, name: &str) {
-        let key = self.shared_global_slot(name);
-        self.emit_u16(Op::GLOBAL_GET, key);
+        self.emit_global_read(name);
         inst!(self, core_wasm::dup);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
@@ -376,7 +370,7 @@ impl Compiler {
         self.emit(Op::DROP);
         common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
         inst!(self, core_wasm::dup);
-        self.emit_u16(Op::GLOBAL_SET, key);
+        self.emit_global_write(name);
 
         self.chunk().emit_end(line);
         self.emit(Op::DROP);
@@ -390,7 +384,6 @@ impl Compiler {
     /// paths, which is what makes a check registered this way survive an
     /// `exit(1)` in the middle of a script.
     pub(super) fn emit_php_run_shutdown_fns(&mut self) {
-        let key = self.shared_global_slot("__php_shutdown_fns");
         let line = self.line;
 
         // `REF_IS_NULL` leaves a RAW i32; running the boxed `dyn_not` /
@@ -398,7 +391,7 @@ impl Compiler {
         // then the program threw `RuntimeError: [object]`). Branch on it
         // directly and put the work in the ELSE arm, the way
         // `emit_ensure_global_map` does.
-        self.emit_u16(Op::GLOBAL_GET, key);
+        self.emit_global_read("__php_shutdown_fns");
         self.emit(Op::REF_IS_NULL);
         self.chunk().emit_if(line);
         self.chunk().emit_else(line);
@@ -409,12 +402,12 @@ impl Compiler {
         // back garbage. Raw chunk slots are folded into the frame size by the
         // `max` the epilogue takes right after.
         let list = self.chunk().alloc_scratch(1);
-        self.emit_u16(Op::GLOBAL_GET, key);
+        self.emit_global_read("__php_shutdown_fns");
         self.emit_u16(Op::LOCAL_SET, list);
         // Clear FIRST: a handler that itself calls `exit` would otherwise
         // re-enter this and run the whole list again.
         self.emit_null();
-        self.emit_u16(Op::GLOBAL_SET, key);
+        self.emit_global_write("__php_shutdown_fns");
 
         let idx = self.chunk().alloc_scratch(1);
         self.emit_const(Value::F64(0.0));
@@ -478,8 +471,7 @@ impl Compiler {
     }
 
     pub(super) fn emit_ensure_global_map(&mut self, name: &str) {
-        let key = self.shared_global_slot(name);
-        self.emit_u16(Op::GLOBAL_GET, key);
+        self.emit_global_read(name);
         inst!(self, core_wasm::dup);
         self.emit(Op::REF_IS_NULL);
         let line = self.line;
@@ -488,7 +480,7 @@ impl Compiler {
         self.emit(Op::DROP);
         common::collections::emit_map_new(&mut self.chunks, self.current, line);
         inst!(self, core_wasm::dup);
-        self.emit_u16(Op::GLOBAL_SET, key);
+        self.emit_global_write(name);
 
         self.chunk().emit_end(line);
     }
@@ -591,8 +583,7 @@ impl Compiler {
         }
         if let Some(binding) = self.static_local_binding(name) {
             let global_name = binding.global_name.clone();
-            let idx = self.global_name_const_idx(&global_name);
-            self.emit_u16(Op::GLOBAL_SET, idx);
+            self.emit_global_write(&global_name);
             return;
         }
         if self.current_class_implicit_self && self.is_class_field(name) {
@@ -620,17 +611,15 @@ impl Compiler {
             // Stack: [value]. Need [class_obj, value] for STRUCT_SET.
             let value_slot = self.define_local("__static_set_value");
             self.emit_u16(Op::LOCAL_SET, value_slot);
-            let class_idx = self.global_name_const_idx(&class_name);
-            self.emit_u16(Op::GLOBAL_GET, class_idx);
+            self.emit_global_read(&class_name);
             self.emit_u16(Op::LOCAL_GET, value_slot);
             let bare_name = self.canon(name);
             let field_idx = self.str_const(&bare_name);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
             self.emit(Op::DROP);
             if self.defined_globals.contains(&bare_name) {
-                let global_idx = self.global_name_const_idx(&bare_name);
                 self.emit_u16(Op::LOCAL_GET, value_slot);
-                self.emit_u16(Op::GLOBAL_SET, global_idx);
+                self.emit_global_write(&bare_name);
             }
             return;
         }
@@ -693,8 +682,7 @@ impl Compiler {
         if self.binding_uses_pointer_cell(name) {
             let value_slot = self.define_local("__ref_global_set_value");
             self.emit_u16(Op::LOCAL_SET, value_slot);
-            let idx = self.global_name_const_idx(&global_key);
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(&global_key);
             crate::primitives::references::emit_cell_store(
                 &mut self.chunks,
                 self.current,
@@ -704,8 +692,7 @@ impl Compiler {
             self.emit(Op::DROP);
             return;
         }
-        let idx = self.global_name_const_idx(&global_key);
-        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit_global_write(&global_key);
     }
 
     pub(super) fn capture_local_slot(&mut self, uv_idx: u8) -> u16 {

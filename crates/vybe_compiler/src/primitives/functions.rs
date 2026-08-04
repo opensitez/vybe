@@ -12,7 +12,6 @@
 //! Python `def`, Dart `void f()`, JS `function`, C# `void F()`, VB `Sub`
 //! all produce the same Chunk structure.
 
-use std::sync::Arc;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -109,8 +108,7 @@ pub fn emit_closure_upvalue(chunk: &mut Chunk, is_local: bool, index: u16, line:
 /// Caller must have closure_ref on stack (from emit_ref_func).
 /// Stack before: [closure_ref]  Stack after: []
 pub fn emit_store_global_func(chunk: &mut Chunk, name: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+    crate::primitives::globals::emit_write(chunk, name, line);
 }
 
 /// Store a function in a local slot.
@@ -126,8 +124,7 @@ pub fn emit_store_local_func(chunk: &mut Chunk, slot: u16, line: u32) {
 /// Pushes the function ref, then caller pushes args, then calls emit_call_args.
 /// Stack: [] → [function_ref]
 pub fn emit_push_global_func(chunk: &mut Chunk, name: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+    crate::primitives::globals::emit_read(chunk, name, line);
 }
 
 impl Compiler {
@@ -199,8 +196,7 @@ impl Compiler {
                 if let Some(callable_global) =
                     self.source_function_callable_global_name_for_canon(&function_name)
                 {
-                    let idx = self.str_const(&callable_global);
-                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    self.emit_global_read(&callable_global);
                     self.emit_u16(Op::LOCAL_SET, callee_slot);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);

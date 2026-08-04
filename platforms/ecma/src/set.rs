@@ -16,6 +16,29 @@ use vybe_runtime::VM;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 
 static SET_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
+static SET_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+/// %Set.prototype% (§24.2.3) — the ONE object every Set instance inherits
+/// from. See `map::shared_map_prototype`; §24.2.4 is the same sentence for
+/// Sets: "Set instances are ordinary objects that inherit properties from
+/// %Set.prototype%".
+pub fn shared_set_prototype() -> Value {
+    let proto = SET_PROTOTYPE.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__proto__".into(), crate::object::shared_object_prototype());
+        // §24.2.3.12 — `Set.prototype[%Symbol.toStringTag%]` is "Set",
+        // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from("Set")));
+        vybe_runtime::heap::alloc(obj)
+    });
+    let value = Value::Object(proto.clone());
+    if let Value::Object(o) = &value {
+        crate::object::track_nonenum(o, "@@toStringTag");
+    }
+    value
+}
 
 fn bound_iterator_method(
     receiver: &Arc<Mutex<Object>>,
@@ -59,9 +82,10 @@ fn bound_iterator_method(
 /// yields nothing.
 pub fn make_set(values: indexmap::IndexSet<Value>) -> Value {
     let mut obj = Object::new();
-    let len = values.len() as i32;
     obj.kind = ObjectKind::Set(values);
-    obj.properties.insert("size".into(), Value::I32(len));
+    // §24.2.3.9: `size` is an accessor on the PROTOTYPE — instances have none.
+    obj.properties
+        .insert("__proto__".into(), shared_set_prototype());
     // __type stamp: see comment on `ecma:map.new`. Without it the
     // TypeRegistry-driven `STRUCT_GET s "add"` lookup misses.
     obj.properties
@@ -101,7 +125,6 @@ fn new_set_from_iterable(args: &[Value]) -> Value {
                 iset.insert(item);
             }
         }
-        sync_set_size(&mut so);
     }
     s
 }
@@ -134,13 +157,6 @@ fn with_two_sets<R>(
     match (&ag.kind, &bg.kind) {
         (ObjectKind::Set(avs), ObjectKind::Set(bvs)) => Some(f(avs, bvs)),
         _ => None }
-}
-
-fn sync_set_size(obj: &mut Object) {
-    if let ObjectKind::Set(ref s) = obj.kind {
-        let n = s.len() as i32;
-        obj.properties.insert("size".into(), Value::I32(n));
-    }
 }
 
 pub fn register(vm: &mut VM) {
@@ -176,7 +192,6 @@ pub fn register(vm: &mut VM) {
                         s.insert(item);
                     }
                 }
-                sync_set_size(&mut so);
             }
             s
         }),
@@ -193,7 +208,6 @@ pub fn register(vm: &mut VM) {
                     if let ObjectKind::Set(ref mut s) = so.kind {
                         s.insert(v);
                     }
-                    sync_set_size(&mut so);
                 }
                 return Value::Object(setobj);
             }
@@ -230,7 +244,6 @@ pub fn register(vm: &mut VM) {
                 } else {
                     false
                 };
-                sync_set_size(&mut so);
                 return Value::Bool(removed);
             }
             Value::Bool(false)
@@ -246,7 +259,6 @@ pub fn register(vm: &mut VM) {
                 if let ObjectKind::Set(ref mut s) = so.kind {
                     s.clear();
                 }
-                sync_set_size(&mut so);
             }
             Value::Null
         }),
@@ -373,7 +385,6 @@ pub fn register(vm: &mut VM) {
                         }
                     }
                 }
-                sync_set_size(&mut o);
             }
             out
         }),
@@ -396,7 +407,6 @@ pub fn register(vm: &mut VM) {
                             }
                         });
                     }
-                    sync_set_size(&mut o);
                 }
             }
             out
@@ -420,7 +430,6 @@ pub fn register(vm: &mut VM) {
                             }
                         });
                     }
-                    sync_set_size(&mut o);
                 }
             }
             out
@@ -449,7 +458,6 @@ pub fn register(vm: &mut VM) {
                             }
                         });
                     }
-                    sync_set_size(&mut o);
                 }
             }
             out
@@ -528,7 +536,6 @@ pub fn register(vm: &mut VM) {
                         avs.insert(v);
                     }
                 }
-                sync_set_size(&mut alock);
             }
             Value::Undefined
         }),
@@ -554,7 +561,6 @@ pub fn register(vm: &mut VM) {
                 if let ObjectKind::Set(ref mut avs) = alock.kind {
                     avs.retain(|v| b_snapshot.contains(v));
                 }
-                sync_set_size(&mut alock);
             }
             Value::Undefined
         }),
@@ -584,7 +590,6 @@ pub fn register(vm: &mut VM) {
                 if let ObjectKind::Set(ref mut avs) = alock.kind {
                     avs.retain(|v| !b_snapshot.contains(v));
                 }
-                sync_set_size(&mut alock);
             }
             Value::Undefined
         }),
@@ -626,7 +631,6 @@ pub fn register(vm: &mut VM) {
                         avs.insert(v);
                     }
                 }
-                sync_set_size(&mut alock);
             }
             Value::Undefined
         }),

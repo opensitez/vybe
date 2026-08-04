@@ -55,14 +55,13 @@ pub fn emit_format_picture(chunks: &mut [Chunk], current: usize, argc: u8, line:
     for _ in 2..argc {
         chunk.emit_op(Op::DROP, line);
     }
-    let global_name = chunk.add_constant(Value::String(Arc::from("__vybe_vb_format")));
     let value_slot = chunk.alloc_scratch(2);
     let picture_slot = value_slot + 1;
     // Stash picture (top), then value.
     chunk.emit_op_u16(Op::LOCAL_SET, picture_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
     // Push global ref + (value, picture) and call.
-    chunk.emit_op_u16(Op::GLOBAL_GET, global_name, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_vb_format", line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, picture_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 2, line);

@@ -2240,6 +2240,22 @@ impl VM {
         if chunks.is_empty() {
             return Ok(Value::Null);
         }
+        // `VYBE_VERIFY=1` — check the structural invariants before running:
+        // every instruction on the 4-byte opcode grid, every jump landing on an
+        // instruction start. These defects surface far from the emitter that
+        // caused them (a nonsense opcode mid-execution), and only for input
+        // shapes that change a body's length, which is what makes them
+        // expensive to find by hand.
+        if std::env::var_os("VYBE_VERIFY").is_some() {
+            for (i, chunk) in chunks.iter().enumerate() {
+                for issue in crate::debug::verify_chunk(chunk) {
+                    eprintln!(
+                        "[verify] chunk {} '{}' @{}: {}",
+                        i, chunk.name, issue.offset, issue.what
+                    );
+                }
+            }
+        }
         // Preserve globals / chunks / type registry across runs, but discard
         // per-execution state (stale frames/stack from a previous run would
         // leave the next run's HALT stuck on an inner-frame path).

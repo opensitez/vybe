@@ -504,10 +504,19 @@ pub fn register(vm: &mut VM) {
                 "__proto__",
                 crate::function::shared_function_prototype(),
             );
-            let proto = Value::Object(vybe_runtime::heap::alloc(Object::new()));
+            // The SHARED prototype singleton, not a fresh object per VM:
+            // §24.1.4 / §24.2.4 — "Map/Set instances are ordinary objects that
+            // inherit properties from %Map.prototype% / %Set.prototype%". The
+            // instances are linked to that singleton when they are created, so
+            // this must be the same object.
+            let proto = if global_name == "Map" {
+                crate::map::shared_map_prototype()
+            } else {
+                crate::set::shared_set_prototype()
+            };
             set_prop(&proto, "__proto__", object_proto.clone());
             set_constructor_once(&proto, ctor.clone());
-            if let Value::Object(p) = &proto {
+            if let Value::Object(ref p) = proto {
                 crate::object::track_nonenum(p, "constructor");
             }
             for method in methods {
@@ -515,9 +524,14 @@ pub fn register(vm: &mut VM) {
                     .host_registry
                     .get(&(module.to_string(), (*method).to_string()))
                 {
-                    set_prop(&proto, method, receiver_host_fn_ref(module, method, idx));
-                    if let Value::Object(p) = &proto {
-                        crate::object::track_nonenum(p, method);
+                    // §24.1.3.10 / §24.2.3.9 — `size` is an ACCESSOR whose set
+                    // accessor is undefined, not a method. `__get_<name>` is
+                    // how the VM spells a getter (`dispatch.rs`), so the same
+                    // host function is installed there instead of under `size`.
+                    let key = if *method == "size" { "__get_size" } else { *method };
+                    set_prop(&proto, key, receiver_host_fn_ref(module, method, idx));
+                    if let Value::Object(ref p) = proto {
+                        crate::object::track_nonenum(p, key);
                     }
                 }
             }

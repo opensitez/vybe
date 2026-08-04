@@ -2039,7 +2039,6 @@ mod tests {
             .expect("vybe:js:function_constructor host fn");
 
         let mut chunk = vybe_runtime::chunk::Chunk::new("<script>");
-        let result_name = chunk.add_constant(Value::String("__test_result".into()));
         let import_idx = chunk.add_import("vybe:js", "function_constructor");
         // String constants go through `wasm:string-constants`, the same route
         // the compiler's `push_const` uses — not the custom `CONST` opcode.
@@ -2048,7 +2047,7 @@ mod tests {
         chunk.emit_string_const("return a + b;", 0);
         chunk.emit_op_u16(vybe_runtime::opcode::Op::CALL_IMPORT, import_idx, 0);
         chunk.emit(3, 0);
-        chunk.emit_op_u16(vybe_runtime::opcode::Op::GLOBAL_SET, result_name, 0);
+        crate::primitives::globals::emit_write(&mut chunk, "__test_result", 0);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         chunk.emit_op(vybe_runtime::opcode::Op::HALT, 0);
 

@@ -55,8 +55,7 @@ pub fn emit_stamp_function_kind_proto(
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, kind_key, line); // [fn, fn]
         chunk.emit_op(Op::DROP, line); // [fn]
     }
-    let ctor_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from(intrinsic)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, ctor_key, line); // [fn, ctor]
+    crate::primitives::globals::emit_read(chunk, intrinsic, line); // [fn, ctor]
     let proto_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("prototype")));
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key, line); // [fn, proto]
     let proto_link_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__proto__")));

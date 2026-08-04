@@ -39,13 +39,11 @@ pub const STATUS_NONE: i32 = 1;
 pub const STATUS_ACTIVE: i32 = 2;
 
 fn push_global(chunk: &mut Chunk, name: &str, line: u32) {
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, key, line);
+    crate::primitives::globals::emit_read(chunk, name, line);
 }
 
 fn set_global(chunk: &mut Chunk, name: &str, line: u32) {
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_SET, key, line);
+    crate::primitives::globals::emit_write(chunk, name, line);
 }
 
 /// The session cookie name. Stack: [] → [string].

@@ -259,3 +259,84 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
         }
     }
 }
+
+// ── Bytecode verifier ────────────────────────────────────────────────────
+
+/// One structural defect found by [`verify_chunk`].
+#[derive(Debug, Clone)]
+pub struct VerifyIssue {
+    /// Byte offset the problem was found at.
+    pub offset: usize,
+    pub what: String }
+
+/// Check a chunk's two structural invariants and report every violation.
+///
+/// 1. **Every instruction sits on the opcode grid.** Opcodes are always 4
+///    bytes plus a format-determined operand, so walking from 0 must decode
+///    cleanly to the end. A byte that fails to decode means something earlier
+///    mis-declared its operand width.
+/// 2. **Every jump lands on an instruction start.** A target that falls inside
+///    another instruction is the classic symptom — the VM decodes the tail of
+///    one opcode as the head of another and reports a nonsense opcode like
+///    `0x0B00 0x0000` (the last byte of an `end`, plus the next three).
+///
+/// These are the bugs that cost the most to find by hand: the failure surfaces
+/// far from the emitter that caused it, and only for input shapes that happen
+/// to change a body's length.
+pub fn verify_chunk(chunk: &Chunk) -> Vec<VerifyIssue> {
+    let code = &chunk.code;
+    let mut issues = Vec::new();
+    let mut starts = std::collections::HashSet::new();
+    let mut jumps: Vec<(usize, i64, &'static str)> = Vec::new();
+
+    let mut ip = 0usize;
+    while ip + 3 < code.len() {
+        starts.insert(ip);
+        let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
+        let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
+        let Some(op) = Op::decode(group, sub) else {
+            issues.push(VerifyIssue {
+                offset: ip,
+                what: format!(
+                    "does not decode as an opcode (0x{:04X} 0x{:04X}) — the previous \
+                     instruction's operand width is wrong",
+                    group, sub
+                ) });
+            break;
+        };
+        let operand_start = ip + 4;
+        let size = op.operand_format().size_in(code, operand_start);
+
+        // Relative branch offsets: `i16` immediately after the opcode.
+        if matches!(op.operand_format(), crate::opcode::OperandFormat::I16) && operand_start + 1 < code.len() {
+            let rel = i16::from_be_bytes([code[operand_start], code[operand_start + 1]]) as i64;
+            jumps.push((operand_start, operand_start as i64 + 2 + rel, op.wasm_name()));
+        }
+        // `try_table` catch targets: u8 count, then per clause
+        // (u8 kind, u16 tag, i16 catch offset relative to just past itself).
+        if matches!(op.operand_format(), crate::opcode::OperandFormat::TryTable) {
+            let count = code.get(operand_start).copied().unwrap_or(0) as usize;
+            for c in 0..count {
+                let pos = operand_start + 1 + c * 5 + 3;
+                if pos + 1 < code.len() {
+                    let rel = i16::from_be_bytes([code[pos], code[pos + 1]]) as i64;
+                    jumps.push((pos, pos as i64 + 2 + rel, "try_table catch"));
+                }
+            }
+        }
+        ip = operand_start + size;
+    }
+
+    for (at, target, what) in jumps {
+        if target < 0 || target as usize > code.len() {
+            issues.push(VerifyIssue {
+                offset: at,
+                what: format!("{what} target {target} is outside the chunk") });
+        } else if target as usize != code.len() && !starts.contains(&(target as usize)) {
+            issues.push(VerifyIssue {
+                offset: at,
+                what: format!("{what} target {target} is not an instruction start") });
+        }
+    }
+    issues
+}

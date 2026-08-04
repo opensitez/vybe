@@ -849,10 +849,7 @@ pub fn emit_array_create_instance(chunks: &mut [Chunk], current: usize, argc: u8
 /// the observable singleton behavior for the supported surface.
 pub fn emit_array_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
-    let name = chunk.add_constant(vybe_runtime::Value::String(
-        std::sync::Arc::from("__dotnet_array_empty"),
-    ));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__dotnet_array_empty", line);
     chunk.emit_dup(line);
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_if(line);
@@ -860,7 +857,7 @@ pub fn emit_array_empty(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::collections::emit_array_new(chunks, current, 0, line);
     let chunk = &mut chunks[current];
     chunk.emit_dup(line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, name, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, "__dotnet_array_empty", line);
     chunk.emit_end(line);
 }
 

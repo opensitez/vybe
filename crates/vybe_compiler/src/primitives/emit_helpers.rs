@@ -353,8 +353,7 @@ impl Compiler {
             let idx = self.import(&module, &func);
             self.emit_host_call(idx, 0);
         } else {
-            let idx = self.global_name_const_idx(&ctor_name);
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(&ctor_name);
             self.emit_u8(Op::CALL_REF, 0);
         }
         self.emit_u16(Op::LOCAL_SET, slot);
@@ -377,8 +376,7 @@ impl Compiler {
             let idx = self.import(&module, &func);
             self.emit_host_call(idx, 0);
         } else {
-            let idx = self.global_name_const_idx(ctor_name);
-            self.emit_u16(Op::GLOBAL_GET, idx);
+            self.emit_global_read(ctor_name);
             self.emit_u8(Op::CALL_REF, 0);
         }
     }
@@ -549,9 +547,8 @@ impl Compiler {
         key_slot: u16,
         value_slot: u16,
     ) {
-        let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
-        self.emit_u16(Op::GLOBAL_GET, map_key);
+        self.emit_global_read(map_name);
         self.emit_u16(Op::LOCAL_GET, key_slot);
         self.emit(Op::ARRAY_GET);
         self.emit_u16(Op::LOCAL_SET, value_slot);
@@ -563,9 +560,8 @@ impl Compiler {
         key_slot: u16,
         value_slot: u16,
     ) {
-        let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
-        self.emit_u16(Op::GLOBAL_GET, map_key);
+        self.emit_global_read(map_name);
         self.emit_u16(Op::LOCAL_GET, key_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit(Op::ARRAY_SET);
@@ -578,9 +574,8 @@ impl Compiler {
         key_slot: u16,
         value: Value,
     ) {
-        let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
-        self.emit_u16(Op::GLOBAL_GET, map_key);
+        self.emit_global_read(map_name);
         self.emit_u16(Op::LOCAL_GET, key_slot);
         self.emit_const(value);
         self.emit(Op::ARRAY_SET);
@@ -588,9 +583,8 @@ impl Compiler {
     }
 
     pub(super) fn emit_global_map_set_null(&mut self, map_name: &str, key_slot: u16) {
-        let map_key = self.shared_global_slot(map_name);
         self.emit_ensure_global_map(map_name);
-        self.emit_u16(Op::GLOBAL_GET, map_key);
+        self.emit_global_read(map_name);
         self.emit_u16(Op::LOCAL_GET, key_slot);
         self.emit_null();
         self.emit(Op::ARRAY_SET);
@@ -599,7 +593,6 @@ impl Compiler {
 
     pub(super) fn emit_record_rows_cache(&mut self, file_slot: u16, rows_slot: u16, len_slot: u16) {
         let line = self.line;
-        let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
 
         self.emit_global_map_get_into_local("__vb_record_rows_by_handle", file_slot, rows_slot);
         self.emit_u16(Op::LOCAL_GET, rows_slot);
@@ -607,7 +600,7 @@ impl Compiler {
         self.chunk().emit_if(line);
 
         self.emit_ensure_global_map("__vb_file_path_by_handle");
-        self.emit_u16(Op::GLOBAL_GET, path_map_key);
+        self.emit_global_read("__vb_file_path_by_handle");
         self.emit_u16(Op::LOCAL_GET, file_slot);
         self.emit(Op::ARRAY_GET);
         let read_file_idx = self.import("wasi:filesystem", "readFile");

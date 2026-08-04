@@ -556,7 +556,7 @@ impl Compiler {
                     false
                 };
                 if !skip_c_coerce {
-                    self.coerce_c_value_for_type_hint(effective_type_hint)?;
+                    self.bind_value_to_declared_type(effective_type_hint, Some(init_expr))?;
                 }
                 self.maybe_promote_array_literal_to_set(
                     decl.type_hint.as_deref(),
@@ -626,8 +626,7 @@ impl Compiler {
                         type_name.clone()
                     }
                 };
-                let idx = self.str_const(&ctor_global);
-                self.emit_u16(Op::GLOBAL_GET, idx);
+                self.emit_global_read(&ctor_global);
                 self.emit_u8(Op::CALL_REF, 0);
                 return Ok(());
             } else {
@@ -649,6 +648,67 @@ impl Compiler {
             .and_then(Self::vb_fixed_string_len)
         {
             self.emit_vb_fixed_string_adjust_from_stack(target_len, false);
+        }
+        Ok(())
+    }
+
+    /// Bind the value on the stack to a DECLARED type.
+    ///
+    /// The single owner of "a value is being stored into a declared type".
+    /// Every binding site routes here — declaration, assignment, parameter
+    /// entry — and states only the fact; none of them decides anything.
+    ///
+    /// # Why one owner
+    ///
+    /// This decision used to be smeared across the emitter (the profile
+    /// check), two call sites (`skip_c_coerce`) and three more (the redundancy
+    /// skip). Sites that each decide for themselves drift: parameters were
+    /// simply never asked, so `void f(unsigned char c); f(300)` kept `300`
+    /// where C says `44`. That is the same failure shape as C's seven
+    /// overlapping classification sets — one concept, many owners.
+    ///
+    /// `source` is the expression that produced the value, when the site knows
+    /// it. Passing `None` is always correct, just slower.
+    pub(super) fn bind_value_to_declared_type(
+        &mut self,
+        type_hint: Option<&str>,
+        source: Option<&Expression>,
+    ) -> Result<(), String> {
+        // A value provably already exact in the target needs no conversion —
+        // eliminating a mathematical no-op cannot change behaviour.
+        if let Some(source) = source {
+            if self.coercion_is_redundant(source, type_hint) {
+                return Ok(());
+            }
+        }
+        self.coerce_c_value_for_type_hint(type_hint)
+    }
+
+    /// Narrow every typed parameter at function entry.
+    ///
+    /// Parameters are typed variables — bound with `define_local_typed` — so
+    /// the declared type is present; it was simply never applied on entry,
+    /// which is why an argument could sit outside its own parameter's range.
+    /// Runs AFTER default-value handling, so a defaulted parameter narrows the
+    /// value it actually ends up with.
+    pub(super) fn emit_param_type_bindings(&mut self, params: &[Param]) -> Result<(), String> {
+        for p in params {
+            let Some(hint) = p.type_hint.clone() else {
+                continue;
+            };
+            // Only widths narrow; anything else (a class, `dynamic`, a
+            // string type) is left exactly alone. This is what lets C#
+            // `int x` and `dynamic y` differ WITHOUT a per-declaration flag.
+            let normalized = Self::normalize_type_hint(&hint);
+            if vybe_ast::builtin_types::int_width_of(&normalized).is_none() {
+                continue;
+            }
+            let Some(slot) = self.scope().resolve(&p.name) else {
+                continue;
+            };
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.bind_value_to_declared_type(Some(&hint), None)?;
+            self.emit_u16(Op::LOCAL_SET, slot);
         }
         Ok(())
     }
@@ -684,79 +744,15 @@ impl Compiler {
             // A language whose `char` holds a CHARACTER, not an 8-bit
             // integer, must not get the modular byte coercion below. Was
             "char" if self.hint_is_builtin_string(&normalized) => {}
-            "char" | "uint8" | "unsigned char" | "byte" => {
-                self.emit(Op::F64_TRUNC);
-                self.emit_const(Value::F64(256.0));
-                self.compile_binop(&BinOp::Mod);
-                self.emit_const(Value::F64(256.0));
-                self.emit(Op::F64_ADD);
-                self.emit_const(Value::F64(256.0));
-                self.compile_binop(&BinOp::Mod);
-            }
-            "signed char" | "int8" | "sbyte" => {
-                // Signed 8-bit: wrap to 0..255 then sign-extend (>= 128 → −256),
-                // mirroring the int16 path. (`i8` range is −128..127.)
-                self.emit(Op::F64_TRUNC);
-                self.emit_const(Value::F64(256.0));
-                self.compile_binop(&BinOp::Mod);
-                self.emit_const(Value::F64(256.0));
-                self.emit(Op::F64_ADD);
-                self.emit_const(Value::F64(256.0));
-                self.compile_binop(&BinOp::Mod);
-                inst!(self, core_wasm::dup);
-                self.emit_const(Value::F64(128.0));
-                self.emit(Op::F64_GE);
-                let line = self.line;
-                self.chunk().emit_if_value(line);
-                self.emit_const(Value::F64(256.0));
-                self.emit(Op::F64_SUB);
-                self.chunk().emit_else(line);
-                self.chunk().emit_end(line);
-            }
-            "int16" => {
-                self.emit(Op::F64_TRUNC);
-                self.emit_const(Value::F64(65_536.0));
-                self.compile_binop(&BinOp::Mod);
-                self.emit_const(Value::F64(65_536.0));
-                self.emit(Op::F64_ADD);
-                self.emit_const(Value::F64(65_536.0));
-                self.compile_binop(&BinOp::Mod);
-                inst!(self, core_wasm::dup);
-                self.emit_const(Value::F64(32_768.0));
-                self.emit(Op::F64_GE);
-                let line = self.line;
-                self.chunk().emit_if_value(line);
-                self.emit_const(Value::F64(65_536.0));
-                self.emit(Op::F64_SUB);
-                self.chunk().emit_else(line);
-                self.chunk().emit_end(line);
-            }
-            "uint32" | "unsigned int" => {
-                self.emit(Op::F64_TRUNC);
-                self.emit_const(Value::F64(4_294_967_296.0));
-                self.compile_binop(&BinOp::Mod);
-                self.emit_const(Value::F64(4_294_967_296.0));
-                self.emit(Op::F64_ADD);
-                self.emit_const(Value::F64(4_294_967_296.0));
-                self.compile_binop(&BinOp::Mod);
-            }
-            "int" => {
-                self.emit(Op::F64_TRUNC);
-                self.emit_const(Value::F64(4_294_967_296.0));
-                self.compile_binop(&BinOp::Mod);
-                self.emit_const(Value::F64(4_294_967_296.0));
-                self.emit(Op::F64_ADD);
-                self.emit_const(Value::F64(4_294_967_296.0));
-                self.compile_binop(&BinOp::Mod);
-                inst!(self, core_wasm::dup);
-                self.emit_const(Value::F64(2_147_483_648.0));
-                self.emit(Op::F64_GE);
-                let line = self.line;
-                self.chunk().emit_if_value(line);
-                self.emit_const(Value::F64(4_294_967_296.0));
-                self.emit(Op::F64_SUB);
-                self.chunk().emit_else(line);
-                self.chunk().emit_end(line);
+            // Every integer width now resolves through the ONE spelling table
+            // in `vybe_ast::builtin_types`, instead of the per-language list
+            // (`"unsigned char"`, `"sbyte"`, …) that used to be inline here.
+            // The emitted sequence is unchanged — modulus and sign threshold
+            // come from the width rather than from a repeated literal.
+            _ if vybe_ast::builtin_types::int_width_of(&normalized).is_some() => {
+                let width = vybe_ast::builtin_types::int_width_of(&normalized)
+                    .expect("guard just matched");
+                self.emit_int_width_wrap(width);
             }
             "float" | "single" => {
                 self.emit_const(Value::F64(10_000_000.0));
@@ -769,5 +765,34 @@ impl Compiler {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Wrap the stack value into `width`, in f64 modular arithmetic.
+    ///
+    /// `x mod 2^bits` is emitted as `((x % m) + m) % m` so a negative input
+    /// lands in `0..m`, then a signed width subtracts one modulus above its
+    /// threshold. Byte-identical to the per-width arms this replaced.
+    fn emit_int_width_wrap(&mut self, width: vybe_ast::builtin_types::IntWidth) {
+        let modulus = width.modulus();
+        self.emit(Op::F64_TRUNC);
+        self.emit_const(Value::F64(modulus));
+        self.compile_binop(&BinOp::Mod);
+        self.emit_const(Value::F64(modulus));
+        self.emit(Op::F64_ADD);
+        self.emit_const(Value::F64(modulus));
+        self.compile_binop(&BinOp::Mod);
+
+        let Some(threshold) = width.sign_threshold() else {
+            return;
+        };
+        inst!(self, core_wasm::dup);
+        self.emit_const(Value::F64(threshold));
+        self.emit(Op::F64_GE);
+        let line = self.line;
+        self.chunk().emit_if_value(line);
+        self.emit_const(Value::F64(modulus));
+        self.emit(Op::F64_SUB);
+        self.chunk().emit_else(line);
+        self.chunk().emit_end(line);
     }
 }

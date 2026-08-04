@@ -101,9 +101,7 @@ pub mod closures;
 pub mod components;
 mod control_flow;
 mod emit_helpers;
-#[path = "enum.rs"]
-pub mod r#enum;
-mod enums;
+pub mod enums;
 pub mod events;
 pub mod expressions;
 pub mod http_cookie;
@@ -2383,7 +2381,7 @@ impl Compiler {
             .unwrap_or_else(|| panic!("missing shared global slot for {name}"))
     }
 
-    fn global_name_const_idx(&mut self, name: &str) -> u16 {
+    pub(crate) fn global_name_const_idx(&mut self, name: &str) -> u16 {
         self.shared_global_slots
             .get(name)
             .copied()
@@ -2661,6 +2659,7 @@ impl Compiler {
             }
         }
         Self::normalize_import_table(&mut self.chunks);
+        common::globals::declare_free_globals(&mut self.chunks);
         let host_imports = self.collected_host_imports();
         Ok(CompileResult {
             chunks: self.chunks,

@@ -319,8 +319,7 @@ impl Compiler {
             .scope()
             .resolve(local_name)
             .unwrap_or_else(|| self.define_local(local_name));
-        let idx = self.str_const("__js_this");
-        self.emit_u16(Op::GLOBAL_GET, idx);
+        self.emit_global_read("__js_this");
         self.emit_u16(Op::LOCAL_SET, slot);
         Some(slot)
     }
@@ -329,17 +328,15 @@ impl Compiler {
         if !self.profile.ambient_this_binding {
             return;
         }
-        let idx = self.str_const("__js_this");
-        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit_global_write("__js_this");
     }
 
     pub(super) fn restore_js_this(&mut self, slot: Option<u16>) {
         let Some(slot) = slot else {
             return;
         };
-        let idx = self.str_const("__js_this");
         self.emit_u16(Op::LOCAL_GET, slot);
-        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit_global_write("__js_this");
     }
 
     pub(super) fn save_js_new_target(&mut self, local_name: &str) -> Option<u16> {
@@ -350,8 +347,7 @@ impl Compiler {
             .scope()
             .resolve(local_name)
             .unwrap_or_else(|| self.define_local(local_name));
-        let idx = self.str_const("__js_new_target");
-        self.emit_u16(Op::GLOBAL_GET, idx);
+        self.emit_global_read("__js_new_target");
         self.emit_u16(Op::LOCAL_SET, slot);
         Some(slot)
     }
@@ -360,27 +356,24 @@ impl Compiler {
         if !self.profile.ecma_new_dispatch {
             return;
         }
-        let idx = self.str_const("__js_new_target");
-        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit_global_write("__js_new_target");
     }
 
     pub(super) fn restore_js_new_target(&mut self, slot: Option<u16>) {
         let Some(slot) = slot else {
             return;
         };
-        let idx = self.str_const("__js_new_target");
         self.emit_u16(Op::LOCAL_GET, slot);
-        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit_global_write("__js_new_target");
     }
 
     pub(super) fn set_js_new_target_undefined(&mut self) {
         if !self.profile.ecma_new_dispatch {
             return;
         }
-        let idx = self.str_const("__js_new_target");
         let line = self.line;
         common::expressions::emit_undefined(self.chunk(), line);
-        self.emit_u16(Op::GLOBAL_SET, idx);
+        self.emit_global_write("__js_new_target");
     }
 
     pub(super) fn flatten_member_chain(&self, expr: &Expression) -> Vec<String> {

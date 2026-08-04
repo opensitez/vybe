@@ -1108,7 +1108,6 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let step = 5;
     let counter = 6;
     let saved_this = 7;
-    let js_this = c.add_constant(vybe_runtime::Value::String(Arc::from("__js_this")));
     let async_iter_key = c.add_constant(vybe_runtime::Value::String(Arc::from("asyncIterator")));
     // NOT yet on the Iterator slot. Swapping this single key for
     // `__vybe_slot_5` cost one python `class` test (246/310 → 245/311): the
@@ -1135,7 +1134,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     let exit_block = c.emit_block(0);
 
     // saved_this = __js_this
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     c.emit_op_u16(Op::LOCAL_SET, saved_this, 0);
 
     // Fast path: built-in Array → result = v, exit. Walking the
@@ -1273,7 +1272,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
 
     // __js_this = v; it = method()
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
+    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op_u8(Op::CALL_REF, 0, 0);
     crate::primitives::functions::emit_await_into(imports, &mut c, 0);
@@ -1365,7 +1364,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_br_if(1, 0); // counter >= cap → break
 
     c.emit_op_u16(Op::LOCAL_GET, it, 0);
-    c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
+    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
 
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
     c.emit_op_u8(Op::CALL_REF, 0, 0);
@@ -1411,7 +1410,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     // top level, so structured control flow has fully unwound by the
     // time we hit it — no leaked labels.
     c.emit_op_u16(Op::LOCAL_GET, saved_this, 0);
-    c.emit_op_u16(Op::GLOBAL_SET, js_this, 0);
+    crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
     c.emit_op_u16(Op::LOCAL_GET, result, 0);
     c.emit_op(Op::RETURN, 0);
     c
@@ -1427,8 +1426,7 @@ fn build_generator_self() -> Chunk {
     let mut c = Chunk::new("__stdlib_generator_self");
     c.arity = 0;
     c.local_count = 0;
-    let js_this = c.add_constant(Value::String(Arc::from("__js_this")));
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -1826,14 +1824,12 @@ fn build_minmax(imports: &mut Chunk) -> Chunk {
     let max_g = 2;
 
     // min = __vybe_min(arr); max = __vybe_max(arr); return [min, max]
-    let name_min = c.add_constant(Value::String(Arc::from("__vybe_min")));
-    c.emit_op_u16(Op::GLOBAL_GET, name_min, 0);
+    crate::primitives::globals::emit_read(&mut c, "__vybe_min", 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, min_g, 0);
 
-    let name_max = c.add_constant(Value::String(Arc::from("__vybe_max")));
-    c.emit_op_u16(Op::GLOBAL_GET, name_max, 0);
+    crate::primitives::globals::emit_read(&mut c, "__vybe_max", 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, max_g, 0);
@@ -2024,8 +2020,7 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
     c.emit_end(0);
     c.patch_block(string_path);
 
-    let iter_drain = c.add_constant(Value::String(Arc::from("__vybe_iter_drain")));
-    c.emit_op_u16(Op::GLOBAL_GET, iter_drain, 0);
+    crate::primitives::globals::emit_read(&mut c, "__vybe_iter_drain", 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     c.emit_op_u8(Op::CALL_REF, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, drained, 0);
@@ -2102,8 +2097,7 @@ fn build_rotate(imports: &mut Chunk) -> Chunk {
     // n_norm = ((n % len) + len) % len  — handles negative n
     c.emit_op_u16(Op::LOCAL_GET, n, 0);
     c.emit_op_u16(Op::LOCAL_GET, len, 0);
-    let fmod_name = c.add_constant(Value::String(Arc::from("__vybe_fmod")));
-    c.emit_op_u16(Op::GLOBAL_GET, fmod_name, 0);
+    crate::primitives::globals::emit_read(&mut c, "__vybe_fmod", 0);
     // fmod expects [a, b] before func ref; CALL_REF expects [func, args]
     // We have [n, len, fmod]. Stash + reload.
     // Simpler: just inline the modulo via DYN_MOD if it exists. Otherwise:
@@ -2407,7 +2401,7 @@ fn emit_pascal_write_buffer(c: &mut Chunk, buffer_key: u16, line: u32) {
     let undefined_key = c.add_constant(Value::String(Arc::from("undefined")));
     let empty_key = c.add_constant(Value::String(Arc::from("")));
 
-    c.emit_op_u16(Op::GLOBAL_GET, buffer_key, line);
+    crate::primitives::globals::emit_read(c, "__pascal_write_buffer", line);
     c.emit_dup(line);
     c.emit_op(Op::REF_IS_NULL, line);
     c.emit_if_value(line);
@@ -2438,7 +2432,7 @@ fn build_pascal_write(imports: &mut Chunk) -> Chunk {
     emit_pascal_write_buffer(&mut c, buffer_key, line);
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     crate::primitives::ops::emit_dyn_add_into(imports, &mut c, line);
-    c.emit_op_u16(Op::GLOBAL_SET, buffer_key, line);
+    crate::primitives::globals::emit_write(&mut c, "__pascal_write_buffer", line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c
@@ -2461,7 +2455,7 @@ fn build_pascal_writeln(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::DROP, line);
 
     emit_const_index(&mut c, empty_key, line);
-    c.emit_op_u16(Op::GLOBAL_SET, buffer_key, line);
+    crate::primitives::globals::emit_write(&mut c, "__pascal_write_buffer", line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     c

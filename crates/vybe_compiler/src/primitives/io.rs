@@ -174,13 +174,11 @@ fn key_const(chunk: &mut Chunk, key: &str) -> u16 {
 }
 
 fn global_get(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = key_const(chunk, key);
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+    crate::primitives::globals::emit_read(chunk, key, line);
 }
 
 fn global_set(chunk: &mut Chunk, key: &str, line: u32) {
-    let idx = key_const(chunk, key);
-    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+    crate::primitives::globals::emit_write(chunk, key, line);
 }
 
 /// Push the buffer stack, creating it on first use. Stack: [] → [array].

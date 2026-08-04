@@ -504,11 +504,13 @@ pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_call(entries_fn, 1, line);
 
     // [[k,v], ...] → call __vybe_dict_values_from_entries → [v0, v1, ...]
-    let global_name =
-        chunks[current].add_constant(Value::String(Arc::from("__vybe_dict_values_from_entries")));
     let entries_local = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, entries_local, line);
-    chunks[current].emit_op_u16(Op::GLOBAL_GET, global_name, line);
+    crate::primitives::globals::emit_read(
+        &mut chunks[current],
+        "__vybe_dict_values_from_entries",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, entries_local, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
 }

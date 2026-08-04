@@ -545,6 +545,88 @@ impl Compiler {
         )
     }
 
+    /// Is `expr` already EXACTLY representable in `normalized_hint`, so that the
+    /// width coercion in `coerce_c_value_for_type_hint` is a mathematical no-op?
+    ///
+    /// This is not an optimization heuristic — it answers "would the coercion
+    /// change the value?", and only `false` is ever the safe-but-slow answer.
+    /// Every arm below must be a value the coercion provably maps to itself.
+    ///
+    /// Why it matters: that coercion is a modular-arithmetic chain in f64
+    /// (`trunc`, three `%`, an add, and for signed types a compare + subtract).
+    /// Emitting it for `int k = 0` costs ~20 opcodes to compute `0`. Measured,
+    /// a C loop body ran **302 executed opcodes per iteration** for work that is
+    /// ~11 opcodes of WASM — see `statictypelowering.md`.
+    ///
+    /// Deliberately conservative in this first cut:
+    /// - **Literals** are checked against the target's exact range.
+    /// - **Bitwise ops** already leave an exact i32 (the compiler emits
+    ///   `I32_AND`/`I32_OR`/… for them), so they are exact for `int`.
+    ///   `UShr` is EXCLUDED — under ECMA coercion it yields a u32, which can
+    ///   exceed `i32::MAX`.
+    /// - **Idents are NOT trusted.** A variable is coerced at its own
+    ///   declaration and assignments, but a typed *parameter* is not coerced on
+    ///   entry, so `int y = x;` could legitimately need the wrap.
+    fn value_is_exact_in_type_hint(&self, expr: &Expression, normalized_hint: &str) -> bool {
+        // Same ONE spelling table the narrowing emitter resolves through, so
+        // the two can never disagree about what a width is.
+        let Some(width) = vybe_ast::builtin_types::int_width_of(normalized_hint) else {
+            return false;
+        };
+        let range = width.range();
+        let is_i32 = width == vybe_ast::builtin_types::IntWidth::I32;
+
+        match &expr.kind {
+            ExprKind::Lit(Literal::Int(n)) => *n >= range.0 && *n <= range.1,
+
+            ExprKind::Binary { op, left, right } => {
+                // A bitwise op only leaves an exact i32 when it really is the
+                // i32 opcode. If either operand is a user value type, the
+                // operator may be OVERLOADED (C# `operator &`, Python
+                // `__and__`) and can return anything — so claim nothing.
+                if self.expr_user_value_type_name(left).is_some()
+                    || self.expr_user_value_type_name(right).is_some()
+                {
+                    return false;
+                }
+                match op {
+                    // `x & MASK` is bounded by the mask whenever the mask is a
+                    // non-negative literal: every result bit is a mask bit.
+                    // This is what makes `(unsigned char)(i & 0xFF)` free.
+                    BinOp::BitAnd => {
+                        let mask_fits = |e: &Expression| {
+                            matches!(&e.kind, ExprKind::Lit(Literal::Int(m))
+                                if *m >= 0 && *m <= range.1)
+                        };
+                        mask_fits(left) || mask_fits(right)
+                    }
+                    // The remaining bitwise ops leave an exact i32, which is
+                    // exact for `int` but says nothing about narrower widths.
+                    BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => is_i32,
+                    _ => false }
+            }
+
+            _ => false }
+    }
+
+    /// Would `coerce_c_value_for_type_hint` be a no-op for this value?
+    pub(super) fn coercion_is_redundant(
+        &self,
+        expr: &Expression,
+        type_hint: Option<&str>,
+    ) -> bool {
+        let Some(type_hint) = type_hint else {
+            return false;
+        };
+        let normalized = Self::normalize_type_hint(type_hint);
+        // A `char` that holds a CHARACTER is not a numeric width at all; the
+        // coercion arm skips it too, so never claim to have narrowed one.
+        if normalized == "char" && self.hint_is_builtin_string(&normalized) {
+            return false;
+        }
+        self.value_is_exact_in_type_hint(expr, &normalized)
+    }
+
     pub(super) fn expr_user_value_type_name(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self

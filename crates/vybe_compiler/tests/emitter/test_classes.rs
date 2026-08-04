@@ -331,3 +331,33 @@ fn dict_keys_uses_struct_get() {
         .any(|c| matches!(c, Value::String(s) if s.as_ref() == "__keys"));
     assert!(has_keys);
 }
+
+/// A name a chunk READS but never WRITES is an import of the embedder, and the
+/// module must declare it — a WASM module may only touch globals it declared.
+/// The test is the bytecode write-set, not what the source declared: the
+/// prelude declares `globalThis` and never assigns it.
+#[test]
+fn free_globals_are_declared_as_host_imports() {
+    let mut chunk = Chunk::new("<script>");
+    let read_only = chunk.add_constant(Value::String(std::sync::Arc::from("globalThis")));
+    let written = chunk.add_constant(Value::String(std::sync::Arc::from("myVar")));
+    chunk.emit_op_u16(Op::GLOBAL_GET, read_only, 0);
+    chunk.emit_op_u16(Op::GLOBAL_SET, written, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, written, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let mut chunks = vec![chunk];
+    vybe_compiler::primitives::globals::declare_free_globals(&mut chunks);
+
+    let declared: Vec<&str> = chunks[0]
+        .global_imports
+        .iter()
+        .filter(|i| i.module == vybe_runtime::chunk::HOST_GLOBALS_MODULE)
+        .map(|i| i.name.as_str())
+        .collect();
+    assert_eq!(
+        declared,
+        vec!["globalThis"],
+        "only the read-never-written name is an import"
+    );
+}

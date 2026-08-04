@@ -731,6 +731,90 @@ mod canvas_impl {
             );
         }
         
+        // sdlBlitPaletted(surface, indices, w, h, palette, dstW, dstH)
+        //
+        // The whole graphics requirement of a software renderer: expand an
+        // 8-bit palette-indexed frame to RGBA and show it. Doom's
+        // `I_FinishUpdate` is exactly this.
+        //
+        // The GUEST owns the pixel buffer — Doom writes straight into
+        // `screenbuffer->pixels` — so only the expansion crosses to the host,
+        // where it runs natively. Smoothing is turned off so an upscaled frame
+        // stays crisp instead of being blurred by bilinear filtering.
+        {
+            let gui = gui.clone();
+            vm.register_host_fn(
+                "vybe:gui",
+                "sdlBlitPaletted",
+                Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                    let name = handle_name(args.first());
+                    let w = args.get(2).map(|v| v.as_f64() as u32).unwrap_or(0);
+                    let h = args.get(3).map(|v| v.as_f64() as u32).unwrap_or(0);
+                    if w == 0 || h == 0 {
+                        return Value::Null;
+                    }
+                    // An array passed as `unsigned char *` DECAYS to a carray
+                    // pointer — `{__ref_kind:"carray", __base, __idx}` — not a
+                    // plain Array. Reading only the Array case produced an
+                    // empty buffer, every index fell back to palette entry 0,
+                    // and the frame came out uniformly black while the call
+                    // still "succeeded". Same unwrap `sdlFillRect` needs.
+                    let read_nums = |v: Option<&Value>, cap: usize| -> Vec<f64> {
+                        let Some(Value::Object(obj)) = v else {
+                            return Vec::new();
+                        };
+                        let mut start = 0usize;
+                        let target = {
+                            let o = obj.lock().unwrap();
+                            match o.properties.get("__base") {
+                                Some(Value::Object(base)) => {
+                                    start = o
+                                        .properties
+                                        .get("__idx")
+                                        .map(|i| i.as_f64() as usize)
+                                        .unwrap_or(0);
+                                    base.clone()
+                                }
+                                _ => obj.clone(),
+                            }
+                        };
+                        let t = target.lock().unwrap();
+                        match &t.kind {
+                            vybe_runtime::value::ObjectKind::Array(items) => {
+                                items.iter().skip(start).take(cap).map(|x| x.as_f64()).collect()
+                            }
+                            _ => Vec::new(),
+                        }
+                    };
+                    let indices: Vec<u8> = read_nums(args.get(1), (w as usize) * (h as usize))
+                        .into_iter()
+                        .map(|v| v as u8)
+                        .collect();
+                    // Palette entries are packed 0xRRGGBB.
+                    let palette: Vec<u32> = read_nums(args.get(4), 256)
+                        .into_iter()
+                        .map(|v| v as u32)
+                        .collect();
+                    let img = vybe_widgets::canvas::Image::from_paletted(w, h, &indices, &palette);
+                    let dst_w = args
+                        .get(5)
+                        .map(|v| v.as_f64() as f32)
+                        .filter(|v| *v > 0.0)
+                        .unwrap_or(w as f32);
+                    let dst_h = args
+                        .get(6)
+                        .map(|v| v.as_f64() as f32)
+                        .filter(|v| *v > 0.0)
+                        .unwrap_or(h as f32);
+                    let mut state = gui.lock().unwrap();
+                    let canvas = state.find_canvas_for_draw(&name);
+                    canvas.set_image_smoothing(false);
+                    canvas.draw_image(&img, 0.0, 0.0, dst_w, dst_h);
+                    Value::Null
+                }),
+            );
+        }
+
         // sdlPresent(surface) — SDL's frame boundary.
         //
         // SDL is immediate-mode and never clears its surface; the program just

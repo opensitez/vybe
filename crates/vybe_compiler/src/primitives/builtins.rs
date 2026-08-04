@@ -217,8 +217,7 @@ impl Compiler {
                 } else {
                     "__vybe_pascal_set_exclude"
                 };
-                let helper_idx = self.str_const(helper);
-                self.emit_u16(Op::GLOBAL_GET, helper_idx);
+                self.emit_global_read(helper);
                 self.emit_var_get(var_name);
                 self.compile_expr(args[1])?;
                 self.emit_u8(Op::CALL_REF, 2);
@@ -1516,8 +1515,7 @@ impl Compiler {
                 if let Some(op) = Op::from_flattened_name(op_name) {
                     self.emit(op);
                 } else {
-                    let c = self.str_const(op_name);
-                    self.emit_u16(Op::GLOBAL_GET, c);
+                    self.emit_global_read(op_name);
                 }
             }
         }
@@ -2726,8 +2724,7 @@ impl Compiler {
                         self.emit_const(Value::Bool(true));
                         return Ok(());
                     }
-                    let idx = self.str_const(&global_name);
-                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    self.emit_global_read(&global_name);
                     fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_const(Value::String(Arc::from("undefined")));
                     {
@@ -2757,8 +2754,7 @@ impl Compiler {
                 }) = args.first()
                 {
                     let global_name = self.canon(name);
-                    let idx = self.str_const(&global_name);
-                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    self.emit_global_read(&global_name);
                 } else {
                     if let Some(arg) = args.first() {
                         self.compile_expr(arg)?;
@@ -2995,8 +2991,7 @@ impl Compiler {
                     if consult_resolvers {
                         self.emit_constructor_global_ref(&global_name, name);
                     } else {
-                        let idx = self.str_const(&global_name);
-                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_global_read(&global_name);
                     }
                     let line = self.line;
                     crate::primitives::dynamic_symbols::emit_symbol_kind_test(
@@ -3023,8 +3018,7 @@ impl Compiler {
                     }
                     self.compile_expr(args[1])?;
                     let global_name = self.canon(name);
-                    let idx = self.str_const(&global_name);
-                    self.emit_u16(Op::GLOBAL_SET, idx);
+                    self.emit_global_write(&global_name);
                     self.defined_globals.insert(global_name);
                     self.emit_const(Value::Bool(true));
                 } else {
@@ -3211,8 +3205,7 @@ impl Compiler {
             // `emit_php_run_shutdown_fns` at end of program and on exit/die.
             "php_register_shutdown_function" => {
                 self.emit_ensure_global_list("__php_shutdown_fns");
-                let key = self.shared_global_slot("__php_shutdown_fns");
-                self.emit_u16(Op::GLOBAL_GET, key);
+                self.emit_global_read("__php_shutdown_fns");
                 // One entry per registration: [callback, ...extra args].
                 let line = self.line;
                 common::collections::emit_array_new(&mut self.chunks, self.current, 0, line);
@@ -3269,8 +3262,7 @@ impl Compiler {
                     self.compile_expr(args[0])?;
                     let arr_slot = self.define_local("__php_rsort_arr");
                     self.emit_u16(Op::LOCAL_SET, arr_slot);
-                    let helper = self.str_const("__vybe_sort_in_place");
-                    self.emit_u16(Op::GLOBAL_GET, helper);
+                    self.emit_global_read("__vybe_sort_in_place");
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     self.emit_u8(Op::CALL_REF, 1);
                     self.emit(Op::DROP);

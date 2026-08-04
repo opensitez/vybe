@@ -43,10 +43,7 @@ const ENVIRON_CACHE_GLOBAL: &str = "__vybe_request_environ";
 const BODY_CACHE_GLOBAL: &str = "__vybe_request_body";
 
 fn push_request_handle(chunk: &mut Chunk, line: u32) {
-    let name = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
-        REQUEST_GLOBAL,
-    )));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
+    crate::primitives::globals::emit_read(chunk, REQUEST_GLOBAL, line);
 }
 
 /// Call a `wasi:http/types` method on the request handle.
@@ -199,13 +196,11 @@ pub fn emit_header(chunks: &mut [Chunk], current: usize, name: &str, line: u32) 
 }
 
 fn push_global(chunk: &mut Chunk, name: &str, line: u32) {
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, key, line);
+    crate::primitives::globals::emit_read(chunk, name, line);
 }
 
 fn set_global(chunk: &mut Chunk, name: &str, line: u32) {
-    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_SET, key, line);
+    crate::primitives::globals::emit_write(chunk, name, line);
 }
 
 /// Store `[value]` into the environ map under `key`. Stack: [map, value] → [map].

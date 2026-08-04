@@ -265,10 +265,9 @@ impl Compiler {
 
     fn emit_js_import_meta_object(&mut self) {
         let global_name = "__js_import_meta";
-        let global_idx = self.str_const(global_name);
         let meta_slot = self.define_local("__js_import_meta_value");
 
-        self.emit_u16(Op::GLOBAL_GET, global_idx);
+        self.emit_global_read(global_name);
         self.emit_u16(Op::LOCAL_SET, meta_slot);
 
         self.emit_u16(Op::LOCAL_GET, meta_slot);
@@ -286,7 +285,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, init_slot);
-        self.emit_u16(Op::GLOBAL_SET, global_idx);
+        self.emit_global_write(global_name);
         self.emit_u16(Op::LOCAL_GET, init_slot);
         self.emit_u16(Op::LOCAL_SET, meta_slot);
 
@@ -306,7 +305,7 @@ impl Compiler {
         self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, init_slot);
-        self.emit_u16(Op::GLOBAL_SET, global_idx);
+        self.emit_global_write(global_name);
         self.emit_u16(Op::LOCAL_GET, init_slot);
         self.emit_u16(Op::LOCAL_SET, meta_slot);
 
@@ -596,8 +595,7 @@ impl Compiler {
     }
 
     fn emit_generator_payload_store(&mut self) {
-        let store_global = self.str_const("__vybe_generator_payloads");
-        self.emit_u16(Op::GLOBAL_GET, store_global);
+        self.emit_global_read("__vybe_generator_payloads");
         let store_slot = self.define_local("__gen_payload_store");
         self.emit_u16(Op::LOCAL_SET, store_slot);
 
@@ -608,15 +606,14 @@ impl Compiler {
         common::dict::emit_new(&mut self.chunks, self.current, line);
         inst!(self, core_wasm::dup);
         self.emit_u16(Op::LOCAL_SET, store_slot);
-        self.emit_u16(Op::GLOBAL_SET, store_global);
+        self.emit_global_write("__vybe_generator_payloads");
 
         self.chunk().emit_end(line);
         self.emit_u16(Op::LOCAL_GET, store_slot);
     }
 
     fn emit_next_generator_payload_id(&mut self) {
-        let next_global = self.str_const("__vybe_generator_payload_next_id");
-        self.emit_u16(Op::GLOBAL_GET, next_global);
+        self.emit_global_read("__vybe_generator_payload_next_id");
         let id_slot = self.define_local("__gen_payload_id_current");
         self.emit_u16(Op::LOCAL_SET, id_slot);
 
@@ -634,7 +631,7 @@ impl Compiler {
             let line = self.line;
             crate::primitives::ops::emit_dyn_add(self.chunk(), line);
         };
-        self.emit_u16(Op::GLOBAL_SET, next_global);
+        self.emit_global_write("__vybe_generator_payload_next_id");
 
         self.emit_u16(Op::LOCAL_GET, id_slot);
     }
@@ -832,8 +829,7 @@ impl Compiler {
                 if !is_local {
                     let canon_name = self.canon(name);
                     if let Some(enum_type) = self.enum_members.get(&canon_name).cloned() {
-                        let type_idx = self.str_const(&enum_type);
-                        self.emit_u16(Op::GLOBAL_GET, type_idx);
+                        self.emit_global_read(&enum_type);
                         let mem_idx = self.str_const(&canon_name);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, mem_idx);
                         return Ok(());
@@ -906,8 +902,7 @@ impl Compiler {
                         !name.eq_ignore_ascii_case(&self.profile.constructor_name)
                     })
                 {
-                    let idx = self.str_const("__js_this");
-                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    self.emit_global_read("__js_this");
                     return Ok(());
                 }
 
@@ -947,18 +942,15 @@ impl Compiler {
                             let l = self.line;
                             crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
                         } else {
-                            let idx = self.str_const("__js_this");
-                            self.emit_u16(Op::GLOBAL_GET, idx);
+                            self.emit_global_read("__js_this");
                         }
                     } else if self.profile.ambient_this_binding {
-                        let idx = self.str_const("__js_this");
-                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_global_read("__js_this");
                     } else {
                         self.emit_null();
                     }
                 } else if self.profile.ambient_this_binding {
-                    let idx = self.str_const("__js_this");
-                    self.emit_u16(Op::GLOBAL_GET, idx);
+                    self.emit_global_read("__js_this");
                 } else {
                     self.emit_null();
                 }
@@ -974,8 +966,7 @@ impl Compiler {
                         .and_then(|pc| pc.parent.clone())
                     {
                         let pname = self.canon(&parent_name);
-                        let idx = self.str_const(&pname);
-                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_global_read(&pname);
                     } else {
                         self.emit_null();
                     }
@@ -1164,7 +1155,19 @@ impl Compiler {
                         // the real `app.http.request` type.
                         let aliased = self.resolve_source_type_alias(type_name);
                         let name_canon = self.canon(&aliased);
-                        self.emit_ref_type_test(Op::REF_TEST, &name_canon, line);
+                        // Through the shared reflection primitive so `instanceof`
+                        // and a typed `catch` cannot disagree about the same
+                        // object — it spills the operand because the answer needs
+                        // to read it twice (rtt, then the `__types` chain).
+                        let obj_slot = self.define_local("__instanceof_obj");
+                        self.emit_u16(Op::LOCAL_SET, obj_slot);
+                        crate::primitives::reflection::emit_is_instance_of(
+                            &mut self.chunks,
+                            self.current,
+                            obj_slot,
+                            &name_canon,
+                            line,
+                        );
                         return Ok(());
                     }
                 }
@@ -1716,8 +1719,7 @@ impl Compiler {
                     if let Some(source_function) =
                         self.resolve_namespaced_function_identity(&source_member_parts.join("."))
                     {
-                        let global_idx = self.str_const(&source_function);
-                        self.emit_u16(Op::GLOBAL_GET, global_idx);
+                        self.emit_global_read(&source_function);
                         return Ok(());
                     }
                 }
@@ -2166,8 +2168,7 @@ impl Compiler {
                     }
 
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {
-                        let idx = self.str_const(&key);
-                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_global_read(&key);
                         return Ok(());
                     }
 
@@ -2213,8 +2214,7 @@ impl Compiler {
                                 .map(|pc| !pc.static_fields.iter().any(|name| name == &method_name))
                                 .unwrap_or(false);
                             if zero_arg_static {
-                                let cls_idx = self.str_const(&canon_obj);
-                                self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                                self.emit_global_read(&canon_obj);
                                 inst!(self, core_wasm::dup);
                                 let method_idx = self.str_const(&method_name);
                                 self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
@@ -2255,8 +2255,7 @@ impl Compiler {
                         // shared tree; the common resolver handles the mounted chain.
                         match self.resolve_profile_namespace_chain(&parts) {
                             Some(super::resolver::Resolution::GlobalAccess { name }) => {
-                                let idx = self.str_const(&name);
-                                self.emit_u16(Op::GLOBAL_GET, idx);
+                                self.emit_global_read(&name);
                                 return Ok(());
                             }
                             Some(super::resolver::Resolution::Tree(
@@ -3116,8 +3115,7 @@ impl Compiler {
                     let line = self.line;
                     self.chunk().emit_if_value(line);
 
-                    let class_idx = self.str_const(&self.canon(&type_name));
-                    self.emit_u16(Op::GLOBAL_GET, class_idx);
+                    self.emit_global_read(&self.canon(&type_name));
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -4125,8 +4123,7 @@ impl Compiler {
                             self.chunks[self.current].local_count
                         ));
                         if saved_nt.is_some() {
-                            let class_idx = self.global_name_const_idx(&canon_type);
-                            self.emit_u16(Op::GLOBAL_GET, class_idx);
+                            self.emit_global_read(&canon_type);
                             self.set_js_new_target_from_stack();
                         }
                         let saved_this = self.save_js_this(&format!(
@@ -4141,8 +4138,7 @@ impl Compiler {
                     if self.profile.ecma_new_dispatch
                         && self.defined_functions.contains(&canon_type)
                     {
-                        let idx = self.str_const(&canon_type);
-                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_global_read(&canon_type);
                         let ctor_slot = self.define_local("__js_ctor");
                         self.emit_u16(Op::LOCAL_SET, ctor_slot);
                         let line = self.line;
@@ -4444,16 +4440,15 @@ impl Compiler {
                             .map(str::trim)
                             .unwrap_or(proper_name.as_str());
                         if matches!(bare_proper_name, "List" | "ArrayList") {
-                            let sort_global = self.str_const("__vybe_sort_in_place");
                             let sort_key = self.str_const("sort");
                             inst!(self, core_wasm::dup);
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_global_read("__vybe_sort_in_place");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, sort_key);
                             self.emit(Op::DROP);
 
                             let sort_pascal_key = self.str_const("Sort");
                             inst!(self, core_wasm::dup);
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_global_read("__vybe_sort_in_place");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, sort_pascal_key);
                             self.emit(Op::DROP);
                         }
@@ -4508,16 +4503,15 @@ impl Compiler {
                         if bare_str.eq_ignore_ascii_case("list")
                             || bare_str.eq_ignore_ascii_case("arraylist")
                         {
-                            let sort_global = self.str_const("__vybe_sort_in_place");
                             let sort_key = self.str_const("sort");
                             inst!(self, core_wasm::dup);
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_global_read("__vybe_sort_in_place");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, sort_key);
                             self.emit(Op::DROP);
 
                             let sort_pascal_key = self.str_const("Sort");
                             inst!(self, core_wasm::dup);
-                            self.emit_u16(Op::GLOBAL_GET, sort_global);
+                            self.emit_global_read("__vybe_sort_in_place");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, sort_pascal_key);
                             self.emit(Op::DROP);
                         }
@@ -4592,7 +4586,7 @@ impl Compiler {
                 }
                 self.compile_expr(value)?;
                 inst!(self, core_wasm::dup);
-                self.compile_assign_target(target)?;
+                self.compile_assign_target_valued(target, Some(value))?;
                 // PHP reference assignment: mark target as pointer-cell
                 // AFTER the first store so subsequent writes use cell_store.
                 if matches!(
@@ -5451,10 +5445,14 @@ impl Compiler {
                 self.emit_const(Value::I32(0));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
 
-                self.emit_u16(Op::LOCAL_GET, obj_slot);
                 let canon_type_name = canon_type.clone();
-                self.emit_ref_type_test(Op::REF_TEST, &canon_type_name, line);
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                crate::primitives::reflection::emit_is_instance_of(
+                    &mut self.chunks,
+                    self.current,
+                    obj_slot,
+                    &canon_type_name,
+                    line,
+                );
                 self.chunk().emit_if(line);
                 self.emit_const(Value::I32(1));
                 self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5506,10 +5504,14 @@ impl Compiler {
                     .cloned()
                     .collect();
                 for candidate in &reflection_matches {
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
                     let candidate_name = candidate.clone();
-                    self.emit_ref_type_test(Op::REF_TEST, &candidate_name, line);
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                    crate::primitives::reflection::emit_is_instance_of(
+                        &mut self.chunks,
+                        self.current,
+                        obj_slot,
+                        &candidate_name,
+                        line,
+                    );
                     self.chunk().emit_if(line);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -5914,8 +5916,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, source_slot);
 
                             let value_slot = self.define_local("__cast_struct_value");
-                            let idx = self.str_const(&ctor_global);
-                            self.emit_u16(Op::GLOBAL_GET, idx);
+                            self.emit_global_read(&ctor_global);
                             self.emit_u8(Op::CALL_REF, 0);
                             self.emit_u16(Op::LOCAL_SET, value_slot);
 
@@ -6403,8 +6404,7 @@ impl Compiler {
                             {
                                 self.emit_u16(Op::LOCAL_GET, self_slot);
                             } else {
-                                let js_this = self.str_const("__js_this");
-                                self.emit_u16(Op::GLOBAL_GET, js_this);
+                                self.emit_global_read("__js_this");
                             }
                             self.set_js_this_from_stack();
                             for a in args {
@@ -6815,8 +6815,7 @@ impl Compiler {
                             self.canon(&format!("__extends_{}_{}", class_name, self.chunks.len()));
                         self.defined_globals.insert(synth_parent.clone());
                         self.compile_expr(p)?;
-                        let parent_idx = self.global_name_const_idx(&synth_parent);
-                        self.emit_u16(Op::GLOBAL_SET, parent_idx);
+                        self.emit_global_write(&synth_parent);
                         Some(synth_parent)
                     }
                 } else {
@@ -6848,8 +6847,7 @@ impl Compiler {
                 if let Some(saved) = saved_expr_js_this {
                     self.restore_js_this(saved);
                 }
-                let class_idx = self.str_const(&class_name);
-                self.emit_u16(Op::GLOBAL_GET, class_idx);
+                self.emit_global_read(&class_name);
             }
 
             // ── FunctionExpr (JS) ───────────────────────────────────────
@@ -6931,8 +6929,7 @@ impl Compiler {
                     }
                     // User-defined class constant — resolve as a global
                     if self.defined_globals.contains(&compound) {
-                        let idx = self.str_const(&compound);
-                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_global_read(&compound);
                         return Ok(());
                     }
                 }
@@ -7064,8 +7061,7 @@ impl Compiler {
                 _ => None };
 
             if let Some(helper) = helper {
-                let helper_idx = self.str_const(helper);
-                self.emit_u16(Op::GLOBAL_GET, helper_idx);
+                self.emit_global_read(helper);
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
                 self.emit_u8(Op::CALL_REF, 2);
@@ -7487,8 +7483,7 @@ use vybe_runtime::{Chunk, Value};
 /// Uses `global_get "__undefined"` — a sentinel wired at bundle time.
 /// Stack: [] → [undefined]
 pub fn emit_undefined(chunk: &mut Chunk, line: u32) {
-    let name = chunk.add_constant(Value::String(Arc::from("__undefined")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
+    crate::primitives::globals::emit_read(chunk, "__undefined", line);
 }
 
 /// Emit bitwise NOT (i32). WASM equivalent: i32.const -1, i32.xor.

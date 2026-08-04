@@ -119,8 +119,7 @@ pub fn build_constructor_chunk(
     let widget_slot = arity + 1;
 
     if let Some(parent_name) = class.parent {
-        let parent_const = chunk.add_constant(Value::String(Arc::from(parent_name)));
-        chunk.emit_op_u16(Op::GLOBAL_GET, parent_const, line);
+        vybe_compiler::primitives::globals::emit_read(&mut chunk, parent_name, line);
         if arity > 0 && class.ctor_arity == 1 && parent_name != "TObject" {
             chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
             chunk.emit_op_u8(Op::CALL_REF, 1, line);
@@ -256,15 +255,13 @@ pub fn emit_install_class_global(
 ) {
     script_chunk.emit_op_u16(Op::REF_FUNC, ctor_idx as u16, line);
     script_chunk.emit(0, line);
-    let name_const = script_chunk.add_constant(Value::String(Arc::from(class_name)));
-    script_chunk.emit_op_u16(Op::GLOBAL_SET, name_const, line);
+    vybe_compiler::primitives::globals::emit_write(script_chunk, class_name, line);
 
     let lower = class_name.to_lowercase();
     if lower != class_name {
         script_chunk.emit_op_u16(Op::REF_FUNC, ctor_idx as u16, line);
         script_chunk.emit(0, line);
-        let lower_const = script_chunk.add_constant(Value::String(Arc::from(lower.as_str())));
-        script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_const, line);
+        vybe_compiler::primitives::globals::emit_write(script_chunk, lower.as_str(), line);
     }
 }
 
@@ -357,15 +354,13 @@ pub fn emit_install_function_global(
 ) {
     script_chunk.emit_op_u16(Op::REF_FUNC, chunk_idx as u16, line);
     script_chunk.emit(0, line);
-    let name_const = script_chunk.add_constant(Value::String(Arc::from(name)));
-    script_chunk.emit_op_u16(Op::GLOBAL_SET, name_const, line);
+    vybe_compiler::primitives::globals::emit_write(script_chunk, name, line);
 
     let lower = name.to_lowercase();
     if lower != name {
         script_chunk.emit_op_u16(Op::REF_FUNC, chunk_idx as u16, line);
         script_chunk.emit(0, line);
-        let lower_const = script_chunk.add_constant(Value::String(Arc::from(lower.as_str())));
-        script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_const, line);
+        vybe_compiler::primitives::globals::emit_write(script_chunk, lower.as_str(), line);
     }
 }
 
@@ -416,11 +411,9 @@ pub fn emit_install_application_global(
     script_chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(script_chunk, line);
-    let app_name = script_chunk.add_constant(Value::String(Arc::from("Application")));
-    script_chunk.emit_op_u16(Op::GLOBAL_SET, app_name, line);
+    vybe_compiler::primitives::globals::emit_write(script_chunk, "Application", line);
 
-    let lower_name = script_chunk.add_constant(Value::String(Arc::from("application")));
-    script_chunk.emit_op_u16(Op::GLOBAL_SET, lower_name, line);
+    vybe_compiler::primitives::globals::emit_write(script_chunk, "application", line);
 }
 
 fn bind_ref(chunk: &mut Chunk, this_slot: u16, key: &str, chunk_idx: usize, line: u32) {

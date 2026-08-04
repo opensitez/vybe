@@ -590,9 +590,8 @@ pub fn emit_resolve_async_iterator(
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    let js_this_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__js_this")));
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
+    crate::primitives::globals::emit_write(chunk, "__js_this", line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
@@ -700,9 +699,8 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     chunk.emit_br_if(0, line); // BR to end of IF(no next), not outer_block
 
     // iter = iter_fn(obj) — §7.4.2 step 4: Call(method, obj)
-    let js_this_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__js_this")));
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
+    crate::primitives::globals::emit_write(chunk, "__js_this", line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
@@ -784,7 +782,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
 
     // __js_this = iter; step = next_fn(iter)
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    chunk.emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
+    crate::primitives::globals::emit_write(chunk, "__js_this", line);
     chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
@@ -843,11 +841,10 @@ pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
     c.local_count = 2; // value(0) + has_more(1)
     let value_local = 0u16;
     let has_more_local = 1u16;
-    let js_this = c.add_constant(Value::String(Arc::from("__js_this")));
     let value_key = c.add_constant(Value::String(Arc::from("value")));
     let done_key = c.add_constant(Value::String(Arc::from("done")));
 
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     emit_next(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, has_more_local, 0);
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
@@ -890,7 +887,6 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     let value_local = 1u16;
     let done_local = 2u16;
     let err_local = 3u16;
-    let js_this = c.add_constant(Value::String(Arc::from("__js_this")));
     let value_key = c.add_constant(Value::String(Arc::from("value")));
     let done_key = c.add_constant(Value::String(Arc::from("done")));
     let returned_key = c.add_constant(Value::String(Arc::from("__vybe_gen_returned")));
@@ -904,7 +900,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
 
     let try_patch = crate::primitives::errors::emit_try_start(&mut c, 0);
 
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     c.emit_struct_field_op(Op::STRUCT_GET, 0, returned_key, 0); // null if never stamped
     ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_if(0);
@@ -923,7 +919,7 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_op(Op::REF_IS_NULL, 0);
     c.emit_if(0);
     // next() — drive one step; emit_next pushes [value, has_more].
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     emit_next(&mut c, 0);
     ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     ops::emit_dyn_not_into(imports, &mut c, 0); // i32 done = !has_more
@@ -931,18 +927,18 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
     c.emit_else(0);
     // next(v) — RESUME with v; the suspended `yield` evaluates to v.
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     c.emit_op_u16(Op::LOCAL_GET, v_local, 0);
     emit_resume(&mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, value_local, 0);
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     c.emit_call(is_done_idx, 1, 0);
     ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, done_local, 0);
     c.emit_end(0);
 
     // Stamp started — `.throw()` on an unstarted generator keys on it.
-    c.emit_op_u16(Op::GLOBAL_GET, js_this, 0);
+    crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     core_wasm::bool_const(&mut c, 0, true);
     c.emit_struct_field_op(Op::STRUCT_SET, 0, started_key, 0);
     c.emit_op(Op::DROP, 0);

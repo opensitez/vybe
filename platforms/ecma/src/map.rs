@@ -16,6 +16,38 @@ use vybe_runtime::VM;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 
 static MAP_ITERATOR_IDX: OnceLock<usize> = OnceLock::new();
+static MAP_PROTOTYPE: OnceLock<Arc<Mutex<Object>>> = OnceLock::new();
+
+/// %Map.prototype% (§24.1.3) — the ONE object every Map instance inherits
+/// from, in the shape of `object::shared_object_prototype`.
+///
+/// It used to be minted fresh per VM in `ecma_globals`, and instances were
+/// never linked to it at all: dispatch went through a `__type: "Map"` stamp
+/// and the TypeRegistry, and `size` was an own DATA property on each instance
+/// kept in step by `sync_map_size`. Neither is ECMA — §24.1.3.10 makes `size`
+/// an ACCESSOR on the prototype and gives instances no own `size` — and the
+/// JS prelude compensated by re-wrapping the constructor and calling
+/// `Object.setPrototypeOf` on every instance. The prototype is the base; it
+/// has to be real here so nothing above has to fake it.
+pub fn shared_map_prototype() -> Value {
+    let proto = MAP_PROTOTYPE.get_or_init(|| {
+        let mut obj = Object::new();
+        obj.properties
+            .insert("__proto__".into(), crate::object::shared_object_prototype());
+        // §24.1.3.13 — `Map.prototype[@@toStringTag]` is "Map",
+        // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
+        obj.properties.insert(
+            "@@toStringTag".into(),
+            Value::String(Arc::from("Map")),
+        );
+        vybe_runtime::heap::alloc(obj)
+    });
+    let value = Value::Object(proto.clone());
+    if let Value::Object(o) = &value {
+        crate::object::track_nonenum(o, "@@toStringTag");
+    }
+    value
+}
 
 fn bound_iterator_method(
     receiver: &Arc<Mutex<Object>>,
@@ -53,7 +85,10 @@ fn bound_iterator_method(
 fn new_map_value() -> Value {
     let mut obj = Object::new();
     obj.kind = ObjectKind::Map(IndexMap::new());
-    obj.properties.insert("size".into(), Value::I32(0));
+    // §24.1.3.10: `size` is an accessor on the PROTOTYPE. An instance has no
+    // own `size`, so there is nothing to keep in sync either.
+    obj.properties
+        .insert("__proto__".into(), shared_map_prototype());
     // __type stamp lets TypeRegistry-driven runtime method dispatch
     // (`STRUCT_GET m "set"` → host fn) find the right binding. Without
     // it, JS-shape `m.set(k,v)` would dereference a missing property.
@@ -82,13 +117,6 @@ fn is_map(args: &[Value], idx: usize) -> Option<Arc<Mutex<Object>>> {
 
 /// Refresh the cached `size` property so user code reading
 /// `map.size` via property access sees the live count.
-fn sync_map_size(obj: &mut Object) {
-    if let ObjectKind::Map(ref m) = obj.kind {
-        let n = m.len() as i32;
-        obj.properties.insert("size".into(), Value::I32(n));
-    }
-}
-
 fn map_groupby_magic(callback: &Value, item: &Value) -> Option<Value> {
     if let Value::Object(obj) = callback {
         let o = obj.lock().unwrap();
@@ -197,7 +225,6 @@ pub fn register(vm: &mut VM) {
                             }
                         }
                     }
-                    sync_map_size(&mut mo);
                 }
             }
             m
@@ -229,7 +256,6 @@ pub fn register(vm: &mut VM) {
                                 }
                             }
                         }
-                        sync_map_size(&mut mo);
                     }
                 }
             }
@@ -264,7 +290,6 @@ pub fn register(vm: &mut VM) {
                     if let ObjectKind::Map(ref mut im) = m.kind {
                         im.insert(key, val);
                     }
-                    sync_map_size(&mut m);
                 }
                 return Value::Object(mapobj);
             }
@@ -301,7 +326,6 @@ pub fn register(vm: &mut VM) {
                 } else {
                     false
                 };
-                sync_map_size(&mut m);
                 return Value::Bool(removed);
             }
             Value::Bool(false)
@@ -317,7 +341,6 @@ pub fn register(vm: &mut VM) {
                 if let ObjectKind::Map(ref mut im) = m.kind {
                     im.clear();
                 }
-                sync_map_size(&mut m);
             }
             Value::Null
         }),
@@ -496,7 +519,6 @@ pub fn register(vm: &mut VM) {
                             g.properties.insert("length".into(), Value::F64(len as f64));
                         }
                     }
-                    sync_map_size(&mut mo);
                 }
             }
             out
@@ -517,7 +539,6 @@ pub fn register(vm: &mut VM) {
                         return existing.clone();
                     }
                     im.insert(key, default.clone());
-                    sync_map_size(&mut mo);
                     return default;
                 }
             }
@@ -547,7 +568,6 @@ pub fn register(vm: &mut VM) {
                     let mut mo2 = mapobj.lock().unwrap();
                     if let ObjectKind::Map(ref mut im) = mo2.kind {
                         im.insert(key, value.clone());
-                        sync_map_size(&mut mo2);
                     }
                     return value;
                 }

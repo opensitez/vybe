@@ -34,13 +34,11 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
 }
 
 fn gget(chunk: &mut Chunk, name: &str, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, key, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, name, line);
 }
 
 fn gset(chunk: &mut Chunk, name: &str, line: u32) {
-    let key = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_SET, key, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, name, line);
 }
 
 fn emit_host_call(

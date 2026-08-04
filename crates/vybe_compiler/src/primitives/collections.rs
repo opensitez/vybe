@@ -994,8 +994,7 @@ pub fn emit_runtime_helper_call(
     for i in (0..argc as u16).rev() {
         chunks[current].emit_op_u16(Op::LOCAL_SET, base + i, line);
     }
-    let name_c = chunks[current].add_constant(Value::String(Arc::from(global)));
-    chunks[current].emit_op_u16(Op::GLOBAL_GET, name_c, line);
+    crate::primitives::globals::emit_read(&mut chunks[current], global, line);
     for i in 0..argc as u16 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + i, line);
     }
@@ -1448,8 +1447,7 @@ pub fn emit_sorted(chunks: &mut [Chunk], current: usize, line: u32) {
 
 /// Push the __vybe_sorted func ref. Use BEFORE compiling arg.
 pub fn emit_sorted_push_func(chunk: &mut Chunk, line: u32) {
-    let name = chunk.add_constant(Value::String(Arc::from("__vybe_sorted")));
-    chunk.emit_op_u16(Op::GLOBAL_GET, name, line);
+    crate::primitives::globals::emit_read(chunk, "__vybe_sorted", line);
 }
 
 /// Invoke __vybe_sorted after [func, arg] are on stack.

@@ -1233,8 +1233,7 @@ impl Compiler {
             return saved_js_this;
         }
 
-        let js_global_this = self.str_const("__js_global_this");
-        self.emit_u16(Op::GLOBAL_GET, js_global_this);
+        self.emit_global_read("__js_global_this");
         let global_this_slot = self.define_local("__js_global_this_value");
         self.emit_u16(Op::LOCAL_SET, global_this_slot);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
@@ -1243,7 +1242,7 @@ impl Compiler {
         self.chunk().emit_if_value(line);
         self.emit_common("object.new", 0, line);
         inst!(self, core_wasm::dup);
-        self.emit_u16(Op::GLOBAL_SET, js_global_this);
+        self.emit_global_write("__js_global_this");
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         fn_call!(self, "wasm:js-undefined", "test", 1);
@@ -1251,7 +1250,7 @@ impl Compiler {
         self.chunk().emit_if_value(line);
         self.emit_common("object.new", 0, self.line);
         inst!(self, core_wasm::dup);
-        self.emit_u16(Op::GLOBAL_SET, js_global_this);
+        self.emit_global_write("__js_global_this");
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, global_this_slot);
         self.chunk().emit_end(line);
@@ -3707,8 +3706,7 @@ impl Compiler {
                 if let Some(source_function) =
                     self.resolve_namespaced_function_identity(&source_member_parts.join("."))
                 {
-                    let global_idx = self.str_const(&source_function);
-                    self.emit_u16(Op::GLOBAL_GET, global_idx);
+                    self.emit_global_read(&source_function);
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
@@ -4153,8 +4151,7 @@ impl Compiler {
                 }
 
                 if let Some(class_canon) = early_static_class_canon {
-                    let cls_idx = self.str_const(&class_canon);
-                    self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                    self.emit_global_read(&class_canon);
                     let method_canon = self.canon(&method_name);
                     let qualified_method = self.canon(&format!("{}.{}", class_canon, method_name));
                     let method_idx = self.str_const(&method_canon);
@@ -4269,8 +4266,7 @@ impl Compiler {
                         // `has_receiver` decision made when the method chunk
                         // was declared (`classes.rs`).
                         if self.static_methods_take_receiver() {
-                            let cls_idx = self.str_const(&class_canon);
-                            self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                            self.emit_global_read(&class_canon);
                             let receiver_slot = self.define_local("__early_static_receiver");
                             self.emit_u16(Op::LOCAL_SET, receiver_slot);
                             if self.class_prototype_dispatch() {
@@ -4318,8 +4314,7 @@ impl Compiler {
                 if let Some(source_function) =
                     self.resolve_namespaced_function_identity(&parts.join("."))
                 {
-                    let global_idx = self.str_const(&source_function);
-                    self.emit_u16(Op::GLOBAL_GET, global_idx);
+                    self.emit_global_read(&source_function);
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
@@ -4353,8 +4348,7 @@ impl Compiler {
 
                         match resolution {
                             Some(super::resolver::Resolution::GlobalAccess { name }) => {
-                                let global_idx = self.str_const(&name);
-                                self.emit_u16(Op::GLOBAL_GET, global_idx);
+                                self.emit_global_read(&name);
                                 for a in &arg_exprs {
                                     self.compile_expr(a)?;
                                 }
@@ -4523,8 +4517,7 @@ impl Compiler {
 
                                 if !arg_exprs.is_empty() && ns_parts.len() >= 2 {
                                     let method_name = ns_parts.last().cloned().unwrap_or_default();
-                                    let root_idx = self.str_const(&ns_parts[0]);
-                                    self.emit_u16(Op::GLOBAL_GET, root_idx);
+                                    self.emit_global_read(&ns_parts[0]);
                                     for part in &ns_parts[1..ns_parts.len() - 1] {
                                         let idx = self.str_const(part);
                                         self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
@@ -4546,8 +4539,7 @@ impl Compiler {
                                     return Ok(());
                                 }
 
-                                let root_idx = self.str_const(&ns_parts[0]);
-                                self.emit_u16(Op::GLOBAL_GET, root_idx);
+                                self.emit_global_read(&ns_parts[0]);
                                 for part in &ns_parts[1..] {
                                     let idx = self.str_const(part);
                                     self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
@@ -4785,8 +4777,7 @@ impl Compiler {
 
                 // Profile namespace roots
                 if self.profile.is_namespace_root(&lower_parts[0]) {
-                    let root_idx = self.str_const(&lower_parts[0]);
-                    self.emit_u16(Op::GLOBAL_GET, root_idx);
+                    self.emit_global_read(&lower_parts[0]);
                     for part in &lower_parts[1..] {
                         let idx = self.str_const(part);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
@@ -4809,8 +4800,7 @@ impl Compiler {
                 if let Some(source_function) =
                     self.resolve_namespaced_function_identity(&source_member_parts.join("."))
                 {
-                    let global_idx = self.str_const(&source_function);
-                    self.emit_u16(Op::GLOBAL_GET, global_idx);
+                    self.emit_global_read(&source_function);
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
@@ -4884,8 +4874,7 @@ impl Compiler {
                 if let Some(canon) = static_class_canon {
                     if self.class_prototype_dispatch() {
                         let method_name = self.js_member_storage_name_for_class(&canon, field);
-                        let cls_idx = self.str_const(&canon);
-                        self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                        self.emit_global_read(&canon);
                         let cls_tmp = self
                             .scope()
                             .resolve("__static_cls")
@@ -5015,8 +5004,7 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    let cls_idx = self.str_const(&canon);
-                    self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                    self.emit_global_read(&canon);
                     inst!(self, core_wasm::dup);
                     let m = self.canon(field);
                     let method_idx = self.str_const(&m);
@@ -5181,8 +5169,7 @@ impl Compiler {
                             })
                             .unwrap_or(false);
                         if nested_ok {
-                            let outer_idx = self.str_const(&outer_canon);
-                            self.emit_u16(Op::GLOBAL_GET, outer_idx);
+                            self.emit_global_read(&outer_canon);
                             let nested_idx = self.str_const(&self.canon(nested_name));
                             self.emit_struct_field_op(Op::STRUCT_GET, 0, nested_idx);
                             let cls_tmp = self
@@ -8106,8 +8093,7 @@ impl Compiler {
             if let Some(class_name) =
                 resolve_pointer_receiver_instance_method_owner(self, object, field)
             {
-                let class_idx = self.str_const(&class_name);
-                self.emit_u16(Op::GLOBAL_GET, class_idx);
+                self.emit_global_read(&class_name);
                 self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
                 let fn_tmp = self.define_local("__go_pending_instance_fn");
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
@@ -8821,8 +8807,7 @@ impl Compiler {
                 let is_local = self.has_accessible_local_binding(name);
                 if !is_local {
                     if let Some(class_name) = self.is_class_static_method(name) {
-                        let cls_idx = self.str_const(&class_name);
-                        self.emit_u16(Op::GLOBAL_GET, cls_idx);
+                        self.emit_global_read(&class_name);
                         let method_idx = self.str_const(&self.canon(name));
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
                         let fn_tmp = self.define_local("__bare_static_fn");
@@ -9353,8 +9338,7 @@ impl Compiler {
                         if prefers_direct_module_global {
                             self.emit_var_get(name);
                         } else {
-                            let module_idx = self.str_const(&module_name);
-                            self.emit_u16(Op::GLOBAL_GET, module_idx);
+                            self.emit_global_read(&module_name);
                             let member_idx = self.str_const(&canon_name);
                             self.emit_struct_field_op(Op::STRUCT_GET, 0, member_idx);
                         }
@@ -9465,8 +9449,7 @@ impl Compiler {
             if let Some(callable_global) =
                 self.source_function_callable_global_name_for_canon(&canon_name)
             {
-                let fn_idx = self.str_const(&callable_global);
-                self.emit_u16(Op::GLOBAL_GET, fn_idx);
+                self.emit_global_read(&callable_global);
             } else if !is_local {
                 if is_direct_global {
                     self.emit_var_get(name);
@@ -9483,8 +9466,7 @@ impl Compiler {
                     if prefers_direct_module_global {
                         self.emit_var_get(name);
                     } else {
-                        let module_idx = self.str_const(&module_name);
-                        self.emit_u16(Op::GLOBAL_GET, module_idx);
+                        self.emit_global_read(&module_name);
                         let member_idx = self.str_const(&canon_name);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, member_idx);
                     }

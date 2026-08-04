@@ -1385,26 +1385,27 @@ impl Compiler {
                                     }
                                 }
 
-                                // Single identity test per candidate type:
-                                // `REF_TEST` → `test_type` resolves type-registry
-                                // subtype (the real class hierarchy — now that the
-                                // host registers Error/Exception as distinct roots
-                                // per §20.5, PHP's sibling model via its prelude,
-                                // etc.), `__type`/`__types` chain, and prototype
-                                // identity. One unified mechanism, no per-language
-                                // branching, no stamp string-compares.
+                                // Single identity test per candidate type,
+                                // through the shared reflection primitive that
+                                // owns the question — it unions the rtt
+                                // (`ref.test`, which is what resolves declared
+                                // subtyping and `implements` by index) with the
+                                // `__types` ancestry chain every frontend
+                                // stamps. A bare `REF_TEST` here answered from
+                                // the rtt alone, so an instance a BASE
+                                // constructor allocated — carrying its parent's
+                                // rtt — failed `catch` on its own class even
+                                // though `__types` named it. One unified
+                                // mechanism, no per-language branching.
                                 for expected in &expected_names {
-                                    self.emit_u16(Op::LOCAL_GET, exc_slot);
                                     let line = self.line;
-                                    let expected_name = expected.clone();
-                                    self.emit_ref_type_test(Op::REF_TEST, &expected_name, line);
-                                    {
-                                        let line = self.line;
-                                        crate::primitives::ops::emit_dyn_to_bool(
-                                            self.chunk(),
-                                            line,
-                                        );
-                                    };
+                                    crate::primitives::reflection::emit_is_instance_of(
+                                        &mut self.chunks,
+                                        self.current,
+                                        exc_slot,
+                                        expected,
+                                        line,
+                                    );
                                     self.chunk().emit_if(line);
                                     inst!(self, core_wasm::bool_const, true);
                                     self.emit_u16(Op::LOCAL_SET, arm_match_slot);
@@ -1887,8 +1888,7 @@ impl Compiler {
                                 self.emit_null();
                             }
                             let cname = self.canon(fname);
-                            let idx = self.str_const(&cname);
-                            self.emit_u16(Op::GLOBAL_SET, idx);
+                            self.emit_global_write(&cname);
                             self.defined_globals.insert(cname.clone());
                             member_names.push((cname.clone(), cname));
                         }
@@ -1905,9 +1905,8 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, val_slot);
 
                             let cn = self.canon(cname);
-                            let idx = self.str_const(&cn);
                             self.emit_u16(Op::LOCAL_GET, val_slot);
-                            self.emit_u16(Op::GLOBAL_SET, idx);
+                            self.emit_global_write(&cn);
                             self.defined_globals.insert(cn.clone());
                             member_names.push((cn.clone(), cn.clone()));
 
@@ -1918,8 +1917,7 @@ impl Compiler {
                             // miss harmlessly in that case.
                             let class_canon = self.canon(name);
                             if self.defined_globals.contains(&class_canon) {
-                                let cg_idx = self.str_const(&class_canon);
-                                self.emit_u16(Op::GLOBAL_GET, cg_idx);
+                                self.emit_global_read(&class_canon);
                                 self.emit_u16(Op::LOCAL_GET, val_slot);
                                 let field_idx = self.str_const(cname);
                                 self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
@@ -1976,8 +1974,7 @@ impl Compiler {
                     .iter()
                     .any(|(mn, _)| mn.eq_ignore_ascii_case("__static_init__"))
                 {
-                    let init_idx = self.str_const("__static_init__");
-                    self.emit_u16(Op::GLOBAL_GET, init_idx);
+                    self.emit_global_read("__static_init__");
                     self.emit_u8(Op::CALL_REF, 0);
                     self.emit(Op::DROP);
                 }
@@ -1986,16 +1983,14 @@ impl Compiler {
                 self.emit_struct_new(0, 0);
                 for (mn, global_name) in &member_names {
                     inst!(self, core_wasm::dup);
-                    let gidx = self.str_const(global_name);
-                    self.emit_u16(Op::GLOBAL_GET, gidx);
+                    self.emit_global_read(global_name);
                     let key = self.str_const(mn);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
                     self.emit(Op::DROP);
                     // Register bare member → module name for qualified resolution
                     self.enum_members.insert(mn.clone(), module_name.clone());
                 }
-                let mod_idx = self.str_const(&module_name);
-                self.emit_u16(Op::GLOBAL_SET, mod_idx);
+                self.emit_global_write(&module_name);
                 self.defined_globals.insert(module_name);
             }
 
@@ -2066,7 +2061,6 @@ impl Compiler {
                 self.current_namespace = prev_namespace;
 
                 for (member_name, qualified_name, is_type_like) in &member_names {
-                    let qualified_idx = self.str_const(qualified_name);
                     self.defined_globals.insert(qualified_name.clone());
                     if *is_type_like {
                         self.defined_classes.insert(qualified_name.clone());
@@ -2088,9 +2082,8 @@ impl Compiler {
                         && !self.defined_classes.contains(member_name)
                         && !self.defined_functions.contains(member_name)
                     {
-                        let source_idx = self.str_const(member_name);
-                        self.emit_u16(Op::GLOBAL_GET, qualified_idx);
-                        self.emit_u16(Op::GLOBAL_SET, source_idx);
+                        self.emit_global_read(qualified_name);
+                        self.emit_global_write(member_name);
                     }
                 }
 
@@ -2098,14 +2091,12 @@ impl Compiler {
                 self.emit_struct_new(0, 0);
                 for (member_name, qualified_name, _) in &member_names {
                     inst!(self, core_wasm::dup);
-                    let gidx = self.str_const(qualified_name);
-                    self.emit_u16(Op::GLOBAL_GET, gidx);
+                    self.emit_global_read(qualified_name);
                     let key = self.str_const(member_name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
                     self.emit(Op::DROP);
                 }
-                let ns_idx = self.str_const(&ns_name);
-                self.emit_u16(Op::GLOBAL_SET, ns_idx);
+                self.emit_global_write(&ns_name);
                 self.defined_globals.insert(ns_name.clone());
 
                 let namespace_parts: Vec<&str> = ns_name
@@ -2120,19 +2111,16 @@ impl Compiler {
                         let child_key = self.canon(namespace_parts[depth]);
 
                         if self.defined_globals.contains(&parent_name) {
-                            let parent_idx = self.str_const(&parent_name);
-                            self.emit_u16(Op::GLOBAL_GET, parent_idx);
+                            self.emit_global_read(&parent_name);
                         } else {
                             self.emit_struct_new(0, 0);
                         }
                         inst!(self, core_wasm::dup);
-                        let child_idx = self.str_const(&child_name);
-                        self.emit_u16(Op::GLOBAL_GET, child_idx);
+                        self.emit_global_read(&child_name);
                         let key_idx = self.str_const(&child_key);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx);
                         self.emit(Op::DROP);
-                        let parent_idx = self.str_const(&parent_name);
-                        self.emit_u16(Op::GLOBAL_SET, parent_idx);
+                        self.emit_global_write(&parent_name);
                         self.defined_globals.insert(parent_name);
                     }
                 }
@@ -2512,8 +2500,6 @@ impl Compiler {
                 file_number } => {
                 let path_slot = self.define_local("__vb_open_path");
                 let file_slot = self.define_local("__vb_open_file_number");
-                let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
-                let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
                 let mode_text = match mode {
                     FileMode::Input => "Input",
                     FileMode::Output => "Output",
@@ -2535,14 +2521,14 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_ensure_global_map("__vb_file_path_by_handle");
-                self.emit_u16(Op::GLOBAL_GET, path_map_key);
+                self.emit_global_read("__vb_file_path_by_handle");
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 self.emit_u16(Op::LOCAL_GET, path_slot);
                 self.emit(Op::ARRAY_SET);
                 self.emit(Op::DROP);
 
                 self.emit_ensure_global_map("__vb_file_eof_by_handle");
-                self.emit_u16(Op::GLOBAL_GET, eof_map_key);
+                self.emit_global_read("__vb_file_eof_by_handle");
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 self.emit_const(Value::Bool(false));
                 self.emit(Op::ARRAY_SET);
@@ -2553,8 +2539,6 @@ impl Compiler {
                 self.emit_global_map_set_null("__vb_record_current_index_by_handle", file_slot);
             }
             StmtKind::CloseFile(file_num) => {
-                let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
-                let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
                 if let Some(fnum) = file_num {
                     let file_slot = self.define_local("__vb_close_file_number");
                     self.compile_expr(fnum)?;
@@ -2566,14 +2550,14 @@ impl Compiler {
                     self.emit(Op::DROP);
 
                     self.emit_ensure_global_map("__vb_file_path_by_handle");
-                    self.emit_u16(Op::GLOBAL_GET, path_map_key);
+                    self.emit_global_read("__vb_file_path_by_handle");
                     self.emit_u16(Op::LOCAL_GET, file_slot);
                     self.emit_null();
                     self.emit(Op::ARRAY_SET);
                     self.emit(Op::DROP);
 
                     self.emit_ensure_global_map("__vb_file_eof_by_handle");
-                    self.emit_u16(Op::GLOBAL_GET, eof_map_key);
+                    self.emit_global_read("__vb_file_eof_by_handle");
                     self.emit_u16(Op::LOCAL_GET, file_slot);
                     self.emit_const(Value::Bool(false));
                     self.emit(Op::ARRAY_SET);
@@ -2615,7 +2599,6 @@ impl Compiler {
                 let rows_slot = self.define_local("__vb_input_rows");
                 let len_slot = self.define_local("__vb_input_len");
                 let idx_slot = self.define_local("__vb_input_idx");
-                let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
@@ -2653,7 +2636,7 @@ impl Compiler {
                 }
 
                 self.emit_ensure_global_map("__vb_file_eof_by_handle");
-                self.emit_u16(Op::GLOBAL_GET, eof_map_key);
+                self.emit_global_read("__vb_file_eof_by_handle");
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 inst!(self, core_wasm::i32_const, 1);
@@ -2682,7 +2665,6 @@ impl Compiler {
                 let rows_slot = self.define_local("__vb_line_input_rows");
                 let len_slot = self.define_local("__vb_line_input_len");
                 let idx_slot = self.define_local("__vb_line_input_idx");
-                let eof_map_key = self.shared_global_slot("__vb_file_eof_by_handle");
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
@@ -2707,7 +2689,7 @@ impl Compiler {
                 self.emit_var_set(variable);
 
                 self.emit_ensure_global_map("__vb_file_eof_by_handle");
-                self.emit_u16(Op::GLOBAL_GET, eof_map_key);
+                self.emit_global_read("__vb_file_eof_by_handle");
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 inst!(self, core_wasm::i32_const, 1);
@@ -2990,7 +2972,6 @@ impl Compiler {
                 let line_slot = self.define_local("__vb_rewrite_line");
                 let items_slot = self.define_local("__vb_rewrite_items");
                 let path_slot = self.define_local("__vb_rewrite_path");
-                let path_map_key = self.shared_global_slot("__vb_file_path_by_handle");
 
                 self.compile_expr(file_number)?;
                 self.emit_u16(Op::LOCAL_SET, file_slot);
@@ -3030,7 +3011,7 @@ impl Compiler {
                 self.emit(Op::DROP);
 
                 self.emit_ensure_global_map("__vb_file_path_by_handle");
-                self.emit_u16(Op::GLOBAL_GET, path_map_key);
+                self.emit_global_read("__vb_file_path_by_handle");
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 self.emit(Op::ARRAY_GET);
                 self.emit_u16(Op::LOCAL_SET, path_slot);
@@ -3056,8 +3037,7 @@ impl Compiler {
                 }
                 if let Some(expr) = default {
                     self.compile_expr(expr)?;
-                    let idx = self.str_const("default");
-                    self.emit_u16(Op::GLOBAL_SET, idx);
+                    self.emit_global_write("default");
                 }
             }
 
@@ -3811,20 +3791,26 @@ impl Compiler {
                 cls,
                 patterns,
                 kw_patterns } => {
-                // Type test. A named class is known here, so the test is the
-                // WASM GC one: `REF_TEST` resolves the subject through the type
-                // registry (`type_id` → `is_subtype`), matching a subclass
-                // against its ancestor by the real hierarchy. Only a computed
-                // class expression falls back to `emit_instanceof`, which can
-                // do no better than compare the `__type`/`__types` stamps.
-                self.emit_u16(Op::LOCAL_GET, value_slot);
+                // Type test. A named class is known here, so it asks the shared
+                // identity primitive — the same one typed `catch` and
+                // `instanceof` ask, so a class pattern cannot disagree with them
+                // about the same subject. A computed class expression is only
+                // known as a runtime VALUE, so it can do no better than
+                // `emit_instanceof`'s `__type`/`__types` compare.
                 match &cls.kind {
                     ExprKind::Ident(class_name) => {
                         let canon = self.canon(class_name);
                         let line = self.line;
-                        self.emit_ref_type_test(Op::REF_TEST, &canon, line);
+                        crate::primitives::reflection::emit_is_instance_of(
+                            &mut self.chunks,
+                            self.current,
+                            value_slot,
+                            &canon,
+                            line,
+                        );
                     }
                     _ => {
+                        self.emit_u16(Op::LOCAL_GET, value_slot);
                         self.compile_expr(cls)?;
                         common::reflection::emit_instanceof(
                             &mut self.chunks,
@@ -4165,8 +4151,7 @@ impl Compiler {
                 if *kind == VarDeclKind::Static {
                     let binding =
                         self.ensure_static_local_binding(name, inferred_type_hint.clone())?;
-                    let flag_idx = self.str_const(&binding.init_flag_name);
-                    self.emit_u16(Op::GLOBAL_GET, flag_idx);
+                    self.emit_global_read(&binding.init_flag_name);
                     {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -4176,10 +4161,9 @@ impl Compiler {
                     self.chunk().emit_if(line);
 
                     self.emit_var_decl_initializer_value(decl, resolved_type_hint.as_deref())?;
-                    let value_idx = self.str_const(&binding.global_name);
-                    self.emit_u16(Op::GLOBAL_SET, value_idx);
+                    self.emit_global_write(&binding.global_name);
                     inst!(self, core_wasm::bool_const, true);
-                    self.emit_u16(Op::GLOBAL_SET, flag_idx);
+                    self.emit_global_write(&binding.init_flag_name);
                     self.chunk().emit_end(line);
 
                     let binding_key = self.canon(name);
@@ -4237,7 +4221,7 @@ impl Compiler {
                         false
                     };
                     if !skip_c_coerce {
-                        self.coerce_c_value_for_type_hint(effective_type_hint)?;
+                        self.bind_value_to_declared_type(effective_type_hint, Some(init_expr))?;
                     }
                     self.maybe_promote_array_literal_to_set(
                         decl.type_hint.as_deref(),
@@ -4272,16 +4256,14 @@ impl Compiler {
 
                 if is_toplevel || is_hoisted {
                     let cn = self.canon(name);
-                    let idx = self.str_const(&cn);
-                    self.emit_u16(Op::GLOBAL_SET, idx);
+                    self.emit_global_write(&cn);
                     if self.profile.ecma_lexical_declarations
                         && *kind == VarDeclKind::Var
                         && is_toplevel
                     {
-                        let global_this_key = self.str_const("globalThis");
                         let field_key = self.str_const(&cn);
-                        self.emit_u16(Op::GLOBAL_GET, global_this_key);
-                        self.emit_u16(Op::GLOBAL_GET, idx);
+                        self.emit_global_read("globalThis");
+                        self.emit_global_read(&cn);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, field_key);
                         self.emit(Op::DROP);
                     }
@@ -4604,7 +4586,20 @@ impl Compiler {
         }
     }
 
+    /// Assign the stack value to `target`, with no knowledge of what produced
+    /// it — so any declared width coercion is emitted unconditionally.
     pub(super) fn compile_assign_target(&mut self, target: &Expression) -> Result<(), String> {
+        self.compile_assign_target_valued(target, None)
+    }
+
+    /// As above, but `source` is the expression that produced the stack value.
+    /// Knowing it lets a provably redundant width coercion be skipped — see
+    /// `coercion_is_redundant`. Passing `None` is always correct, just slower.
+    pub(super) fn compile_assign_target_valued(
+        &mut self,
+        target: &Expression,
+        source: Option<&Expression>,
+    ) -> Result<(), String> {
         match &target.kind {
             ExprKind::Ident(name) => {
                 // FuncName := value assigns to Result slot (Pascal/VB)
@@ -4646,7 +4641,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                 }
                 let stored_type_hint = self.lookup_var_type_hint(name).map(str::to_string);
-                self.coerce_c_value_for_type_hint(stored_type_hint.as_deref())?;
+                self.bind_value_to_declared_type(stored_type_hint.as_deref(), source)?;
                 self.emit_var_set(name);
             }
             ExprKind::StaticAccess { class, member } => {
@@ -4733,8 +4728,7 @@ impl Compiler {
                     {
                         self.emit_u16(Op::LOCAL_GET, slot);
                     } else {
-                        let js_this = self.str_const("__js_this");
-                        self.emit_u16(Op::GLOBAL_GET, js_this);
+                        self.emit_global_read("__js_this");
                     }
                     self.emit_u16(Op::LOCAL_SET, receiver_tmp);
 
@@ -4818,8 +4812,7 @@ impl Compiler {
                         let tmp = self.define_local("__tmp");
                         self.emit_u16(Op::LOCAL_SET, tmp);
                         self.emit_u16(Op::LOCAL_GET, tmp);
-                        let idx = self.str_const(&key);
-                        self.emit_u16(Op::GLOBAL_SET, idx);
+                        self.emit_global_write(&key);
                         return Ok(());
                     }
 
@@ -5084,8 +5077,7 @@ impl Compiler {
                     if crate::primitives::globals::names_global_namespace(&self.profile, n))
                 {
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    let g_idx = self.str_const(&field_name);
-                    self.emit_u16(Op::GLOBAL_SET, g_idx);
+                    self.emit_global_write(&field_name);
                 }
             }
             ExprKind::Unary {
