@@ -357,8 +357,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let test_undef = c.add_import("wasm:js-undefined", "test");
     for method in ["__repr__", "__str__"] {
         let m = c.alloc_scratch(1);
-        let gm = c.add_constant(Value::String(Arc::from("__vybe_js_get_method")));
-        c.emit_op_u16(Op::GLOBAL_GET, gm, line);
+        vybe_compiler::primitives::globals::emit_read(&mut c, "__vybe_js_get_method", line);
         lget(&mut c, value, line);
         str_const(&mut c, method, line);
         c.emit_op_u8(Op::CALL_REF, 2, line);

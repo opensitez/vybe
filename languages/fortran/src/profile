@@ -6,6 +6,11 @@ name = "fortran"
 extensions = ["f90", "f95", "f03", "f08", "f18", "f"]
 
 [compiler]
+# Declared types CONVERT the value they bind (assignment, declaration and
+# parameter entry alike). Stated explicitly rather than inherited: the platform
+# default is `true`, and inheriting it silently gave Python coercive semantics
+# it never chose.
+coerces_value_to_type_hint = true
 # `intent(out)` arrives default-initialized.
 out_params_default_initialized = true
 # An omitted trailing `optional ::` dummy argument is passed as undefined.

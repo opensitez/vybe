@@ -1824,6 +1824,23 @@ fn parse_fortran_format_chunks(format_spec: &str) -> Option<Vec<FortranFormatChu
 }
 
 fn stringify_fortran_io_expr(expr: Expression) -> Expression {
+    // OPEN BUG: a logical renders as `true`/`false`; the standard specifies the
+    // single letter and gfortran writes ` T`. It is JS's rendering leaking
+    // through `__str__`.
+    //
+    // It is NOT fixed here. Testing the expression's SHAPE — literal, or a
+    // comparison operator — was tried and reverted: it renders `print *, .true.`
+    // as `T` while a variable declared `logical :: b` still gives `true`,
+    // because this walker is stateless and cannot know a name's declared type.
+    // One type with two spellings in the same program is worse than one wrong
+    // spelling everywhere.
+    //
+    // The real seam is `[builtin_slots.bool] to_string`, which fires at a
+    // profile-declared print builtin — the way Kotlin binds
+    // `println = { emit = "common:kotlin.print", slot = "to_string" }`. Fortran
+    // cannot use it while `build_fortran_io_text` hand-concatenates `__str__`
+    // calls instead of lowering to such a builtin. That restructuring belongs
+    // with namespaceplan.md Phase 5 (fortran: "mounts + walker normalization").
     if is_fortran_logical_expr(&expr) {
         return Expression::new(ExprKind::Ternary {
             cond: Box::new(expr),

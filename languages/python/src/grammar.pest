@@ -126,7 +126,9 @@ with_item = { expression ~ (as_kw ~ target)? }
 
 // ── Match / Case ───────────────────────────────────────────────────────────────
 match_stmt = {
-    "match" ~ expression_list ~ ":" ~ NEWLINE ~ INDENT ~ case_clause+ ~ eat_terminators ~ DEDENT
+    // `NEWLINE*` for the same reason as `block`: a comment line before the
+    // first `case` carries its own NEWLINE.
+    "match" ~ expression_list ~ ":" ~ NEWLINE ~ NEWLINE* ~ INDENT ~ case_clause+ ~ eat_terminators ~ DEDENT
 }
 
 case_clause = { "case" ~ pattern ~ ("if" ~ expression)? ~ block }
@@ -233,8 +235,15 @@ aug_assign_op = {
 
 // ── Block (colon + body) ──────────────────────────────────────────────────────
 // Two forms: indented block or single-line after colon
+// A COMMENT-only (or blank) line between the `:` and the block's first
+// statement contributes its own NEWLINE: the preprocessor emits such a line
+// verbatim, without an INDENT marker, so the stream reads
+// `":" NEWLINE NEWLINE INDENT`. Allowing only one NEWLINE made a comment in the
+// FIRST position of any block a parse error — the docstring position, i.e.
+// most commented Python. Mid-block comments always worked because
+// `eat_terminators` absorbs the extra NEWLINE; nothing absorbed it here.
 block = {
-    ":" ~ NEWLINE ~ DEDENT* ~ INDENT ~ (statement ~ eat_terminators)+ ~ DEDENT
+    ":" ~ NEWLINE ~ NEWLINE* ~ DEDENT* ~ INDENT ~ (statement ~ eat_terminators)+ ~ DEDENT
     | ":" ~ simple_stmt_list ~ terminator
 }
 

@@ -1673,13 +1673,11 @@ fn emit_lua_get_metamethod(
 }
 
 fn emit_lua_global_get(chunk: &mut Chunk, name: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_GET, idx, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, name, line);
 }
 
 fn emit_lua_global_set(chunk: &mut Chunk, name: &str, line: u32) {
-    let idx = chunk.add_constant(Value::String(Arc::from(name)));
-    chunk.emit_op_u16(Op::GLOBAL_SET, idx, line);
+    vybe_compiler::primitives::globals::emit_write(chunk, name, line);
 }
 
 fn emit_lua_get_metatable_for_value(

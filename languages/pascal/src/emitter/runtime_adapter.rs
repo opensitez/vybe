@@ -457,15 +457,14 @@ fn emit_pascal_file_eof(chunks: &mut [Chunk], current: usize, line: u32) {
 
 fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -> u16 {
     let slot = chunks[current].alloc_scratch(1);
-    let key = chunks[current].add_constant(Value::String(std::sync::Arc::from(name)));
-    chunks[current].emit_op_u16(Op::GLOBAL_GET, key, line);
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], name, line);
     vybe_compiler::primitives::instructions::core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op(Op::DROP, line);
     collections::emit_map_new(chunks, current, line);
     vybe_compiler::primitives::instructions::core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::GLOBAL_SET, key, line);
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], name, line);
     chunks[current].emit_else(line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);

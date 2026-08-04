@@ -8,6 +8,11 @@ name = "pascal"
 extensions = ["pas", "pp", "dpr", "lpr"]
 
 [compiler]
+# Declared types CONVERT the value they bind (assignment, declaration and
+# parameter entry alike). Stated explicitly rather than inherited: the platform
+# default is `true`, and inheriting it silently gave Python coercive semantics
+# it never chose.
+coerces_value_to_type_hint = true
 # A bare reference to a parameterless function invokes it: `X := Foo;` calls
 # `Foo`. Was a `profile.name == "pascal"` check in shared `expressions.rs`.
 bare_name_invokes_parameterless_function = true

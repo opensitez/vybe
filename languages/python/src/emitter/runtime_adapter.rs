@@ -870,10 +870,8 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     // is an object carrying either method, call it and use its result. The
     // method lookup returns undefined for primitives, so `print(5)` etc. fall
     // straight through to the default formatting below.
-    let get_method = std::sync::Arc::from("__vybe_js_get_method");
-    let get_method_c = chunk.add_constant(vybe_runtime::Value::String(get_method));
     let str_method = chunk.alloc_scratch(1);
-    chunk.emit_op_u16(Op::GLOBAL_GET, get_method_c, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_string_const("__str__", line);
     chunk.emit_op_u8(Op::CALL_REF, 2, line);
@@ -883,7 +881,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, str_method, line);
     chunk.emit_call(test_undef, 1, line);
     chunk.emit_if(line);
-    chunk.emit_op_u16(Op::GLOBAL_GET, get_method_c, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_js_get_method", line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_string_const("__repr__", line);
     chunk.emit_op_u8(Op::CALL_REF, 2, line);
@@ -908,7 +906,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     let repr_fn = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
         "__vybe_bytes_repr",
     )));
-    chunk.emit_op_u16(Op::GLOBAL_GET, repr_fn, line);
+    vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_bytes_repr", line);
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_op_u8(Op::CALL_REF, 1, line);
     chunk.emit_else(line);

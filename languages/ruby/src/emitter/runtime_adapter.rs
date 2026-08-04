@@ -3332,15 +3332,14 @@ fn emit_ruby_string_array(chunks: &mut [Chunk], current: usize, values: &[&str],
 }
 
 fn emit_ruby_env(chunks: &mut [Chunk], current: usize, line: u32) {
-    let env_g = chunks[current].add_constant(Value::String(Arc::from("__ruby_env")));
-    chunks[current].emit_op_u16(Op::GLOBAL_GET, env_g, line);
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__ruby_env", line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_struct_new(0, 0, line);
     chunks[current].emit_dup(line);
-    chunks[current].emit_op_u16(Op::GLOBAL_SET, env_g, line);
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__ruby_env", line);
     chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::GLOBAL_GET, env_g, line);
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__ruby_env", line);
     chunks[current].emit_end(line);
 }
 
@@ -14777,9 +14776,9 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             let seed_g = chunks[current].add_constant(vybe_runtime::Value::String(
                 std::sync::Arc::from("__vybe_rng_seed"),
             ));
-            chunks[current].emit_op_u16(Op::GLOBAL_GET, seed_g, line); // old seed (null if unset)
+            vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__vybe_rng_seed", line); // old seed (null if unset)
             chunks[current].emit_op_u16(Op::LOCAL_GET, n_s, line);
-            chunks[current].emit_op_u16(Op::GLOBAL_SET, seed_g, line); // seed = n
+            vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__vybe_rng_seed", line); // seed = n
             chunks[current].emit_op_u16(Op::LOCAL_GET, n_s, line);
             vybe_compiler::primitives::random::emit_seed(chunks, current, line); // set PRNG state, pops n
         }

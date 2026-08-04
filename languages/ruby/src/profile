@@ -8,6 +8,11 @@ name = "ruby"
 extensions = ["rb"]
 
 [compiler]
+# Declared types CONVERT the value they bind (assignment, declaration and
+# parameter entry alike). Stated explicitly rather than inherited: the platform
+# default is `true`, and inheriting it silently gave Python coercive semantics
+# it never chose.
+coerces_value_to_type_hint = true
 function_return = "explicit"
 # `Integer("abc")` raises ArgumentError; measured against ruby 2026-08-02.
 numeric_cast_invalid_error = "ArgumentError"

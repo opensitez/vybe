@@ -7,6 +7,12 @@ name = "python"
 extensions = ["py", "pyw"]
 
 [compiler]
+# PEP 484: an annotation is DESCRIPTIVE, never coercive. `x: int = 3.7` keeps
+# 3.7 and `def f(x: int)` called with 3.7 receives 3.7 — verified against
+# python3. This was inheriting the platform default of `true`, so annotated
+# declarations were being narrowed (`x: int = 3.7` gave 3). No language ever
+# declared that default; it applied by omission.
+coerces_value_to_type_hint = false
 # NameError on an unresolvable read is NOT enabled yet: `resolvable` in
 # bindings.rs consults only this file's own declarations, never the common
 # resolver, so host builtins look undeclared. Enabling it cost 47 tests with the

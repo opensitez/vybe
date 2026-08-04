@@ -1497,6 +1497,13 @@ fn walk_regular_data_item(
         for nested in group_children.iter().chain(sibling_items.iter()) {
             // Walk nested item and collect as object property
             collect_group_children(nested.clone(), &mut props, &mut child_stmts)?;
+        }
+        // The LAYOUT is this group's OWN storage, so it takes the subordinate
+        // items only. `sibling_items` are the entries at the same or a lower
+        // level that FOLLOW it — the next `01` record and its children — and
+        // folding those in made `DISPLAY W` emit the next record's fields too
+        // (measured: `aabbcc  dd` where cobc gives `aa  bb  `).
+        for nested in group_children.iter() {
             collect_group_layout_parts(nested.clone(), &mut layout_parts)?;
         }
         let mut field_names = Vec::new();
@@ -2368,6 +2375,34 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
             exprs.retain(|e| !matches!(&e.kind, ExprKind::Ident(n) if ctx.is_screen_item(n)));
             if exprs.is_empty() {
                 return Ok(None);
+            }
+            // DISPLAY of a GROUP item writes its children's storage end to end.
+            // `group_layout_for_name` already builds exactly that for the
+            // file-WRITE path; without it here the group rendered as
+            // `[object Object]` where cobc gives `aa  bb  ` (measured).
+            //
+            // Each child is padded to its own PICTURE first — the group's bytes
+            // are the padded fields concatenated, not their trimmed values.
+            for e in exprs.iter_mut() {
+                let ExprKind::Ident(name) = &e.kind else { continue };
+                let items = ctx.group_layout_for_name(name);
+                if items.is_empty() {
+                    continue;
+                }
+                let padded: Vec<Expression> = items
+                    .into_iter()
+                    .map(|item| match &item.kind {
+                        ExprKind::Ident(child) => match ctx.field_pic(child) {
+                            Some(fmt) => cobol_pic_format_expr(item, fmt),
+                            None => item },
+                        _ => item })
+                    .collect();
+                let mut it = padded.into_iter();
+                let Some(mut acc) = it.next() else { continue };
+                for item in it {
+                    acc = binary(BinOp::Concat, acc, item);
+                }
+                *e = acc;
             }
             // Pad each field operand to the fixed width implied by its PICTURE
             // (numeric 9(n) → zero-pad, alphanumeric X(n) → space-pad). Literals

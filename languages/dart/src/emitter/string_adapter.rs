@@ -1485,9 +1485,8 @@ fn emit_call_ref_on_receiver(
     fn_slot: u16,
     line: u32,
 ) {
-    let js_this_key = string_key(&mut chunks[current], "__js_this");
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunks[current].emit_op_u16(Op::GLOBAL_SET, js_this_key, line);
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__js_this", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
@@ -2915,8 +2914,7 @@ fn emit_dart_identity_hash(chunks: &mut [Chunk], current: usize, value_slot: u16
     chunks[current].emit_op_u16(Op::LOCAL_GET, existing_slot, line);
     chunks[current].emit_else(line);
 
-    let counter_key = string_key(&mut chunks[current], "__dart_identity_hash_next");
-    chunks[current].emit_op_u16(Op::GLOBAL_GET, counter_key, line);
+    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__dart_identity_hash_next", line);
     emit_undefined_to_null(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, next_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
@@ -2929,7 +2927,7 @@ fn emit_dart_identity_hash(chunks: &mut [Chunk], current: usize, value_slot: u16
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_TEE, next_slot, line);
-    chunks[current].emit_op_u16(Op::GLOBAL_SET, counter_key, line);
+    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__dart_identity_hash_next", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
     let field_key = string_key(&mut chunks[current], "__dart_identity_hash");
