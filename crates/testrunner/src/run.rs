@@ -113,7 +113,12 @@ fn execute(
     want_exit: i32,
 ) -> Outcome {
     let started = Instant::now();
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Empty stdin, never the terminal's. A test that reads stdin must see EOF
+    // and finish; inheriting fd 0 makes it block on a human who isn't there,
+    // and the verdict becomes "timeout" on a machine and "passes" on a laptop
+    // where someone hit return. Measured on COBOL `ACCEPT`: `< /dev/null` exits
+    // 0 immediately, inherited it never returns.
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,

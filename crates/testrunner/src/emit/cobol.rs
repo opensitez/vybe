@@ -34,6 +34,20 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     // is rejected by both `cobc -free` and Vybe, which is what the corpus uses.
     let header = format!("*> vybe-test: {slug}\n*> origin: {origin}\n");
 
+    // A program that ACCEPTs from the terminal cannot be RUN by a test harness:
+    // it blocks on a stdin nobody is writing to. Under the warm pool that stdin
+    // is the job protocol's own pipe, so the read hangs until the deadline and
+    // the worker is thrown away — 17 of these were the whole COBOL timeout list.
+    // Cargo asserted `compile_ok` for every one, so compile mode loses nothing.
+    if reads_stdin(&case.source) {
+        return Emitted {
+            text: format!(
+                "{header}*> vybe-test-mode: compile\n{}\n",
+                assemble(&case.source, case.prelude.as_deref(), false)
+            ),
+            pairing: Pairing::Direct };
+    }
+
     let Some(expected) = case.expected.as_ref() else {
         // Run it, do not merely compile it.
         return Emitted {
@@ -110,16 +124,14 @@ fn runtime_paired(
         return None;
     }
     let n = expected.len();
-    // An EVALUATE on the counter, NOT a table. `01 WS-VYBE-W` + FILLER VALUEs +
-    // `REDEFINES … OCCURS` is the textbook COBOL expected-value table, and it
-    // does not work under Vybe: the subscripted read came back unequal to a
-    // literal it held verbatim (measured — `got [02]` against an expectation of
-    // exactly "02"). EVALUATE needs no REDEFINES, no OCCURS and no subscript,
-    // only the literal comparison the static path already proves out.
-    let mut table = String::from("01 WS-VYBE-I PIC 9(4) VALUE 0.");
-    if false {
-        table.clear();
-    }
+    // An EVALUATE on the counter, NOT an expected-value TABLE. The table is the
+    // natural COBOL shape (`01 W.` FILLER VALUEs + `01 T REDEFINES W.`
+    // `05 E PIC X(n) OCCURS m`) and GnuCOBOL compiles it happily, but Vybe
+    // discards REDEFINES, so the subscripted read came back unequal to a
+    // literal it held verbatim — measured `got [02]` against an expectation of
+    // exactly "02". EVALUATE needs no REDEFINES, no OCCURS and no subscript,
+    // only the literal comparison the static path already proves out daily.
+    let table = String::from("01 WS-VYBE-I PIC 9(4) VALUE 0.");
 
     let mut body = src.to_string();
     for (_, end, operands) in displays.iter().rev() {
@@ -156,6 +168,47 @@ fn runtime_paired(
     Some((body, table))
 }
 
+/// Does the program issue a blocking terminal read?
+///
+/// `ACCEPT` is two statements wearing one keyword. `ACCEPT X FROM DATE` (and
+/// `DAY`, `TIME`, `ENVIRONMENT`, `COMMAND-LINE`, `ARGUMENT-*`) is a lookup that
+/// returns immediately — `walk_accept_stmt` lowers each to its own builtin.
+/// Every other form lowers to `readline`, which blocks.
+fn reads_stdin(src: &str) -> bool {
+    const LOOKUPS: [&str; 8] = [
+        "DATE",
+        "DAY",
+        "DAY-OF-WEEK",
+        "TIME",
+        "ENVIRONMENT",
+        "COMMAND-LINE",
+        "ARGUMENT-NUMBER",
+        "ARGUMENT-VALUE",
+    ];
+    let mut at = 0usize;
+    while let Some(found) = src[at..].to_ascii_uppercase().find("ACCEPT ") {
+        let start = at + found;
+        at = start + "ACCEPT ".len();
+        // Not the tail of an identifier, and not inside a literal.
+        let before = src[..start].chars().last().unwrap_or('\n');
+        if before.is_alphanumeric() || before == '-' || before == '"' || before == '\'' {
+            continue;
+        }
+        let end = src[at..].find(['.', '\n']).map_or(src.len(), |i| at + i);
+        let stmt = src[at..end].to_ascii_uppercase();
+        let source = stmt.split_once(" FROM ").map(|(_, rest)| rest.trim());
+        match source {
+            // `FROM ENVIRONMENT "HOME"` — the source is the first word.
+            Some(rest)
+                if LOOKUPS.contains(&rest.split_whitespace().next().unwrap_or("")) =>
+            {
+                continue
+            }
+            _ => return true }
+    }
+    false
+}
+
 /// Split a DISPLAY operand list on whitespace OUTSIDE quotes — a literal may
 /// contain spaces (`DISPLAY "lit " WS-A`).
 fn split_operands(text: &str) -> Vec<String> {
@@ -185,7 +238,26 @@ fn split_operands(text: &str) -> Vec<String> {
     if !cur.is_empty() {
         out.push(cur);
     }
-    out
+    // A qualified name is ONE operand. `DISPLAY LIMIT OF STATE` split three
+    // ways emitted `STRING LIMIT DELIMITED SIZE OF DELIMITED SIZE STATE
+    // DELIMITED SIZE`, which no COBOL accepts — 14 corpus files were failing
+    // on the check rather than on what they test.
+    let mut merged: Vec<String> = Vec::with_capacity(out.len());
+    let mut it = out.into_iter();
+    while let Some(part) = it.next() {
+        if matches!(part.to_ascii_uppercase().as_str(), "OF" | "IN")
+            && let Some(last) = merged.last_mut()
+            && let Some(next) = it.next()
+        {
+            last.push(' ');
+            last.push_str(&part);
+            last.push(' ');
+            last.push_str(&next);
+            continue;
+        }
+        merged.push(part);
+    }
+    merged
 }
 
 /// Rebuild what the test's `p(data, body)` helper produced.
@@ -280,7 +352,27 @@ fn find_displays(src: &str) -> Vec<Display> {
         if upper.contains(" UPON ") || upper.contains("NO ADVANCING") {
             continue;
         }
-        let operands = split_operands(text);
+        let mut operands = split_operands(text);
+        // A DISPLAY need not be period-terminated, so the scan to the next `.`
+        // runs straight into the following statement: `DISPLAY ws-count STOP
+        // RUN.` yielded the operands `ws-count STOP RUN` and emitted
+        // `STRING ws-count DELIMITED SIZE STOP DELIMITED SIZE RUN …`, which is
+        // a parse error. Cut the list at the first word that starts a new verb.
+        if let Some(cut) = operands.iter().position(|op| {
+            let up = op.to_ascii_uppercase();
+            // `END-PERFORM`, `END-IF`, … close the enclosing verb; they are not
+            // operands either.
+            up.starts_with("END-")
+                || matches!(
+                    up.as_str(),
+                    "STOP" | "GOBACK" | "EXIT" | "MOVE" | "PERFORM" | "IF" | "ELSE" | "ADD"
+                        | "SUBTRACT" | "MULTIPLY" | "DIVIDE" | "COMPUTE" | "ACCEPT" | "CALL"
+                        | "GO" | "SET" | "STRING" | "UNSTRING" | "INSPECT" | "EVALUATE"
+                        | "CONTINUE" | "WHEN" | "SEARCH" | "ALTER" | "WRITE" | "READ"
+                )
+        }) {
+            operands.truncate(cut);
+        }
         if operands.is_empty() {
             continue;
         }
