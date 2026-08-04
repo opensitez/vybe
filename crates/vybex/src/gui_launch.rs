@@ -283,6 +283,9 @@ impl Application for FormApp {
             swash_cache: &mut self.swash_cache,
             scale };
         g.form.render(&mut ctx);
+        if !g.overlay_canvases.is_empty() {
+            g.form.render_overlays(&mut ctx, &g.overlay_canvases);
+        }
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) -> bool {

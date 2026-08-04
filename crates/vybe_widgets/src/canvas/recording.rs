@@ -239,6 +239,11 @@ impl RecordingCanvas {
 
     /// Drop every captured command. Used by callers that want one-shot
     /// replay (replay → clear → start fresh).
+    /// Debug-only view of the recorded commands.
+    pub fn commands_for_debug(&self) -> &[DrawCmd] {
+        &self.commands
+    }
+
     pub fn clear(&mut self) {
         self.commands.clear();
     }

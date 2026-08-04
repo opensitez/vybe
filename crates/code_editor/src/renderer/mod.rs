@@ -874,7 +874,7 @@ impl App {
             "md" => "markdown",
             "sql" => "sql",
             "sh" | "bash" => "shell",
-            "ps1" => "powershell",
+            "ps" | "ps1" | "psm1" | "psd1" => "powershell",
             "lua" => "lua",
             "r" => "r",
             "f90" | "f95" | "f03" | "f08" | "for" | "f" => "fortran",
