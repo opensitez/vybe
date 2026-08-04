@@ -172,6 +172,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "php.array_walk_recursive" => {
             super::array_adapter::emit_array_walk_recursive(chunks, current, argc, line)
         }
+        "php.is_array" => super::array_adapter::emit_php_is_array(chunks, current, argc, line),
+        "php.array_sum" => super::array_adapter::emit_php_array_sum(chunks, current, argc, line),
+        "php.offset" => super::array_adapter::emit_php_offset(chunks, current, argc, line),
+        "php.key" => super::array_adapter::emit_php_key(chunks, current, argc, line),
         "php.array_fill" => super::array_adapter::emit_array_fill(chunks, current, argc, line),
         "php.array_fill_keys" => {
             super::array_adapter::emit_array_fill_keys(chunks, current, argc, line)
@@ -509,6 +513,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
 
         // ── PHP `$x++` / `$x--` arithmetic ─────────────────────────
         // Composes `ecma:number.parseFloat` for string-numeric coerce.
+        "php.floatval" => {
+            crate::emitter::numeric_adapter::emit_php_floatval(chunks, current, argc, line)
+        }
         "php.inc" => crate::emitter::numeric_adapter::emit_php_inc(chunks, current, argc, line),
         "php.dec" => crate::emitter::numeric_adapter::emit_php_dec(chunks, current, argc, line),
         "php.int_max" => {

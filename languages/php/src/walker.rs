@@ -629,7 +629,7 @@ fn reflection_param_metas(
             attrs: attrs.get(idx).cloned().unwrap_or_default(),
             is_optional: param.default.is_some() || param.is_optional,
             default: param.default.clone(),
-            type_name: param.type_hint.clone(),
+            type_name: param.type_hint.clone().as_deref().map(str::to_string),
             is_nullable: param.is_nullable,
             pass_by_ref: matches!(param.pass_by, vybe_ast::PassBy::Ref),
             is_variadic: param.is_rest })
@@ -4969,6 +4969,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::PHP,
         body,
+            scheduling: Default::default(),
         imports })
 }
 
@@ -7308,7 +7309,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<(Visibility, bool)>), S
     Ok((
         Param {
             name,
-            type_hint,
+            type_hint: type_hint.map(Into::into),
             default,
             pass_by,
             is_rest,
@@ -8936,6 +8937,93 @@ fn php_known_bad_object_receiver(expr: &Expression) -> Option<PhpKnownReceiverKi
         _ => None }
 }
 
+/// Normalize a subscript key the way php does, folding at walk time where the
+/// key is a literal and deferring to `__php_offset__($base, $key)` otherwise.
+///
+/// php's rule forks on the receiver — a negative offset counts from the end of a
+/// STRING but is a real key −1 on an array — so anything not literal has to be
+/// decided at runtime. Literals are the common case and fold here for free:
+/// `null` → `""`, `false`/`true` → `0`/`1`, a float → truncated, and a canonical
+/// decimal integer string → int (so `$a["0"]` and `$a[0]` are one key), while
+/// `"01"` / `"1.5"` / `" 1"` are not canonical and stay strings.
+///
+/// Mirrors `python_index_operand` / `__py_from_end__` in the python walker.
+fn php_index_operand(object: &Expression, index: Expression) -> Expression {
+    let span = index.span.clone();
+    if let Some(folded) = php_fold_key_literal(&index) {
+        return folded;
+    }
+    // Only a NEGATIVE numeric key still needs the receiver tested at runtime —
+    // it is a from-end offset on a string and a real key −1 on an array. Every
+    // other shape either folded above or is already what php would use.
+    //
+    // Deliberately not wrapped everywhere: injecting a call into every dynamic
+    // subscript put one inside conditions and assignment targets, where it
+    // collided with the surrounding `emit_dyn_to_bool` scratch slots
+    // (`wasm:js-boolean.cast — not a boolean` from php's own copy-on-assign
+    // prelude). Dynamic keys therefore stay direct until that collision is
+    // understood.
+    // `-1` reaches here as `Unary{Neg, Lit(1)}`, not a negative literal.
+    let is_negative_literal = match &index.kind {
+        ExprKind::Lit(Literal::Int(n)) => *n < 0,
+        ExprKind::Lit(Literal::Float(f)) => *f < 0.0,
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr } => matches!(
+            &expr.kind,
+            ExprKind::Lit(Literal::Int(_)) | ExprKind::Lit(Literal::Float(_))
+        ),
+        _ => false };
+    if !is_negative_literal {
+        return index;
+    }
+    Expression::with_span(
+        ExprKind::Call {
+            callee: Box::new(Expression::ident("__php_offset__")),
+            args: vec![
+                Argument::positional(object.clone()),
+                Argument::positional(index),
+            ],
+            optional: false },
+        span,
+    )
+}
+
+/// The same normalization for a key with no receiver — an array-literal key.
+/// `['0' => 'a']` must store the int key `0`, or a later `$a['0']` (which the
+/// subscript path normalizes) would look for a key the literal never wrote.
+fn php_array_key_operand(key: Expression) -> Expression {
+    let span = key.span.clone();
+    if let Some(folded) = php_fold_key_literal(&key) {
+        return folded;
+    }
+    // Same restraint as `php_index_operand`: a non-literal key stays direct.
+    let _ = span;
+    key
+}
+
+/// Fold a LITERAL key to the key php would store. `None` means "not a literal
+/// this rule changes" — the caller decides whether that still needs a runtime
+/// wrapper.
+fn php_fold_key_literal(key: &Expression) -> Option<Expression> {
+    let span = key.span.clone();
+    let folded = match &key.kind {
+        ExprKind::Lit(Literal::Float(f)) => Literal::Int(f.trunc() as i64),
+        ExprKind::Lit(Literal::Bool(b)) => Literal::Int(if *b { 1 } else { 0 }),
+        ExprKind::Lit(Literal::Null) => Literal::Str(String::new()),
+        ExprKind::Lit(Literal::Str(s)) => Literal::Int(php_canonical_int_key(s)?),
+        _ => return None };
+    Some(Expression::with_span(ExprKind::Lit(folded), span))
+}
+
+/// `Some(n)` when `s` is the canonical decimal spelling of an integer — php's
+/// test for "this string key IS the int key". `"01"`, `"1.5"`, `" 1"` and `""`
+/// are not canonical and stay string keys.
+fn php_canonical_int_key(s: &str) -> Option<i64> {
+    let n: i64 = s.parse().ok()?;
+    (n.to_string() == s).then_some(n)
+}
+
 fn php_known_scalar_array_receiver(expr: &Expression) -> bool {
     let resolved = match &expr.kind {
         ExprKind::Ident(name) => lookup_simple_value_var(name).unwrap_or_else(|| expr.clone()),
@@ -9768,7 +9856,7 @@ fn walk_class_member(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
                                 }
                                 promoted.push((
                                     param.name.clone(),
-                                    param.type_hint.clone(),
+                                    param.type_hint.clone().as_deref().map(str::to_string),
                                     v,
                                     readonly,
                                 ));
@@ -13189,7 +13277,7 @@ fn walk_property_hooks(
             Rule::property_set_hook => {
                 let mut param = Param {
                     name: "$value".to_string(),
-                    type_hint: type_hint.clone(),
+                    type_hint: type_hint.clone().map(Into::into),
                     default: None,
                     pass_by: PassBy::Value,
                     is_rest: false,
@@ -15564,8 +15652,12 @@ fn apply_postfix(
         }
         Rule::array_index_op => {
             let mut inner = op.into_inner();
+            // An ABSENT index is the append form `$a[] = v`, whose null is a
+            // marker, not a key — it must not go through key normalization
+            // (which would turn it into the string key "").
             let index = if let Some(i) = inner.next() {
-                walk_expression(i)?
+                let walked = walk_expression(i)?;
+                php_index_operand(&receiver, walked)
             } else {
                 Expression::null()
             };
@@ -19835,7 +19927,7 @@ fn walk_array(pair: Pair<Rule>) -> Result<Expression, String> {
         match (first, second) {
             (Some(first), Some(second)) => {
                 // key => value
-                let key = walk_expression(first)?;
+                let key = php_array_key_operand(walk_expression(first)?);
                 let value = walk_expression(second)?;
                 elems.push(ArrayElement {
                     key: Some(key),
@@ -27694,67 +27786,10 @@ fn lower_php_builtin_call(callee: &Expression, args: &[Argument], span: &Span) -
                 args: splice_args,
                 optional: false }
         }
-        // ── Array sum ──────────────────────────────────────────────────
-        // PHP `array_sum($arr)` → `$arr.reduce((a, b) => a + b, 0)`.
-        "array_sum" => {
-            let arr_expr = arg(0)?;
-            let body = Expression::with_span(
-                ExprKind::Binary {
-                    op: BinOp::Add,
-                    left: Box::new(Expression::with_span(
-                        ExprKind::Ident("__a".to_string()),
-                        span.clone(),
-                    )),
-                    right: Box::new(Expression::with_span(
-                        ExprKind::Ident("__b".to_string()),
-                        span.clone(),
-                    )) },
-                span.clone(),
-            );
-            let lambda = Expression::with_span(
-                ExprKind::Lambda {
-                    params: vec![
-                        Param {
-                            name: "__a".to_string(),
-                            type_hint: None,
-                            default: None,
-                            pass_by: PassBy::Value,
-                            is_rest: false,
-                            is_kwargs: false,
-                            is_optional: false,
-                            is_nullable: false },
-                        Param {
-                            name: "__b".to_string(),
-                            type_hint: None,
-                            default: None,
-                            pass_by: PassBy::Value,
-                            is_rest: false,
-                            is_kwargs: false,
-                            is_optional: false,
-                            is_nullable: false },
-                    ],
-                    body: LambdaBody::Expr(Box::new(body)),
-                    is_async: false,
-                    captures: vec![] },
-                span.clone(),
-            );
-            // PHP `array_sum` sums VALUES regardless of keys, so reduce over
-            // `array_values($arr)` — a plain reduce over an associative array
-            // (Map) iterates the wrong thing and yields NAN.
-            mk_call(
-                Expression::with_span(
-                    ExprKind::Member {
-                        object: Box::new(Expression::with_span(
-                            mk_call(Expression::ident("array_values"), vec![arr_expr]),
-                            span.clone(),
-                        )),
-                        field: "reduce".to_string(),
-                        null_safe: false },
-                    span.clone(),
-                ),
-                vec![lambda, mk_lit_f64(0.0)],
-            )
-        }
+        // PHP `array_sum($arr)` is `common:php.array_sum` (profile), not a
+        // walker rewrite: it must cast each element with php's numeric rule
+        // ('bad' → 0, true → 1), and the `[array_methods]` reduce form loses
+        // the accumulator once the lambda body contains an adapter call.
         // ── Array product ──────────────────────────────────────────────
         // PHP `array_product($arr)` → `$arr.reduce((a, b) => a * b, 1)`.
         // Resolves through PHP profile's [array_methods] (`reduce` →

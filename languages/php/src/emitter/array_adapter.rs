@@ -432,6 +432,14 @@ pub fn emit_array_key_exists(chunks: &mut [Chunk], current: usize, _argc: u8, li
         let chunk = &mut chunks[current];
         lset(chunk, key_slot, line);
         lset(chunk, arr_slot, line);
+    }
+    // The KEY ARGUMENT is normalized too — `array_key_exists('0', $a)` is true
+    // for an array holding the int key `0`, because php never had two keys
+    // there to begin with.
+    emit_php_array_key(chunks, current, key_slot, line);
+    {
+        let chunk = &mut chunks[current];
+        lset(chunk, key_slot, line);
         lget(chunk, arr_slot, line);
     }
     call_import(chunks, current, "ecma:object", "keys", 1, line);
@@ -644,6 +652,9 @@ pub fn emit_array_search(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             alloc_local(chunk),
         )
     };
+    // `entry_slot` is retained so the local layout matches the surrounding
+    // adapters; the key list replaced the entry-pair walk.
+    let _ = entry_slot;
     {
         let chunk = &mut chunks[current];
         if argc >= 3 {
@@ -658,9 +669,12 @@ pub fn emit_array_search(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         lset(chunk, found_slot, line);
         push_const(chunk, Value::Bool(false), line);
         lset(chunk, result_slot, line);
-        lget(chunk, haystack_slot, line);
     }
-    call_import(chunks, current, "ecma:object", "entries", 1, line);
+    // `ecma:object.entries` answers `[]` for a Map, so a keyed php array —
+    // anything array_slice/array_filter produced with keys preserved — searched
+    // as if it were empty. The key list handles both shapes and hands back
+    // php's real keys (ints for a packed list, not "0"/"1" strings).
+    emit_php_key_list_from_slot(chunks, current, haystack_slot, line);
     {
         let chunk = &mut chunks[current];
         lset(chunk, entries_slot, line);
@@ -682,23 +696,41 @@ pub fn emit_array_search(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunk.emit_op(Op::I32_AND, line);
     }
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
-    {
+    let key_slot = {
         let chunk = &mut chunks[current];
+        let key_slot = alloc_local(chunk);
         lget(chunk, entries_slot, line);
         lget(chunk, i_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
-        lset(chunk, entry_slot, line);
-        lget(chunk, entry_slot, line);
-        push_const(chunk, Value::F64(1.0), line);
-        chunk.emit_op(Op::ARRAY_GET, line);
+        lset(chunk, key_slot, line);
+        lget(chunk, haystack_slot, line);
+        lget(chunk, key_slot, line);
+        key_slot
+    };
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    {
+        let chunk = &mut chunks[current];
         lset(chunk, value_slot, line);
+        // `strict` is the whole point of the third argument: without it
+        // `array_search('1', ['a' => 1])` must match `1` loosely and answer
+        // `'a'`. The old code allocated the flag and never read it.
+        lget(chunk, strict_slot, line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+        chunk.emit_if_value(line);
         lget(chunk, value_slot, line);
         lget(chunk, needle_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+        chunk.emit_else(line);
+        lget(chunk, value_slot, line);
+        lget(chunk, needle_slot, line);
+    }
+    crate::emitter::relational_adapter::emit_php_loose_eq(chunks, current, 2, false, line);
+    {
+        let chunk = &mut chunks[current];
+        chunk.emit_end(line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
         chunk.emit_if(line);
-        lget(chunk, entry_slot, line);
-        push_const(chunk, Value::F64(0.0), line);
-        chunk.emit_op(Op::ARRAY_GET, line);
+        lget(chunk, key_slot, line);
         lset(chunk, result_slot, line);
         push_const(chunk, Value::Bool(true), line);
         lset(chunk, found_slot, line);
@@ -922,6 +954,247 @@ pub fn emit_php_array_values(chunks: &mut [Chunk], current: usize, argc: u8, lin
     lget(chunk, out_slot, line);
 }
 
+/// `__php_offset__($base, $key)` → the key php would actually use.
+///
+/// One wrapper because php's rule forks on the RECEIVER, which is only known at
+/// runtime:
+///
+/// * **string base** — offsets are integers counted from the end when negative,
+///   so `'xyz'[-2]` is `'y'`. An ARRAY may not wrap: `$a[-1]` is a real key −1.
+///   This is why php cannot set `profile.negative_index_wraps`, which applies to
+///   every receiver.
+/// * **array base** — php normalizes every key before use: `null` → `""`,
+///   `false`/`true` → `0`/`1`, a float → truncated toward zero, and a
+///   **canonical decimal integer string → int**, so `$a["0"]` and `$a[0]` are
+///   one key. `"01"`, `"1.5"` and `" 1"` are NOT canonical and stay strings —
+///   which is exactly `String(Number(k)) === k` plus an integer test.
+/// The array half of php's key rule, for a key already spilled to `key_slot`.
+/// Leaves the normalized key on the stack. Shared by `__php_offset__` (which
+/// reaches it once the receiver is known not to be a string) and `__php_key__`
+/// (an array-literal key, which has no receiver to test).
+fn emit_php_array_key(chunks: &mut [Chunk], current: usize, key_slot: u16, line: u32) {
+    let test_str = chunks[0].add_import("wasm:js-string", "test");
+    let str_eq = chunks[0].add_import("wasm:js-string", "equals");
+    let test_num = chunks[0].add_import("wasm:js-number", "test");
+    let test_bool = chunks[0].add_import("wasm:js-boolean", "test");
+    let to_num = chunks[0].add_import("ecma:number", "Number");
+    let is_int = chunks[0].add_import("ecma:number", "isInteger");
+    let num_slot = alloc_local(&mut chunks[current]);
+    let c = &mut chunks[current];
+    lget(c, key_slot, line);
+    c.emit_op(Op::REF_IS_NULL, line);
+    c.emit_if_value(line);
+    push_str(c, "", line);
+    c.emit_else(line);
+
+    lget(c, key_slot, line);
+    c.emit_call(test_bool, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+    lget(c, key_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+    push_const(c, Value::F64(1.0), line);
+    c.emit_else(line);
+    push_const(c, Value::F64(0.0), line);
+    c.emit_end(line);
+    c.emit_else(line);
+
+    lget(c, key_slot, line);
+    c.emit_call(test_num, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+    lget(c, key_slot, line);
+    c.emit_op(Op::F64_TRUNC, line);
+    c.emit_else(line);
+
+    // A string key is an int key only when it round-trips: `Number(k)` is an
+    // integer AND spells back to exactly `k`.
+    lget(c, key_slot, line);
+    c.emit_call(test_str, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+    lget(c, key_slot, line);
+    c.emit_call(to_num, 1, line);
+    lset(c, num_slot, line);
+    lget(c, num_slot, line);
+    c.emit_call(is_int, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+    lget(c, num_slot, line);
+    let _ = c;
+    vybe_compiler::primitives::convert::emit_to_string(&mut chunks[current], line);
+    let c = &mut chunks[current];
+    lget(c, key_slot, line);
+    c.emit_call(str_eq, 2, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+    lget(c, num_slot, line);
+    c.emit_else(line);
+    lget(c, key_slot, line);
+    c.emit_end(line);
+    c.emit_else(line);
+    lget(c, key_slot, line);
+    c.emit_end(line);
+    c.emit_else(line);
+    lget(c, key_slot, line);
+    c.emit_end(line);
+
+    c.emit_end(line);
+    c.emit_end(line);
+    c.emit_end(line);
+}
+
+/// `__php_key__($k)` — normalize a key with no receiver to test.
+///
+/// STAGED: the walker folds literal keys directly and does not emit this call
+/// yet — see the profile entry for why. `emit_php_array_key` underneath it is
+/// live, and is what `array_flip` / `array_combine` / `array_count_values` /
+/// `array_key_exists` use to agree with the folded reads.
+pub fn emit_php_key(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let key_slot = alloc_local(&mut chunks[current]);
+    lset(&mut chunks[current], key_slot, line);
+    emit_php_array_key(chunks, current, key_slot, line);
+}
+
+pub fn emit_php_offset(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let test_str = chunks[0].add_import("wasm:js-string", "test");
+    let str_len = chunks[0].add_import("wasm:js-string", "length");
+    let test_num = chunks[0].add_import("wasm:js-number", "test");
+    let (base_slot, key_slot) = {
+        let c = &mut chunks[current];
+        (alloc_local(c), alloc_local(c))
+    };
+    let c = &mut chunks[current];
+    lset(c, key_slot, line);
+    lset(c, base_slot, line);
+
+    lget(c, base_slot, line);
+    c.emit_call(test_str, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+
+    // ── string base: wrap a negative offset from the end, else leave it ──
+    lget(c, key_slot, line);
+    c.emit_call(test_num, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+    lget(c, key_slot, line);
+    push_const(c, Value::F64(0.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
+    c.emit_if_value(line);
+    lget(c, base_slot, line);
+    c.emit_call(str_len, 1, line);
+    lget(c, key_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(c, line);
+    c.emit_else(line);
+    lget(c, key_slot, line);
+    c.emit_end(line);
+    c.emit_else(line);
+    lget(c, key_slot, line);
+    c.emit_end(line);
+
+    c.emit_else(line);
+
+    // ── array base: php's key normalization ──
+    let _ = c;
+    emit_php_array_key(chunks, current, key_slot, line);
+    chunks[current].emit_end(line);
+}
+
+/// PHP `array_sum($arr)` — sum of the VALUES, each through php's numeric cast.
+///
+/// `'3'` is 3, `true` is 1, and a non-numeric `'bad'` is 0 rather than poisoning
+/// the total with NAN. Keys are irrelevant, so this walks the key list (which
+/// handles both a packed list and a Map) instead of reducing over entries.
+pub fn emit_php_array_sum(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let (arr_slot, keys_slot, i_slot, n_slot, key_slot, sum_slot, cur_slot) = {
+        let c = &mut chunks[current];
+        (
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+            alloc_local(c),
+        )
+    };
+    {
+        let c = &mut chunks[current];
+        lset(c, arr_slot, line);
+        push_const(c, Value::F64(0.0), line);
+        lset(c, sum_slot, line);
+    }
+    emit_php_key_list_from_slot(chunks, current, arr_slot, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, keys_slot, line);
+        lget(c, keys_slot, line);
+        c.emit_op(Op::ARRAY_LENGTH, line);
+        lset(c, n_slot, line);
+        push_const(c, Value::F64(0.0), line);
+        lset(c, i_slot, line);
+    }
+    let loop_state = vybe_compiler::primitives::loops::emit_loop_start(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, i_slot, line);
+        lget(c, n_slot, line);
+        vybe_compiler::primitives::ops::emit_dyn_lt(c, line);
+    }
+    vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
+    {
+        let c = &mut chunks[current];
+        lget(c, keys_slot, line);
+        lget(c, i_slot, line);
+        c.emit_op(Op::ARRAY_GET, line);
+        lset(c, key_slot, line);
+        lget(c, arr_slot, line);
+        lget(c, key_slot, line);
+    }
+    vybe_compiler::primitives::collections::emit_get(chunks, current, line);
+    crate::emitter::numeric_adapter::emit_php_floatval(chunks, current, 1, line);
+    {
+        let c = &mut chunks[current];
+        lset(c, cur_slot, line);
+        lget(c, sum_slot, line);
+        lget(c, cur_slot, line);
+        vybe_compiler::primitives::ops::emit_dyn_add(c, line);
+        lset(c, sum_slot, line);
+        lget(c, i_slot, line);
+        push_const(c, Value::F64(1.0), line);
+        c.emit_op(Op::F64_ADD, line);
+        lset(c, i_slot, line);
+    }
+    vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
+    lget(&mut chunks[current], sum_slot, line);
+}
+
+/// PHP `is_array($v)`.
+///
+/// One PHP array is two shapes in Vybe: a packed list (`ObjectKind::Array`)
+/// when the keys are 0..n, a map/ordinary object once they are not. Testing
+/// only the object hierarchy — which is what `intrinsic:php_is_array` did —
+/// answers `false` for every packed list, so `is_array([])` was false.
+pub fn emit_php_is_array(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let chunk = &mut chunks[current];
+    let v_slot = alloc_local(chunk);
+    lset(chunk, v_slot, line);
+
+    emit_is_array(chunks, current, v_slot, line);
+    let chunk = &mut chunks[current];
+    lget(chunk, v_slot, line);
+    vybe_compiler::primitives::instructions::recipes::is_object(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::Bool(true), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_end(line);
+}
+
 /// PHP `array_fill(start, count, value)`.
 ///
 /// `start == 0` keeps the result on the fast sequential-array path so
@@ -941,9 +1214,23 @@ pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     lset(chunk, count_slot, line);
     lset(chunk, start_slot, line);
 
+    // A run starting at 0 is a packed list. So is an EMPTY run at any start:
+    // `array_fill(1, 0, 'x')` is `[]` in php — `json_encode` gives `[]`, not
+    // `{}` — because there are no keys to preserve.
     lget(chunk, start_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    lget(chunk, count_slot, line);
+    push_const(chunk, Value::F64(1.0), line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_op(Op::I32_OR, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::Bool(true), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::Bool(false), line);
+    chunk.emit_end(line);
     lset(chunk, sequential_slot, line);
 
     lget(chunk, sequential_slot, line);
@@ -2327,11 +2614,19 @@ pub fn emit_array_combine(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
-    // out[keys[i]] = values[i]
-    lget(chunk, out_slot, line);
+    // out[keys[i]] = values[i] — `keys[i]` is a key, so php's rule applies:
+    // `array_combine(['0', '01', null], …)` keys on `0`, `'01'` and `''`.
+    let k_slot = alloc_local(chunk);
     lget(chunk, keys_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
+    lset(chunk, k_slot, line);
+    let _ = chunk;
+    emit_php_array_key(chunks, current, k_slot, line);
+    let chunk = &mut chunks[current];
+    lset(chunk, k_slot, line);
+    lget(chunk, out_slot, line);
+    lget(chunk, k_slot, line);
     lget(chunk, values_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
@@ -2473,8 +2768,15 @@ pub fn emit_array_flip(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     );
     let chunk = &mut chunks[current];
     chunk.emit_end(line);
+    // The flipped VALUE becomes a key, so it goes through php's key rule —
+    // `array_flip(['x' => '1'])` is `[1 => 'x']` with an INT key. Normalize into
+    // a slot first so the branchy helper runs on an empty stack.
+    emit_php_array_key(chunks, current, v_slot, line);
+    let chunk = &mut chunks[current];
+    let nk_slot = alloc_local(chunk);
+    lset(chunk, nk_slot, line);
     lget(chunk, out_slot, line);
-    lget(chunk, v_slot, line);
+    lget(chunk, nk_slot, line);
     lget(chunk, k_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
     chunk.emit_op(Op::DROP, line);
@@ -2654,12 +2956,16 @@ pub fn emit_array_count_values(chunks: &mut [Chunk], current: usize, _argc: u8, 
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     let chunk = &mut chunks[current];
 
-    // key = "" + arr[i]
-    push_str(chunk, "", line);
+    // key = php's key rule applied to arr[i] — NOT `"" + v`. Counting `['1',
+    // '1', 'a']` gives `[1 => 2, 'a' => 1]`: the numeric-string value becomes an
+    // INT key, so stringifying every value produced a key nothing could find.
     lget(chunk, arr_slot, line);
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
+    lset(chunk, key_slot, line);
+    let _ = chunk;
+    emit_php_array_key(chunks, current, key_slot, line);
+    let chunk = &mut chunks[current];
     lset(chunk, key_slot, line);
 
     // cur = (out[key] || 0) + 1
@@ -5950,6 +6256,15 @@ pub fn emit_php_array_slice(chunks: &mut [Chunk], current: usize, argc: u8, line
         }
         if argc >= 3 {
             lset(c, len_slot, line);
+            // `$length` is nullable and an explicit `null` means "to the end" —
+            // the same as omitting it. Without this it fell through as 0 and
+            // `array_slice($a, 2, null, true)` answered an empty array.
+            lget(c, len_slot, line);
+            c.emit_op(Op::REF_IS_NULL, line);
+            c.emit_if(line);
+            push_const(c, Value::I32(i32::MAX), line);
+            lset(c, len_slot, line);
+            c.emit_end(line);
         } else {
             push_const(c, Value::I32(i32::MAX), line);
             lset(c, len_slot, line);

@@ -77,7 +77,8 @@ pub fn register() {
         profile_source,
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
-        register_tree: Some(tree_register::register_namespace_tree) });
+        register_tree: Some(tree_register::register_namespace_tree),
+        expand_source: None });
     vybe_runtime::registry::register_hooks(
         "php",
         vybe_runtime::registry::LanguageHooks {

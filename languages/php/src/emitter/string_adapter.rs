@@ -5054,20 +5054,13 @@ pub fn emit_var_export(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     lget(chunk, repr_slot, line);
     chunk.emit_else(line);
     lget(chunk, repr_slot, line);
-    let out_slot = alloc_local(&mut chunks[current]);
-    lset(&mut chunks[current], out_slot, line);
-    let write_idx = chunks[current].add_import("wasi:cli/stdout", "write-via-stream");
-    let rd_slot = alloc_local(&mut chunks[current]);
-    let wr_slot = alloc_local(&mut chunks[current]);
+    // Go through php's own writer, not straight at `wasi:cli/stdout`: a direct
+    // stream write escapes every active `ob_start()` buffer, so
+    // `ob_start(); var_export($x);` printed before the buffer instead of into
+    // it. `var_dump` and `print_r` were already fixed the same way.
+    let _ = chunk;
+    crate::emitter::output_adapter::emit_php_stdout_write(chunks, current, line);
     let chunk = &mut chunks[current];
-    vybe_compiler::primitives::io::emit_write_stdout_with_imports(
-        chunk,
-        write_idx,
-        rd_slot,
-        wr_slot,
-        line,
-        |c| c.emit_op_u16(Op::LOCAL_GET, out_slot, line),
-    );
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_end(line);
 }

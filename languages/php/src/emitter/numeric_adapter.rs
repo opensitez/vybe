@@ -46,6 +46,56 @@ fn lget(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
 }
 
+/// PHP `floatval($v)` — and the `(float)` cast underneath it.
+///
+/// PHP's string→number rule is "read the longest numeric prefix, otherwise
+/// **0**", and `true`/`false`/`null` are 1/0/0. ECMA's `parseFloat` agrees on
+/// the prefix (`"12abc"` → 12) but answers `NaN` for everything else, so
+/// `floatval('bad')` was NaN and one non-numeric element poisoned a whole
+/// `array_sum`.
+pub fn emit_php_floatval(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let parse_float = chunks[0].add_import("ecma:number", "parseFloat");
+    let test_bool = chunks[0].add_import("wasm:js-boolean", "test");
+    let is_nan = chunks[0].add_import("ecma:number", "isNaN");
+    let chunk = &mut chunks[current];
+    let v_slot = alloc_local(chunk);
+    let n_slot = alloc_local(chunk);
+    lset(chunk, v_slot, line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_else(line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_call(test_bool, 1, line);
+    chunk.emit_if_value(line);
+    lget(chunk, v_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_else(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_end(line);
+    chunk.emit_else(line);
+
+    lget(chunk, v_slot, line);
+    chunk.emit_call(parse_float, 1, line);
+    lset(chunk, n_slot, line);
+    lget(chunk, n_slot, line);
+    chunk.emit_call(is_nan, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
+    chunk.emit_if_value(line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_else(line);
+    lget(chunk, n_slot, line);
+    chunk.emit_end(line);
+
+    chunk.emit_end(line);
+    chunk.emit_end(line);
+}
+
 /// `__php_float_bytes($v, $bytes)` → a Uint8Array holding the little-endian
 /// IEEE-754 encoding of `$v` (`$bytes` = 4 → float32, 8 → float64). Backs PHP
 /// `pack('f'|'d', …)`; PHP source can't reach DataView, so this adapter drives
