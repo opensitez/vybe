@@ -456,10 +456,17 @@ pub fn parse(source: &str) -> Result<Module, String> {
             targets: vec![Expression::ident("__doc__")],
             value: Expression::new(ExprKind::Lit(Literal::Null)), by_ref: false }),
     );
+    for stmt in &mut body {
+        stmt.walk_exprs_mut(&mut normalize_asyncio_expr);
+    }
     Ok(Module {
         name: "main".into(),
         language: Lang::Python,
         body,
+            // The contract is declared in the profile's `[async]` section;
+            // the compiler stamps it. A walker writes an override only for a
+            // module whose contract differs from its language's.
+            scheduling: Default::default(),
         imports })
 }
 
@@ -3998,7 +4005,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                         }
                         params.push(Param {
                             name,
-                            type_hint,
+                            type_hint: type_hint.map(Into::into),
                             is_optional: default.is_some(),
                             default,
                             pass_by: PassBy::Value,
@@ -4192,7 +4199,7 @@ fn dataclass_fields(body: &[Statement]) -> Vec<DataclassField> {
                     default: d.init.as_ref().and_then(dataclass_field_default),
                     // `InitVar[int]`, or the bare `InitVar` — the hint is a
                     // string, so match the head rather than parsing it.
-                    init_var: hint == "InitVar" || hint.starts_with("InitVar[") });
+                    init_var: **hint == *"InitVar" || hint.starts_with("InitVar[") });
             }
         }
     }
@@ -4990,7 +4997,7 @@ fn stmts_to_class_members(class_name: &str, stmts: Vec<Statement>) -> Vec<ClassM
                     mods.is_static = true;
                     members.push(ClassMember::Field {
                         name: field_name.clone(),
-                        type_hint: d.type_hint.clone(),
+                        type_hint: d.type_hint.clone().as_deref().map(str::to_string),
                         init: d.init.clone(),
                         modifiers: mods,
                         with_events: false,
@@ -6946,7 +6953,7 @@ fn walk_expr_or_assign(pair: Pair<Rule>) -> Result<StmtKind, String> {
         return Ok(StmtKind::VarDecl {
             declarations: vec![vybe_ast::VarDeclarator {
                 pattern: BindingPattern::Ident(name.clone()),
-                type_hint: Some(hint),
+                type_hint: Some(hint.into()),
                 init,
                 array_bounds: None,
                 with_events: false }],
@@ -18252,5 +18259,64 @@ fn parse_literal_to_expr(text: &str) -> Expression {
         Expression::float(f)
     } else {
         Expression::string(text)
+    }
+}
+
+/// Normalize `asyncio.*` calls into the common async model (`AsyncOp`).
+///
+/// The walker's only async job: Python's spellings onto the language-neutral
+/// vocabulary; the shared lowering targets `ecma:promise` + JSPI. Quirks stay
+/// here — `asyncio.sleep` takes SECONDS while the vocabulary's `Sleep` is
+/// milliseconds, so the walker multiplies. `create_task`/`ensure_future` map
+/// to `Resolved`: §27.2.4.7 PromiseResolve ADOPTS a thenable, which is exactly
+/// ensure_future's contract for an already-started coroutine.
+///
+/// Only the `asyncio.<name>(…)` member spelling is mapped; `from asyncio
+/// import run` bare names need import tracking and stay on the module surface
+/// until it exists. `wait_for`/`shield`/`wait` are deliberately unmapped —
+/// their timeout/cancellation semantics have no vocabulary yet, and wrong is
+/// worse than missing.
+fn normalize_asyncio_expr(expr: &mut Expression) {
+    use vybe_ast::{AsyncOp, BinOp, JoinMode};
+
+    let span = expr.span;
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return;
+    };
+    if !matches!(&object.kind, ExprKind::Ident(id) if id == "asyncio") {
+        return;
+    }
+    fn only_arg(args: &mut Vec<vybe_ast::Argument>) -> Option<Expression> {
+        (args.len() == 1 && args[0].name.is_none()).then(|| args.remove(0).value)
+    }
+    let op = match field.as_str() {
+        "run" => only_arg(args).map(|coro| AsyncOp::BlockOn(Box::new(coro))),
+        "create_task" | "ensure_future" => {
+            only_arg(args).map(|coro| AsyncOp::Resolved(Box::new(coro)))
+        }
+        "sleep" => only_arg(args).map(|secs| {
+            AsyncOp::Sleep(Box::new(Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Mul,
+                    left: Box::new(secs),
+                    right: Box::new(Expression::with_span(
+                        ExprKind::Lit(Literal::Float(1000.0)),
+                        span,
+                    )) },
+                span,
+            )))
+        }),
+        "gather" => args
+            .iter()
+            .all(|a| a.name.is_none())
+            .then(|| AsyncOp::Join {
+                mode: JoinMode::All,
+                sources: std::mem::take(args).into_iter().map(|a| a.value).collect() }),
+        _ => None };
+    if let Some(op) = op {
+        expr.kind = ExprKind::Async(op);
     }
 }

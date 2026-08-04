@@ -1291,6 +1291,60 @@ pub fn emit_getitem(chunks: &mut [Chunk], current: usize, line: u32) {
     }
     chunks[current].emit_else(line);
 
+    // TYPED-ARRAY leg — `bytes` / `bytearray` are `ObjectKind::TypedArray`
+    // (a real Uint8Array), which `isArray` answers FALSE for, so they fell
+    // through to the Map/Object leg, missed `hasIn`, and every subscript
+    // raised KeyError (surfacing as `RuntimeError: [object]`). The probe is
+    // §25.1.5.1 `ArrayBuffer.isView`; the semantics are Python's: negative
+    // index counts from the end, out of range raises IndexError, and the
+    // element read goes through the host's typed read path.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+    call_import(chunks, current, "ecma:arraybuffer", "isView", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    {
+        let idx = chunks[current].alloc_scratch(1);
+        let n = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        collections::emit_len(chunks, current, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, key, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_i32_const(0, line);
+        ops::emit_dyn_lt(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+        ops::emit_dyn_add(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+        chunks[current].emit_end(line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_i32_const(0, line);
+        ops::emit_dyn_lt(&mut chunks[current], line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+        ops::emit_dyn_ge(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_OR, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        emit_throw_python_exception(
+            &mut chunks[current],
+            "IndexError",
+            "index out of range",
+            line,
+        );
+        chunks[current].emit_end(line);
+
+        chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+        call_import(chunks, current, "ecma:object", "get", 2, line);
+    }
+    chunks[current].emit_else(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     call_import(chunks, current, "ecma:array", "isArray", 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -1330,6 +1384,8 @@ pub fn emit_getitem(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);
 
+    chunks[current].emit_end(line);
+    // closes the TYPED-ARRAY leg's if/else
     chunks[current].emit_end(line);
     // closes the STRING leg's if/else added at the top
     chunks[current].emit_end(line);

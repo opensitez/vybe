@@ -903,7 +903,7 @@ fn emit_py_repr(chunk: &mut Chunk, repr_idx: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, scratch, line);
     chunk.emit_call(is_view, 1, line);
     chunk.emit_if_value(line);
-    let repr_fn = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+    let _repr_fn = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
         "__vybe_bytes_repr",
     )));
     vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_bytes_repr", line);
