@@ -3676,13 +3676,9 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
                 pos += read;
                 let mut implements = Vec::new();
                 for _ in 0..impl_count {
-                    let (nlen, read) = read_leb128_u32(&data[pos..]);
+                    let (iface_index, read) = read_leb128_u32(&data[pos..]);
                     pos += read;
-                    let iface_name = std::str::from_utf8(&data[pos..pos + nlen as usize])
-                        .unwrap_or("")
-                        .to_string();
-                    pos += nlen as usize;
-                    implements.push(iface_name);
+                    implements.push(iface_index as u16);
                 }
 
                 // constructor_chunk

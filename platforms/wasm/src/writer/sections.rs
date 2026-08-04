@@ -53,11 +53,16 @@ pub fn encode_import_section(
     rt_imports: &[(&str, &str)],
     func_type_base: u32,
     string_constants: &[String],
+    host_globals: &[String],
 ) -> Vec<u8> {
     let mut out = Vec::new();
     let host_imports = chunks.first().map(|c| c.imports.len()).unwrap_or(0);
     let globals = rt_globals();
-    let total = host_imports + rt_imports.len() + globals.len() + string_constants.len();
+    let total = host_imports
+        + rt_imports.len()
+        + globals.len()
+        + string_constants.len()
+        + host_globals.len();
     write_leb128_u32(&mut out, total as u32);
 
     // Host imports from chunk 0
@@ -98,6 +103,16 @@ pub fn encode_import_section(
         out.push(0x03); // global import
         out.push(TYPE_EXTERNREF);
         out.push(0x00); // immutable (mut = 0)
+    }
+
+    // Free globals — the bindings this module reads but never writes. Order
+    // matches `collect_host_globals`, which is also what `global_map` indexes.
+    for name in host_globals {
+        write_name(&mut out, vybe_runtime::chunk::HOST_GLOBALS_MODULE);
+        write_name(&mut out, name);
+        out.push(0x03); // global import
+        out.push(TYPE_EXTERNREF);
+        out.push(0x00); // immutable — the module only reads these
     }
 
     out
@@ -184,12 +199,22 @@ pub fn encode_export_section(_chunks: &[Chunk], import_count: usize) -> Vec<u8> 
 /// section and the `global.get` immediates index into. If the two ever
 /// disagreed the module would still validate and read the *wrong string*.
 pub fn collect_string_constants(chunks: &[Chunk]) -> Vec<String> {
+    collect_global_imports(chunks, vybe_runtime::chunk::STRING_CONSTANTS_MODULE)
+}
+
+/// The module's FREE globals, in declaration order — names it reads but never
+/// writes. They are imports of the embedder, so they belong in the import
+/// section; without this they were emitted as DEFINED globals initialised to
+/// `ref.null extern`, which is a module that declares it owns `globalThis`.
+pub fn collect_host_globals(chunks: &[Chunk]) -> Vec<String> {
+    collect_global_imports(chunks, vybe_runtime::chunk::HOST_GLOBALS_MODULE)
+}
+
+fn collect_global_imports(chunks: &[Chunk], module: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for chunk in chunks {
         for import in &chunk.global_imports {
-            if import.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE
-                && !out.iter().any(|existing| existing == &import.name)
-            {
+            if import.module == module && !out.iter().any(|existing| existing == &import.name) {
                 out.push(import.name.clone());
             }
         }
@@ -209,6 +234,7 @@ pub fn collect_string_constants(chunks: &[Chunk]) -> Vec<String> {
 pub fn collect_globals(
     chunks: &[Chunk],
     string_constants: &[String],
+    host_globals: &[String],
 ) -> (Vec<String>, std::collections::HashMap<String, u32>) {
     let mut globals = Vec::new();
     let mut global_map = std::collections::HashMap::new();
@@ -223,7 +249,15 @@ pub fn collect_globals(
             import_base + i as u32,
         );
     }
-    let defined_base = import_base + string_constants.len() as u32;
+    // Host globals are referenced by their BARE name — that is what the
+    // bytecode's `GLOBAL_GET` constant holds — so seeding the map with them
+    // both points the instruction at the import AND stops the loop below
+    // handing the same name a defined global.
+    let host_base = import_base + string_constants.len() as u32;
+    for (i, name) in host_globals.iter().enumerate() {
+        global_map.insert(name.clone(), host_base + i as u32);
+    }
+    let defined_base = host_base + host_globals.len() as u32;
 
     for chunk in chunks {
         let mut ip = 0;

@@ -41,9 +41,11 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
     // imported global each. Collected before the globals so both the import
     // section and `global_map` index the same ordered list.
     let string_constants = sections::collect_string_constants(chunks);
+    // Free globals — declared imports of the embedder, not module-owned state.
+    let host_globals = sections::collect_host_globals(chunks);
 
     // Collect globals (string-keyed → absolute WASM global index)
-    let (globals, global_map) = sections::collect_globals(chunks, &string_constants);
+    let (globals, global_map) = sections::collect_globals(chunks, &string_constants, &host_globals);
 
     // Type section: GC struct types + array type + function types
     let (type_section_data, type_ctx) =
@@ -59,6 +61,7 @@ pub fn write_wasm(chunks: &[Chunk]) -> Vec<u8> {
             &rt_imports,
             type_ctx.func_type_base,
             &string_constants,
+            &host_globals,
         ),
     );
 
@@ -278,8 +281,9 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
             // Other metadata
             out.push(if type_entry.is_interface { 1 } else { 0 });
             write_leb128_u32(&mut out, type_entry.implements.len() as u32);
-            for iface in &type_entry.implements {
-                write_name(&mut out, iface);
+            for &iface in &type_entry.implements {
+                // Declared index, not a name — same as the supertype link.
+                write_leb128_u32(&mut out, iface as u32);
             }
             if let Some(ctor_idx) = type_entry.constructor_chunk {
                 out.push(1);

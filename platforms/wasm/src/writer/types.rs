@@ -317,7 +317,7 @@ pub fn build_type_context(
         for (i, te) in type_entries.iter().enumerate() {
             let described_idx = (i as u32) * 2;
             let descriptor_idx = (i as u32) * 2 + 1;
-            let name_lower = te.name.to_lowercase();
+            let _name_lower = te.name.to_lowercase();
 
             // Opening byte: `sub final` (0x4F) if no subtype extends this,
             // else `sub` (0x50) leaving the type open for extension.
