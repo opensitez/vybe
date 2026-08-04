@@ -82,7 +82,8 @@ go_run_cases! {
         vec!["6"]),
     method_passes_own_func_field_to_visitor =>
         ("package main; import \"fmt\"; type node struct { label string; format func(string) string }; func (n node) show(visitor func(string)) { visitor(n.format(n.label)) }; func main() { value := node{label: \"go\", format: func(s string) string { return s + \"!\" }}; value.show(func(s string) { fmt.Println(s) }) }",
-        vec!["go!"]) }
+        vec!["go!"]),
+}
 
 go_compile_cases! {
   distinct_named_func_types_same_signature_compile =>
@@ -101,5 +102,6 @@ go_compile_cases! {
     "package main; type Op func(int) int; func main() { ops := []Op{Op(func(v int) int { return v }), Op(func(v int) int { return v + 1 })}; _ = ops[1](2) }",
   method_returns_closure_from_receiver_compile =>
     "package main; type builder struct { base int }; func (b builder) incrementer() func(int) int { return func(v int) int { return b.base + v } }; func main() { _ = builder{base: 10}.incrementer() }",
-  method_func_param_with_multiple_returns_compile =>
-    "package main; type Splitter func(int) (int, int); type divider struct{}; func (divider) parts(v int, split Splitter) (int, int) { return split(v) }; func main() { _, _ = divider{}.parts(9, Splitter(func(v int) (int, int) { return v / 2, v % 2 })) }" }
+    method_func_param_with_multiple_returns_compile =>
+    "package main; type Splitter func(int) (int, int); type divider struct{}; func (divider) parts(v int, split Splitter) (int, int) { return split(v) }; func main() { _, _ = divider{}.parts(9, Splitter(func(v int) (int, int) { return v / 2, v % 2 })) }",
+}

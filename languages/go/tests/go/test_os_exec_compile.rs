@@ -12,7 +12,9 @@ go_run_cases! {
     os_args_join_empty_slice => (
         "package main; import \"fmt\"; import \"os\"; import \"strings\"; func main() { fmt.Println(strings.Join(os.Args, \",\")) }",
         vec![""]
-    ) }
+    ),
+
+}
 
 go_compile_cases! {
     // os.Getenv
@@ -49,4 +51,5 @@ go_compile_cases! {
     exec_command_variadic_slice_spread => "package main; import \"os/exec\"; func main() { flags := []string{\"-n\"}; _ = exec.Command(\"wc\", flags...) }",
     exec_command_name_from_filepath_base => "package main; import \"os/exec\"; import \"path/filepath\"; func main() { _ = exec.Command(filepath.Base(\"/bin/echo\"), \"vybe\") }",
     exec_command_stored_in_variable => "package main; import \"os/exec\"; func main() { cmd := exec.Command(\"date\"); _ = cmd }",
-    exec_command_path_built_with_join => "package main; import \"os/exec\"; import \"path/filepath\"; func main() { bin := filepath.Join(\"usr\", \"bin\", \"env\"); _ = exec.Command(bin, \"sh\") }" }
+    exec_command_path_built_with_join => "package main; import \"os/exec\"; import \"path/filepath\"; func main() { bin := filepath.Join(\"usr\", \"bin\", \"env\"); _ = exec.Command(bin, \"sh\") }",
+}

@@ -8,9 +8,11 @@ go_run_cases! {
     append_slice_spread => ("package main; import \"fmt\"; func main() { base := []int{1}; more := []int{2,3}; s := append(base, more...); fmt.Println(len(s)); fmt.Println(s[2]) }", vec!["3", "3"]),
     three_index_slice_cap => ("package main; import \"fmt\"; func main() { a := []int{0,1,2,3,4}; b := a[1:3:4]; fmt.Println(len(b)); fmt.Println(cap(b)); fmt.Println(b[1]) }", vec!["2", "3", "2"]),
     clear_slice_zeros_len => ("package main; import \"fmt\"; func main() { s := []int{1,2,3}; clear(s); fmt.Println(len(s)) }", vec!["3"]),
-    clear_map_removes_entries => ("package main; import \"fmt\"; func main() { m := map[string]int{\"a\":1,\"b\":2}; clear(m); fmt.Println(len(m)) }", vec!["0"]) }
+    clear_map_removes_entries => ("package main; import \"fmt\"; func main() { m := map[string]int{\"a\":1,\"b\":2}; clear(m); fmt.Println(len(m)) }", vec!["0"]),
+}
 
 go_compile_cases! {
     copy_string_to_byte_slice => "package main; func main() { dst := make([]byte, 3); _ = copy(dst, \"abc\") }",
     append_nil_slice => "package main; func main() { var s []int; s = append(s, 1) }",
-    full_slice_expression_max => "package main; func main() { a := []int{1,2,3}; _ = a[0:1:2] }" }
+    full_slice_expression_max => "package main; func main() { a := []int{1,2,3}; _ = a[0:1:2] }",
+}

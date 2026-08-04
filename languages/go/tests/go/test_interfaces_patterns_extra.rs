@@ -56,7 +56,8 @@ run_cases! {
     empty_interface_bool_runtime => ("package main; import \"fmt\"; func main() { var value interface{} = true; fmt.Println(value); }", vec!["true"]),
     empty_interface_array_element_runtime => ("package main; import \"fmt\"; func main() { values := [2]interface{}{\"a\", 2}; fmt.Println(values[0]); fmt.Println(values[1]); }", vec!["a", "2"]),
     interface_from_function_return_runtime => ("package main; import \"fmt\"; func build() interface{} { return \"built\" }; func main() { fmt.Println(build()); }", vec!["built"]),
-    interface_in_struct_literal_runtime => ("package main; import \"fmt\"; type holder struct { value interface{} }; func main() { value := holder{value: 11}; fmt.Println(value.value); }", vec!["11"]) }
+    interface_in_struct_literal_runtime => ("package main; import \"fmt\"; type holder struct { value interface{} }; func main() { value := holder{value: 11}; fmt.Println(value.value); }", vec!["11"]),
+}
 
 compile_cases! {
     interface_type_assertion_compile => "package main; func main() { var value interface{} = 1; _ = value.(int) }",
@@ -83,4 +84,5 @@ compile_cases! {
     interface_composite_literal_field_compile => "package main; type holder struct { value interface{} }; func main() { _ = holder{value: 1} }",
     interface_zero_value_compile => "package main; func main() { var value interface{}; _ = value }",
     interface_compare_nil_compile => "package main; func main() { var value interface{}; _ = (value == nil) }",
-    interface_array_compile => "package main; func main() { values := [2]interface{}{1, \"go\"}; _ = values }" }
+    interface_array_compile => "package main; func main() { values := [2]interface{}{1, \"go\"}; _ = values }",
+}

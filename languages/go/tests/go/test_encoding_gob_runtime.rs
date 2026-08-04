@@ -162,7 +162,8 @@ go_run_cases! {
     gob_reencode_same_type_new_buffer => (
         "package main; import \"fmt\"; import \"encoding/gob\"; import \"bytes\"; func main() { var buf1, buf2 bytes.Buffer; gob.NewEncoder(&buf1).Encode(88); var v int; gob.NewDecoder(&buf1).Decode(&v); gob.NewEncoder(&buf2).Encode(v); var v2 int; gob.NewDecoder(&buf2).Decode(&v2); fmt.Println(v2) }",
         vec!["88"]
-    ) }
+    ),
+}
 
 go_compile_cases! {
     gob_encoder_encode_value_reflect => "package main; import \"encoding/gob\"; import \"bytes\"; import \"reflect\"; func main() { e := gob.NewEncoder(bytes.NewBuffer(nil)); _ = e.EncodeValue(reflect.ValueOf(1)) }",
@@ -179,4 +180,5 @@ go_compile_cases! {
     gob_struct_embedded_anonymous => "package main; import \"encoding/gob\"; import \"bytes\"; type Base struct { ID int }; type Derived struct { Base; Name string }; func main() { _ = gob.NewEncoder(bytes.NewBuffer(nil)).Encode(Derived{Base: Base{ID: 1}, Name: \"d\"}) }",
     gob_channel_not_encodable_compile => "package main; import \"encoding/gob\"; import \"bytes\"; func main() { ch := make(chan int); _ = gob.NewEncoder(bytes.NewBuffer(nil)).Encode(ch) }",
     gob_func_not_encodable_compile => "package main; import \"encoding/gob\"; import \"bytes\"; func main() { f := func() {}; _ = gob.NewEncoder(bytes.NewBuffer(nil)).Encode(f) }",
-    gob_complex128_roundtrip_compile => "package main; import \"encoding/gob\"; import \"bytes\"; func main() { var buf bytes.Buffer; _ = gob.NewEncoder(&buf).Encode(complex(1, 2)); var c complex128; _ = gob.NewDecoder(&buf).Decode(&c) }" }
+    gob_complex128_roundtrip_compile => "package main; import \"encoding/gob\"; import \"bytes\"; func main() { var buf bytes.Buffer; _ = gob.NewEncoder(&buf).Encode(complex(1, 2)); var c complex128; _ = gob.NewDecoder(&buf).Decode(&c) }",
+}

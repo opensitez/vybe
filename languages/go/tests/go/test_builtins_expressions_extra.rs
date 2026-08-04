@@ -62,7 +62,8 @@ run_cases! {
     len_on_pointer_dereference_runtime => ("package main; import \"fmt\"; func main() { values := &[3]int{1, 2, 3}; fmt.Println(len(*values)); }", vec!["3"]),
     cap_on_pointer_dereference_runtime => ("package main; import \"fmt\"; func main() { values := &[3]int{1, 2, 3}; fmt.Println(cap(*values)); }", vec!["3"]),
     make_bool_slice_runtime => ("package main; import \"fmt\"; func main() { flags := make([]bool, 2); fmt.Println(len(flags)); fmt.Println(flags[1]); }", vec!["2", "false"]),
-    append_after_copy_runtime => ("package main; import \"fmt\"; func main() { dst := []int{0, 0}; copy(dst, []int{1, 2}); dst = append(dst, 3); fmt.Println(dst[2]); }", vec!["3"]) }
+    append_after_copy_runtime => ("package main; import \"fmt\"; func main() { dst := []int{0, 0}; copy(dst, []int{1, 2}); dst = append(dst, 3); fmt.Println(dst[2]); }", vec!["3"]),
+}
 
 compile_cases! {
     len_on_channel_compile => "package main; func main() { ch := make(chan int, 2); _ = len(ch) }",
@@ -83,4 +84,5 @@ compile_cases! {
     copy_string_into_byte_buffer_compile => "package main; func main() { dst := make([]byte, 4); _ = copy(dst, \"go\") }",
     len_on_function_returned_slice_compile => "package main; func values() []int { return []int{1, 2, 3} }; func main() { _ = len(values()) }",
     cap_on_function_returned_slice_compile => "package main; func values() []int { return make([]int, 2, 5) }; func main() { _ = cap(values()) }",
-    complex_parts_in_assignment_compile => "package main; func main() { r, i := real(complex(5, 6)), imag(complex(5, 6)); _, _ = r, i }" }
+    complex_parts_in_assignment_compile => "package main; func main() { r, i := real(complex(5, 6)), imag(complex(5, 6)); _, _ = r, i }",
+}

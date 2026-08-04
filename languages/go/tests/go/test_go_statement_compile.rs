@@ -35,4 +35,5 @@ compile_cases! {
     go_spawn_for_loop_pass_index_arg_compile => "package main; func main() { for i := 0; i < 3; i++ { go func(idx int) { _ = idx }(i) } }",
     go_spawn_range_over_slice_compile => "package main; func main() { for _, v := range []int{1, 2} { go func() { _ = v }() } }",
     go_spawn_range_pass_value_arg_compile => "package main; func main() { for _, v := range []int{4, 5} { go func(n int) { _ = n }(v) } }",
-    go_spawn_nested_for_loops_compile => "package main; func main() { for i := 0; i < 2; i++ { for j := 0; j < 2; j++ { go func() { _, _ = i, j }() } } }" }
+    go_spawn_nested_for_loops_compile => "package main; func main() { for i := 0; i < 2; i++ { for j := 0; j < 2; j++ { go func() { _, _ = i, j }() } } }",
+}

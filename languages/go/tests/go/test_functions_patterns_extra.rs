@@ -56,7 +56,8 @@ run_cases! {
     anonymous_function_immediate_args_runtime => ("package main; import \"fmt\"; func main() { fmt.Println(func(a int, b int) int { return a - b }(9, 4)); }", vec!["5"]),
     function_composition_runtime => ("package main; import \"fmt\"; func compose(a func(int) int, b func(int) int) func(int) int { return func(v int) int { return b(a(v)) } }; func main() { fn := compose(func(v int) int { return v + 1 }, func(v int) int { return v * 2 }); fmt.Println(fn(5)); }", vec!["12"]),
     function_variable_default_nil_check_runtime => ("package main; import \"fmt\"; func main() { var fn func(int) int; fmt.Println(fn == nil); }", vec!["true"]),
-    named_func_type_runtime => ("package main; import \"fmt\"; type op func(int, int) int; func main() { var add op = func(a int, b int) int { return a + b }; fmt.Println(add(2, 8)); }", vec!["10"]) }
+    named_func_type_runtime => ("package main; import \"fmt\"; type op func(int, int) int; func main() { var add op = func(a int, b int) int { return a + b }; fmt.Println(add(2, 8)); }", vec!["10"]),
+}
 
 compile_cases! {
     named_return_with_defer_compile => "package main; func run() (result int) { defer func() { result++ }(); result = 1; return }; func main() { _ = run }",
@@ -83,4 +84,5 @@ compile_cases! {
     variadic_pass_zero_arguments_compile => "package main; func sum(values ...int) int { return len(values) }; func main() { _ = sum() }",
     function_array_return_compile => "package main; func build() [2]int { return [2]int{1, 2} }; func main() { _ = build() }",
     function_literal_with_blank_identifier_param_compile => "package main; func main() { fn := func(_ int, v int) int { return v }; _ = fn }",
-    function_parameter_named_result_same_type_compile => "package main; func transform(v int) (int, int) { return v, v + 1 }; func main() { _, _ = transform(1) }" }
+    function_parameter_named_result_same_type_compile => "package main; func transform(v int) (int, int) { return v, v + 1 }; func main() { _, _ = transform(1) }",
+}

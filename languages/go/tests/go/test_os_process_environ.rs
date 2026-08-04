@@ -40,7 +40,9 @@ go_run_cases! {
     os_environ_slice_non_nil => (
         "package main; import \"fmt\"; import \"os\"; func main() { fmt.Println(len(os.Environ()) >= 0) }",
         vec!["true"]
-    ) }
+    ),
+
+}
 
 go_compile_cases! {
     os_getpid_assign_int => "package main; import \"os\"; func main() { pid := os.Getpid(); _ = pid }",
@@ -88,4 +90,5 @@ go_compile_cases! {
     os_open_file_with_flags => "package main; import \"os\"; func main() { _, _ = os.OpenFile(\"/tmp/vybe-open\", os.O_CREATE|os.O_RDWR, 0644) }",
     os_pipe_create => "package main; import \"os\"; func main() { r, w, err := os.Pipe(); if err == nil { r.Close(); w.Close() } }",
     os_process_state_exited => "package main; import \"os\"; import \"os/exec\"; func main() { cmd := exec.Command(\"true\"); err := cmd.Run(); if err == nil { _ = cmd.ProcessState.Exited() } }",
-    os_same_file_stat_compare => "package main; import \"os\"; func main() { a, e1 := os.Stat(\".\"); b, e2 := os.Lstat(\".\"); if e1 == nil && e2 == nil { _, _ = os.SameFile(a, b) } }" }
+    os_same_file_stat_compare => "package main; import \"os\"; func main() { a, e1 := os.Stat(\".\"); b, e2 := os.Lstat(\".\"); if e1 == nil && e2 == nil { _, _ = os.SameFile(a, b) } }",
+}

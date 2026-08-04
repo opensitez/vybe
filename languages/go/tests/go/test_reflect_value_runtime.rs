@@ -175,7 +175,8 @@ go_run_cases! {
     reflect_field_by_name_func => (
         "package main; import \"fmt\"; import \"reflect\"; type Row struct { Alpha int; Beta int; Gamma int }; func main() { f, ok := reflect.TypeOf(Row{}).FieldByNameFunc(func(name string) bool { return len(name) == 5 }); fmt.Println(ok); fmt.Println(f.Name) }",
         vec!["true", "Alpha"]
-    ) }
+    ),
+}
 
 go_compile_cases! {
     reflect_typeof_chan => "package main; import \"reflect\"; func main() { _ = reflect.TypeOf(make(chan int)).Kind() }",
@@ -200,4 +201,5 @@ go_compile_cases! {
     reflect_call_invalid_panic_compile => "package main; import \"reflect\"; func noop() {}; func main() { _ = reflect.ValueOf(noop).Call(nil) }",
     reflect_struct_tag_on_field => "package main; import \"reflect\"; type T struct { X int `json:\"x\"` }; func main() { _ = reflect.TypeOf(T{}).Field(0).Tag.Get(\"json\") }",
     reflect_value_bytes => "package main; import \"reflect\"; func main() { _ = reflect.ValueOf([]byte{'a'}).Bytes() }",
-    reflect_value_map_keys => "package main; import \"reflect\"; func main() { _ = reflect.ValueOf(map[int]int{1: 1}).MapKeys() }" }
+    reflect_value_map_keys => "package main; import \"reflect\"; func main() { _ = reflect.ValueOf(map[int]int{1: 1}).MapKeys() }",
+}

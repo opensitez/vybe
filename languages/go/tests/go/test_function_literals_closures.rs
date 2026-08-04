@@ -86,7 +86,8 @@ go_run_cases! {
     closure_in_for_range =>
         ("package main; import \"fmt\"; func main() { sum := 0; for _, v := range []int{1, 2, 3} { func(x int) { sum += x }(v) }; fmt.Println(sum) }", vec!["6"]),
     closure_return_same_capture =>
-        ("package main; import \"fmt\"; func main() { base := 10; mk := func() func() int { return func() int { return base } }; fmt.Println(mk()()) }", vec!["10"]) }
+        ("package main; import \"fmt\"; func main() { base := 10; mk := func() func() int { return func() int { return base } }; fmt.Println(mk()()) }", vec!["10"]),
+}
 
 go_compile_cases! {
     closure_as_http_handler_func_compile =>
@@ -126,4 +127,5 @@ go_compile_cases! {
     closure_handler_func_status_code_compile =>
         "package main; import \"net/http\"; func main() { http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }) }",
     closure_in_select_compile =>
-        "package main; func main() { ch := make(chan int); select { case <-func() chan int { return ch }(): } }" }
+        "package main; func main() { ch := make(chan int); select { case <-func() chan int { return ch }(): } }",
+}
