@@ -1,0 +1,134 @@
+WHITESPACE = _{ " " | "\t" | "\r" }
+NEWLINE = _{ "\r\n" | "\n" | "\r" }
+COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
+
+terminator = _{ ";" | NEWLINE }
+separator = _{ WHITESPACE | terminator }
+eat_terminators = _{ terminator* }
+eat_separators = _{ separator* }
+
+program = { SOI ~ eat_separators ~ (statement ~ eat_separators)* ~ EOI }
+
+statement = _{
+    namespace_decl
+  | class_decl
+  | function_decl
+  | param_stmt
+  | if_stmt
+  | foreach_stmt
+  | for_stmt
+  | while_stmt
+  | do_while_stmt
+  | try_stmt
+  | switch_stmt
+  | return_stmt
+  | throw_stmt
+  | break_stmt
+  | continue_stmt
+  | using_stmt
+  | assignment_stmt
+  | increment_stmt
+  | COMMENT
+  | command_stmt
+}
+
+block = { "{" ~ eat_separators ~ (statement ~ eat_separators)* ~ "}" }
+
+ws = _{ " " | "\t" | "\r" }
+ws1 = _{ (" " | "\t" | "\r")+ }
+
+IDENT = @{ (ASCII_ALPHANUMERIC | "_" | "-" )+ }
+DOT_NAME = @{ (ASCII_ALPHANUMERIC | "_" | "-" | "." )+ }
+namespace_name = @{ DOT_NAME }
+DOTTED_NAME = @{ (ASCII_ALPHANUMERIC | "_" | "-" | "." )+ }
+
+var_ref = @{ "$" ~ (ASCII_ALPHANUMERIC | "_" | "-")+ }
+
+namespace_decl = { ^"namespace" ~ ws1 ~ namespace_name ~ ws* ~ block }
+
+class_decl = { ^"class" ~ ws1 ~ IDENT ~ ws* ~ class_heritage? ~ ws* ~ class_body }
+class_heritage = { ":" ~ ws* ~ DOTTED_NAME ~ (ws* ~ "," ~ ws* ~ DOTTED_NAME)* }
+class_body = { "{" ~ eat_terminators ~ (class_member_decl ~ eat_terminators)* ~ "}" }
+
+class_member_decl = { constructor_decl | class_function_decl | class_field_decl }
+class_function_decl = { ^"function" ~ ws1 ~ function_name ~ ws* ~ function_params? ~ ws* ~ block }
+class_field_decl = { var_ref ~ ws* ~ "=" ~ ws* ~ expr_text }
+constructor_decl = { ^"constructor" ~ ws* ~ function_params? ~ ws* ~ block }
+
+function_decl = { ^"function" ~ ws1 ~ function_name ~ ws* ~ function_params? ~ ws* ~ block }
+param_stmt = { ^"param" ~ ws* ~ "(" ~ ws* ~ function_param_list? ~ ws* ~ ")" }
+function_name = @{ IDENT | var_ref }
+function_params = { "(" ~ ws* ~ function_param_list? ~ ws* ~ ")" }
+function_param_list = { function_param ~ (ws* ~ "," ~ ws* ~ function_param)* }
+function_param = { type_hint? ~ ws* ~ (var_ref | IDENT) ~ (ws* ~ "=" ~ ws* ~ expr_text)? }
+type_hint = { "[" ~ (ASCII_ALPHANUMERIC | "_" | "-" | "." | "[" | "]" | ":" | " ")* ~ "]" }
+
+if_stmt = { ^"if" ~ ws* ~ condition_expr ~ ws* ~ block ~ ws* ~ (elseif_stmt ~ ws*)* ~ else_stmt? }
+elseif_stmt = { ^"elseif" ~ ws* ~ condition_expr ~ ws* ~ block ~ ws* }
+else_stmt = { ^"else" ~ ws* ~ block }
+
+while_stmt = { ^"while" ~ ws* ~ condition_expr ~ ws* ~ block }
+
+foreach_stmt = { ^"foreach" ~ ws* ~ "(" ~ ws* ~ var_ref ~ ws* ~ ^"in" ~ ws* ~ expr_until_rparen ~ ")" ~ ws* ~ block }
+
+switch_stmt = { ^"switch" ~ ws* ~ "(" ~ ws* ~ expr_until_rparen ~ ws* ~ ")" ~ ws* ~ "{" ~ ws* ~ switch_case* ~ "}" }
+switch_case = { switch_default_case | switch_case_value }
+switch_default_case = { ^"default" ~ ws* ~ switch_case_body }
+switch_case_value = { expr_text ~ ws* ~ switch_case_body }
+switch_case_body = { "{" ~ (statement ~ eat_terminators)* ~ "}" }
+
+for_stmt = { ^"for" ~ ws* ~ "(" ~ ws* ~ for_header ~ ")" ~ ws* ~ block }
+for_header = @{ (!")" ~ ANY)* }
+
+assignment_stmt = { lvalue ~ ws* ~ assignment_op ~ ws* ~ expr_text }
+increment_stmt = { lvalue ~ ws* ~ increment_op }
+lvalue = { var_ref ~ (member_access | index_access)* }
+member_access = { "." ~ (IDENT | var_ref | DOTTED_NAME) }
+index_access = { "[" ~ ws* ~ expr_text ~ ws* ~ "]" }
+assignment_op = { "??=" | "||=" | "&&=" | "<<=" | ">>=" | "**=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "=" }
+increment_op = { "++" | "--" }
+
+do_while_stmt = { ^"do" ~ ws* ~ block ~ ws* ~ do_while_tail }
+do_while_tail = _{ do_while_while | do_while_until }
+do_while_while = { ^"while" ~ ws* ~ condition_expr }
+do_while_until = { ^"until" ~ ws* ~ condition_expr }
+
+try_stmt = { ^"try" ~ ws* ~ block ~ catch_clause* ~ finally_clause? }
+catch_clause = { ^"catch" ~ ws* ~ catch_header? ~ ws* ~ block }
+catch_header = { "(" ~ ws* ~ var_ref ~ ws* ~ ")" }
+finally_clause = { ^"finally" ~ ws* ~ block }
+
+return_stmt = { ^"return" ~ ws* ~ expr_text? }
+throw_stmt = { ^"throw" ~ ws* ~ expr_text? }
+break_stmt = { ^"break" ~ ws* ~ integer? }
+continue_stmt = { ^"continue" ~ ws* ~ integer? }
+integer = @{ ASCII_DIGIT+ }
+
+using_stmt = { ^"using" ~ ws+ ~ using_target }
+using_target = { ^"namespace" ~ ws* ~ DOTTED_NAME | DOTTED_NAME | var_ref }
+
+command_stmt = { pipeline_expr }
+pipeline_expr = { command_segment ~ (ws* ~ "|" ~ ws* ~ command_segment)* }
+command_segment = { command_head ~ command_arg* }
+command_head = { !(keyword ~ ws_boundary) ~ command_token }
+command_arg = { command_token }
+command_token = { quoted_string | single_quoted_string | script_block | bare_token }
+script_block = {
+    "{" ~ (script_block | quoted_string | single_quoted_string | (!("{" | "}") ~ ANY))* ~ "}"
+}
+condition_expr = { "(" ~ ws* ~ condition_body ~ ws* ~ ")" }
+condition_body = { (!")" ~ ANY)+ }
+expr_until_rparen = @{ (!")" ~ ANY)+ }
+bare_token = @{ (!("|" | NEWLINE | ";" | "{" | "}" | "(" | ")" | "\"" | "'" | WHITESPACE) ~ ANY)+ }
+
+expr_text = @{
+    object_literal
+  | array_literal
+  | (!(";" | NEWLINE | "|") ~ ANY)+
+}
+array_literal = @{ "@(" ~ (!")" ~ ANY)* ~ ")" }
+object_literal = @{ "@{" ~ (!"}" ~ ANY)* ~ "}" }
+quoted_string = @{ "\"" ~ ( "\\\"" | "\\\\" | "\\`" ~ ANY | (!"\"" ~ ANY) )* ~ "\"" }
+single_quoted_string = @{ "'" ~ ( "\\'" | "\\\\" | "\\`" ~ ANY | (!"'" ~ ANY) )* ~ "'" }
+keyword = @{ ^"if" | ^"elseif" | ^"else" | ^"while" | ^"foreach" | ^"for" | ^"switch" | ^"do" | ^"try" | ^"return" | ^"throw" | ^"break" | ^"continue" | ^"using" | ^"param" | ^"class" | ^"namespace" | ^"function" }
+ws_boundary = _{ WHITESPACE | NEWLINE | "{" | "}" | "(" | ")" | ";" | "|" }

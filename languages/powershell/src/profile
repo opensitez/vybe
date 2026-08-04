@@ -1,0 +1,153 @@
+[info]
+name = "powershell"
+extensions = ["ps", "ps1", "psm1", "psd1"]
+
+[compiler]
+function_return = "explicit"
+case_sensitive = false
+self_keyword = "this"
+constructor_name = "constructor"
+uses_common_resolver = true
+
+[builtins]
+
+"write-output" = { emit = "print", min_args = 0, max_args = 255 }
+"write-host" = { emit = "print", min_args = 0, max_args = 255 }
+
+echo = { emit = "print", min_args = 0, max_args = 255 }
+"get-date" = { emit = "common:dotnet.datetime_now", min_args = 0, max_args = 0 }
+exit = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
+
+# VALUE METHODS — instance methods called on values
+# PowerShell is case-insensitive, but keep canonical and lowercase
+# variants to cover both canonical profile wiring and normalized lookup paths.
+[value_methods]
+
+ToString = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
+tostring = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# builtinslotplan.md — built-in type spellings and slot bindings
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtin_types]
+string = ["string", "str"]
+int    = ["int", "integer"]
+double = ["double", "float", "decimal"]
+bool   = ["bool", "boolean"]
+array  = ["array"]
+map    = ["hashtable", "dictionary"]
+
+# PowerShell follows .NET stringification rules for interpolation, `Write-Output`,
+# and value printing. This makes `Format-` style calls and `${expr}` interpolation
+# stay consistent with `ToString()` and `ToString("F")`.
+[builtin_slots.string]
+to_string = "common:dotnet.tostring_runtime"
+
+[builtin_slots.int]
+to_string = "common:dotnet.tostring_runtime"
+
+[builtin_slots.double]
+to_string = "common:dotnet.tostring_runtime"
+
+[builtin_slots.bool]
+to_string = "common:dotnet.tostring_runtime"
+
+# ────────────────────────────────────────────────────────────────────────────
+# .NET NAMESPACE RESOLUTION
+# ────────────────────────────────────────────────────────────────────────────
+
+[namespaces]
+# Enable .NET runtime surface semantics; namespace lookup is data-driven by
+# the common resolver through the tree mounts and ambient imports below.
+use_dotnet = true
+source_imports_are_namespaces = true
+
+# Types under this namespace-tree path dispatch at RUNTIME through the type
+# registry rather than through this language's value-method tables — `xs.Add(v)`
+# on a .NET collection must reach the collection's own method, not an array
+# builtin that happens to share the name. A PATH, not a language switch: the
+# answer depends on where the declaring type lives.
+runtime_collection_scope = ["dotnet", "system", "collections"]
+
+# Namespace-tree roots this language resolves platform types against. `Button`
+# / `Form` / `Dictionary` are .NET catalog entries, so member access on a
+# statically-typed receiver looks them up under `dotnet`.
+type_scopes = ["dotnet"]
+
+[[esm_default]]
+kind = "tree-mount"
+prefix = "System"
+path = "dotnet.system"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.windows.forms"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.text"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.io"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.diagnostics"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.threading"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections.generic"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.collections.concurrent"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net.http"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.net.sockets"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data.sqlclient"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.data.oledb"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.drawing"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.xml"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dotnet.system.xml.linq"
