@@ -212,11 +212,6 @@ impl TypeDef {
         self
     }
 
-    pub fn with_source_component(mut self, component: &str) -> Self {
-        self.source_component = Some(component.to_string());
-        self
-    }
-
     /// Backward compat: old code used `fields: Vec<String>` for field names.
     /// This preserves that interface.
     pub fn fields(&self) -> Vec<String> {
@@ -381,24 +376,6 @@ impl TypeRegistry {
     /// Look up a constant on a type (for enums).
     pub fn get_constant(&self, type_id: usize, name: &str) -> Option<i64> {
         self.types.get(type_id)?.constants.get(name).copied()
-    }
-
-    /// Resolve a type import: look up a type by interface + name.
-    /// Returns the type_id if found.
-    pub fn resolve_type_import(&self, interface: &str, type_name: &str) -> Option<usize> {
-        let key = type_name.to_lowercase();
-        for (i, td) in self.types.iter().enumerate() {
-            if td.name.to_lowercase() == key {
-                if let Some(ref iface) = td.interface {
-                    if iface == interface {
-                        return Some(i);
-                    }
-                }
-                // Also match by name alone if no interface specified
-                return Some(i);
-            }
-        }
-        None
     }
 
     /// Export a type: mark it with an interface name so other components can import it.
@@ -631,10 +608,16 @@ impl TypeRegistry {
                 }
             }
 
-            // Resolve interface implementations
-            for iface_name in &entry.implements {
-                if let Some(iface_id) = self.get_id(iface_name) {
-                    self.add_implements(type_id, iface_id);
+            // Resolve interface implementations by INDEX, through the same
+            // `local_ids` map the supertype links use.
+            for &iface_index in &entry.implements {
+                if iface_index == 0 {
+                    continue;
+                }
+                if let Some(&iface_id) = local_ids.get(iface_index as usize - 1) {
+                    if iface_id != type_id {
+                        self.add_implements(type_id, iface_id);
+                    }
                 }
             }
         }

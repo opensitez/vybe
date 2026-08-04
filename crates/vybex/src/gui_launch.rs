@@ -275,17 +275,15 @@ impl Application for FormApp {
     }
 
     fn render(&mut self, pixmap: &mut Pixmap, scale: f32) {
-        fill_background(pixmap, 240, 240, 240, 255);
-        let mut g = self.gui.lock().unwrap();
-        let mut ctx = RenderContext {
+        // One renderer, shared with `--capture` and the debugger's `capture`,
+        // so a captured frame is byte-for-byte what the window shows.
+        crate::gui_capture::render_into(
+            &self.gui,
             pixmap,
-            font_system: &mut self.font_system,
-            swash_cache: &mut self.swash_cache,
-            scale };
-        g.form.render(&mut ctx);
-        if !g.overlay_canvases.is_empty() {
-            g.form.render_overlays(&mut ctx, &g.overlay_canvases);
-        }
+            &mut self.font_system,
+            &mut self.swash_cache,
+            scale,
+        );
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) -> bool {
@@ -1067,6 +1065,49 @@ pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
         timer_last_fire: std::collections::HashMap::new() };
 
     run_app(&title, width, height, 1.0, app);
+}
+
+/// Headless counterpart to `launch_gui`: lay the form out, render ONE frame
+/// offscreen, write it as a PNG, and return — no window, no event loop.
+///
+/// Everything a GUI program drew during its run is already in `GuiState`, so
+/// this replays it exactly as the window would. Used by `--capture`; it makes a
+/// GUI program's output readable without a screenshot, which also means a frame
+/// can be diffed as a regression check.
+pub fn capture_gui(
+    mut vm: vybe_runtime::VM,
+    gui: Arc<Mutex<GuiState>>,
+    path: &str,
+    control: Option<&str>,
+) -> Result<(u32, u32), String> {
+    register_dialog_fns(&mut vm);
+
+    if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
+        vm.globals.insert("__f".into(), form_obj);
+    }
+
+    let (width, height) = {
+        let g = gui.lock().unwrap();
+        (g.width, g.height)
+    };
+
+    let mut app = FormApp {
+        font_system: FontSystem::new(),
+        swash_cache: SwashCache::new(),
+        vm: Rc::new(RefCell::new(vm)),
+        gui: Arc::clone(&gui),
+        data_bindings: Vec::new(),
+        binding_sources: Vec::new(),
+        navigators: Vec::new(),
+        data_store: std::collections::HashMap::new(),
+        initialised: false,
+        timer_last_fire: std::collections::HashMap::new() };
+
+    // Lays the form out and fires Load + data bindings, exactly as the window
+    // path does — without this, controls have no rect and the frame is blank.
+    app.on_init(width as f32, height as f32, 1.0);
+
+    crate::gui_capture::capture_to_png(&gui, path, control, 1.0)
 }
 
 /// Wrapper that dispatches to `launch_gui` or `launch_vybewidget_form`.

@@ -13,6 +13,8 @@
 //!   --portable, -p    Minimal WASI runtime only (no Vybe host optimizations)
 //!   --trace, -t       Enable bytecode trace output
 //!   --chunk <name>    Limit --dump/--trace output to a specific chunk
+//!   --capture FILE    Render one GUI frame to a PNG instead of opening a window
+//!   --capture-control N  Crop --capture to a single control
 //!
 //! Supports single source files (detected by extension), MULTIPLE source files
 //! linked together like a C compiler (`vybex main.c util.c` — the first file is
@@ -83,6 +85,29 @@ fn should_emit_full_ast(module: &Module) -> bool {
     summary.top_level_statements <= 250
         && summary.inline_html_echoes <= 16
         && summary.string_bytes <= 16000
+}
+
+/// Print the full AST of just the top-level declarations named `name`
+/// (functions, classes, structs, interfaces, enums, namespaces), matched
+/// case-insensitively so it works for the case-folding languages too.
+/// Returns how many matched.
+fn print_ast_for_named(module: &Module, name: &str) -> usize {
+    let mut matched = 0;
+    for stmt in &module.body {
+        let decl_name = match &stmt.kind {
+            StmtKind::FunctionDecl { name, .. }
+            | StmtKind::ClassDecl { name, .. }
+            | StmtKind::InterfaceDecl { name, .. }
+            | StmtKind::EnumDecl { name, .. }
+            | StmtKind::StructDecl { name, .. }
+            | StmtKind::NamespaceDecl { name, .. } => name.as_str(),
+            _ => continue };
+        if decl_name.eq_ignore_ascii_case(name) {
+            matched += 1;
+            println!("{:#?}", stmt);
+        }
+    }
+    matched
 }
 
 fn print_ast_outline(module: &Module) {
@@ -204,6 +229,10 @@ pub fn run() {
     let mut debug = false;
     let mut dap_port: Option<u16> = None;
     let mut watch = false;
+    // `--capture <png>` renders one GUI frame offscreen instead of opening a
+    // window; `--capture-control <name>` crops it to a single control.
+    let mut capture: Option<String> = None;
+    let mut capture_control: Option<String> = None;
     let mut chunk_filter = None;
     // Every non-flag positional is a source file. Several files link into one
     // bundle (C-compiler style); the first is the entry file.
@@ -254,6 +283,20 @@ pub fn run() {
                     std::process::exit(1);
                 };
                 dap_port = p.parse().ok();
+            }
+            "--capture" => {
+                let Some(p) = iter.next() else {
+                    eprintln!("Missing value for --capture");
+                    std::process::exit(1);
+                };
+                capture = Some(p.clone());
+            }
+            "--capture-control" => {
+                let Some(c) = iter.next() else {
+                    eprintln!("Missing value for --capture-control");
+                    std::process::exit(1);
+                };
+                capture_control = Some(c.clone());
             }
             "--watch" | "-W" => watch = true,
             "--serve" => serve = true,
@@ -424,7 +467,14 @@ pub fn run() {
                 eprintln!("AST dump is only available for source files and projects");
                 std::process::exit(1);
             }
-            run_wasm(path, dump, trace, chunk_filter.as_deref());
+            run_wasm(
+                path,
+                dump,
+                trace,
+                chunk_filter.as_deref(),
+                capture.as_deref(),
+                capture_control.as_deref(),
+            );
             return;
         }
 
@@ -460,6 +510,17 @@ pub fn run() {
             }
         };
         print_ast_summary(&module);
+        // `--chunk` narrows --dump and --trace to one function; do the same
+        // here. Without it, reading one function out of a large program means
+        // scrolling tens of thousands of lines of `{:#?}`.
+        if let Some(name) = chunk_filter.as_deref() {
+            let matched = print_ast_for_named(&module, name);
+            if matched == 0 {
+                eprintln!("[vybex] no top-level declaration named `{name}`");
+                std::process::exit(1);
+            }
+            return;
+        }
         if should_emit_full_ast(&module) {
             eprintln!("[vybex] Printing full AST...");
             println!("{:#?}", module);
@@ -681,7 +742,28 @@ pub fn run() {
     }
 
     if gui.lock().unwrap().should_run {
-        crate::gui_launch::launch_gui(vm, gui);
+        match capture {
+            Some(path) => run_capture(vm, gui, &path, capture_control.as_deref()),
+            None => crate::gui_launch::launch_gui(vm, gui),
+        }
+    }
+}
+
+/// Write one offscreen GUI frame to `path`, reporting the result on stderr.
+/// A capture that finds no frame is an ERROR exit, not a silent empty file —
+/// the whole point is to be usable as a check.
+fn run_capture(
+    vm: vybe_runtime::VM,
+    gui: std::sync::Arc<std::sync::Mutex<vybe_platform_vybe::gui_state::GuiState>>,
+    path: &str,
+    control: Option<&str>,
+) {
+    match crate::gui_launch::capture_gui(vm, gui, path, control) {
+        Ok((w, h)) => eprintln!("[vybex] captured {w}x{h} → {path}"),
+        Err(e) => {
+            eprintln!("[vybex] capture failed: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -702,7 +784,14 @@ fn recompile_for_reload(
     Ok(compiled.chunks)
 }
 
-fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
+fn run_wasm(
+    path: &Path,
+    dump: bool,
+    trace: bool,
+    chunk_filter: Option<&str>,
+    capture: Option<&str>,
+    capture_control: Option<&str>,
+) {
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) => {
@@ -751,7 +840,10 @@ fn run_wasm(path: &Path, dump: bool, trace: bool, chunk_filter: Option<&str>) {
     }
 
     if gui.lock().unwrap().should_run {
-        crate::gui_launch::launch_gui(vm, gui);
+        match capture {
+            Some(path) => run_capture(vm, gui, path, capture_control),
+            None => crate::gui_launch::launch_gui(vm, gui),
+        }
     }
 }
 

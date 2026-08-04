@@ -1233,40 +1233,14 @@ impl VM {
                 _ if op == Op::GLOBAL_GET => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
-                    // In strict isolation mode, prefix globals with module name
-                    // to prevent cross-module access
-                    let key = if self.strict_isolation {
-                        if let Some(ref prefix) = self.module_prefix {
-                            let prefixed = format!("{}::{}", prefix, name);
-                            // Try prefixed first, then unprefixed (for exports)
-                            if self.globals.contains_key(&prefixed) {
-                                prefixed
-                            } else {
-                                name
-                            }
-                        } else {
-                            name
-                        }
-                    } else {
-                        name
-                    };
-                    let val = self.globals.get(&key).cloned().unwrap_or(Value::Undefined);
+                    let val = self.globals.get(&name).cloned().unwrap_or(Value::Undefined);
                     self.push(val)?;
                 }
                 _ if op == Op::GLOBAL_SET => {
                     let idx = self.read_u16();
                     let name = self.constant_str(idx);
-                    let key = if self.strict_isolation {
-                        if let Some(ref prefix) = self.module_prefix {
-                            format!("{}::{}", prefix, name)
-                        } else {
-                            name
-                        }
-                    } else {
-                        name
-                    };
                     let val = self.pop();
-                    self.globals.insert(key, val);
+                    self.globals.insert(name, val);
                 }
 
                 // -- Properties --
@@ -5214,8 +5188,6 @@ impl VM {
                         let child_func_table = self.func_table.clone();
                         let child_wasm_tables = self.wasm_tables.clone();
                         let child_case_aliases = self.case_aliases.clone();
-                        let child_strict_isolation = self.strict_isolation;
-                        let child_module_prefix = self.module_prefix.clone();
 
                         let handle = std::thread::spawn(move || {
                             let mut child_vm = VM::new();
@@ -5229,8 +5201,6 @@ impl VM {
                             child_vm.func_table = child_func_table;
                             child_vm.wasm_tables = child_wasm_tables;
                             child_vm.case_aliases = child_case_aliases;
-                            child_vm.strict_isolation = child_strict_isolation;
-                            child_vm.module_prefix = child_module_prefix;
 
                             // Push the start_arg onto the child VM's stack so
                             // call_function lays it out at slot 0 of the spawned

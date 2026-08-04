@@ -54,6 +54,29 @@ pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
                 print_widgets(&gui);
                 continue;
             }
+            // `capture` is client-side for the same reason: it renders the live
+            // GuiState into an offscreen pixmap, so it works whether the VM is
+            // paused or running.
+            if head == "capture" {
+                capture_frame(&gui, &line.split_whitespace().skip(1).collect::<Vec<_>>());
+                continue;
+            }
+            if matches!(head, "draws" | "drawlist") {
+                print_draws(&gui, &line.split_whitespace().skip(1).collect::<Vec<_>>());
+                continue;
+            }
+            // `trace canvas on|off` is client-side — it flips a process-wide
+            // toggle the host draw path reads, so it needs no VM round-trip and
+            // works while the VM is running.
+            if head == "trace" {
+                let rest: Vec<&str> = line.split_whitespace().skip(1).collect();
+                if rest.first() == Some(&"canvas") {
+                    let on = rest.get(1) != Some(&"off");
+                    vybe_widgets::canvas::set_trace_enabled(on);
+                    eprintln!("  canvas tracing {}", if on { "on" } else { "off" });
+                    continue;
+                }
+            }
             match parse_command(line) {
                 Ok(command) => {
                     if !send_and_print(&cmd_tx, command) {
@@ -63,6 +86,143 @@ pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
                 Err(msg) => eprintln!("  {msg}") }
         }
     });
+}
+
+/// One recorded draw command, rendered compactly.
+///
+/// `DrawCmd` derives `Debug`, but `{:?}` is unusable here: `DrawImage` would
+/// dump every pixel. So the common ops get a short form and everything else
+/// falls back to a truncated `Debug`.
+fn format_draw_cmd(cmd: &vybe_widgets::canvas::DrawCmd) -> String {
+    use vybe_widgets::canvas::DrawCmd as D;
+    let hex = |c: &vybe_widgets::canvas::Color| {
+        if c.a == 255 {
+            format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
+        } else {
+            format!("#{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a)
+        }
+    };
+    match cmd {
+        D::SetFillColor(c) => format!("setFillColor    {}", hex(c)),
+        D::SetStrokeColor(c) => format!("setStrokeColor  {}", hex(c)),
+        D::SetLineWidth(w) => format!("setLineWidth    {w}"),
+        D::SetGlobalAlpha(a) => format!("setGlobalAlpha  {a}"),
+        D::SetFont(f) => format!("setFont         {} {}px", f.family, f.size),
+        D::BeginPath => "beginPath".to_string(),
+        D::ClosePath => "closePath".to_string(),
+        D::MoveTo(x, y) => format!("moveTo          {x},{y}"),
+        D::LineTo(x, y) => format!("lineTo          {x},{y}"),
+        D::Arc { x, y, r, .. } => format!("arc             {x},{y} r={r}"),
+        D::Ellipse { x, y, rx, ry } => format!("ellipse         {x},{y} {rx}x{ry}"),
+        D::Rect { x, y, w, h } => format!("rect            {x},{y} {w}x{h}"),
+        D::Fill => "fill".to_string(),
+        D::Stroke => "stroke".to_string(),
+        D::FillRect { x, y, w, h } => format!("fillRect        {x},{y} {w}x{h}"),
+        D::StrokeRect { x, y, w, h } => format!("strokeRect      {x},{y} {w}x{h}"),
+        D::ClearRect { x, y, w, h } => format!("clearRect       {x},{y} {w}x{h}"),
+        D::FillText { text, x, y } => format!("fillText        {text:?} @{x},{y}"),
+        D::StrokeText { text, x, y } => format!("strokeText      {text:?} @{x},{y}"),
+        // NEVER `{:?}` an Image — that is the whole pixel buffer.
+        D::DrawImage { image, x, y, w, h } => format!(
+            "drawImage       {}x{} → {x},{y} {w}x{h}",
+            image.width, image.height
+        ),
+        D::Save => "save".to_string(),
+        D::Restore => "restore".to_string(),
+        D::Translate(x, y) => format!("translate       {x},{y}"),
+        D::Scale(x, y) => format!("scale           {x},{y}"),
+        D::Rotate(a) => format!("rotate          {a}"),
+        other => {
+            let mut s = format!("{other:?}");
+            s.truncate(80);
+            s
+        }
+    }
+}
+
+/// `draws [control] [n]` — list the draw commands recorded on a canvas.
+///
+/// This is what tells "nothing was drawn" apart from "drawn in the wrong place"
+/// and "drawn, then painted over" — three failures that look identical on screen.
+fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
+    let mut g = match gui.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner() };
+
+    let limit: usize = args
+        .iter()
+        .find_map(|a| a.parse().ok())
+        .unwrap_or(usize::MAX);
+    let wanted = args
+        .iter()
+        .find(|a| a.parse::<usize>().is_err())
+        .map(|w| g.resolve_control_name(w));
+
+    // A drawing surface is EITHER a real `CanvasWidget` child (the normal case)
+    // OR an entry in `overlay_canvases` (the fallback for a name that matches no
+    // control). Listing only the second is how this first came up empty on a
+    // program that had plainly drawn — so collect both.
+    let mut found: Vec<(String, Vec<vybe_widgets::canvas::DrawCmd>)> = Vec::new();
+    for w in g.form.controls_mut().iter_mut() {
+        let name = w.name().to_string();
+        if let Some(any) = w.as_any_mut() {
+            if let Some(c) = any.downcast_mut::<vybe_widgets::Canvas>() {
+                found.push((name, c.canvas_mut().commands_for_debug().to_vec()));
+            }
+        }
+    }
+    for (name, canvas) in g.overlay_canvases.iter() {
+        found.push((format!("{name} (overlay)"), canvas.commands_for_debug().to_vec()));
+    }
+
+    if found.is_empty() {
+        eprintln!("  (no canvases exist)");
+        return;
+    }
+
+    let mut shown = false;
+    for (name, cmds) in &found {
+        if let Some(w) = &wanted {
+            // Same forgiving match as `--capture-control`: a canvas named after
+            // a window title is not something anyone types exactly.
+            if !name.to_lowercase().contains(&w.to_lowercase()) {
+                continue;
+            }
+        }
+        shown = true;
+        eprintln!("  {} command(s) on `{name}`", cmds.len());
+        for (i, cmd) in cmds.iter().take(limit).enumerate() {
+            eprintln!("  {i:>4}  {}", format_draw_cmd(cmd));
+        }
+        if cmds.len() > limit {
+            eprintln!("  … {} more (pass a count to see more)", cmds.len() - limit);
+        }
+    }
+    if !shown {
+        let names: Vec<&str> = found.iter().map(|(n, _)| n.as_str()).collect();
+        eprintln!(
+            "  no canvas named `{}` (have: {})",
+            wanted.unwrap_or_default(),
+            names.join(", ")
+        );
+    }
+}
+
+/// `capture [control] [file]` — write the live frame to a PNG.
+///
+/// Both arguments are optional: with none it writes the whole form to
+/// `vybe-capture.png`. A single argument ending in `.png` is taken as the file,
+/// otherwise as a control name.
+fn capture_frame(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
+    let is_file = |s: &str| s.ends_with(".png");
+    let (control, path) = match args {
+        [] => (None, "vybe-capture.png"),
+        [one] if is_file(one) => (None, *one),
+        [one] => (Some(*one), "vybe-capture.png"),
+        [a, b, ..] => (Some(*a), *b) };
+    match crate::gui_capture::capture_to_png(gui, path, control, 1.0) {
+        Ok((w, h)) => eprintln!("  wrote {w}x{h} PNG → {path}"),
+        Err(e) => eprintln!("  capture failed: {e}") }
 }
 
 /// Dump the live GUI state (controls, their properties, wired events). Reads the
@@ -79,6 +239,7 @@ fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
         eprintln!("  (no controls realized yet)");
         return;
     }
+    let form_rect = vybe_widgets::PanelWidget::rect(&g.form);
     eprintln!(
         "  form {}×{}  running={}  ({} control(s))",
         g.width,
@@ -86,6 +247,12 @@ fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
         g.should_run,
         g.control_names.len()
     );
+    // Without a window nothing has called `on_init`, so no control has a rect
+    // yet. Say so once, rather than printing a blank rect on every line and
+    // leaving it looking like the controls are broken.
+    if form_rect.w < 1.0 || form_rect.h < 1.0 {
+        eprintln!("  (form not laid out yet — no window; rects appear once it is)");
+    }
     for name in &g.control_names {
         // Properties recorded for this control (keyed by (control, prop_lower)).
         let mut props: Vec<String> = g
@@ -106,7 +273,16 @@ fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
         events.sort();
         let prop_str = if props.is_empty() { String::new() } else { format!("  {{{}}}", props.join(", ")) };
         let evt_str = if events.is_empty() { String::new() } else { format!("  events[{}]", events.join(",")) };
-        eprintln!("  • {name}{prop_str}{evt_str}");
+        // The LAID-OUT rect, which the property store does not carry. A zero
+        // rect means the control was never laid out — it will not render and it
+        // cannot be hit-tested, and nothing else in this dump reveals that.
+        let rect_str = match g.form.get_control_rect(name) {
+            Some(r) if r.w >= 1.0 && r.h >= 1.0 => {
+                format!("  rect={},{} {}x{}", r.x, r.y, r.w, r.h)
+            }
+            Some(_) => "  rect=0x0 ← never laid out".to_string(),
+            None => String::new() };
+        eprintln!("  • {name}{rect_str}{prop_str}{evt_str}");
     }
 }
 
@@ -476,6 +652,8 @@ fn print_help() {
          \x20 inspect:  bt backtrace · locals [frame] · stack · g/globals [prefix] · dis [n] · chunks\n\
          \x20 vars:     p <name>[.field][idx] or p <expr> · set <name> = <literal> · watch <expr> · watches · unwatch\n\
          \x20 gui:      widgets/controls · click <control> · fire <control> <event> · close [control]\n\
+         \x20 gui+:     draws [control] [n] recorded draw cmds · capture [control] [file.png] offscreen PNG\n\
+         \x20 stream+:  trace canvas on|off  (draw routing — which control each draw resolved to)\n\
          \x20 reload:   reload  (recompile + swap changed fn bodies in place; heap/globals kept)\n\
          \x20 stream:   trace on|off  (live opcode stream — the VYBE_TRACE replacement)\n\
          \x20 chunk may be a name or a numeric index (see `chunks`)."

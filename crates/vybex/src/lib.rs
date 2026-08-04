@@ -5,6 +5,7 @@ include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 pub mod cli;
 pub mod dap;
 pub mod debug_repl;
+pub mod gui_capture;
 pub mod gui_launch;
 pub mod server;
 pub mod watch;

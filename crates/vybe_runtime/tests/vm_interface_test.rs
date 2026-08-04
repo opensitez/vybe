@@ -183,7 +183,8 @@ fn load_type_table_interface() {
             fields: vec!["name".into()],
             methods: vec![("speak".into(), 1), ("fetch".into(), 2)],
             is_interface: false,
-            implements: vec!["ianimal".into()],
+            // `ianimal` is entry 1 of this same table — the link is an index.
+            implements: vec![1],
             constructor_chunk: Some(3),
             field_descriptors: std::collections::HashMap::new() },
     ];

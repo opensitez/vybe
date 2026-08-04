@@ -19,6 +19,14 @@ pub fn imported_global_key(module: &str, name: &str) -> String {
     format!("{}::{}", module, name)
 }
 
+/// The namespace a module declares its HOST-provided global bindings under.
+///
+/// A free global — a name the module reads but never writes — is an import,
+/// and this is the module it comes from: the embedder. Distinct from
+/// [`STRING_CONSTANTS_MODULE`], which the js-string-builtins spec designates
+/// and whose field name IS its value.
+pub const HOST_GLOBALS_MODULE: &str = "vybe:globals";
+
 /// A host function import declaration — (module, name).
 /// Like WASM: (import "vybe:math" "floor" (func ...))
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,8 +132,11 @@ pub struct TypeEntry {
     pub methods: Vec<(String, usize)>,
     /// Whether this is an interface definition (not a concrete class).
     pub is_interface: bool,
-    /// Interface names this type implements.
-    pub implements: Vec<String>,
+    /// Interfaces this type implements — **1-based indices into this same
+    /// type table**, like `parent_index`. An interface defined elsewhere gets
+    /// a declaration here and binds at load, so the link is an index either
+    /// way and nothing resolves an interface by name at run time.
+    pub implements: Vec<u16>,
     /// Constructor chunk index (if any). Resolved during load_type_table.
     pub constructor_chunk: Option<usize>,
     /// Field property descriptors (WASM Annotations proposal @ecma262 namespace).

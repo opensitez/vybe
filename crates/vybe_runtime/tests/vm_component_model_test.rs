@@ -279,17 +279,6 @@ fn type_registry_import_merges_existing() {
 }
 
 #[test]
-fn type_registry_resolve_type_import() {
-    let mut reg = vybe_runtime::typedef::TypeRegistry::new();
-    let mut td = TypeDef::new("Button");
-    td.interface = Some("gui:controls".to_string());
-    reg.register(td);
-
-    let resolved = reg.resolve_type_import("gui:controls", "Button");
-    assert!(resolved.is_some());
-}
-
-#[test]
 fn type_registry_export_and_query() {
     let mut reg = vybe_runtime::typedef::TypeRegistry::new();
     let tid = reg.register(TypeDef::new("Form"));
