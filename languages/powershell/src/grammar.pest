@@ -18,7 +18,11 @@ program = { SOI ~ eat_separators ~ (statement ~ eat_separators)* ~ EOI }
 expr_entry = { SOI ~ expression ~ EOI }
 
 statement = _{
-    namespace_decl
+    labeled_stmt
+  | label_decl
+  | trap_stmt
+  | named_block
+  | namespace_decl
   | class_decl
   | function_decl
   | param_stmt
@@ -43,6 +47,17 @@ statement = _{
 }
 
 block = { "{" ~ eat_separators ~ (statement ~ eat_separators)* ~ "}" }
+
+// `:outer while (…) { … }` — a loop label, and `break outer` / `continue outer`
+// target it. A label may also stand alone on its own line.
+label_decl = @{ ":" ~ (ASCII_ALPHANUMERIC | "_")+ }
+labeled_stmt = { label_decl ~ eat_separators ~ (while_stmt | for_stmt | foreach_stmt | do_while_stmt | switch_stmt) }
+
+// `trap { … }` — a statement-level error handler.
+trap_stmt = { kw_trap ~ type_literal? ~ block }
+
+// `begin` / `process` / `end` / `clean` blocks of an advanced function.
+named_block = { (kw_begin | kw_process | kw_end | kw_clean) ~ block }
 
 ws = _{ " " | "\t" | "\r" }
 ws1 = _{ (" " | "\t" | "\r")+ }
@@ -76,6 +91,11 @@ kw_using     = @{ ^"using" ~ !ident_tail }
 kw_in        = @{ ^"in" ~ !ident_tail }
 kw_base      = @{ ^"base" ~ !ident_tail }
 kw_default   = @{ ^"default" ~ !ident_tail }
+kw_trap      = @{ ^"trap" ~ !ident_tail }
+kw_begin     = @{ ^"begin" ~ !ident_tail }
+kw_process   = @{ ^"process" ~ !ident_tail }
+kw_end       = @{ ^"end" ~ !ident_tail }
+kw_clean     = @{ ^"clean" ~ !ident_tail }
 ident_tail   = _{ ASCII_ALPHANUMERIC | "_" | "-" }
 
 IDENT = @{ (ASCII_ALPHANUMERIC | "_" | "-" )+ }
@@ -132,9 +152,21 @@ for_update = { simple_statement }
 simple_statement = _{ assignment_stmt | increment_stmt | expr_statement }
 expr_statement = { expression }
 
-assignment_stmt = { lvalue ~ ws* ~ assignment_op ~ ws* ~ rhs_value }
+assignment_stmt = { lvalue ~ ws* ~ assignment_op ~ eat_ws_nl ~ rhs_value }
 // RHS may be a pipeline: `$x = Get-Item | Select-Object -First 1`.
-rhs_value = _{ (expression ~ &(ws* ~ (terminator | EOI | "}"))) | command_pipeline }
+// It may also be a STATEMENT — `$r = switch ($v) { … }` and `$r = if (…) { … }`
+// are ordinary PowerShell, where the value is whatever the taken branch output.
+// Tried before `command_pipeline` so `switch` is not read as a command name.
+rhs_value = _{
+    (expression ~ &(ws* ~ (terminator | EOI | "}")))
+  | value_stmt
+  | command_pipeline
+}
+// Branching statements only. A LOOP used as a value collects EVERY iteration's
+// output into an array, which the lambda-and-return lowering cannot express —
+// listing loops here would make `$s = foreach (…) { … }` return null silently
+// instead of failing where the gap is.
+value_stmt = { switch_stmt | if_stmt | try_stmt }
 increment_stmt = { lvalue ~ ws* ~ increment_op }
 lvalue = { type_literal? ~ var_ref ~ (member_get | index_get)* }
 assignment_op = { "??=" | "||=" | "&&=" | "<<=" | ">>=" | "**=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "=" }
@@ -152,8 +184,9 @@ finally_clause = { kw_finally ~ block }
 
 return_stmt = { kw_return ~ rhs_value? }
 throw_stmt = { kw_throw ~ expression? }
-break_stmt = { kw_break ~ integer? }
-continue_stmt = { kw_continue ~ integer? }
+break_stmt = { kw_break ~ (integer | label_name)? }
+continue_stmt = { kw_continue ~ (integer | label_name)? }
+label_name = @{ (ASCII_ALPHANUMERIC | "_")+ }
 integer = @{ ASCII_DIGIT+ }
 
 using_stmt = { kw_using ~ using_target }
@@ -161,7 +194,7 @@ using_target = { kw_namespace ~ DOTTED_NAME | DOTTED_NAME | var_ref }
 
 // A bracketed run that ends the line is an attribute, not a cast: the `&`
 // lookahead is what keeps `[int]$x = 5` an assignment.
-expr_stmt = { &("(" | "$" | "[" | "@") ~ expression ~ &(ws* ~ (terminator | EOI | "}")) }
+expr_stmt = { &("(" | "$" | "[" | "@" | "\"" | "'" | "!" | "-" | ASCII_DIGIT) ~ expression ~ &(ws* ~ (terminator | EOI | "}")) }
 
 attribute_stmt = { type_literal+ ~ !(ws* ~ (var_ref | "::" | "." | "[" | "(" | "@" | "\"" | "'")) }
 
@@ -172,7 +205,7 @@ condition_expr = { "(" ~ eat_separators ~ paren_body ~ eat_separators ~ ")" }
 // the closing paren — if it stops short (a bare command head, or a `|`), fall
 // back to the command pipeline form.
 paren_body = _{ (expression ~ &(eat_separators ~ ")")) | command_pipeline }
-command_pipeline = { pipeline_head ~ (ws* ~ "|" ~ ws* ~ command_segment)* }
+command_pipeline = { pipeline_head ~ (ws* ~ "|" ~ eat_ws_nl ~ command_segment)* }
 pipeline_head = _{ (expression ~ &(ws* ~ ("|" | ")"))) | command_segment }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -187,8 +220,10 @@ pipeline_head = _{ (expression ~ &(ws* ~ ("|" | ")"))) | command_segment }
 // `.` (dot-source) and `&` (call) are invocation operators, not member access:
 // they are only these when followed by whitespace.
 invoke_op = @{ ("." | "&") ~ &(" " | "\t") }
-command_stmt = { pipeline_expr }
-pipeline_expr = { command_segment ~ (ws* ~ "|" ~ ws* ~ command_segment)* }
+command_stmt = { pipeline_expr ~ (ws* ~ chain_op ~ eat_ws_nl ~ pipeline_expr)* }
+chain_op = @{ "&&" | "||" }
+// A `|` may end a line and continue on the next.
+pipeline_expr = { command_segment ~ (ws* ~ "|" ~ eat_ws_nl ~ command_segment)* }
 // NOTE: no explicit separator between head and args — pest skips implicit
 // WHITESPACE between terms in a non-atomic rule, so an explicit `ws1` here
 // would never match (the whitespace is already consumed).
@@ -200,7 +235,11 @@ command_head = { !keyword ~ !(number ~ !command_name_char) ~ command_token }
 command_name_char = _{ ASCII_ALPHANUMERIC | "_" | "-" | "." | ":" | "\\" | "/" }
 command_arg = { command_param | command_token }
 command_param = @{ "-" ~ (ASCII_ALPHANUMERIC | "_")+ ~ (":" ~ (!(WHITESPACE | NEWLINE | ";" | "|") ~ ANY)+)? }
-command_token = { here_string_double | here_string_single | quoted_string | single_quoted_string | script_block | sub_expr | array_expr | hash_literal | paren_expr | type_literal | var_ref | bare_token }
+// A command ARGUMENT takes its whole postfix chain: `$b.Count`, `$x.F()`,
+// `[math]::Abs(1)`. Matching a bare `var_ref` here split `$b.Count` into
+// two arguments.
+command_value = { (var_ref | paren_expr | type_literal) ~ postfix_op* }
+command_token = { quoted_string | single_quoted_string | script_block | sub_expr | array_expr | hash_literal | splat_ref | command_value | bare_token }
 script_block = {
     "{" ~ (script_block | quoted_string | single_quoted_string | (!("{" | "}") ~ ANY))* ~ "}"
 }
@@ -224,7 +263,12 @@ ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 expression = { comma_expr }
 comma_expr = { ternary_expr ~ (ws* ~ "," ~ ws* ~ ternary_expr)* }
 
-ternary_expr = { logical_or ~ (ws* ~ "?" ~ ws* ~ ternary_expr ~ ws* ~ ":" ~ ws* ~ ternary_expr)? }
+ternary_expr = { coalesce ~ (ws* ~ "?" ~ !"?" ~ ws* ~ ternary_expr ~ ws* ~ ":" ~ ws* ~ ternary_expr)? }
+
+// `$a ?? $b` — null-coalescing. Parsed under the ternary so the `??` is taken
+// before the ternary's single `?` can claim its first character.
+coalesce    = { logical_or ~ (ws* ~ coalesce_op ~ ws* ~ logical_or)* }
+coalesce_op = @{ "??" }
 
 logical_or  = { logical_and ~ (ws* ~ or_op ~ ws* ~ logical_and)* }
 or_op       = @{ "-" ~ (^"or" | ^"xor") ~ !ident_char }
@@ -232,7 +276,25 @@ or_op       = @{ "-" ~ (^"or" | ^"xor") ~ !ident_char }
 logical_and = { comparison ~ (ws* ~ and_op ~ ws* ~ comparison)* }
 and_op      = @{ "-" ~ ^"and" ~ !ident_char }
 
-comparison  = { range_expr ~ (ws* ~ cmp_op ~ ws* ~ range_expr)* }
+// `-replace` / `-split` / `-join` take a comma-separated ARGUMENT LIST on the
+// right, the same way `-f` does: `$s -replace 'a', 'b'` is a two-argument
+// replace, not a comparison against the array `('b')`. They are split out from
+// `cmp_op` so only these three spellings admit the comma — `-eq` keeps its
+// single operand and nothing else in the chain changes shape.
+comparison  = {
+    format_expr ~ (ws* ~ (list_cmp_op ~ ws* ~ cmp_list | cmp_op ~ ws* ~ format_expr))*
+}
+list_cmp_op = @{ "-" ~ (^"c" | ^"i")? ~ (^"replace" | ^"split" | ^"join") ~ !ident_char }
+cmp_list    = { format_expr ~ (ws* ~ "," ~ ws* ~ format_expr)* }
+
+// `-f` is .NET composite formatting and its right operand is an ARRAY LITERAL:
+// `"{0} {1}" -f $a, $b` passes two format arguments, it does not build a list
+// whose first element is a formatted string. Comma binds tighter than `-f` in
+// PowerShell, so the argument list is spelled out here rather than inherited
+// from the top-level comma rule.
+format_expr = { range_expr ~ (ws* ~ format_op ~ ws* ~ format_args)? }
+format_op   = @{ "-" ~ ^"f" ~ !ident_char }
+format_args = { range_expr ~ (ws* ~ "," ~ ws* ~ range_expr)* }
 // The bare word must be tried BEFORE the case-modifier form: `e?` is greedy in
 // a PEG and does not backtrack, so `("c"|"i")? ~ cmp_word` would consume the
 // `i` of `-is` / `-in` and then fail to match a word.
@@ -240,10 +302,10 @@ cmp_op      = @{ "-" ~ (cmp_word | (^"c" | ^"i") ~ cmp_word) ~ !ident_char }
 // Longest-first: `like` before `le`, `notin` before `not`, `isnot` before `is`.
 cmp_word    = _{
     ^"notcontains" | ^"notlike" | ^"notmatch" | ^"notin"
-  | ^"contains" | ^"replace" | ^"split" | ^"join"
+  | ^"contains"
   | ^"like" | ^"match" | ^"isnot"
   | ^"band" | ^"bor" | ^"bxor" | ^"shl" | ^"shr"
-  | ^"eq" | ^"ne" | ^"ge" | ^"gt" | ^"le" | ^"lt" | ^"is" | ^"in" | ^"f"
+  | ^"eq" | ^"ne" | ^"ge" | ^"gt" | ^"le" | ^"lt" | ^"is" | ^"in"
 }
 
 range_expr  = { additive ~ (ws* ~ ".." ~ ws* ~ additive)? }
@@ -261,7 +323,9 @@ pow_op      = @{ "**" }
 
 unary       = { unary_op ~ ws* ~ unary | cast_expr | postfix }
 unary_op    = @{
-    "!"
+    "++"
+  | "--"
+  | "!"
   | "-" ~ (^"not" | ^"bnot" | ^"join" | ^"split") ~ !ident_char
   | "-" ~ !(ASCII_ALPHA | "-")
   | "+" ~ !"+"
@@ -285,6 +349,7 @@ primary = _{
   | paren_expr
   | array_expr
   | hash_literal
+  | splat_ref
   | script_block_expr
   | number
   | quoted_string
@@ -295,10 +360,14 @@ primary = _{
 }
 
 paren_expr   = { "(" ~ eat_separators ~ paren_body ~ eat_separators ~ ")" }
-// `$( … )` and `@( … )` hold statements, not just one expression.
-sub_expr     = { "$(" ~ eat_separators ~ (statement ~ eat_separators)* ~ ")" }
+// `$( … )` and `@( … )` hold statements, not just one expression — but a lone
+// expression is the common case and is NOT a `statement`: `expr_stmt` demands a
+// terminator, `EOI` or `}` after it and a `)` is none of those, so `$(1 + 2)`
+// failed the whole rule and fell through to a command call on `$`.
+sub_expr     = { "$(" ~ eat_separators ~ sub_body ~ eat_separators ~ ")" }
+sub_body     = _{ (expression ~ &(eat_separators ~ ")")) | (statement ~ eat_separators)* }
 // Elements may be commands too: `@(Get-ChildItem)`.
-array_expr   = { "@(" ~ eat_separators ~ (array_element ~ eat_separators ~ ("," ~ eat_separators ~ array_element ~ eat_separators)*)? ~ ")" }
+array_expr   = { "@(" ~ eat_separators ~ (array_element ~ eat_separators ~ (("," | ";") ~ eat_separators ~ array_element ~ eat_separators)*)? ~ ")" }
 array_element = _{ (ternary_expr ~ &(eat_separators ~ ("," | ")"))) | command_pipeline }
 hash_literal = { "@{" ~ eat_separators ~ (hash_entry ~ eat_separators ~ (("," | ";")? ~ eat_separators ~ hash_entry ~ eat_separators)*)? ~ ")"? ~ "}" }
 hash_entry   = { hash_key ~ ws* ~ "=" ~ ws* ~ ternary_expr }
@@ -306,7 +375,8 @@ hash_key     = { quoted_string | single_quoted_string | number | bare_word }
 script_block_expr = { "{" ~ eat_separators ~ (statement ~ eat_separators)* ~ "}" }
 
 number = @{
-    "0" ~ (^"x") ~ ASCII_HEX_DIGIT+
+    "0" ~ (^"b") ~ ASCII_BIN_DIGIT+
+  | "0" ~ (^"x") ~ ASCII_HEX_DIGIT+
   | ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ (^"kb" | ^"mb" | ^"gb" | ^"tb" | ^"pb" | ^"l" | ^"d")?
   | "." ~ ASCII_DIGIT+
 }
@@ -317,6 +387,8 @@ number = @{
 type_literal = @{ "[" ~ type_body ~ "]" }
 type_body    = _{ (!("[" | "]") ~ ANY | "[" ~ type_body ~ "]")* }
 bare_word    = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+// Splatting: `@args` spreads a collection/hashtable into a call's arguments.
+splat_ref    = @{ "@" ~ (ASCII_ALPHANUMERIC | "_")+ }
 
 here_string_double = @{ "@\"" ~ (!(NEWLINE ~ "\"@") ~ ANY)* ~ NEWLINE ~ "\"@" }
 here_string_single = @{ "@'" ~ (!(NEWLINE ~ "'@") ~ ANY)* ~ NEWLINE ~ "'@" }

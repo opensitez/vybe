@@ -32,6 +32,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::Unknown,
         body,
         imports: Vec::new(),
+        scheduling: Default::default(),
     })
 }
 
@@ -102,6 +103,19 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             Rule::break_stmt => return Ok(Some(parse_break_stmt(pair))),
             Rule::continue_stmt => return Ok(Some(parse_continue_stmt(pair))),
             Rule::param_stmt => return Ok(None),
+            // A bare label carries no runtime behaviour of its own.
+            Rule::label_decl => return Ok(None),
+            Rule::labeled_stmt => return parse_labeled_stmt(pair),
+            Rule::trap_stmt => return parse_trap_stmt(pair).map(Some),
+            Rule::named_block => {
+                // `begin`/`process`/`end` bodies run in declaration order.
+                let stmts = parse_block_statements(
+                    pair.into_inner()
+                        .find(|c| c.as_rule() == Rule::block)
+                        .ok_or_else(|| "named block without body".to_string())?,
+                )?;
+                return Ok(Some(Statement::new(StmtKind::Block(stmts))));
+            }
             // `[CmdletBinding()]`, `[OutputType(…)]` — declaration metadata that
             // carries no runtime behaviour.
             Rule::attribute_stmt => return Ok(None),
@@ -140,6 +154,57 @@ fn parse_statement_fallback(pair: Pair<Rule>) -> Result<Option<Statement>, Strin
     Ok(None)
 }
 
+/// `:outer while (…) { … }` — attach the label to the loop it introduces.
+fn parse_labeled_stmt(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
+    let mut label = None;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::label_decl => {
+                label = Some(child.as_str().trim_start_matches(':').to_string());
+            }
+            _ => {
+                let stmt = match parse_statement(child)? {
+                    Some(stmt) => stmt,
+                    None => continue,
+                };
+                return Ok(Some(match label.take() {
+                    Some(label) => Statement::new(StmtKind::Labeled {
+                        label,
+                        body: Box::new(stmt),
+                    }),
+                    None => stmt,
+                }));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// `trap { … }` is a statement-level handler for anything thrown after it, so
+/// it lowers to a try/catch wrapping the rest of the enclosing block. Here it
+/// becomes the catch half; the walker cannot see the remainder, so the body is
+/// emitted as a catch-all handler.
+fn parse_trap_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut body = Vec::new();
+    for child in pair.into_inner() {
+        if child.as_rule() == Rule::block {
+            body = parse_block_statements(child)?;
+        }
+    }
+    Ok(Statement::new(StmtKind::Try {
+        body: Vec::new(),
+        catches: vec![CatchClause {
+            types: Vec::new(),
+            var_name: Some("__trap".to_string()),
+            stack_var: None,
+            body,
+            when_clause: None,
+        }],
+        else_body: None,
+        finally: None,
+    }))
+}
+
 fn parse_namespace_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut name = String::new();
     let mut body = Vec::new();
@@ -170,7 +235,7 @@ fn parse_block_statements(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut name = String::new();
     let mut parents = Vec::new();
-    let mut interfaces = Vec::new();
+    let interfaces = Vec::new();
     let mut members = Vec::new();
 
     for child in pair.into_inner() {
@@ -443,7 +508,7 @@ fn parse_function_params(pair: Pair<Rule>) -> Vec<Param> {
             let is_optional = default.as_ref().is_some();
             out.push(Param {
                 name,
-                type_hint,
+                type_hint: type_hint.map(Into::into),
                 default,
                 pass_by: PassBy::Value,
                 is_rest: false,
@@ -696,6 +761,88 @@ fn statement_to_expression(stmt: Statement) -> Expression {
     }
 }
 
+/// A statement used where a VALUE is wanted: `$r = switch ($v) { 1 { 'one' } }`.
+/// PowerShell hands back whatever the taken branch output, so the statement
+/// becomes the body of a zero-argument lambda that is called immediately and
+/// every branch's trailing expression becomes a `return`. Nothing new is
+/// introduced — `Lambda` + `Call` are shared nodes the compiler already emits.
+fn statement_value_expr(stmt: Statement) -> Expression {
+    let body = return_last_of_branches(vec![stmt]);
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Lambda {
+            params: Vec::new(),
+            body: LambdaBody::Block(body),
+            is_async: false,
+            captures: Vec::new(),
+        })),
+        args: Vec::new(),
+        optional: false,
+    })
+}
+
+/// `implicit_return` reaching INTO branches: the value of an `if` / `switch` /
+/// `try` is the last expression of whichever branch ran, so each branch body
+/// needs its own trailing `return`, not just the outermost statement list.
+fn return_last_of_branches(body: Vec<Statement>) -> Vec<Statement> {
+    let mut body = implicit_return(body);
+    let Some(last) = body.pop() else {
+        return body;
+    };
+    let rewritten = match last.kind {
+        StmtKind::If {
+            cond,
+            then_body,
+            elifs,
+            else_body,
+        } => Statement::new(StmtKind::If {
+            cond,
+            then_body: return_last_of_branches(then_body),
+            elifs: elifs
+                .into_iter()
+                .map(|(c, b)| (c, return_last_of_branches(b)))
+                .collect(),
+            else_body: else_body.map(return_last_of_branches),
+        }),
+        StmtKind::Switch {
+            expr,
+            cases,
+            default,
+        } => Statement::new(StmtKind::Switch {
+            expr,
+            cases: cases
+                .into_iter()
+                .map(|c| SwitchCase {
+                    conditions: c.conditions,
+                    body: return_last_of_branches(c.body),
+                })
+                .collect(),
+            default: default.map(return_last_of_branches),
+        }),
+        StmtKind::Try {
+            body: try_body,
+            catches,
+            else_body,
+            finally,
+        } => Statement::new(StmtKind::Try {
+            body: return_last_of_branches(try_body),
+            catches: catches
+                .into_iter()
+                .map(|mut c| {
+                    c.body = return_last_of_branches(c.body);
+                    c
+                })
+                .collect(),
+            else_body: else_body.map(return_last_of_branches),
+            // `finally` runs for its effects; its last expression is not the
+            // statement's value.
+            finally,
+        }),
+        _ => last,
+    };
+    body.push(rewritten);
+    body
+}
+
 fn compound_to_binop(op: CompoundOp) -> BinOp {
     match op {
         CompoundOp::Add => BinOp::Add,
@@ -906,6 +1053,14 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
             Rule::expression | Rule::command_pipeline => {
                 rhs = Some(walk_expr(child));
             }
+            // `$r = switch (…) { … }` — the RHS is a statement used as a value.
+            Rule::value_stmt => {
+                rhs = child
+                    .into_inner()
+                    .next()
+                    .and_then(|s| parse_statement(s).ok().flatten())
+                    .map(statement_value_expr);
+            }
             _ => {}
         }
     }
@@ -1076,12 +1231,12 @@ fn walk_lvalue(pair: Pair<Rule>) -> Expression {
 fn parse_command_line(text: &str) -> Option<Expression> {
     let mut segment_iter = split_command_segments(text).into_iter();
     let first_segment = segment_iter.next()?;
-    let mut first_tokens = split_command_tokens(&first_segment);
+    let first_tokens = split_command_tokens(&first_segment);
     if first_tokens.is_empty() {
         return None;
     }
 
-    let (head, mut args) = parse_command_parts(&first_tokens)?;
+    let (head, args) = parse_command_parts(&first_tokens)?;
     let mut expr = Expression::new(ExprKind::Call {
         callee: Box::new(head),
         args,
@@ -1125,12 +1280,12 @@ fn parse_pipeline(pair: Pair<Rule>) -> Option<Expression> {
 
     let mut segments = segments.into_iter();
     let first = segments.next()?;
-    let (head, mut args) = parse_command_segment(first)?;
-    let mut expr = Expression::new(ExprKind::Call {
-        callee: Box::new(head),
-        args,
-        optional: false,
-    });
+    let (head, args) = parse_command_segment(first)?;
+    // Through `build_command_call`, not a bare `Call`: a cmdlet reached as a
+    // STATEMENT must get the same `normalize_cmdlet` rewrite it gets as an
+    // expression, or `Set-Variable -Name x -Value 1` compiles to a call to a
+    // function that was never defined.
+    let mut expr = build_command_call(head, args);
 
     for segment in segments {
         let (next, mut next_args) = parse_command_segment(segment)?;
@@ -1148,11 +1303,22 @@ fn parse_pipeline(pair: Pair<Rule>) -> Option<Expression> {
 
 fn parse_command_tokens_as_expr(tokens: &[String]) -> Option<Expression> {
     let (callee, args) = parse_command_parts(tokens)?;
-    Some(Expression::new(ExprKind::Call {
+    Some(build_command_call(callee, args))
+}
+
+/// Build the call for a command invocation, giving `normalize_cmdlet` first
+/// refusal so .NET-shaped cmdlets never need a builtin of their own.
+fn build_command_call(callee: Expression, args: Vec<Argument>) -> Expression {
+    if let ExprKind::Ident(name) = &callee.kind {
+        if let Some(expr) = normalize_cmdlet(name, &args) {
+            return expr;
+        }
+    }
+    Expression::new(ExprKind::Call {
         callee: Box::new(callee),
         args,
         optional: false,
-    }))
+    })
 }
 
 fn parse_command_segment(pair: Pair<Rule>) -> Option<(Expression, Vec<Argument>)> {
@@ -1433,6 +1599,7 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
         }
 
         Rule::comma_expr => walk_comma_expr(pair),
+        Rule::coalesce => walk_binary_chain(pair),
         Rule::ternary_expr => walk_ternary(pair),
 
         Rule::logical_or
@@ -1442,6 +1609,11 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
         | Rule::multiplicative
         | Rule::power => walk_binary_chain(pair),
 
+        // The argument list of `-replace` / `-split` / `-join`. Reuses the comma
+        // walk so a single operand stays scalar and several become an `Array`
+        // that `spread_operands` unpacks back into arguments.
+        Rule::cmp_list => walk_comma_expr(pair),
+        Rule::format_expr => walk_format(pair),
         Rule::range_expr => walk_range(pair),
         Rule::unary => walk_unary(pair),
         Rule::cast_expr => walk_cast(pair),
@@ -1467,6 +1639,8 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
         Rule::var_ref => walk_var_ref(pair.as_str()),
         Rule::type_literal => type_literal_expr(type_literal_name(pair.as_str())),
         Rule::bare_word => walk_bare_word(pair.as_str()),
+        // `@args` reads the variable; the SPREAD is applied by the call site.
+        Rule::splat_ref => Expression::ident(pair.as_str().trim_start_matches('@')),
 
         _ => first_inner_expr(pair),
     }
@@ -1536,6 +1710,15 @@ fn walk_ternary(pair: Pair<Rule>) -> Expression {
 }
 
 /// Left-associative fold over `operand (op operand)*`.
+/// The right operand of a list-taking operator, as the argument list it stands
+/// for. A single operand stays a single argument.
+fn spread_operands(right: Expression) -> Vec<Expression> {
+    match right.kind {
+        ExprKind::Array(elems) => elems.into_iter().map(|e| e.value).collect(),
+        _ => vec![right],
+    }
+}
+
 fn walk_binary_chain(pair: Pair<Rule>) -> Expression {
     let mut inner = pair.into_inner();
     let mut left = match inner.next() {
@@ -1548,6 +1731,43 @@ fn walk_binary_chain(pair: Pair<Rule>) -> Expression {
         left = build_binary(op_pair.as_str(), left, right);
     }
     left
+}
+
+/// `"{0} {1}" -f $a, $b` — .NET composite formatting. Lowered to
+/// `String.Format(fmt, …)` so the shared dotnet surface owns the format
+/// pictures (`{0:N2}`, `{0,-8}`) rather than this walker.
+fn walk_format(pair: Pair<Rule>) -> Expression {
+    let mut inner = pair.into_inner();
+    let Some(head) = inner.next() else {
+        return Expression::null();
+    };
+    let fmt = walk_expr(head);
+
+    let mut args = vec![Argument::positional(fmt)];
+    let mut saw_op = false;
+    for child in inner {
+        match child.as_rule() {
+            Rule::format_op => saw_op = true,
+            Rule::format_args => {
+                args.extend(child.into_inner().map(|a| Argument::positional(walk_expr(a))));
+            }
+            _ => {}
+        }
+    }
+
+    if !saw_op {
+        return args.remove(0).value;
+    }
+
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident("String")),
+            field: "Format".to_string(),
+            null_safe: false,
+        })),
+        args,
+        optional: false,
+    })
 }
 
 fn walk_range(pair: Pair<Rule>) -> Expression {
@@ -1585,7 +1805,20 @@ fn walk_unary(pair: Pair<Rule>) -> Expression {
         _ => {}
     }
 
+    // Fold a negated numeric literal into the literal itself, so `$a[-1]` hands
+    // the shared indexing a real negative constant rather than a runtime
+    // `Unary{Neg, 1}` it cannot reason about.
+    if op_text == "-" {
+        match &operand.kind {
+            ExprKind::Lit(Literal::Int(n)) => return Expression::int(-n),
+            ExprKind::Lit(Literal::Float(f)) => return Expression::float(-f),
+            _ => {}
+        }
+    }
+
     let op = match op_text.as_str() {
+        "++" => UnaryOp::PreInc,
+        "--" => UnaryOp::PreDec,
         "!" | "-not" => UnaryOp::Not,
         "-bnot" => UnaryOp::BitNot,
         "+" => UnaryOp::Pos,
@@ -1604,6 +1837,16 @@ fn walk_cast(pair: Pair<Rule>) -> Expression {
         .map(|p| type_literal_name(p.as_str()).to_string())
         .unwrap_or_default();
     let expr = inner.next().map(walk_expr).unwrap_or_else(Expression::null);
+
+    // `[bool]$x` is a TRUTHINESS conversion, and the shared `Cast` lowering has
+    // no bool arm — it would hand the value straight back, so `[bool]0` stayed
+    // `0`. `!!$x` reaches the profile's own truthiness rule and yields a real
+    // boolean, so the conversion is expressed with nodes the compiler already
+    // owns rather than a new cast target.
+    if matches!(type_name.to_lowercase().as_str(), "bool" | "boolean" | "system.boolean") {
+        return negate(negate(expr));
+    }
+
     Expression::new(ExprKind::Cast {
         expr: Box::new(expr),
         type_name,
@@ -1785,14 +2028,146 @@ fn pipeline_cmdlet_method(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Cmdlets that are really .NET calls in disguise. Rewriting them here routes
+/// them through the dotnet tree-mount that already resolves `System.*` — no
+/// cmdlet builtins, no host functions, no emitter arm.
+///
+/// `New-Object` is construction; the file cmdlets are `System.IO.File` statics.
+fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
+    let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
+    let named = |key: &str| {
+        args.iter()
+            .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+            .map(|a| a.value.clone())
+    };
+
+    match name.to_lowercase().as_str() {
+        // `New-Object System.Text.StringBuilder` / `-TypeName … -ArgumentList …`
+        "new-object" => {
+            let type_expr = named("TypeName").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let type_name = literal_text(&type_expr)?;
+
+            let mut ctor_args: Vec<Argument> = Vec::new();
+            if let Some(list) = named("ArgumentList") {
+                match list.kind {
+                    ExprKind::Array(elems) => ctor_args.extend(
+                        elems.into_iter().map(|e| Argument::positional(e.value)),
+                    ),
+                    _ => ctor_args.push(Argument::positional(list)),
+                }
+            } else {
+                for a in positional.iter().skip(1) {
+                    ctor_args.push((*a).clone());
+                }
+            }
+
+            Some(Expression::new(ExprKind::New {
+                class: Box::new(type_literal_expr(&type_name)),
+                args: ctor_args,
+            }))
+        }
+
+        "test-path" => Some(dotnet_static_call(
+            "System.IO.File",
+            "Exists",
+            vec![named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?],
+        )),
+        "get-content" => Some(dotnet_static_call(
+            "System.IO.File",
+            "ReadAllText",
+            vec![named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?],
+        )),
+        "set-content" => {
+            let path = named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let value = named("Value").or_else(|| positional.get(1).map(|a| a.value.clone()))?;
+            Some(dotnet_static_call("System.IO.File", "WriteAllText", vec![path, value]))
+        }
+        "remove-item" => Some(dotnet_static_call(
+            "System.IO.File",
+            "Delete",
+            vec![named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?],
+        )),
+        "join-path" => {
+            let head = named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let tail =
+                named("ChildPath").or_else(|| positional.get(1).map(|a| a.value.clone()))?;
+            Some(dotnet_static_call("System.IO.Path", "Combine", vec![head, tail]))
+        }
+
+        // `Set-Variable -Name x -Value 1` IS an assignment to `$x` — the same
+        // storage `$x = 1` writes. Normalizing it here keeps one mechanism.
+        // `-Option ReadOnly|Constant` is deliberately NOT modelled: enforcing it
+        // would mean statically tracking which names were declared read-only and
+        // compiling a later write to `throw`, which is test-shaped rather than a
+        // semantic the compiler can honestly claim.
+        "set-variable" => {
+            let name_expr =
+                named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let target = literal_text(&name_expr)?;
+            let value = named("Value")
+                .or_else(|| positional.get(1).map(|a| a.value.clone()))
+                .unwrap_or_else(Expression::null);
+            Some(Expression::new(ExprKind::Assign {
+                target: Box::new(Expression::ident(scope_qualified_name(&target))),
+                value: Box::new(value),
+            }))
+        }
+        "get-variable" => {
+            let name_expr =
+                named("Name").or_else(|| positional.first().map(|a| a.value.clone()))?;
+            let target = literal_text(&name_expr)?;
+            Some(Expression::ident(scope_qualified_name(&target)))
+        }
+
+        // Sleep takes seconds by default; the shared threading primitive is in
+        // milliseconds, which is also what `-Milliseconds` already supplies.
+        "start-sleep" => {
+            let ms = match named("Milliseconds") {
+                Some(v) => v,
+                None => {
+                    let secs = named("Seconds")
+                        .or_else(|| positional.first().map(|a| a.value.clone()))?;
+                    Expression::new(ExprKind::Binary {
+                        op: BinOp::Mul,
+                        left: Box::new(secs),
+                        right: Box::new(Expression::int(1000)),
+                    })
+                }
+            };
+            Some(dotnet_static_call("System.Threading.Thread", "Sleep", vec![ms]))
+        }
+
+        _ => None,
+    }
+}
+
+/// `[System.IO.File]::Method(args)` as a member chain the resolver understands.
+fn dotnet_static_call(type_name: &str, method: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(type_literal_expr(type_name)),
+            field: method.to_string(),
+            null_safe: false,
+        })),
+        args: args.into_iter().map(Argument::positional).collect(),
+        optional: false,
+    })
+}
+
+/// The text of a literal string / identifier argument, for cmdlet arguments
+/// that name a TYPE rather than carry a value.
+fn literal_text(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Lit(Literal::Str(s)) => Some(s.clone()),
+        ExprKind::Ident(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
 /// A bare command invocation used where an expression is expected: `(hi 'PASS')`.
 fn walk_command_segment_expr(pair: Pair<Rule>) -> Expression {
     match parse_command_segment(pair) {
-        Some((callee, args)) => Expression::new(ExprKind::Call {
-            callee: Box::new(callee),
-            args,
-            optional: false,
-        }),
+        Some((callee, args)) => build_command_call(callee, args),
         None => Expression::null(),
     }
 }
@@ -1847,6 +2222,14 @@ fn hash_key_text(pair: Pair<Rule>) -> String {
 
 /// `$( … )` — a statement list whose value is the last expression.
 fn walk_sub_expr(pair: Pair<Rule>) -> Expression {
+    // `sub_body` is silent, so a lone-expression `$( … )` arrives as a single
+    // `expression` child and the statement path never sees it.
+    let mut inner = pair.clone().into_inner();
+    if let (Some(only), None) = (inner.next(), inner.next()) {
+        if only.as_rule() == Rule::expression {
+            return walk_expr(only);
+        }
+    }
     let stmts = collect_statements(pair);
     last_expression_of(stmts)
 }
@@ -1931,6 +2314,12 @@ fn walk_number(raw: &str) -> Expression {
 
     if let Some(hex) = lower.strip_prefix("0x") {
         if let Ok(v) = i64::from_str_radix(hex, 16) {
+            return Expression::int(v);
+        }
+    }
+
+    if let Some(bin) = lower.strip_prefix("0b") {
+        if let Ok(v) = i64::from_str_radix(bin, 2) {
             return Expression::int(v);
         }
     }
@@ -2071,9 +2460,37 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
     // `-contains` / `-notcontains` take the collection on the LEFT, the inverse
     // of `-in` / `-notin`. Swapping the operands is what makes both spellings
     // reach the same shared `In` lowering.
+    // `-notin` / `-notcontains` become `Not(In(…))` rather than `NotIn`: the
+    // negation then goes through the same materialization the other comparison
+    // operators use, so the result is the boolean `$false`, not `1`.
+    // `-is` / `-isnot` are TYPE TESTS. `BinOp::Is` is reference equality
+    // (Python's `is`), so it answered `$x -is [int]` by comparing 42 to the
+    // resolved type — false for every operand, primitive or class alike.
+    if word == "is" || word == "isnot" {
+        let test = type_test_expr(left, &right);
+        return if word == "isnot" { negate(test) } else { test };
+    }
+
+    match word.as_str() {
+        "notcontains" => {
+            return negate(Expression::new(ExprKind::Binary {
+                op: BinOp::In,
+                left: Box::new(right),
+                right: Box::new(left),
+            }))
+        }
+        "notin" => {
+            return negate(Expression::new(ExprKind::Binary {
+                op: BinOp::In,
+                left: Box::new(left),
+                right: Box::new(right),
+            }))
+        }
+        _ => {}
+    }
+
     let (op, left, right) = match word.as_str() {
         "contains" => (BinOp::In, right, left),
-        "notcontains" => (BinOp::NotIn, right, left),
         other => {
             let op = match other {
                 "+" => BinOp::Add,
@@ -2101,14 +2518,19 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
                 "bxor" => BinOp::BitXor,
                 "shl" => BinOp::Shl,
                 "shr" => BinOp::Shr,
-                "join" => {
-                    return method_call_expr(left, "join", vec![right]);
-                }
+                "??" => BinOp::NullCoalesce,
+                // `-split` / `-replace` / `-join` carry an argument LIST, which
+                // arrives here as an `Array` when the source spelled more than
+                // one. Spread it: `$s -replace 'a', 'b'` is `replace(a, b)`,
+                // not `replace(['a','b'])`.
                 "split" => {
-                    return method_call_expr(left, "split", vec![right]);
+                    return method_call_expr(left, "split", spread_operands(right));
                 }
                 "replace" => {
-                    return method_call_expr(left, "replace", vec![right]);
+                    return method_call_expr(left, "replace", spread_operands(right));
+                }
+                "join" => {
+                    return method_call_expr(left, "join", spread_operands(right));
                 }
                 "notlike" | "notmatch" => {
                     return Expression::new(ExprKind::Unary {
@@ -2120,7 +2542,12 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
                         })),
                     });
                 }
-                _ => BinOp::Eq,
+                // Unreachable for a valid operator: every spelling `cmp_word`
+                // admits is mapped above. Keeping `Eq` here would turn a future
+                // grammar addition into a silently wrong comparison, so fall
+                // back to concatenation, which shows up as a wrong VALUE rather
+                // than a plausible-looking boolean.
+                _ => BinOp::Add,
             };
             (op, left, right)
         }
@@ -2131,6 +2558,65 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
         left: Box::new(left),
         right: Box::new(right),
     })
+}
+
+fn negate(expr: Expression) -> Expression {
+    Expression::new(ExprKind::Unary {
+        op: UnaryOp::Not,
+        expr: Box::new(expr),
+    })
+}
+
+/// `$x -is [T]`. A BUILT-IN spelling is a value-kind question and answers
+/// through `typeof`; anything else names a type and answers through
+/// `instanceof`. The two cannot share a mechanism: `42` has no prototype chain
+/// to walk, and a user class has no `typeof` tag of its own.
+fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
+    let name = dotted_name_of(type_expr).unwrap_or_default();
+    let leaf = name.rsplit('.').next().unwrap_or(&name).to_lowercase();
+
+    let tag = match leaf.trim_end_matches("[]") {
+        "int" | "int16" | "int32" | "int64" | "long" | "short" | "byte" | "sbyte" | "uint"
+        | "uint16" | "uint32" | "uint64" | "ushort" | "double" | "single" | "float"
+        | "decimal" => Some("number"),
+        "string" | "char" => Some("string"),
+        "bool" | "boolean" => Some("boolean"),
+        _ => None,
+    };
+
+    if let Some(tag) = tag {
+        return Expression::new(ExprKind::Binary {
+            op: BinOp::StrictEq,
+            left: Box::new(Expression::new(ExprKind::TypeOf(Box::new(value)))),
+            right: Box::new(Expression::string(tag)),
+        });
+    }
+
+    // `[array]` / `[hashtable]` are PowerShell spellings for the runtime's own
+    // Array and Map; every other name is taken as written so a user class
+    // reaches its own prototype.
+    let ctor = match leaf.as_str() {
+        "array" => "Array".to_string(),
+        "hashtable" | "dictionary" | "ordered" => "Map".to_string(),
+        _ => name,
+    };
+
+    Expression::new(ExprKind::Binary {
+        op: BinOp::InstanceOf,
+        left: Box::new(value),
+        right: Box::new(type_literal_expr(&ctor)),
+    })
+}
+
+/// The dotted name a type-literal member chain spells, if it is one.
+fn dotted_name_of(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Member { object, field, .. } => {
+            Some(format!("{}.{}", dotted_name_of(object)?, field))
+        }
+        _ => None,
+    }
 }
 
 fn is_comparison_word(word: &str) -> bool {
@@ -2250,10 +2736,11 @@ fn parse_double_quoted_string(text: &str) -> Expression {
     match parts.as_slice() {
         [] => Expression::string(""),
         [InterpolPart::Text(s)] => Expression::string(s),
-        [InterpolPart::Expr(expr)] => expr.clone(),
-        _ => {
-            Expression::new(ExprKind::Interpolation(parts))
-        }
+        // A lone `"$x"` is NOT `$x` — it is `$x` converted to a string. Handing
+        // the expression back unwrapped made `"$n" -eq '5'` compare a number to
+        // a string and `"$arr"` compare an array to one. One part still goes
+        // through `Interpolation` so the string conversion happens.
+        _ => Expression::new(ExprKind::Interpolation(parts)),
     }
 }
 

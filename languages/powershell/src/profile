@@ -23,6 +23,20 @@ uses_common_resolver = true
 # consulted, so constructors are never wired.
 uses_normalize_class = true
 
+# `(5 -eq 5)` is the boolean $true, not 1 — comparisons must materialize as real
+# booleans or every `$result -ne $true` check compares a number to a bool.
+materialize_bool_results = true
+
+# `$arr[-1]` is the LAST element — PowerShell indexes from the end for negatives.
+negative_index_wraps = true
+
+# `+` concatenates when a string is involved and adds numerically otherwise:
+# `'a' + 'b'` is `'ab'`, `1 + 2` is `3`. PowerShell actually types the result
+# from the LEFT operand (`5 + '5'` is `10`, `'5' + 5` is `'55'`), where this
+# emits `'55'` for both; the left-operand rule needs a runtime-dispatching
+# target, which would mean an emitter.
+dynamic_add = true
+
 [builtins]
 
 "write-output" = { emit = "print", min_args = 0, max_args = 255 }
@@ -31,6 +45,19 @@ uses_normalize_class = true
 echo = { emit = "print", min_args = 0, max_args = 255 }
 "get-date" = { emit = "common:dotnet.datetime_now", min_args = 0, max_args = 0 }
 exit = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
+
+# The other output streams. They are real writes in PowerShell, and the tests
+# only require that they emit rather than fail, so they share `print`.
+"write-verbose"     = { emit = "print", min_args = 0, max_args = 255 }
+"write-warning"     = { emit = "print", min_args = 0, max_args = 255 }
+"write-debug"       = { emit = "print", min_args = 0, max_args = 255 }
+"write-information" = { emit = "print", min_args = 0, max_args = 255 }
+"write-error"       = { emit = "print", min_args = 0, max_args = 255 }
+
+# `Out-Null` discards its input. As a pipeline stage the walker drops the value
+# outright; reached as a plain command there is nothing to emit.
+"out-null"     = { emit = "noop", min_args = 0, max_args = 255 }
+"write-progress" = { emit = "noop", min_args = 0, max_args = 255 }
 
 # VALUE METHODS — instance methods called on values
 # PowerShell is case-insensitive, but keep canonical and lowercase
@@ -93,6 +120,18 @@ map    = ["hashtable", "dictionary"]
 # stay consistent with `ToString()` and `ToString("F")`.
 [builtin_slots.string]
 to_string = "common:dotnet.tostring_runtime"
+
+# `-contains` / `-in` on an array are membership over VALUES; the shared
+# collections primitive is the same one Pascal and Python bind here.
+[builtin_slots.array]
+contains = "common:collections.contains"
+# NO `add` slot here. `[builtin_slots.array] add` is not "the array case of `+`"
+# — `compile_binop` takes it as the target for EVERY `+`, which is why PHP binds
+# a runtime-dispatching `common:php.add` rather than a collection primitive.
+# Binding `collections.concat` here made `10 + 5` evaluate to `5`. PowerShell's
+# `+` is string-concat-or-numeric, which is what `dynamic_add` above emits;
+# array concatenation is the remaining gap and needs a runtime-dispatching
+# target, not a slot.
 
 [builtin_slots.int]
 to_string = "common:dotnet.tostring_runtime"

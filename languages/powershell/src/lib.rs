@@ -47,6 +47,7 @@ pub fn register() {
         emit_dispatch: None,
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: None,
+        expand_source: None,
     });
 }
 
