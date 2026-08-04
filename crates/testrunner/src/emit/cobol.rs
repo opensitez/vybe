@@ -43,6 +43,19 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
 
     let displays = find_displays(&case.source);
     if let Some(reason) = unpairable(&case.source, &displays, expected) {
+        // RUNTIME pairing: an expected TABLE plus a counter, checked where each
+        // DISPLAY stands. The counter advances as the program runs, so a
+        // DISPLAY inside a PERFORM pairs correctly and a conditional branch
+        // contributes exactly the line it actually produced — 165 loop cases
+        // and 116 count mismatches that static pairing can only refuse.
+        if let Some((body, table)) = runtime_paired(&case.source, &displays, expected, &reason) {
+            return Emitted {
+                text: format!(
+                    "{header}{}\n",
+                    assemble_with(&body, case.prelude.as_deref(), true, &table)
+                ),
+                pairing: Pairing::Direct };
+        }
         return Emitted {
             text: format!("{header}{}\n", assemble(&case.source, case.prelude.as_deref(), false)),
             pairing: Pairing::Unpairable(reason) };
@@ -82,6 +95,67 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
         pairing: Pairing::Direct }
 }
 
+/// Build the runtime-paired body plus the WORKING-STORAGE table it needs.
+///
+/// Only the reasons that are about PAIRING can be rescued this way. A DISPLAY
+/// inside an `ON SIZE ERROR`-style clause is not a complete statement, so no
+/// check can be appended after it however the lines are matched up.
+fn runtime_paired(
+    src: &str,
+    displays: &[Display],
+    expected: &[String],
+    reason: &str,
+) -> Option<(String, String)> {
+    if displays.is_empty() || expected.is_empty() || reason.contains("clause") {
+        return None;
+    }
+    let n = expected.len();
+    // An EVALUATE on the counter, NOT a table. `01 WS-VYBE-W` + FILLER VALUEs +
+    // `REDEFINES … OCCURS` is the textbook COBOL expected-value table, and it
+    // does not work under Vybe: the subscripted read came back unequal to a
+    // literal it held verbatim (measured — `got [02]` against an expectation of
+    // exactly "02"). EVALUATE needs no REDEFINES, no OCCURS and no subscript,
+    // only the literal comparison the static path already proves out.
+    let mut table = String::from("01 WS-VYBE-I PIC 9(4) VALUE 0.");
+    if false {
+        table.clear();
+    }
+
+    let mut body = src.to_string();
+    for (_, end, operands) in displays.iter().rev() {
+        let sources = operands
+            .iter()
+            .map(|o| format!("{o} DELIMITED SIZE"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut arms = String::new();
+        for (i, want) in expected.iter().enumerate() {
+            let want = want.replace('"', "'");
+            arms.push_str(&format!(
+                "\n        WHEN {}\n            IF WS-VYBE-L NOT = \"{want}\"\n                \
+                 DISPLAY \"FAIL at {} want [{want}] got [\" WS-VYBE-L \"]\"\n                \
+                 MOVE 1 TO RETURN-CODE\n                RAISE EXCEPTION EC-PROGRAM\n            END-IF",
+                i + 1,
+                i + 1
+            ));
+        }
+        let check = format!(
+            "\n    ADD 1 TO WS-VYBE-I\n    MOVE SPACES TO WS-VYBE-L\n    \
+             STRING {sources} INTO WS-VYBE-L\n    EVALUATE WS-VYBE-I{arms}\n        \
+             WHEN OTHER\n            DISPLAY \"FAIL: more than {n} line(s)\"\n            \
+             MOVE 1 TO RETURN-CODE\n            RAISE EXCEPTION EC-PROGRAM\n    END-EVALUATE."
+        );
+        body.insert_str(*end, &check);
+    }
+    // Too FEW lines is a failure too, and only the end can see it.
+    body.push_str(&format!(
+        "\n    IF WS-VYBE-I NOT = {n}\n        \
+         DISPLAY \"FAIL: \" WS-VYBE-I \" line(s), wanted {n}\"\n        \
+         MOVE 1 TO RETURN-CODE\n        RAISE EXCEPTION EC-PROGRAM\n    END-IF."
+    ));
+    Some((body, table))
+}
+
 /// Split a DISPLAY operand list on whitespace OUTSIDE quotes — a literal may
 /// contain spaces (`DISPLAY "lit " WS-A`).
 fn split_operands(text: &str) -> Vec<String> {
@@ -116,13 +190,42 @@ fn split_operands(text: &str) -> Vec<String> {
 
 /// Rebuild what the test's `p(data, body)` helper produced.
 fn assemble(body: &str, prelude: Option<&str>, needs_scratch: bool) -> String {
+    assemble_with(body, prelude, needs_scratch, "")
+}
+
+fn assemble_with(
+    body: &str,
+    prelude: Option<&str>,
+    needs_scratch: bool,
+    extra_data: &str,
+) -> String {
     // Some cases carry a COMPLETE program rather than a PROCEDURE DIVISION
     // fragment. Wrapping one again nests it inside `PROGRAM-ID. T`, which cobc
     // rejects three different ways: "redefinition of program ID", "multiple
     // PROGRAM-ID's without matching END PROGRAM", and "CONFIGURATION SECTION
     // not allowed in nested programs".
     if body.to_ascii_uppercase().contains("IDENTIFICATION DIVISION") {
-        return format!("{}\n", body.trim_end());
+        // A COMPLETE program is not re-wrapped, so the scratch field and the
+        // expected table have to be injected into ITS working storage —
+        // returning the body untouched left `WS-VYBE-E` undeclared and every
+        // runtime-paired case failed to compile.
+        let mut decls = String::new();
+        if needs_scratch {
+            decls.push_str("\n01 WS-VYBE-L PIC X(256).");
+        }
+        if !extra_data.is_empty() {
+            decls.push('\n');
+            decls.push_str(extra_data);
+        }
+        if decls.is_empty() {
+            return format!("{}\n", body.trim_end());
+        }
+        let upper = body.to_ascii_uppercase();
+        let Some(at) = upper.find("WORKING-STORAGE SECTION.") else {
+            return format!("{}\n", body.trim_end());
+        };
+        let at = at + "WORKING-STORAGE SECTION.".len();
+        return format!("{}{decls}{}\n", &body[..at], body[at..].trim_end());
     }
     let mut data = prelude.map(str::trim).unwrap_or("").to_string();
     if needs_scratch {
@@ -133,6 +236,12 @@ fn assemble(body: &str, prelude: Option<&str>, needs_scratch: bool) -> String {
             data.push('\n');
         }
         data.push_str("01 WS-VYBE-L PIC X(256).");
+    }
+    if !extra_data.is_empty() {
+        if !data.is_empty() {
+            data.push('\n');
+        }
+        data.push_str(extra_data);
     }
     let data = data.as_str();
     // Byte-for-byte the layout the test's own `p(data, body)` produced —

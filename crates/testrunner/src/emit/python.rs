@@ -1,9 +1,17 @@
 //! Python emitter: one extracted case → a standalone `.py` test.
 //!
-//! `print(a, b)` composes one line from its arguments joined by a space, so it
-//! pairs the same way `fmt.Println` and `console.log` do. Sources are already
-//! multi-line and indentation-sensitive, so nothing is reflowed — each print is
-//! replaced in place, preserving its column.
+//! **Output is COLLECTED, not paired.** Every `print(a, b)` becomes
+//! `__p(__line(a, b))`, appending to a buffer the harness compares once at the
+//! end of the file. Pairing the i-th print with the i-th expected line cannot
+//! assert anything about a loop — 936 of Python's cases — nor about an
+//! `if`/`else` where only one branch prints, which is most of the 209 cases
+//! whose print count simply differed from the line count.
+//!
+//! `print(..., end='')` becomes `__pr`, which appends without the newline, so
+//! prints sharing a line are ordinary now too.
+//!
+//! Sources are already multi-line and indentation-sensitive, so nothing is
+//! reflowed — each print is replaced in place, preserving its column.
 
 use crate::emit::go::Pairing;
 use crate::extract::Case;
@@ -31,51 +39,100 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     };
 
     let prints = find_prints(&case.source);
-    if let Some(reason) = unpairable(&case.source, &prints, expected.len()) {
+    if let Some(reason) = unpairable(&case.source, &prints) {
         return Emitted {
             text: format!("{header}\n{}\n", case.source.trim()),
             pairing: Pairing::Unpairable(reason) };
     }
 
     let mut body = case.source.clone();
-    for (i, span) in prints.iter().enumerate().rev() {
+    for span in prints.iter().rev() {
         let args = case.source[span.1..span.2].trim();
-        let call = if args.is_empty() {
-            format!("__check(\"\", {})", py_string(&expected[i]))
-        } else {
-            format!("__check(__line({args}), {})", py_string(&expected[i]))
-        };
-        body.replace_range(span.0..span.3, &call);
+        body.replace_range(span.0..span.3, &collect_call(args));
     }
+
+    let want = py_string(&expected.join("\n"));
+    let body = format!("{}\n__check(__buf, {want})", body.trim_end());
 
     Emitted {
         text: format!("{header}\n{harness}\n\n{}\n", body.trim()),
         pairing: Pairing::Direct }
 }
 
-fn unpairable(src: &str, prints: &[Span], expected: usize) -> Option<String> {
-    if prints.is_empty() {
-        return Some("no print() to pair".into());
+/// One print, rewritten to append to the buffer.
+///
+/// `end=''` is what makes consecutive prints share a line, so it selects `__pr`
+/// (append without a newline) rather than being a reason to give up. Any other
+/// `end=` value is passed through as the terminator.
+fn collect_call(args: &str) -> String {
+    let (values, end) = split_end_kwarg(args);
+    let values = values.trim();
+    let line = if values.is_empty() {
+        "\"\"".to_string()
+    } else {
+        format!("__line({values})")
+    };
+    match end {
+        // The default terminator is a newline, which `__p` supplies.
+        None => format!("__p({line})"),
+        Some(e) if e.trim() == "''" || e.trim() == "\"\"" => format!("__pr({line})"),
+        Some(e) => format!("__pr({line} + {})", e.trim()) }
+}
+
+/// Split `a, b, end='x'` into (`a, b`, Some(`'x'`)). Only a TOP-LEVEL `end=`
+/// counts — one inside a nested call belongs to that call.
+fn split_end_kwarg(args: &str) -> (&str, Option<&str>) {
+    let bytes = args.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0usize;
+    let mut last_comma: Option<usize> = None;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => last_comma = Some(i),
+            b'e' if depth == 0 && args[i..].starts_with("end=") => {
+                let before_ok = i == 0 || last_comma.is_some_and(|c| c < i);
+                if before_ok {
+                    let cut = last_comma.unwrap_or(0);
+                    let values = if last_comma.is_some() { &args[..cut] } else { "" };
+                    return (values, Some(&args[i + 4..]));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
     }
-    if has_word(src, "for") || has_word(src, "while") {
-        return Some("loop — print count is not static".into());
+    (args, None)
+}
+
+/// Under collection the only thing that defeats the check is output that never
+/// reaches the buffer. Loops, count mismatches and `end=` are all ordinary now.
+fn unpairable(src: &str, prints: &[Span]) -> Option<String> {
+    if prints.is_empty() {
+        return Some("no print() to collect".into());
     }
     for span in prints {
         let args = &src[span.1..span.2];
-        // `end=` suppresses the newline so prints share a line; `sep=` changes
-        // the join; `*xs` hides how many values there are.
-        if args.contains("end=") || args.contains("sep=") {
-            return Some("print(end=/sep=) — output is not one line per call".into());
+        // `sep=` changes the join, and `__line` hardcodes a single space.
+        if args.contains("sep=") {
+            return Some("print(sep=) — the join is not a single space".into());
         }
+        // `*xs` hides how many values there are, so `__line` cannot spread it.
         if args.trim_start().starts_with('*') {
             return Some("unpacked print args — count is not static".into());
         }
     }
-    if prints.len() != expected {
-        return Some(format!(
-            "{} print() call(s) but {expected} expected line(s)",
-            prints.len()
-        ));
+    // Writing to a stream of its own bypasses the buffer entirely.
+    if src.contains("sys.stdout") || src.contains("sys.stderr") {
+        return Some("writes to sys.stdout/stderr directly".into());
     }
     None
 }

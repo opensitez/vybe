@@ -99,6 +99,7 @@ fn cmd_extract(args: &[String]) -> Result<()> {
     let mut total = 0usize;
     let mut compile_only = 0usize;
     let mut unpairable: Vec<(String, String)> = Vec::new();
+    let mut empty: Vec<String> = Vec::new();
 
     for input in files {
         let path = Path::new(input);
@@ -145,7 +146,24 @@ fn cmd_extract(args: &[String]) -> Result<()> {
                 .into_iter()
                 .filter(|c| !seen.contains(&c.name)),
         );
+        // A module that yields NOTHING is the one failure extraction could not
+        // report. An unlisted macro name, a helper reached by a path, a program
+        // built with `format!` — each looks identical to "this file has no
+        // tests", and the gap only ever showed as a count against the cargo
+        // log: 8 C modules, 31 COBOL, 11 C#, 9 Pascal, 7 PHP.
         if cases.is_empty() {
+            // At COLUMN ZERO only. `helpers.rs` carries an indented `#[test]`
+            // inside its `macro_rules!` body — that is the DEFINITION of a
+            // test, not a test, and cargo runs none of them.
+            let declares_tests = text.lines().any(|l| {
+                l.starts_with("#[test]")
+                    || (l.contains("! {")
+                        && !l.starts_with(char::is_whitespace)
+                        && !l.starts_with("macro_rules!"))
+            });
+            if declares_tests {
+                empty.push(input.to_string());
+            }
             continue;
         }
 
@@ -261,6 +279,15 @@ fn cmd_extract(args: &[String]) -> Result<()> {
     }
 
     println!("\nextracted {total} file(s)");
+    if !empty.is_empty() {
+        println!(
+            "{} module(s) HAVE tests but yielded none — an unread shape:",
+            empty.len()
+        );
+        for input in &empty {
+            println!("  {input}");
+        }
+    }
     if compile_only > 0 {
         println!(
             "{compile_only} compile-mode case(s): the source must be ACCEPTED, \

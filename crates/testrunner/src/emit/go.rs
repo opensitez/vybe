@@ -31,35 +31,70 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     };
     header.push('\n');
 
-    let prints = find_prints(&case.source);
-
-    if let Some(reason) = unpairable_reason(&case.source, &prints, expected.len()) {
+    let (body, rewritten) = rewrite_prints(&case.source);
+    if let Some(reason) = unpairable_reason(&case.source, rewritten) {
         return Emitted {
             text: header + &reflow(&case.source),
             pairing: Pairing::Unpairable(reason) };
     }
 
-    // The i-th expected LINE belongs to the print that runs i-th, which is not
-    // the i-th print in the source once `defer` is involved.
-    let order = runtime_order(&case.source, &prints);
-
-    // Rewrite back-to-front so the earlier spans keep their byte offsets.
-    let mut pairing: Vec<Option<&String>> = vec![None; prints.len()];
-    for (line, &print_index) in order.iter().enumerate() {
-        pairing[print_index] = expected.get(line);
-    }
-    let mut body = case.source.clone();
-    for (i, span) in prints.iter().enumerate().rev() {
-        let Some(want) = pairing[i] else { continue };
-        let args = &case.source[span.args_start..span.args_end];
-        let replacement =
-            format!("__check({}, {})", render_println_args(args), go_string(want));
-        body.replace_range(span.start..span.end, &replacement);
-    }
+    let want = go_string(&expected.join("\n"));
+    let body = close_main_with(&body, &format!("__check({want})"));
 
     Emitted {
         text: header + &splice_harness(&reflow(&body), harness),
         pairing: Pairing::Direct }
+}
+
+/// Put `__check(…)` at the END of `main`, after every print AND after every
+/// `defer` those prints might sit in — a deferred call runs when main returns,
+/// so the buffer is only complete at the closing brace.
+fn close_main_with(src: &str, call: &str) -> String {
+    match main_body_span(src) {
+        // `end` is one PAST main's closing brace, so the check goes before
+        // `end - 1` — inserting at `end` puts it at file scope, where Go has
+        // no statements at all.
+        Some((_, end)) => format!("{}\n{call}\n{}", &src[..end - 1], &src[end - 1..]),
+        None => format!("{src}\n{call}\n") }
+}
+
+/// Rewrite every print into a buffer append. Returns the new source and how
+/// many calls were rewritten.
+///
+/// `Printf` and `Print` become `Sprintf`/`Sprint` — the same formatting by the
+/// same code, which is why they stop being blockers. `Println` cannot use
+/// `Sprintln`, which Vybe does not implement, so its spacing is reproduced by
+/// `render_println_args` exactly as the per-print rewriting already did.
+fn rewrite_prints(src: &str) -> (String, usize) {
+    let bytes = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Longest first: `fmt.Println(` and `fmt.Printf(` both start with
+        // `fmt.Print`.
+        let hit = ["fmt.Println(", "fmt.Printf(", "fmt.Print("]
+            .into_iter()
+            .find(|n| src.is_char_boundary(i) && src[i..].starts_with(n));
+        if let Some(needle) = hit {
+            let args_start = i + needle.len();
+            if let Some(args_end) = close_paren(bytes, args_start) {
+                let args = &src[args_start..args_end];
+                let call = match needle {
+                    "fmt.Println(" => format!("__p({})", render_println_args(args)),
+                    "fmt.Printf(" => format!("__pr(fmt.Sprintf({args}))"),
+                    _ => format!("__pr(fmt.Sprint({args}))") };
+                out.push_str(&call);
+                count += 1;
+                i = args_end + 1;
+                continue;
+            }
+        }
+        let ch = src[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    (out, count)
 }
 
 /// Put the harness in front of `func main`, where a reader looking for the
@@ -70,132 +105,23 @@ fn splice_harness(src: &str, harness: &str) -> String {
         None => format!("{src}\n{harness}\n") }
 }
 
-fn unpairable_reason(src: &str, prints: &[Span], expected: usize) -> Option<String> {
-    if has_keyword(src, "for") || has_keyword(src, "range") {
-        return Some("loop — print count is not static".into());
+/// Under collection the only thing that defeats the check is output whose
+/// ORDER is not knowable, or output that never reaches the buffer. Loops,
+/// `defer`, `Printf`, `Print` and count mismatches are all ordinary now.
+fn unpairable_reason(src: &str, rewritten: usize) -> Option<String> {
+    if rewritten == 0 {
+        return Some("no output calls to collect".into());
     }
-    // A goroutine's output order is genuinely not knowable from the source.
-    // `defer` is — but only in `main`; see below.
+    // A goroutine's output order is genuinely not knowable from the source, and
+    // collecting it does not make it so.
     if has_keyword(src, "go") {
         return Some("goroutine — output order is not source order".into());
     }
-    // A `defer` runs when ITS function returns, not when the program ends. In
-    // `main` those are the same moment, so the LIFO reordering in
-    // `runtime_order` is exact. Anywhere else the deferred output lands
-    // mid-stream at a point only real control-flow analysis would find.
-    if !defer_spans(src).is_empty() {
-        if !defers_are_all_top_level_in_main(src) {
-            return Some("defer outside main — output lands mid-stream".into());
-        }
-        // `defer f()` where `f` is a named function that prints: the print sits
-        // in `f`'s body, lexically outside any defer, so the reordering below
-        // cannot see that it runs late.
-        if let Some(body) = main_body_span(src) {
-            if prints.iter().any(|p| p.start < body.0 || p.start >= body.1) {
-                return Some("defer plus a printing helper — order needs call analysis".into());
-            }
-        }
-    }
-    if has_call(src, "fmt.Printf") || has_call(src, "fmt.Print") {
-        return Some("Printf/Print — output is not one line per call".into());
-    }
-    if prints.len() != expected {
-        return Some(format!(
-            "{} Println call(s) but {expected} expected line(s)",
-            prints.len()
-        ));
-    }
-    if prints.is_empty() {
-        return Some("no output calls to pair".into());
-    }
-    // `fmt.Println(xs...)` spreads a slice: how many values it prints, and
-    // therefore where the spaces fall, is not visible in the source.
-    if prints.iter().any(|span| {
-        split_top_level(&src[span.args_start..span.args_end])
-            .iter()
-            .any(|p| p.ends_with("..."))
-    }) {
-        return Some("variadic spread — Println's spacing is not static".into());
+    // Writing to a stream of its own bypasses the buffer entirely.
+    if has_call(src, "fmt.Fprintln") || has_call(src, "fmt.Fprintf") || has_call(src, "os.Stdout") {
+        return Some("writes to a stream other than fmt.Print*".into());
     }
     None
-}
-
-/// Print indices in the order they actually produce output.
-///
-/// `defer` runs its statements LIFO when the function returns, so
-/// `defer Println(3); defer Println(2); defer Println(1)` prints `1, 2, 3` —
-/// the reverse of the source. Pairing the i-th print with the i-th expected
-/// line without accounting for that mis-assigned 37 Go tests.
-///
-/// Deferred calls run in reverse registration order, and the prints *within*
-/// one deferred closure still run in source order — so the result is: every
-/// non-deferred print in source order, then each `defer` group in reverse
-/// registration order.
-fn runtime_order(src: &str, prints: &[Span]) -> Vec<usize> {
-    let defers = defer_spans(src);
-    let group_of = |span: &Span| -> Option<usize> {
-        defers
-            .iter()
-            .position(|(start, end)| span.start >= *start && span.start < *end)
-    };
-
-    let mut immediate = Vec::new();
-    let mut deferred: Vec<(usize, usize)> = Vec::new(); // (defer index, print index)
-    for (i, span) in prints.iter().enumerate() {
-        match group_of(span) {
-            Some(group) => deferred.push((group, i)),
-            None => immediate.push(i) }
-    }
-    // Later `defer`s run first; inside one, source order holds.
-    deferred.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    immediate.extend(deferred.into_iter().map(|(_, i)| i));
-    immediate
-}
-
-/// Whether every `defer` sits directly in `main`'s body.
-///
-/// Directly: not inside a nested `func` literal that `main` *calls*, whose
-/// defers would fire at that call rather than at exit. The deferred expression
-/// itself may of course be a closure — that is `defer func() { … }()`.
-fn defers_are_all_top_level_in_main(src: &str) -> bool {
-    let bytes = src.as_bytes();
-    let Some((body, _)) = main_body_span(src) else {
-        return false;
-    };
-
-    let defers = defer_spans(src);
-    let mut depth = 0i32;
-    let mut i = body;
-    let mut next_defer = 0usize;
-
-    while i < bytes.len() && next_defer < defers.len() {
-        if let Some(next) = skip_literal(bytes, i) {
-            i = next;
-            continue;
-        }
-        // A defer's own body may nest freely; step over it whole.
-        if i == defers[next_defer].0 {
-            if depth != 1 {
-                return false;
-            }
-            i = defers[next_defer].1;
-            next_defer += 1;
-            continue;
-        }
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    // main closed with defers still unaccounted for.
-                    return false;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    next_defer == defers.len()
 }
 
 /// Byte range of `main`'s body, from its opening brace to its closing one.
@@ -217,71 +143,6 @@ fn main_body_span(src: &str) -> Option<(usize, usize)> {
                 depth -= 1;
                 if depth == 0 {
                     return Some((open, i + 1));
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Byte range of each `defer` statement, in registration order.
-fn defer_spans(src: &str) -> Vec<(usize, usize)> {
-    let bytes = src.as_bytes();
-    let mut spans = Vec::new();
-    let mut i = 0usize;
-
-    while i < bytes.len() {
-        if let Some(next) = skip_literal(bytes, i) {
-            i = next;
-            continue;
-        }
-        if !src.is_char_boundary(i) || !src[i..].starts_with("defer")
-            || is_ident(if i == 0 { b' ' } else { bytes[i - 1] })
-            || is_ident(bytes.get(i + 5).copied().unwrap_or(b' '))
-        {
-            i += 1;
-            continue;
-        }
-        match defer_end(src, bytes, i + 5) {
-            Some(end) => {
-                spans.push((i, end));
-                i = end;
-            }
-            None => i += 5 }
-    }
-    spans
-}
-
-/// End of the deferred expression starting at `from`.
-///
-/// `defer fmt.Println(x)` ends at the call's `)`. `defer func() { … }()` does
-/// not: the first `)` closes the literal's parameter list, so a `{` or `(`
-/// following it means the expression continues.
-fn defer_end(src: &str, bytes: &[u8], from: usize) -> Option<usize> {
-    let mut paren = 0usize;
-    let mut brace = 0usize;
-    let mut i = from;
-
-    while i < bytes.len() {
-        if let Some(next) = skip_literal(bytes, i) {
-            i = next;
-            continue;
-        }
-        match bytes[i] {
-            b'(' => paren += 1,
-            b'{' => brace += 1,
-            b'}' => brace = brace.saturating_sub(1),
-            b')' => {
-                paren -= 1;
-                if paren == 0 && brace == 0 {
-                    let rest = src[i + 1..].trim_start();
-                    if rest.starts_with('{') || rest.starts_with('(') {
-                        i += 1;
-                        continue;
-                    }
-                    return Some(i + 1);
                 }
             }
             _ => {}
@@ -352,37 +213,6 @@ struct Span {
     args_start: usize,
     args_end: usize,
     end: usize }
-
-/// Every `fmt.Println(...)` call outside a string literal, in source order.
-fn find_prints(src: &str) -> Vec<Span> {
-    const NEEDLE: &str = "fmt.Println(";
-    let bytes = src.as_bytes();
-    let mut spans = Vec::new();
-    let mut i = 0usize;
-
-    while i < bytes.len() {
-        if let Some(next) = skip_literal(bytes, i) {
-            i = next;
-            continue;
-        }
-        // Sources contain non-ASCII outside literals (an em dash in a comment,
-        // for one), and slicing into the middle of a code point panics.
-        if !src.is_char_boundary(i) {
-            i += 1;
-            continue;
-        }
-        if src[i..].starts_with(NEEDLE) {
-            let args_start = i + NEEDLE.len();
-            if let Some(args_end) = close_paren(bytes, args_start) {
-                spans.push(Span { start: i, args_start, args_end, end: args_end + 1 });
-                i = args_end + 1;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    spans
-}
 
 /// Index of the `)` closing a call whose arguments start at `from`.
 fn close_paren(bytes: &[u8], from: usize) -> Option<usize> {

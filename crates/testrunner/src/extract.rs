@@ -788,6 +788,63 @@ fn const_fns(text: &str) -> Vec<(String, String)> {
             out.push((name, value));
         }
     }
+    out.extend(const_items(text));
+    out
+}
+
+/// Module-level `const NAME: &str = "…";` / `static NAME: &str = "…";`.
+///
+/// The same shared fragment as a `const fn`, spelled the way a module with ONE
+/// shared value spells it. Absent here, a call that passed it by name resolved
+/// to nothing: `test_enum_set.rs` hoists its `enum Color { … }` into
+/// `const TYPES` and passes it as `run_in_main(src, TYPES)`, so all 46 emitted
+/// files declared no `Color` and every one of them failed on the missing type.
+fn const_items(text: &str) -> Vec<(String, String)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at < text.len() {
+        let Some(found) = text[at..].find(|c| c == 'c' || c == 's') else {
+            break;
+        };
+        let start = at + found;
+        at = start + 1;
+        let rest = &text[start..];
+        let Some(after_kw) = rest
+            .strip_prefix("const ")
+            .or_else(|| rest.strip_prefix("static "))
+        else {
+            continue;
+        };
+        // Must start an item, not sit inside an identifier (`my_const `).
+        if start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            continue;
+        }
+        let name_at = start + (rest.len() - after_kw.len());
+        let mut end = name_at;
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            end += 1;
+        }
+        if end == name_at {
+            continue;
+        }
+        let name = text[name_at..end].to_string();
+        // `: <ty> = <literal>` — a non-string type simply will not scan below.
+        let colon = rustlit::skip_trivia(bytes, end);
+        if bytes.get(colon) != Some(&b':') {
+            continue;
+        }
+        let Some(eq_off) = text[colon..].find('=') else {
+            continue;
+        };
+        let value_at = rustlit::skip_trivia(bytes, colon + eq_off + 1);
+        if !starts_string_literal(bytes, value_at) {
+            continue;
+        }
+        if let Ok((value, _)) = rustlit::scan(bytes, value_at) {
+            out.push((name, value));
+        }
+    }
     out
 }
 
@@ -797,8 +854,48 @@ fn const_fns(text: &str) -> Vec<(String, String)> {
 /// a bare `starts_with("run_")` says no to that — which is why 31 of its
 /// modules (247 tests) extracted nothing at all. The call is the same call; the
 /// path in front of it is a Rust import detail.
+/// Callers pass a whole call expression as often as a bare callee, so cut at
+/// the argument list FIRST. Splitting the whole expression on `::` reads the
+/// tail of the program instead: `run_prints(r#"… new ReflectionEnum(Status::class) …"#)`
+/// ends in `class)…`, which is not a run helper, and every PHP module using
+/// `::` in its source stopped extracting.
 fn is_run_helper(name: &str) -> bool {
-    name.rsplit("::").next().is_some_and(|n| n.trim().starts_with("run_"))
+    is_run_helper_name(last_segment(name))
+}
+
+fn is_run_helper_name(name: &str) -> bool {
+    name.starts_with("run_")
+}
+
+/// The callee without its module path or argument list.
+fn last_segment(name: &str) -> &str {
+    let callee = name.split('(').next().unwrap_or(name);
+    callee.rsplit("::").next().unwrap_or(callee).trim()
+}
+
+/// What `helpers::run_print` builds, reproduced exactly.
+///
+/// Leading `import …;` / `from … import …;` prefixes are peeled onto their own
+/// lines first — a test writes `"import re; re.findall(…)"` meaning "run the
+/// import, print the trailing expression", and wrapping the whole thing gives
+/// `print(import re; …)`, which is not Python. Then the LAST line becomes the
+/// argument of a `print`.
+fn wrap_in_print(expr: &str) -> String {
+    let trimmed = expr.strip_suffix('\n').unwrap_or(expr);
+    let mut prelude = String::new();
+    let mut rest = trimmed;
+    while rest.starts_with("import ") || rest.starts_with("from ") {
+        let Some(semi) = rest.find(';') else { break };
+        prelude.push_str(rest[..semi].trim());
+        prelude.push('\n');
+        rest = rest[semi + 1..].trim_start();
+    }
+    match rest.rfind('\n') {
+        Some(split) => {
+            let (stmts, last) = rest.split_at(split);
+            format!("{prelude}{stmts}\nprint({})\n", &last[1..])
+        }
+        None => format!("{prelude}print({rest})\n") }
 }
 
 fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Option<Case> {
@@ -845,6 +942,16 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
         }
         i = end;
     }
+
+    // A MODULE-level `const TYPES: &str = r#"…"#;` reads exactly like a
+    // fn-local `let` at the call site — `run_in_main(src, TYPES)` cannot tell
+    // them apart — but only the local flavour was collected here, so a module
+    // that hoists its shared declarations into a const emitted every file
+    // WITHOUT them. All 46 `enum_set` cases referenced a `Color` that appeared
+    // nowhere in the program and failed on the missing type rather than on
+    // anything they meant to assert. Appended LAST so a same-named local still
+    // shadows, since the lookups take the first match.
+    sources.extend(consts.iter().cloned());
 
     // Module-local SIMD helpers wrap a FUNCTION BODY into a self-verifying
     // script. Rebuild each wrapper or the emitted file is a fragment: a bare
@@ -1019,6 +1126,17 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
         });
 
     let expected = parse_expected(expected_expr)?;
+    // `run_print(expr)` does not take a program — it WRAPS the expression in a
+    // `print(...)` and returns what that printed. 1,277 Python cases use it,
+    // and taking the argument as the program left every one of them with "no
+    // print() to pair": the file evaluated `5 & 3` and threw the value away.
+    // The wrapper is a pure source transform, so reproducing it here emits the
+    // program cargo actually ran.
+    let source = if last_segment(helper) == "run_print" {
+        wrap_in_print(&source)
+    } else {
+        source
+    };
     Some(Case {
         name,
         source,
@@ -1136,6 +1254,186 @@ fn top_level_comma(args: &str) -> Option<usize> {
 // 3,469 of Python's 10,374 tests are written this way.
 
 /// Every `name!(case_name, "src"[, expected])` invocation in a module.
+
+/// Which positional argument of a locally-defined case macro fills which role.
+///
+/// A file may define its own `macro_rules!` wrapper instead of using one of the
+/// table macros in [`shape_of`], and the positions are NOT conventional:
+///
+/// ```ignore
+/// macro_rules! jm { ($name:ident, $src:expr, $types:expr, $expected:expr) => { …
+///     assert_eq!(run_in_main($src, $types), vec![$expected]); … } }
+///
+/// macro_rules! vb { ($name:ident, $reason:expr, $src:expr, [$($expected:expr),*]) => { … } }
+/// ```
+///
+/// Both take four arguments and NEITHER puts the expectation third. Guessing
+/// positionally is what produced 365 corrupt Java files: `jm!`'s `$types` was
+/// emitted as the expected output and the real expectation was dropped, so
+/// every one of those tests asserted that the program prints its own type
+/// declarations — and the declarations themselves never reached the file, so
+/// the program could not compile either. The roles are stated in the macro's
+/// own definition, so read them from there instead.
+#[derive(Debug, Clone, Copy)]
+struct MacroRoles {
+    /// Index of the argument holding the program source.
+    source: usize,
+    /// Index of a SECOND source the helper wraps around the first — Java's
+    /// `run_in_main(main_body, type_defs)`.
+    prelude: Option<usize>,
+    /// Index of the argument holding the expectation.
+    expected: Option<usize> }
+
+/// Read the ordered `$param` names out of a `macro_rules!` matcher.
+///
+/// One name per top-level comma-separated fragment, taking the FIRST `$ident`
+/// in each — which is what makes a repetition fragment like
+/// `[$($expected:expr),* $(,)?]` still report `expected` at its own position.
+fn macro_matcher_params(matcher: &str) -> Vec<String> {
+    let bytes = matcher.as_bytes();
+    let mut params = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut push = |frag: &str, params: &mut Vec<String>| {
+        let f = frag.as_bytes();
+        let mut j = 0usize;
+        while j < f.len() {
+            if f[j] == b'$' {
+                let mut k = j + 1;
+                while k < f.len() && (f[k].is_ascii_alphanumeric() || f[k] == b'_') {
+                    k += 1;
+                }
+                if k > j + 1 {
+                    params.push(frag[j + 1..k].to_string());
+                    return;
+                }
+            }
+            j += 1;
+        }
+        params.push(String::new());
+    };
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                push(&matcher[start..i], &mut params);
+                start = i + 1;
+            }
+            _ => {} }
+        i += 1;
+    }
+    if start < matcher.len() {
+        push(&matcher[start..], &mut params);
+    }
+    params
+}
+
+/// Split `text` on top-level commas, honouring nesting and string literals.
+fn split_top_level(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if starts_string_literal(bytes, i) {
+            match rustlit::scan(bytes, i) {
+                Ok((_, end)) => {
+                    i = end;
+                    continue;
+                }
+                Err(_) => return out };
+        }
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {} }
+        i += 1;
+    }
+    if start <= text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+/// Learn `macro_name`'s argument roles from its `macro_rules!` definition in
+/// the same file. `None` when the file does not define it, or when the body
+/// does not name a runner helper the roles could be read from.
+fn macro_roles(text: &str, macro_name: &str) -> Option<MacroRoles> {
+    let decl = format!("macro_rules! {macro_name}");
+    let at = text.find(&decl)?;
+    let brace = text[at..].find('{')? + at;
+    let open = text[brace..].find('(')? + brace;
+    let close = close_paren(text.as_bytes(), open + 1)?;
+    let params = macro_matcher_params(&text[open + 1..close]);
+    if params.is_empty() {
+        return None;
+    }
+    let index_of = |name: &str| params.iter().position(|p| p == name);
+
+    let body_start = text[close..].find("=>")? + close;
+    let body_end = matching_brace(text.as_bytes(), text[body_start..].find('{')? + body_start).ok()?;
+    let body = &text[body_start..body_end];
+
+    // The runner call: the first `…run…(` whose arguments are macro params.
+    // Its first argument is the source and its second, if any, the prelude —
+    // the same `(main_body, type_defs)` contract `Case::prelude` documents.
+    let bytes = body.as_bytes();
+    let mut source = None;
+    let mut prelude = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'(' {
+            i += 1;
+            continue;
+        }
+        let mut name_start = i;
+        while name_start > 0
+            && (bytes[name_start - 1].is_ascii_alphanumeric() || bytes[name_start - 1] == b'_')
+        {
+            name_start -= 1;
+        }
+        let fn_name = &body[name_start..i];
+        if !fn_name.contains("run") {
+            i += 1;
+            continue;
+        }
+        let Some(end) = close_paren(bytes, i + 1) else {
+            i += 1;
+            continue;
+        };
+        let args = split_top_level(&body[i + 1..end]);
+        let param_at = |arg: &str| {
+            let a = arg.trim().trim_start_matches('&').trim();
+            a.strip_prefix('$').and_then(|rest| {
+                let ident: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                index_of(&ident)
+            })
+        };
+        if let Some(first) = args.first().and_then(|a| param_at(a)) {
+            source = Some(first);
+            prelude = args.get(1).and_then(|a| param_at(a));
+            break;
+        }
+        i += 1;
+    }
+
+    // The expectation is whatever param is left that the matcher named
+    // `expected` — every wrapper in the corpus spells it that way, and reading
+    // the assert's shape instead would have to model `vec![…]`, `[…]`, `&[…]`
+    // and repetition all over again for no extra reach.
+    Some(MacroRoles { source: source?, prelude, expected: index_of("expected") })
+}
+
 pub fn paren_macros_in_file(text: &str) -> Vec<Case> {
     let bytes = text.as_bytes();
     let mut cases = Vec::new();
@@ -1186,6 +1484,41 @@ pub fn paren_macros_in_file(text: &str) -> Vec<Case> {
             i += 1;
             continue;
         }
+        // A wrapper the file defines itself states its own argument order, so
+        // read the roles rather than assuming `(name, source, expected)`.
+        if let Some(roles) = macro_roles(text, &text[start..i]) {
+            let Some(close) = close_paren(bytes, i + 2) else {
+                i += 1;
+                continue;
+            };
+            let args = split_top_level(&text[i + 2..close]);
+            let literal = |idx: usize| -> Option<String> {
+                let arg = args.get(idx)?.trim();
+                let a = &arg[rustlit::skip_trivia(arg.as_bytes(), 0)..];
+                starts_string_literal(a.as_bytes(), 0)
+                    .then(|| rustlit::scan(a.as_bytes(), 0).ok().map(|(t, _)| t))
+                    .flatten()
+            };
+            if let Some(source) = literal(roles.source) {
+                let expected = roles
+                    .expected
+                    .and_then(|idx| args.get(idx))
+                    .and_then(|arg| parse_expected(arg));
+                cases.push(Case {
+                    name,
+                    source,
+                    expected,
+                    expect_failure: false,
+                    single_line: false,
+                    run_only: false,
+                    prelude: roles.prelude.and_then(literal) });
+                i = close;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
         at = rustlit::skip_trivia(bytes, at + 1);
         if !starts_string_literal(bytes, at) {
             i += 1;

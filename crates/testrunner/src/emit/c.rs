@@ -78,22 +78,40 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let prologue = format!(
-        "const char *__w[] = {{{table}}};\nint __n = {}, __i = 0;\n",
-        expected.len()
-    );
     // Too FEW lines is a failure too, and only the end can see it.
     let epilogue = "if (__i != __n) { printf(\"FAIL: %d line(s), wanted %d\\n\", __i, __n); assert(0); }\n";
-    // The prologue declares `__w`/`__n`/`__i`, so it must land INSIDE `main`,
-    // not above it — otherwise a body that is already a whole program gets the
-    // declarations at file scope where `__i++` cannot reach them.
-    let (pro_at, out) = if declares_main(&out) {
-        match find_main(&out).and_then(|m| out[m..].find('{').map(|o| m + o + 1)) {
-            Some(at) => (at, out),
-            None => (0, out) }
+    // The prologue declares `__w`/`__n`/`__i`, and every check reads them, so
+    // it has to be in scope at every check.
+    //
+    // Inside `main` is the default. But a case can print from a HELPER defined
+    // above main — `typedef void F(void); void f(void) { printf("V"); }` — and
+    // then the check lands in `f` while the declarations sit in main's body,
+    // which `cc` rejects outright ("undeclared identifier `__i`"). 86 files
+    // were emitted that way and could never compile in either runtime.
+    //
+    // FILE scope fixes those, and is measured to work under BOTH Vybe and cc:
+    // a `static` expected table plus a `static` counter incremented from a
+    // function. That is not the same thing as the accumulation this module's
+    // header rules out — that was a file-scope char BUFFER written from a
+    // function, which is broken; a counter and a const table are not.
+    //
+    // It is used only where needed, so the 6,000-odd cases that already pair
+    // keep the placement they were verified with.
+    let main_body_at = if declares_main(&out) {
+        find_main(&out).and_then(|m| out[m..].find('{').map(|o| m + o + 1))
     } else {
-        (0, out)
+        None
     };
+    let checks_outside_main = main_body_at.is_some_and(|at| out[..at].contains("__i++"));
+    let (pro_at, file_scope) = match main_body_at {
+        Some(_) if checks_outside_main => (0, true),
+        Some(at) => (at, false),
+        None => (0, false) };
+    let storage = if file_scope { "static " } else { "" };
+    let prologue = format!(
+        "{storage}const char *__w[] = {{{table}}};\n{storage}int __n = {}, __i = 0;\n",
+        expected.len()
+    );
     let epi_at = out.rfind("return 0;").filter(|at| *at >= pro_at);
     let body_out = match epi_at {
         Some(at) => format!(
@@ -304,6 +322,28 @@ fn find_prints(src: &str) -> Vec<Print> {
     out
 }
 
+/// Is `at` inside a `#define`'s logical line? A trailing `\` continues it onto
+/// the next physical line, so the run does not simply end at the first newline.
+fn in_define(src: &str, at: usize) -> bool {
+    let mut pos = 0usize;
+    let mut in_macro = false;
+    for line in src.split_inclusive('\n') {
+        let end = pos + line.len();
+        if !in_macro {
+            in_macro = line.trim_start().starts_with("#define");
+        }
+        if in_macro {
+            if at >= pos && at < end {
+                return true;
+            }
+            // The continuation only holds while the line ends in a backslash.
+            in_macro = line.trim_end().ends_with('\\');
+        }
+        pos = end;
+    }
+    false
+}
+
 fn unpairable(
     src: &str,
     prelude: Option<&str>,
@@ -316,6 +356,12 @@ fn unpairable(
     // Declarations can print too, and those calls are not in `body`.
     if prelude.is_some_and(|p| p.contains("printf(") || p.contains("puts(")) {
         return Some("prints from a declaration — not reachable from the body".into());
+    }
+    // A `#define` body is ONE logical line. The check spans several, so
+    // substituting it there truncates the macro at the first newline and `cc`
+    // rejects the file outright ("expected identifier or '('").
+    if prints.iter().any(|p| in_define(src, p.start)) {
+        return Some("print inside a #define — the check cannot span the macro's line".into());
     }
     if src.contains("fprintf(") || src.contains("putchar(") || src.contains("fwrite(") {
         return Some("fprintf/putchar/fwrite — output is not one line per call".into());
