@@ -205,7 +205,8 @@ pub fn register() {
         profile_source,
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
-        register_tree: None });
+        register_tree: None,
+        expand_source: None });
     vybe_runtime::registry::register_hooks(
         "js",
         vybe_runtime::registry::LanguageHooks {

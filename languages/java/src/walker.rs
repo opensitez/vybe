@@ -410,6 +410,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Java,
         body,
+            scheduling: Default::default(),
         imports })
 }
 
@@ -2477,7 +2478,7 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
             0,
             ClassMember::Field {
                 name: java_record_storage_field(&param.name),
-                type_hint: param.type_hint.clone(),
+                type_hint: param.type_hint.clone().as_deref().map(str::to_string),
                 init: None,
                 modifiers: Modifiers::default(),
                 with_events: false,
@@ -2489,7 +2490,7 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
             StmtKind::FunctionDecl {
                 name: param.name.clone(),
                 params: vec![],
-                return_type: param.type_hint.clone(),
+                return_type: param.type_hint.clone().as_deref().map(str::to_string),
                 body: vec![Statement::new(StmtKind::Return(Some(Expression::new(
                     ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
@@ -3091,7 +3092,7 @@ fn walk_var_declarator(
 
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(name),
-        type_hint: emitted_type_hint,
+        type_hint: emitted_type_hint.map(Into::into),
         init,
         array_bounds: None,
         with_events: false })
@@ -3143,7 +3144,7 @@ fn walk_if(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 Statement::new(StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(var),
-                        type_hint: Some(type_name),
+                        type_hint: Some(type_name.into()),
                         init: Some(subject),
                         array_bounds: None,
                         with_events: false }],
@@ -3904,7 +3905,7 @@ fn java_var_decl_typed(
     Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name.to_string()),
-            type_hint,
+            type_hint: type_hint.map(Into::into),
             init,
             array_bounds: None,
             with_events: false }],
@@ -4130,7 +4131,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
 
     Ok(Param {
         name,
-        type_hint,
+        type_hint: type_hint.map(Into::into),
         default: None,
         pass_by: PassBy::Value,
         is_rest,
@@ -6885,7 +6886,8 @@ fn java_reflection_meta(
                                 .map(|param| {
                                     param
                                         .type_hint
-                                        .clone()
+                                        .as_deref()
+                                        .map(str::to_string)
                                         .unwrap_or_else(|| "Object".to_string())
                                 })
                                 .collect(),
@@ -6905,7 +6907,8 @@ fn java_reflection_meta(
                         .map(|param| {
                             param
                                 .type_hint
-                                .clone()
+                                .as_deref()
+                                .map(str::to_string)
                                 .unwrap_or_else(|| "Object".to_string())
                         })
                         .collect(),
@@ -8634,7 +8637,7 @@ fn erase_java_interface_param_hints_with_types(
                         .as_deref()
                         .is_some_and(java_anonymous_interface_target);
                     if is_interface_hint {
-                        decl.type_hint = inferred_type.clone();
+                        decl.type_hint = inferred_type.clone().map(Into::into);
                     }
                     if let BindingPattern::Ident(name) = &decl.pattern {
                         if is_interface_hint
@@ -8649,7 +8652,7 @@ fn erase_java_interface_param_hints_with_types(
                                 types.borrow_mut().remove(name);
                             });
                         }
-                        if let Some(type_name) = inferred_type.or_else(|| decl.type_hint.clone()) {
+                        if let Some(type_name) = inferred_type.or_else(|| decl.type_hint.clone().as_deref().map(str::to_string)) {
                             concrete_locals.insert(name.clone(), type_name);
                         }
                     }
@@ -9526,7 +9529,7 @@ fn walk_lambda_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                                     .to_string();
                                 params.push(Param {
                                     name,
-                                    type_hint,
+                                    type_hint: type_hint.map(Into::into),
                                     default: None,
                                     pass_by: PassBy::Value,
                                     is_rest: false,
@@ -10354,7 +10357,7 @@ fn rewrite_java_new_local_stmt(
                 // Retype `Local loc = …` → the hoisted name so `loc.method()`
                 // resolves to the user class (not a builtin value-method).
                 if d.type_hint.as_deref() == Some(old_name) {
-                    d.type_hint = Some(new_name.to_string());
+                    d.type_hint = Some(new_name.to_string().into());
                 }
                 if let Some(e) = &mut d.init {
                     rewrite_java_new_local_expr(e, old_name, new_name, capture_vals);
@@ -11308,7 +11311,7 @@ fn java_prepend_outer_constructor_param(
 fn java_outer_param(owner_name: &str) -> Param {
     Param {
         name: "__java_outer".to_string(),
-        type_hint: Some(owner_name.to_string()),
+        type_hint: Some(owner_name.to_string().into()),
         default: None,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -11399,7 +11402,7 @@ fn rewrite_java_nested_type_refs_stmt(
             return_type, body, ..
         } => {
             if let Some(type_hint) = return_type {
-                if let Some((qualified, _)) = nested_types.get(type_hint) {
+                if let Some((qualified, _)) = nested_types.get(type_hint.as_str()) {
                     *type_hint = qualified.clone();
                 }
             }
@@ -11414,8 +11417,8 @@ fn rewrite_java_nested_type_refs_stmt(
                     rewrite_java_nested_type_refs_expr(init, nested_types);
                 }
                 if let Some(type_hint) = &mut decl.type_hint {
-                    if let Some((qualified, _)) = nested_types.get(type_hint) {
-                        *type_hint = qualified.clone();
+                    if let Some((qualified, _)) = nested_types.get(type_hint.spelling()) {
+                        *type_hint = qualified.clone().into();
                     }
                 }
             }
@@ -12067,7 +12070,7 @@ fn rewrite_java_tostring_stmts(
                             let mut local_types: HashMap<String, String> = params
                                 .iter()
                                 .filter_map(|p| {
-                                    p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone()))
+                                    p.type_hint.as_deref().map(|t| (p.name.clone(), t.to_string()))
                                 })
                                 .collect();
                             local_types.extend(
@@ -12094,7 +12097,7 @@ fn rewrite_java_tostring_stmts(
                                 let mut local_types: HashMap<String, String> = params
                                     .iter()
                                     .filter_map(|p| {
-                                        p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone()))
+                                        p.type_hint.as_deref().map(|t| (p.name.clone(), t.to_string()))
                                     })
                                     .collect();
                                 local_types.extend(
@@ -12152,7 +12155,7 @@ fn rewrite_java_tostring_stmts(
                     if let (BindingPattern::Ident(name), Some(type_hint)) =
                         (&decl.pattern, &decl.type_hint)
                     {
-                        locals.insert(name.clone(), type_hint.clone());
+                        locals.insert(name.clone(), type_hint.clone().to_string());
                     }
                 }
             }
@@ -13321,7 +13324,7 @@ fn rewrite_java_tostring_expr(
             let mut lambda_locals = locals.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    lambda_locals.insert(param.name.clone(), type_hint.clone());
+                    lambda_locals.insert(param.name.clone(), type_hint.clone().to_string());
                 }
             }
             match body {
@@ -16320,7 +16323,7 @@ fn normalize_java_class_members(
                 let mut locals = params.iter().map(|p| p.name.clone()).collect();
                 let mut local_types: HashMap<String, String> = params
                     .iter()
-                    .filter_map(|p| p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone())))
+                    .filter_map(|p| p.type_hint.as_deref().map(|t| (p.name.clone(), t.to_string())))
                     .collect();
                 local_types.extend(
                     names
@@ -16351,7 +16354,7 @@ fn normalize_java_class_members(
                     let mut locals = params.iter().map(|p| p.name.clone()).collect();
                     let mut local_types: HashMap<String, String> = params
                         .iter()
-                        .filter_map(|p| p.type_hint.as_ref().map(|t| (p.name.clone(), t.clone())))
+                        .filter_map(|p| p.type_hint.as_deref().map(|t| (p.name.clone(), t.to_string())))
                         .collect();
                     local_types.extend(
                         names
@@ -18287,7 +18290,7 @@ fn normalize_java_expr(
             for param in params {
                 lambda_locals.insert(param.name.clone());
                 if let Some(type_hint) = &param.type_hint {
-                    lambda_types.insert(param.name.clone(), type_hint.clone());
+                    lambda_types.insert(param.name.clone(), type_hint.clone().to_string());
                 }
             }
             match body {

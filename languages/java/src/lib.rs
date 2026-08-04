@@ -36,6 +36,7 @@ pub fn register() {
         // `Plugin::init`, so every language that links the platform benefits
         // without asking Java for anything.
         register_tree: None,
+        expand_source: None,
     });
 }
 

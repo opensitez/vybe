@@ -171,6 +171,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: package_name,
         language: Lang::Go,
         body,
+            scheduling: Default::default(),
         imports }))
 }
 
@@ -5631,7 +5632,10 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
                 signatures.insert(
                     name.clone(),
                                 GoFunctionSignature {
-                                    params: params.iter().map(|param| param.type_hint.clone()).collect(),
+                                    params: params
+                                        .iter()
+                                        .map(|param| param.type_hint.as_deref().map(str::to_string))
+                                        .collect(),
                                     return_type: return_type.clone(),
                                     generic_arg_count: go_signature_generic_arg_count(params),
                                     generic_param_names: go_signature_generic_param_names(params) },
@@ -5652,7 +5656,7 @@ fn collect_go_function_signatures(body: &[Statement]) -> HashMap<String, GoFunct
                                 GoFunctionSignature {
                                     params: params
                                         .iter()
-                                        .map(|param| param.type_hint.clone())
+                                        .map(|param| param.type_hint.as_deref().map(str::to_string))
                                         .collect(),
                                     return_type: return_type.clone(),
                                     generic_arg_count: go_signature_generic_arg_count(params),
@@ -5937,7 +5941,8 @@ fn normalize_go_function_body(
                     param.name.clone(),
                     param
                         .type_hint
-                        .clone()
+                        .as_deref()
+                        .map(str::to_string)
                         .unwrap_or_else(|| "object".to_string()),
                 );
                 named_result = Some(param);
@@ -6173,7 +6178,7 @@ fn go_extract_named_result_marker(stmt: &Statement) -> Option<Param> {
     let type_hint = go_type_name_from_expr(&args[1].value)?;
     Some(Param {
         name: name.clone(),
-        type_hint: Some(type_hint),
+        type_hint: Some(type_hint.into()),
         default: None,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -6218,7 +6223,7 @@ fn go_lower_named_result_body(
     let result_type = result
         .type_hint
         .clone()
-        .unwrap_or_else(|| "object".to_string());
+        .unwrap_or_else(|| "object".to_string().into());
 
     let body = go_rewrite_named_result_cell_body(body, &result_name);
     let rewritten_body = go_rewrite_named_result_returns(body, &result_name, &sentinel);
@@ -7192,7 +7197,7 @@ fn go_rewrite_immediate_lambda_ref_captures(
         let pointee_type = go_expr_type_hint(&Expression::ident(&name), env, signatures);
         next_params.push(Param {
             name: temp_name.clone(),
-            type_hint: pointee_type.map(|type_name| format!("*{}", type_name.trim())),
+            type_hint: pointee_type.map(|type_name| format!("*{}", type_name.trim())).map(Into::into),
             default: None,
             pass_by: PassBy::Value,
             is_rest: false,
@@ -8118,7 +8123,7 @@ fn go_defer_temp_decl(name: String, type_hint: Option<String>, init: Expression)
     Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name),
-            type_hint,
+            type_hint: type_hint.map(Into::into),
             init: Some(init),
             array_bounds: None,
             with_events: false }],
@@ -8186,7 +8191,7 @@ fn normalize_go_statement(
                 if let Some(type_hint) = param.type_hint.as_ref() {
                     fn_env
                         .value_types
-                        .insert(param.name.clone(), type_hint.clone());
+                        .insert(param.name.clone(), type_hint.clone().to_string());
                 }
                 if let Some(type_hint) = param
                     .type_hint
@@ -9723,7 +9728,7 @@ fn normalize_go_expr(
                 if let Some(type_hint) = param.type_hint.as_ref() {
                     lambda_env
                         .value_types
-                        .insert(param.name.clone(), type_hint.clone());
+                        .insert(param.name.clone(), type_hint.clone().to_string());
                 }
                 if let Some(type_hint) = param
                     .type_hint
@@ -9773,7 +9778,7 @@ fn lower_go_fixed_array_range(
     let iter_decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(iter_name.clone()),
-            type_hint: (!iter_type.is_empty()).then(|| iter_type.clone()),
+            type_hint: (!iter_type.is_empty()).then(|| iter_type.clone()).map(Into::into),
             init: Some(go_wrap_fixed_array_copy(iter, env, signatures)),
             array_bounds: None,
             with_events: false }],
@@ -9794,7 +9799,7 @@ fn lower_go_fixed_array_range(
                     &Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(key_name.to_string()),
-                            type_hint: Some("int".to_string()),
+                            type_hint: Some("int".to_string().into()),
                             init: Some(Expression::ident(&index_name)),
                             array_bounds: None,
                             with_events: false }],
@@ -9809,7 +9814,7 @@ fn lower_go_fixed_array_range(
                     &Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(var.to_string()),
-                            type_hint: go_array_element_type(&iter_type),
+                            type_hint: go_array_element_type(&iter_type).map(Into::into),
                             init: Some(Expression::new(ExprKind::Index {
                                 object: Box::new(Expression::ident(&iter_name)),
                                 index: Box::new(Expression::ident(&index_name)),
@@ -9829,7 +9834,7 @@ fn lower_go_fixed_array_range(
                     &Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(var.to_string()),
-                            type_hint: Some("int".to_string()),
+                            type_hint: Some("int".to_string().into()),
                             init: Some(Expression::ident(&index_name)),
                             array_bounds: None,
                             with_events: false }],
@@ -9855,7 +9860,7 @@ fn lower_go_fixed_array_range(
         init: Some(Box::new(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(index_name.clone()),
-                type_hint: Some("int".to_string()),
+                type_hint: Some("int".to_string().into()),
                 init: Some(Expression::int(0)),
                 array_bounds: None,
                 with_events: false }],
@@ -9897,7 +9902,7 @@ fn lower_go_channel_range(
     let iter_decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(iter_name.clone()),
-            type_hint: (!iter_type.is_empty()).then_some(iter_type),
+            type_hint: (!iter_type.is_empty()).then_some(iter_type.into()),
             init: Some(iter),
             array_bounds: None,
             with_events: false }],
@@ -9905,7 +9910,7 @@ fn lower_go_channel_range(
     let index_decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(index_name.clone()),
-            type_hint: Some("int".to_string()),
+            type_hint: Some("int".to_string().into()),
             init: Some(Expression::int(0)),
             array_bounds: None,
             with_events: false }],
@@ -9917,7 +9922,7 @@ fn lower_go_channel_range(
             loop_body.push(Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(key_name.to_string()),
-                    type_hint: Some("int".to_string()),
+                    type_hint: Some("int".to_string().into()),
                     init: Some(Expression::ident(&index_name)),
                     array_bounds: None,
                     with_events: false }],
@@ -9928,7 +9933,7 @@ fn lower_go_channel_range(
         loop_body.push(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(value_name.to_string()),
-                type_hint: Some(elem_type),
+                type_hint: Some(elem_type.into()),
                 init: Some(channels::channel_receive_expr(Expression::ident(
                     &iter_name,
                 ))),
@@ -9976,7 +9981,7 @@ fn lower_go_integer_range(
     let bound_decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(bound_name.clone()),
-            type_hint: Some("int".to_string()),
+            type_hint: Some("int".to_string().into()),
             init: Some(iter),
             array_bounds: None,
             with_events: false }],
@@ -9999,7 +10004,7 @@ fn lower_go_integer_range(
             &Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(range_name.to_string()),
-                    type_hint: Some("int".to_string()),
+                    type_hint: Some("int".to_string().into()),
                     init: Some(Expression::ident(&index_name)),
                     array_bounds: None,
                     with_events: false }],
@@ -10023,7 +10028,7 @@ fn lower_go_integer_range(
         init: Some(Box::new(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(index_name.clone()),
-                type_hint: Some("int".to_string()),
+                type_hint: Some("int".to_string().into()),
                 init: Some(Expression::int(0)),
                 array_bounds: None,
                 with_events: false }],
@@ -10058,7 +10063,7 @@ fn lower_go_string_range(
     let iter_decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(iter_name.clone()),
-            type_hint: Some("string".to_string()),
+            type_hint: Some("string".to_string().into()),
             init: Some(iter),
             array_bounds: None,
             with_events: false }],
@@ -10077,7 +10082,7 @@ fn lower_go_string_range(
                     &Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(key_name.to_string()),
-                            type_hint: Some("int".to_string()),
+                            type_hint: Some("int".to_string().into()),
                             init: Some(Expression::ident(&index_name)),
                             array_bounds: None,
                             with_events: false }],
@@ -10092,7 +10097,7 @@ fn lower_go_string_range(
                     &Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(var.to_string()),
-                            type_hint: Some("int".to_string()),
+                            type_hint: Some("int".to_string().into()),
                             init: Some(go_member_call(
                                 Expression::ident(&iter_name),
                                 "charCodeAt",
@@ -10113,7 +10118,7 @@ fn lower_go_string_range(
                     &Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(var.to_string()),
-                            type_hint: Some("int".to_string()),
+                            type_hint: Some("int".to_string().into()),
                             init: Some(Expression::ident(&index_name)),
                             array_bounds: None,
                             with_events: false }],
@@ -10139,7 +10144,7 @@ fn lower_go_string_range(
         init: Some(Box::new(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(index_name.clone()),
-                type_hint: Some("int".to_string()),
+                type_hint: Some("int".to_string().into()),
                 init: Some(Expression::int(0)),
                 array_bounds: None,
                 with_events: false }],
@@ -15785,7 +15790,7 @@ fn go_rewrite_sort_call(call_name: &str, args: &[Argument]) -> Option<Expression
 fn go_int_param(name: &str) -> Param {
     Param {
         name: name.to_string(),
-        type_hint: Some("int".to_string()),
+        type_hint: Some("int".to_string().into()),
         default: None,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -15815,7 +15820,7 @@ fn go_lambda(params: Vec<Param>, body: Vec<Statement>) -> Expression {
 fn go_error_param(name: &str) -> Param {
     Param {
         name: name.to_string(),
-        type_hint: Some("error".to_string()),
+        type_hint: Some("error".to_string().into()),
         default: None,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -16362,7 +16367,7 @@ fn go_lower_copy_expr(
         Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(target_name.clone()),
-                type_hint: target_type,
+                type_hint: target_type.map(Into::into),
                 init: Some(target),
                 array_bounds: None,
                 with_events: false }],
@@ -16370,7 +16375,7 @@ fn go_lower_copy_expr(
         Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(source_name.clone()),
-                type_hint: source_type,
+                type_hint: source_type.map(Into::into),
                 init: Some(source),
                 array_bounds: None,
                 with_events: false }],
@@ -16378,7 +16383,7 @@ fn go_lower_copy_expr(
         Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(count_name.clone()),
-                type_hint: Some("int".to_string()),
+                type_hint: Some("int".to_string().into()),
                 init: Some(count_expr),
                 array_bounds: None,
                 with_events: false }],
@@ -16386,7 +16391,7 @@ fn go_lower_copy_expr(
         Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(index_name.clone()),
-                type_hint: Some("int".to_string()),
+                type_hint: Some("int".to_string().into()),
                 init: Some(Expression::int(0)),
                 array_bounds: None,
                 with_events: false }],
@@ -17182,7 +17187,7 @@ fn go_decl_fixed_array_binding(
     let BindingPattern::Ident(name) = &decl.pattern else {
         return None;
     };
-    let type_name = decl.type_hint.clone().or_else(|| {
+    let type_name = decl.type_hint.as_deref().map(str::to_string).or_else(|| {
         decl.init
             .as_ref()
             .and_then(|expr| go_expr_type_hint(expr, env, signatures))
@@ -17200,7 +17205,8 @@ fn go_decl_binding_type(
     };
 
     decl.type_hint
-        .clone()
+        .as_deref()
+        .map(str::to_string)
         .or_else(|| {
             decl.init
                 .as_ref()
@@ -17775,7 +17781,7 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             } else {
                 receiver_name
             },
-            type_hint: Some(receiver_type.clone()),
+            type_hint: Some(receiver_type.clone().into()),
             default: None,
             pass_by: PassBy::Value,
             is_rest: false,
@@ -17825,7 +17831,7 @@ fn walk_signature(pair: Pair<Rule>) -> Result<GoSignatureInfo, String> {
                                 .cloned()
                                 .collect();
                             return_type = if p.len() == 1 {
-                                p[0].type_hint.clone()
+                                p[0].type_hint.clone().as_deref().map(str::to_string)
                             } else {
                                 Some(format!("[{}]", p.len()))
                             };
@@ -17861,10 +17867,10 @@ fn go_hidden_named_result_param(param: &Param) -> Param {
     let type_name = param
         .type_hint
         .clone()
-        .unwrap_or_else(|| "object".to_string());
+        .unwrap_or_else(|| "object".to_string().into());
     Param {
         name: param.name.clone(),
-        type_hint: Some("object".to_string()),
+        type_hint: Some("object".to_string().into()),
         default: Some(go_named_result_cell_object(go_zero_value_expr(&type_name))),
         pass_by: PassBy::Value,
         is_rest: false,
@@ -17921,7 +17927,7 @@ fn walk_parameter_list(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
             for name in names {
                 params.push(Param {
                     name,
-                    type_hint: type_hint.clone(),
+                    type_hint: type_hint.clone().map(Into::into),
                     default: None,
                     pass_by: PassBy::Value,
                     is_rest,
@@ -17954,7 +17960,7 @@ fn prepend_go_generic_type_params(params: &mut Vec<Param>, generic_params: &[Gen
             0,
             Param {
                 name,
-                type_hint: Some("__goTypeArg".to_string()),
+                type_hint: Some("__goTypeArg".to_string().into()),
                 default: Some(go_runtime_type_arg_expr("any".to_string())),
                 pass_by: PassBy::Value,
                 is_rest: false,
@@ -18093,7 +18099,7 @@ fn walk_const_spec(
             vec![VarDeclarator {
                 pattern,
                 init: Some(init),
-                type_hint: effective_type_hint.clone(),
+                type_hint: effective_type_hint.clone().map(Into::into),
                 array_bounds: None,
                 with_events: false }],
             raw_inits,
@@ -18109,7 +18115,7 @@ fn walk_const_spec(
         declarations.push(VarDeclarator {
             pattern: BindingPattern::Ident(name),
             init: next_inits.first().cloned(),
-            type_hint: effective_type_hint.clone(),
+            type_hint: effective_type_hint.clone().map(Into::into),
             array_bounds: None,
             with_events: false });
     }
@@ -18247,7 +18253,7 @@ fn walk_var_spec(
             vec![VarDeclarator {
                 pattern,
                 init: Some(init),
-                type_hint,
+                type_hint: type_hint.map(Into::into),
                 array_bounds: None,
                 with_events: false }],
             None,
@@ -18262,7 +18268,7 @@ fn walk_var_spec(
         declarations.push(VarDeclarator {
             pattern: BindingPattern::Ident(name),
             init: init_values.first().cloned(),
-            type_hint: type_hint.clone(),
+            type_hint: type_hint.clone().map(Into::into),
             array_bounds: None,
             with_events: false });
     }
@@ -21090,7 +21096,7 @@ fn go_type_switch_case_body(
                     init: Some(Expression::new(ExprKind::Cast {
                         expr: Box::new(expr),
                         type_name: case_type.to_string() })),
-                    type_hint: Some(case_type.to_string()),
+                    type_hint: Some(case_type.to_string().into()),
                     array_bounds: None,
                     with_events: false }],
                 kind: VarDeclKind::Let }),

@@ -799,6 +799,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::Unknown,
         body,
+            scheduling: Default::default(),
         imports: Vec::new() })
 }
 
@@ -1632,7 +1633,7 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
                         params = (0..pc)
                             .map(|i| Param {
                                 name: format!("p{}", i),
-                                type_hint: Some("i32".to_string()),
+                                type_hint: Some("i32".into()),
                                 default: None,
                                 pass_by: PassBy::Value,
                                 is_rest: false,
@@ -1780,7 +1781,7 @@ fn walk_param(pair: Pair<Rule>, base: usize) -> Result<Vec<Param>, String> {
     if let Some(n) = name {
         return Ok(vec![Param {
             name: n,
-            type_hint: types.into_iter().next(),
+            type_hint: types.into_iter().next().map(Into::into),
             default: None,
             pass_by: PassBy::Value,
             is_rest: false,
@@ -1793,7 +1794,7 @@ fn walk_param(pair: Pair<Rule>, base: usize) -> Result<Vec<Param>, String> {
         .enumerate()
         .map(|(i, t)| Param {
             name: format!("p{}", base + i),
-            type_hint: Some(t),
+            type_hint: Some(t.into()),
             default: None,
             pass_by: PassBy::Value,
             is_rest: false,
@@ -1842,7 +1843,7 @@ fn walk_local(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(var_name),
-                    type_hint: Some(t.clone()),
+                    type_hint: Some(t.clone().into()),
                     init: Some(init),
                     array_bounds: None,
                     with_events: false }],

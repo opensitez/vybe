@@ -55,6 +55,12 @@ tuple_literals_tagged = true
 # BUILTINS — bare global function calls and dotted static calls
 # ────────────────────────────────────────────────────────────────────────────
 
+[async]
+# A .NET Task whose antecedent is already complete may run its continuation
+# SYNCHRONOUSLY on the completing thread — unlike ECMA-262 §27.7.5.3, where an
+# await always enqueues a job.
+continuation = "sync_if_settled"
+
 [builtins]
 
 # `Type.GetType("Name")` — static type lookup by name. Resolution is the shared

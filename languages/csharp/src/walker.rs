@@ -85,8 +85,11 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::CSharp,
         body,
+            // Declared in the profile's `[async]` section; see python's note.
+            scheduling: Default::default(),
         imports };
     rewrite_using_imports(&mut module);
+    normalize_task_surface(&mut module);
     inject_interface_defaults(&mut module.body);
     lower_csharp_using_declarations(&mut module.body);
     rewrite_set_algebra_bool_calls(&mut module.body);
@@ -1374,6 +1377,11 @@ fn rewrite_explicit_interface_accesses_in_expr(
     conflicted: &HashSet<String>,
 ) {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_explicit_interface_accesses_in_expr(child, conflicted);
+            }
+        }
         ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_explicit_interface_accesses_in_expr(left, conflicted);
             rewrite_explicit_interface_accesses_in_expr(right, conflicted);
@@ -1719,13 +1727,14 @@ fn rewrite_record_uses_in_statement(
             for param in params {
                 if let Some(type_name) = param
                     .type_hint
-                    .clone()
+                    .as_deref()
+                    .map(str::to_string)
                     .filter(|name| record_shapes.contains_key(name))
                 {
                     scopes
                         .last_mut()
                         .unwrap()
-                        .insert(param.name.clone(), type_name);
+                        .insert(param.name.clone(), type_name.to_string());
                 }
             }
             rewrite_record_uses_in_statements(body, record_shapes, scopes);
@@ -1744,13 +1753,14 @@ fn rewrite_record_uses_in_statement(
                         for param in params {
                             if let Some(type_name) = param
                                 .type_hint
-                                .clone()
+                                .as_deref()
+                                .map(str::to_string)
                                 .filter(|name| record_shapes.contains_key(name))
                             {
                                 scopes
                                     .last_mut()
                                     .unwrap()
-                                    .insert(param.name.clone(), type_name);
+                                    .insert(param.name.clone(), type_name.to_string());
                             }
                         }
                         rewrite_record_uses_in_statements(body, record_shapes, scopes);
@@ -3098,6 +3108,153 @@ fn checked_numeric_compound_binop(op: &CompoundOp) -> Option<BinOp> {
         _ => None }
 }
 
+/// Normalize C#'s Task surface into the common async model (`AsyncOp`).
+///
+/// This is the walker doing its ONLY async job: mapping C#'s spellings onto
+/// the language-neutral vocabulary. `Task.FromResult(x)` is §27.2.4.7
+/// PromiseResolve wearing a .NET name; the shared lowering
+/// (`primitives/async_ops.rs`) turns the vocabulary into `ecma:promise` +
+/// JSPI. Before this pass, every one of these fell through to a member call
+/// on a `Task` global that does not exist — measured 2026-08-04 as
+/// `csharp_async_await_flow` 0/5, "undefined is not callable".
+///
+/// Deliberately NOT mapped: `Task.WhenAny` (settles with the completed TASK
+/// where `race` settles with its VALUE — a wrong mapping is worse than a
+/// missing one).
+///
+/// `await` itself is normalized here too — to `AsyncOp::AwaitEager`, because
+/// .NET's continuation contract (settled antecedent may continue
+/// synchronously) is a different OPERATION from ECMA's always-deferred
+/// `ExprKind::Await`, and the difference belongs on the node, not in a
+/// runtime-consulted property.
+fn normalize_task_surface(module: &mut Module) {
+    for stmt in &mut module.body {
+        stmt.walk_exprs_mut(&mut normalize_task_expr);
+    }
+}
+
+fn normalize_task_expr(expr: &mut Expression) {
+    use vybe_ast::{AsyncOp, JoinMode};
+
+    /// `Task` as either the bare identifier or the fully-qualified
+    /// `System.Threading.Tasks.Task` chain — both spellings appear in real
+    /// source and both name the SAME type. (A user class literally named
+    /// `Task` would shadow this; C# code doing that has bigger problems, and
+    /// the alternative — resolving through using-directives — already ran as
+    /// its own pass before this one.)
+    fn is_task_head(expr: &Expression) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(id) => id == "Task",
+            ExprKind::Member { object, field, .. } if field == "Task" => {
+                matches!(&object.kind, ExprKind::Member { object: threading, field: tasks, .. }
+                    if tasks == "Tasks"
+                        && matches!(&threading.kind, ExprKind::Member { object: system, field: th, .. }
+                            if th == "Threading"
+                                && matches!(&system.kind, ExprKind::Ident(sys) if sys == "System")))
+            }
+            _ => false }
+    }
+    fn is_task_static(callee: &Expression, name: &str) -> bool {
+        matches!(&callee.kind,
+            ExprKind::Member { object, field, .. }
+                if field == name && is_task_head(object))
+    }
+    fn first_arg(args: &mut Vec<vybe_ast::Argument>) -> Option<Expression> {
+        (args.len() == 1).then(|| args.remove(0).value)
+    }
+
+    let span = expr.span;
+    let replacement = match &mut expr.kind {
+        // Task.CompletedTask — a settled Task with no value.
+        ExprKind::Member { object, field, .. }
+            if field == "CompletedTask" && is_task_head(object) =>
+        {
+            Some(AsyncOp::Resolved(Box::new(Expression::with_span(
+                ExprKind::Lit(Literal::Null),
+                span,
+            ))))
+        }
+        ExprKind::Call { callee, args, .. } => {
+            if is_task_static(callee, "FromResult") {
+                first_arg(args).map(|value| AsyncOp::Resolved(Box::new(value)))
+            } else if is_task_static(callee, "FromException") {
+                first_arg(args).map(|reason| AsyncOp::Rejected(Box::new(reason)))
+            } else if is_task_static(callee, "Run") {
+                first_arg(args).map(|work| AsyncOp::Spawn(Box::new(work)))
+            } else if is_task_static(callee, "Delay") {
+                first_arg(args).map(|ms| AsyncOp::Sleep(Box::new(ms)))
+            } else if is_task_static(callee, "WhenAll") {
+                Some(AsyncOp::Join {
+                    mode: JoinMode::All,
+                    sources: std::mem::take(args).into_iter().map(|a| a.value).collect() })
+            } else if args.len() == 1
+                && matches!(&callee.kind,
+                    ExprKind::Member { field, .. } if field == "ConfigureAwait")
+            {
+                // `.ConfigureAwait(b)` selects a resumption context. There is
+                // ONE agent here (ECMA's model), so both answers are the same
+                // context: the receiver passes through unchanged.
+                if let ExprKind::Member { object, .. } = &mut callee.kind {
+                    let task = std::mem::replace(
+                        &mut **object,
+                        Expression::with_span(ExprKind::Lit(Literal::Null), span),
+                    );
+                    expr.kind = task.kind;
+                }
+                return;
+            } else if args.is_empty() {
+                // <expr>.GetAwaiter().GetResult() → BlockOn(<expr>) — the
+                // sync↔async boundary, matched as the exact two-step chain.
+                match &mut callee.kind {
+                    ExprKind::Member { object: get_result_recv, field, .. }
+                        if field == "GetResult" =>
+                    {
+                        match &mut get_result_recv.kind {
+                            ExprKind::Call { callee: inner, args: inner_args, .. }
+                                if inner_args.is_empty() =>
+                            {
+                                match &mut inner.kind {
+                                    ExprKind::Member { object: task, field, .. }
+                                        if field == "GetAwaiter" =>
+                                    {
+                                        let task = std::mem::replace(
+                                            &mut **task,
+                                            Expression::with_span(
+                                                ExprKind::Lit(Literal::Null),
+                                                span,
+                                            ),
+                                        );
+                                        Some(AsyncOp::BlockOn(Box::new(task)))
+                                    }
+                                    _ => None }
+                            }
+                            _ => None }
+                    }
+                    _ => None }
+            } else {
+                None
+            }
+        }
+        // C#'s `await` is NOT ECMA's `Await`: a Task whose antecedent is
+        // already settled may run its continuation synchronously (.NET's
+        // contract), where ECMA-262 §6.2.3.1 always yields one job tick even
+        // for `await 1`. Two contracts = two AST operations — the semantics
+        // are normalized onto the node here, lowered to their own import
+        // (`jspi.await_eager` vs `jspi.await`), and the runtime never
+        // consults a per-module property to pick between them.
+        ExprKind::Await(inner) => {
+            let inner = std::mem::replace(
+                &mut **inner,
+                Expression::with_span(ExprKind::Lit(Literal::Null), span),
+            );
+            Some(AsyncOp::AwaitEager(Box::new(inner)))
+        }
+        _ => None };
+    if let Some(op) = replacement {
+        expr.kind = ExprKind::Async(op);
+    }
+}
+
 fn rewrite_using_imports(module: &mut Module) {
     let mut aliases: HashMap<String, String> = HashMap::new();
     let mut static_paths: Vec<String> = Vec::new();
@@ -3247,7 +3404,7 @@ fn lower_one_csharp_using(var: &str, resource: Expression, tail: Vec<Statement>)
     let decl = Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(var.to_string()),
-            type_hint: resource_type.clone(),
+            type_hint: resource_type.clone().map(Into::into),
             init: Some(resource),
             array_bounds: None,
             with_events: false }],
@@ -4349,6 +4506,11 @@ fn rewrite_using_imports_in_expr(
     static_paths: &[String],
 ) {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_using_imports_in_expr(child, aliases, static_paths);
+            }
+        }
         ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_using_imports_in_expr(left, aliases, static_paths);
             rewrite_using_imports_in_expr(right, aliases, static_paths);
@@ -4985,6 +5147,11 @@ fn rewrite_extension_calls_in_expr(
     extension_containers: &HashSet<String>,
 ) {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_extension_calls_in_expr(child, extension_methods, extension_containers);
+            }
+        }
         ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_extension_calls_in_expr(left, extension_methods, extension_containers);
             rewrite_extension_calls_in_expr(right, extension_methods, extension_containers);
@@ -5812,7 +5979,7 @@ fn infer_csharp_iife_return_type(expr: &Expression) -> Option<String> {
                 continue;
             }
             if let Some(type_hint) = decl.type_hint.as_ref() {
-                return Some(type_hint.clone());
+                return Some(type_hint.clone().to_string());
             }
             if let Some(Expression {
                 kind: ExprKind::New { class, .. },
@@ -6277,7 +6444,7 @@ fn rewrite_user_defined_operator_calls_in_members(
                             scopes
                                 .last_mut()
                                 .unwrap()
-                                .insert(param.name.clone(), type_hint.clone());
+                                .insert(param.name.clone(), type_hint.spelling().to_string());
                         }
                     }
                     rewrite_user_defined_operator_calls_in_statements(body, operators, &mut scopes);
@@ -6294,7 +6461,7 @@ fn rewrite_user_defined_operator_calls_in_members(
                         scopes
                             .last_mut()
                             .unwrap()
-                            .insert(param.name.clone(), type_hint.clone());
+                            .insert(param.name.clone(), type_hint.spelling().to_string());
                     }
                 }
                 rewrite_user_defined_operator_calls_in_statements(body, operators, &mut scopes);
@@ -6322,8 +6489,9 @@ fn rewrite_user_defined_operator_calls_in_members(
                         setter
                             .param
                             .type_hint
-                            .clone()
-                            .unwrap_or_else(|| "object".into()),
+                            .as_deref()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| "object".to_string()),
                     );
                     rewrite_user_defined_operator_calls_in_statements(
                         &mut setter.body,
@@ -6377,13 +6545,13 @@ fn rewrite_user_defined_operator_calls_in_statement(
                     }
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
-                    let inferred = decl.type_hint.clone().or_else(|| {
+                    let inferred = decl.type_hint.as_deref().map(str::to_string).or_else(|| {
                         decl.init
                             .as_ref()
                             .and_then(|e| infer_csharp_expr_type(e, operators, scopes))
                     });
                     if let Some(type_name) = inferred {
-                        scopes.last_mut().unwrap().insert(name.clone(), type_name);
+                        scopes.last_mut().unwrap().insert(name.clone(), type_name.to_string());
                     }
                 }
             }
@@ -6395,7 +6563,7 @@ fn rewrite_user_defined_operator_calls_in_statement(
                     scopes
                         .last_mut()
                         .unwrap()
-                        .insert(param.name.clone(), type_hint.clone());
+                        .insert(param.name.clone(), type_hint.clone().to_string());
                 }
             }
             rewrite_user_defined_operator_calls_in_statements(body, operators, scopes);
@@ -6725,7 +6893,7 @@ fn rewrite_user_defined_operator_expr(
                     scopes
                         .last_mut()
                         .unwrap()
-                        .insert(param.name.clone(), type_hint.clone());
+                        .insert(param.name.clone(), type_hint.clone().to_string());
                 }
             }
             match body {
@@ -6972,7 +7140,7 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
     if let Some(type_hint) = type_hint.filter(|hint| !hint.eq_ignore_ascii_case("var")) {
         let normalized_hint = normalize_runtime_type_name(&type_hint).to_lowercase();
         for decl in &mut declarations {
-            decl.type_hint = Some(csharp_storage_type_hint(&type_hint));
+            decl.type_hint = Some(csharp_storage_type_hint(&type_hint).into());
             // Resolve a target-typed `default` against the declared type.
             if let Some(init) = &decl.init {
                 if matches!(&init.kind, vybe_ast::ExprKind::DefaultOf(t) if t.is_empty()) {
@@ -6987,7 +7155,7 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
                             vybe_ast::ExprKind::Member { field, .. } => Some(field.clone()),
                             _ => None };
                         if let Some(name) = inferred {
-                            decl.type_hint = Some(name);
+                            decl.type_hint = Some(name.into());
                         }
                     }
                 }
@@ -7000,7 +7168,7 @@ fn walk_local_var(pair: Pair<Rule>) -> Result<StmtKind, String> {
             if decl.type_hint.is_none() {
                 if let Some(ref init) = decl.init {
                     if let Some(name) = infer_csharp_type_from_expr(init) {
-                        decl.type_hint = Some(name);
+                        decl.type_hint = Some(name.into());
                     }
                 }
             }
@@ -7211,7 +7379,7 @@ fn apply_primary_constructor(
     for param in &params {
         members.push(ClassMember::Field {
             name: param.name.clone(),
-            type_hint: param.type_hint.clone(),
+            type_hint: param.type_hint.clone().as_deref().map(str::to_string),
             init: None,
             modifiers: Modifiers::default(),
             with_events: false,
@@ -8546,9 +8714,7 @@ fn walk_destructor(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember,
                 // `~Foo() => Cleanup();` — a finalizer returns nothing, so the
                 // expression is a stand-alone statement, not a `Return`.
                 if let Some(inner) = p.into_inner().next() {
-                    let span = to_span(&inner);
-                    let expr = walk_expression(inner)?;
-                    body = vec![Statement::with_span(StmtKind::Expr(expr), span)];
+                    body = vec![walk_expression_body_stmt(inner, false)?];
                 }
             }
             _ => {}
@@ -8599,9 +8765,7 @@ fn walk_constructor(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, St
                 // ExprStmt. Constructors don't return a value, so we
                 // don't wrap in Return.
                 if let Some(inner) = p.into_inner().next() {
-                    let span = to_span(&inner);
-                    let expr = walk_expression(inner)?;
-                    body = vec![Statement::with_span(StmtKind::Expr(expr), span)];
+                    body = vec![walk_expression_body_stmt(inner, false)?];
                 }
             }
             _ => {}
@@ -8662,12 +8826,7 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                 // `Type Name => expr;` — read-only expression-bodied
                 // property. Lower to a getter that returns the expr.
                 if let Some(inner) = p.into_inner().next() {
-                    let span = to_span(&inner);
-                    let expr = walk_expression(inner)?;
-                    getter = Some(vec![Statement::with_span(
-                        StmtKind::Return(Some(expr)),
-                        span,
-                    )]);
+                    getter = Some(vec![walk_expression_body_stmt(inner, true)?]);
                     is_auto = false;
                 }
             }
@@ -8709,16 +8868,8 @@ fn walk_property(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, 
                                 Rule::expression_body => {
                                     is_auto = false;
                                     if let Some(expr_pair) = ap.into_inner().next() {
-                                        let span = to_span(&expr_pair);
-                                        let expr = walk_expression(expr_pair)?;
-                                        acc_body = Some(if is_get {
-                                            vec![Statement::with_span(
-                                                StmtKind::Return(Some(expr)),
-                                                span,
-                                            )]
-                                        } else {
-                                            vec![Statement::with_span(StmtKind::Expr(expr), span)]
-                                        });
+                                        acc_body =
+                                            Some(vec![walk_expression_body_stmt(expr_pair, is_get)?]);
                                     }
                                 }
                                 Rule::class_modifiers => {} // skip accessor modifiers
@@ -9270,10 +9421,8 @@ fn walk_local_function(pair: Pair<Rule>) -> Result<StmtKind, String> {
             Rule::param_list => params = walk_params(p)?,
             Rule::block_statement => body = walk_body(p)?,
             Rule::expression_body => {
-                let span = to_span(&p);
                 if let Some(expr_pair) = p.into_inner().next() {
-                    let expr = walk_expression(expr_pair)?;
-                    body = vec![Statement::with_span(StmtKind::Return(Some(expr)), span)];
+                    body = vec![walk_expression_body_stmt(expr_pair, true)?];
                 }
             }
             _ => {}
@@ -9428,10 +9577,8 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
             Rule::param_list => params = walk_params(p)?,
             Rule::block_statement => body = walk_body(p)?,
             Rule::expression_body => {
-                let span = to_span(&p);
                 if let Some(expr_pair) = p.into_inner().next() {
-                    let expr = walk_expression(expr_pair)?;
-                    body = vec![Statement::with_span(StmtKind::Return(Some(expr)), span)];
+                    body = vec![walk_expression_body_stmt(expr_pair, true)?];
                 }
             }
             _ => {}
@@ -9485,12 +9632,7 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
             // get-only indexer whose body is `return expr;`.
             Rule::expression_body => {
                 if let Some(expr_pair) = p.into_inner().next() {
-                    let span = to_span(&expr_pair);
-                    let expr = walk_expression(expr_pair)?;
-                    getter = Some(vec![Statement::with_span(
-                        StmtKind::Return(Some(expr)),
-                        span,
-                    )]);
+                    getter = Some(vec![walk_expression_body_stmt(expr_pair, true)?]);
                 }
             }
             Rule::property_body => {
@@ -9511,16 +9653,8 @@ fn walk_indexer(pair: Pair<Rule>, mods: Modifiers) -> Result<Vec<ClassMember>, S
                                 }
                                 Rule::expression_body => {
                                     if let Some(expr_pair) = ap.into_inner().next() {
-                                        let span = to_span(&expr_pair);
-                                        let expr = walk_expression(expr_pair)?;
-                                        acc_body = Some(if is_get {
-                                            vec![Statement::with_span(
-                                                StmtKind::Return(Some(expr)),
-                                                span,
-                                            )]
-                                        } else {
-                                            vec![Statement::with_span(StmtKind::Expr(expr), span)]
-                                        });
+                                        acc_body =
+                                            Some(vec![walk_expression_body_stmt(expr_pair, is_get)?]);
                                     }
                                 }
                                 Rule::class_modifiers => {}
@@ -9627,10 +9761,8 @@ fn walk_method(pair: Pair<Rule>, mods: Modifiers) -> Result<ClassMember, String>
                 // C# expression-bodied member: `=> expr;` lowers to
                 // `{ return expr; }`. The inner `expression` pair is
                 // the only child of `expression_body`.
-                let span = to_span(&p);
                 if let Some(expr_pair) = p.into_inner().next() {
-                    let expr = walk_expression(expr_pair)?;
-                    body = vec![Statement::with_span(StmtKind::Return(Some(expr)), span)];
+                    body = vec![walk_expression_body_stmt(expr_pair, true)?];
                 }
             }
             Rule::method_name => {
@@ -9794,7 +9926,7 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
 
         let other_param = Param {
             name: "other".into(),
-            type_hint: Some(name.clone()),
+            type_hint: Some(name.clone().into()),
             default: None,
             pass_by: PassBy::Value,
             is_rest: false,
@@ -9874,9 +10006,7 @@ fn extract_interface_default_method(member: Pair<Rule>) -> Result<Option<ClassMe
             Rule::param_list => params = walk_params(p)?,
             Rule::expression_body => {
                 if let Some(e) = p.into_inner().next() {
-                    body = Some(vec![Statement::new(StmtKind::Return(Some(
-                        walk_expression(e)?,
-                    )))]);
+                    body = Some(vec![walk_expression_body_stmt(e, true)?]);
                 }
             }
             Rule::block_statement => body = Some(walk_body(p)?),
@@ -10182,7 +10312,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
     for param in &params {
         members.push(ClassMember::Field {
             name: param.name.clone(),
-            type_hint: param.type_hint.clone(),
+            type_hint: param.type_hint.clone().as_deref().map(str::to_string),
             init: None,
             modifiers: Modifiers::default(),
             with_events: false,
@@ -10270,7 +10400,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
     if !has_user_equals && !params.is_empty() {
         let other_param = Param {
             name: "other".into(),
-            type_hint: Some(name.clone()),
+            type_hint: Some(name.clone().into()),
             default: None,
             pass_by: PassBy::Value,
             is_rest: false,
@@ -10326,7 +10456,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
     if !has_user_op_eq && !params.is_empty() {
         let left_param = Param {
             name: "left".into(),
-            type_hint: Some(name.clone()),
+            type_hint: Some(name.clone().into()),
             default: None,
             pass_by: PassBy::Value,
             is_rest: false,
@@ -10335,7 +10465,7 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             is_nullable: false };
         let right_param = Param {
             name: "right".into(),
-            type_hint: Some(name.clone()),
+            type_hint: Some(name.clone().into()),
             default: None,
             pass_by: PassBy::Value,
             is_rest: false,
@@ -10687,7 +10817,7 @@ fn walk_foreach(pair: Pair<Rule>) -> Result<StmtKind, String> {
                     Statement::new(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(user_var),
-                            type_hint: Some(csharp_storage_type_hint(&type_hint)),
+                            type_hint: Some(csharp_storage_type_hint(&type_hint).into()),
                             init: Some(Expression::ident(&source_var)),
                             array_bounds: None,
                             with_events: false }],
@@ -10900,7 +11030,7 @@ fn walk_switch(pair: Pair<Rule>) -> Result<StmtKind, String> {
         let matched_decl = Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(matched_name.clone()),
-                type_hint: Some("bool".to_string()),
+                type_hint: Some("bool".to_string().into()),
                 init: Some(Expression::bool(false)),
                 array_bounds: None,
                 with_events: false }],
@@ -11290,7 +11420,7 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
     Ok((
         Param {
             name,
-            type_hint,
+            type_hint: type_hint.map(Into::into),
             default,
             pass_by,
             is_rest,
@@ -11302,6 +11432,38 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
 }
 
 // ── Expressions ─────────────────────────────────────────────────────────────
+
+/// The single statement an `expression_body`'s inner pair lowers to.
+///
+/// C# 7.0 §12.18 allows a `throw` EXPRESSION in an expression body; the common
+/// tree keeps throw as a STATEMENT, so `=> throw e` normalizes to `{ throw e; }`
+/// here — the quirk stays in the language layer. `as_return` picks the
+/// value-position lowering (`return expr;`) vs the void one (`expr;`); a throw
+/// is a throw either way.
+fn walk_expression_body_stmt(inner: Pair<Rule>, as_return: bool) -> Result<Statement, String> {
+    let span = to_span(&inner);
+    if inner.as_rule() == Rule::throw_expression {
+        let value = inner
+            .into_inner()
+            .next()
+            .ok_or("throw expression without an operand")?;
+        return Ok(Statement::with_span(
+            StmtKind::Throw {
+                expr: Some(walk_expression(value)?),
+                cause: None },
+            span,
+        ));
+    }
+    let expr = walk_expression(inner)?;
+    Ok(Statement::with_span(
+        if as_return {
+            StmtKind::Return(Some(expr))
+        } else {
+            StmtKind::Expr(expr)
+        },
+        span,
+    ))
+}
 
 fn walk_expression(pair: Pair<Rule>) -> Result<Expression, String> {
     let span = to_span(&pair);
@@ -13104,7 +13266,7 @@ fn emit_object_init_iife(
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__obj".into()),
-                type_hint,
+                type_hint: type_hint.map(Into::into),
                 init: Some(new_call),
                 array_bounds: None,
                 with_events: false }],
@@ -14585,7 +14747,7 @@ fn emit_dict_iife(
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__d".into()),
-                type_hint: Some(type_hint),
+                type_hint: Some(type_hint.into()),
                 init: Some(new_dict),
                 array_bounds: None,
                 with_events: false }],
@@ -14631,10 +14793,9 @@ fn emit_set_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressio
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__s".into()),
-                type_hint: Some(annotate_case_insensitive_ctor_type(
-                    type_name.clone(),
-                    &args,
-                )),
+                type_hint: Some(
+                    annotate_case_insensitive_ctor_type(type_name.clone(), &args).into(),
+                ),
                 init: Some(new_set),
                 array_bounds: None,
                 with_events: false }],
@@ -14681,10 +14842,9 @@ fn emit_list_iife(type_name: String, args: Vec<Argument>, elements: Vec<Expressi
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__l".into()),
-                type_hint: Some(annotate_case_insensitive_ctor_type(
-                    type_name.clone(),
-                    &args,
-                )),
+                type_hint: Some(
+                    annotate_case_insensitive_ctor_type(type_name.clone(), &args).into(),
+                ),
                 init: Some(new_list),
                 array_bounds: None,
                 with_events: false }],
@@ -16360,7 +16520,7 @@ fn build_type_pattern_binding_stmt(
     Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(binding_name),
-            type_hint: Some(type_name),
+            type_hint: Some(type_name.into()),
             init: Some(subject),
             array_bounds: None,
             with_events: false }],

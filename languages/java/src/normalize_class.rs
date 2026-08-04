@@ -13,16 +13,16 @@
 //!   - `toString()`, `equals()`, `hashCode()`, `compareTo()` → canonical names
 
 use vybe_ast::{
-    ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind, Visibility };
+    ClassMember, ClassModifiers, ConstructorInitializerTarget, Span, StmtKind };
 use vybe_ast::class_normalize::{NormalMembers, from_method_stmt, types::*};
 
 pub fn normalize_class(
     span: Span,
-    name: &str,
+    _name: &str,
     parents: &[String],
-    interfaces: &[String],
+    _interfaces: &[String],
     members: &[ClassMember],
-    modifiers: &ClassModifiers,
+    _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut out = NormalMembers::default();
 

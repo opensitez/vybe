@@ -13,7 +13,7 @@
 
 use vybe_ast::{ClassMember, ClassModifiers, Span, StmtKind};
 use vybe_ast::class_normalize::{
-    Access, Augmentation, AugmentationConflict, AugmentationContributes, AugmentationMode,
+    Augmentation, AugmentationConflict, AugmentationContributes, AugmentationMode,
     AugmentationPosition, AugmentationSuper, NormalClass, NormalField, NormalMembers,
     SpecialMethod, access_from_visibility, from_method_stmt };
 

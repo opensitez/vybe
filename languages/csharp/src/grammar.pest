@@ -210,7 +210,12 @@ method_declaration = {
 
 // Expression-bodied member (C# 6+): `=> expr;`. Lowers to `{ return expr; }`
 // in the walker. Same rule serves methods, properties, indexers, operators.
-expression_body = { "=>" ~ expression ~ ";" }
+// C# 7.0 §12.18: a `throw` EXPRESSION is legal in an expression body (also
+// ternary arms and `??` operands — those routes come with their own tests).
+// The walker normalizes `=> throw e` to a `{ throw e; }` body: the common
+// tree keeps throw as a statement, and the quirk stays in the language layer.
+expression_body   = { "=>" ~ (throw_expression | expression) ~ ";" }
+throw_expression  = { "throw" ~ expression }
 
 // Field: Type name = value; or Type name;
 field_declaration = {

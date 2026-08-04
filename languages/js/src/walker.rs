@@ -82,10 +82,15 @@ pub fn parse(source: &str) -> Result<Module, String> {
     apply_static_tdz(&mut body);
     validate_private_class_syntax(&body)?;
 
+    for stmt in &mut body {
+        stmt.walk_exprs_mut(&mut normalize_promise_statics);
+    }
+
     Ok(Module {
         name: "main".into(),
         language: Lang::JavaScript,
         body,
+            scheduling: Default::default(),
         imports })
 }
 
@@ -345,6 +350,12 @@ fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String>
 
 fn validate_private_expr(expr: &Expression) -> Result<(), String> {
     match &expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children() {
+                validate_private_expr(child)?;
+            }
+            Ok(())
+        }
         ExprKind::Delete(inner) => {
             if matches!(
                 &inner.kind,
@@ -664,6 +675,7 @@ fn class_member_contains_await(member: &ClassMember) -> bool {
 
 fn expr_contains_await(expr: &Expression) -> bool {
     match &expr.kind {
+        ExprKind::Async(op) => op.children().into_iter().any(expr_contains_await),
         ExprKind::Await(_) => true,
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
@@ -1527,6 +1539,11 @@ fn rewrite_expression_keys(
     consts: &std::collections::HashMap<String, String>,
 ) {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_expression_keys(child, consts);
+            }
+        }
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
@@ -5964,5 +5981,68 @@ fn wrap_generator_if_needed(
             is_async,
             is_generator: false,
             is_sub: false }
+    }
+}
+
+/// Normalize the STATIC `Promise.*` combinators into the common async model.
+///
+/// JS is the language whose spellings already ARE the §27.2 surface, so this
+/// changes nothing observable — it routes the statics through the same
+/// vocabulary and single lowering every other language uses (a direct
+/// `ecma:promise` import instead of a runtime member walk on the `Promise`
+/// global). Instance combinators (`.then`/`.catch`/`.finally`) are
+/// DELIBERATELY not normalized: any object may carry a user `then` (that is
+/// what makes a thenable a thenable, §27.2.4.7 step 8), so only runtime
+/// dispatch can decide — a syntactic rewrite would hijack user objects.
+fn normalize_promise_statics(expr: &mut Expression) {
+    use vybe_ast::{AsyncOp, JoinMode};
+
+    let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
+        return;
+    };
+    let ExprKind::Member { object, field, .. } = &callee.kind else {
+        return;
+    };
+    if !matches!(&object.kind, ExprKind::Ident(id) if id == "Promise") {
+        return;
+    }
+    fn only_arg(args: &mut Vec<vybe_ast::Argument>) -> Option<Expression> {
+        (args.len() == 1 && args[0].name.is_none()).then(|| args.remove(0).value)
+    }
+    // The combinators take one ITERABLE argument; only the ARRAY-LITERAL
+    // spelling is normalized (its elements become Join sources directly).
+    // `Promise.all(someIterable)` keeps the runtime path — the vocabulary's
+    // Join is variadic-by-value, and re-spreading an arbitrary iterable
+    // syntactically would change evaluation order.
+    fn array_literal_sources(args: &mut Vec<vybe_ast::Argument>) -> Option<Vec<Expression>> {
+        if args.len() != 1 || args[0].name.is_some() {
+            return None;
+        }
+        match &args[0].value.kind {
+            ExprKind::Array(items)
+                if items.iter().all(|i| i.key.is_none() && !i.spread) =>
+            {
+                let ExprKind::Array(items) =
+                    std::mem::replace(&mut args[0].value.kind, ExprKind::Lit(Literal::Null))
+                else {
+                    unreachable!()
+                };
+                Some(items.into_iter().map(|i| i.value).collect())
+            }
+            _ => None }
+    }
+    let join = |mode| {
+        move |sources| AsyncOp::Join { mode, sources }
+    };
+    let op = match field.as_str() {
+        "resolve" => only_arg(args).map(|v| AsyncOp::Resolved(Box::new(v))),
+        "reject" => only_arg(args).map(|r| AsyncOp::Rejected(Box::new(r))),
+        "all" => array_literal_sources(args).map(join(JoinMode::All)),
+        "allSettled" => array_literal_sources(args).map(join(JoinMode::AllSettled)),
+        "race" => array_literal_sources(args).map(join(JoinMode::Race)),
+        "any" => array_literal_sources(args).map(join(JoinMode::Any)),
+        _ => None };
+    if let Some(op) = op {
+        expr.kind = ExprKind::Async(op);
     }
 }

@@ -1082,6 +1082,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Dart,
         body,
+            scheduling: Default::default(),
         imports })
 }
 
@@ -3166,7 +3167,7 @@ fn override_inherited_getter_fields(body: &mut [Statement]) {
                 array_bounds: None });
             let value_param = Param {
                 name: "__dart_ovr_value".to_string(),
-                type_hint: type_hint.clone(),
+                type_hint: type_hint.clone().map(Into::into),
                 default: None,
                 pass_by: PassBy::Value,
                 is_rest: false,
@@ -3539,7 +3540,7 @@ fn walk_var_declarator(
 
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(name),
-        type_hint,
+        type_hint: type_hint.map(Into::into),
         init,
         array_bounds: None,
         with_events: false })
@@ -3945,7 +3946,7 @@ fn walk_lambda_param_pair(lparam: Pair<Rule>) -> Result<Param, String> {
     let is_optional = default.is_some();
     Ok(Param {
         name,
-        type_hint,
+        type_hint: type_hint.map(Into::into),
         default,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -4016,7 +4017,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Param, String> {
     let is_optional = default.is_some();
     Ok(Param {
         name,
-        type_hint,
+        type_hint: type_hint.map(Into::into),
         default,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -4083,7 +4084,7 @@ fn walk_param_with_this(pair: Pair<Rule>) -> Result<(Param, bool, bool), String>
     let is_optional = default.is_some();
     let param = Param {
         name,
-        type_hint,
+        type_hint: type_hint.map(Into::into),
         default,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -5514,7 +5515,7 @@ fn walk_extension_type_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
             name: None,
             params: vec![Param {
                 name: representation_name.clone(),
-                type_hint: Some(type_hint),
+                type_hint: Some(type_hint.into()),
                 default: None,
                 pass_by: PassBy::Value,
                 is_rest: false,
@@ -7119,7 +7120,7 @@ fn dart_stack_trace_binding(name: &str, caught: Option<&str>) -> Statement {
     Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name.to_string()),
-            type_hint: Some("StackTrace".to_string()),
+            type_hint: Some("StackTrace".to_string().into()),
             init: Some(Expression::new(ExprKind::Call {
                 callee: Box::new(Expression::ident("__dart_stack_trace")),
                 args: vec![Argument::positional(caught_expr)],
@@ -9024,6 +9025,44 @@ fn dart_promise_member(name: &str) -> Expression {
         null_safe: false })
 }
 
+/// `Future.<name>(args)` as the common async model, where the shape maps
+/// cleanly. Returns `None` for anything else — the caller falls back to the
+/// legacy Promise-member alias, so nothing regresses while the remaining
+/// shapes (`sync`/`microtask`, non-literal `wait` iterables) migrate.
+///
+/// `wait`/`any` take the LIST-LITERAL spelling only: `Join` is
+/// variadic-by-value, and re-spreading an arbitrary iterable expression would
+/// change evaluation order. Dart's `Future.any` completes with the first
+/// COMPLETED outcome, value or error — that is `race` (§27.2.4.5), not `any`
+/// (§27.2.4.3, first FULFILLED).
+fn dart_future_async_op(name: &str, mut args: Vec<Argument>) -> Option<AsyncOp> {
+    let positional = args.iter().all(|a| a.name.is_none() && !a.spread);
+    match name {
+        "value" if args.len() == 1 && positional => {
+            Some(AsyncOp::Resolved(Box::new(args.remove(0).value)))
+        }
+        "error" if args.len() == 1 && positional => {
+            Some(AsyncOp::Rejected(Box::new(args.remove(0).value)))
+        }
+        "wait" | "any" if args.len() == 1 && positional => {
+            let ExprKind::Array(items) = &args[0].value.kind else {
+                return None;
+            };
+            if items.iter().any(|i| i.key.is_some() || i.spread) {
+                return None;
+            }
+            let ExprKind::Array(items) =
+                std::mem::replace(&mut args[0].value.kind, ExprKind::Lit(Literal::Null))
+            else {
+                unreachable!()
+            };
+            Some(AsyncOp::Join {
+                mode: if name == "wait" { JoinMode::All } else { JoinMode::Race },
+                sources: items.into_iter().map(|i| i.value).collect() })
+        }
+        _ => None }
+}
+
 fn dart_future_promise_alias(name: &str) -> Option<&'static str> {
     match name {
         "value" => Some("resolve"),
@@ -9463,7 +9502,7 @@ fn dart_iterable_generate(args: Vec<Argument>) -> Option<Expression> {
         init: Some(Box::new(Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(index.to_string()),
-                type_hint: Some("int".to_string()),
+                type_hint: Some("int".to_string().into()),
                 init: Some(Expression::int(0)),
                 array_bounds: None,
                 with_events: false }],
@@ -9985,6 +10024,18 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                             }
                         }
                         if class_name == "Future" {
+                            // The common shapes construct the async VOCABULARY
+                            // directly — one model, one lowering — instead of
+                            // synthesizing JS `Promise.*` member spellings
+                            // (one language pretending to be another; the
+                            // alias below survives only for the shapes the
+                            // vocabulary deliberately does not claim).
+                            if let Some(args) = call_args.clone() {
+                                if let Some(op) = dart_future_async_op(&name, args) {
+                                    expr = Expression::new(ExprKind::Async(op));
+                                    continue;
+                                }
+                            }
                             if let Some(alias) = dart_future_promise_alias(&name) {
                                 expr = dart_promise_member(alias);
                                 let static_args = if let Some(args) = call_args {

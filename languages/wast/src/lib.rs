@@ -30,6 +30,7 @@ pub fn register() {
         emit_dispatch: None,
         normalize_class: None,
         register_tree: None,
+        expand_source: None,
     });
 }
 

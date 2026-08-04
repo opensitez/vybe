@@ -505,6 +505,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name,
         language: Lang::Pascal,
         body,
+            scheduling: Default::default(),
         imports })
 }
 
@@ -2650,7 +2651,7 @@ fn rewrite_pascal_nested_result_captures_in_function(
             0,
             Param {
                 name: "Result".to_string(),
-                type_hint: Some(outer_return_type.clone()),
+                type_hint: Some(outer_return_type.clone().into()),
                 default: None,
                 pass_by: PassBy::Ref,
                 is_rest: false,
@@ -13852,7 +13853,7 @@ fn pascal_integer_var_decl(name: &str) -> Statement {
     Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name.to_string()),
-            type_hint: Some("Integer".to_string()),
+            type_hint: Some("Integer".to_string().into()),
             init: None,
             array_bounds: None,
             with_events: false }],
@@ -14906,7 +14907,7 @@ fn flatten_pascal_multidim_fixed_array_type_hints_stmt(stmt: &mut Statement) {
             for decl in declarations {
                 if let Some(type_hint) = &mut decl.type_hint {
                     if let Some(flat) = flat_pascal_fixed_array_type_hint(type_hint) {
-                        *type_hint = flat;
+                        *type_hint = flat.into();
                     }
                 }
             }
@@ -14920,7 +14921,7 @@ fn flatten_pascal_multidim_fixed_array_type_hints_stmt(stmt: &mut Statement) {
             for param in params {
                 if let Some(type_hint) = &mut param.type_hint {
                     if let Some(flat) = flat_pascal_fixed_array_type_hint(type_hint) {
-                        *type_hint = flat;
+                        *type_hint = flat.into();
                     }
                 }
             }
@@ -15011,7 +15012,7 @@ fn flatten_pascal_multidim_fixed_array_type_hints_member(member: &mut ClassMembe
             for param in params {
                 if let Some(type_hint) = &mut param.type_hint {
                     if let Some(flat) = flat_pascal_fixed_array_type_hint(type_hint) {
-                        *type_hint = flat;
+                        *type_hint = flat.into();
                     }
                 }
             }
@@ -17137,7 +17138,7 @@ fn rewrite_pascal_fast_integer_equality_stmt(
                 }
                 if let BindingPattern::Ident(name) = &decl.pattern {
                     if let Some(type_hint) = &decl.type_hint {
-                        env.insert(name.to_lowercase(), type_hint.clone());
+                        env.insert(name.to_lowercase(), type_hint.clone().to_string());
                     }
                 }
             }
@@ -17270,7 +17271,7 @@ fn rewrite_pascal_fast_integer_equality_members(members: &mut [ClassMember]) {
                 let mut env = class_env.clone();
                 for param in params {
                     if let Some(type_hint) = &param.type_hint {
-                        env.insert(param.name.to_lowercase(), type_hint.clone());
+                        env.insert(param.name.to_lowercase(), type_hint.clone().to_string());
                     }
                 }
                 rewrite_pascal_fast_integer_equality_body(body, &mut env);
@@ -17279,7 +17280,7 @@ fn rewrite_pascal_fast_integer_equality_members(members: &mut [ClassMember]) {
                 let mut env = class_env.clone();
                 for param in params {
                     if let Some(type_hint) = &param.type_hint {
-                        env.insert(param.name.to_lowercase(), type_hint.clone());
+                        env.insert(param.name.to_lowercase(), type_hint.clone().to_string());
                     }
                 }
                 rewrite_pascal_fast_integer_equality_body(body, &mut env);
@@ -17292,7 +17293,7 @@ fn rewrite_pascal_fast_integer_equality_members(members: &mut [ClassMember]) {
                 if let Some(setter) = setter {
                     let mut env = class_env.clone();
                     if let Some(type_hint) = &setter.param.type_hint {
-                        env.insert(setter.param.name.to_lowercase(), type_hint.clone());
+                        env.insert(setter.param.name.to_lowercase(), type_hint.clone().to_string());
                     }
                     rewrite_pascal_fast_integer_equality_body(&mut setter.body, &mut env);
                 }
@@ -18061,7 +18062,7 @@ fn rewrite_pascal_fixed_array_bounds_stmt(stmt: &mut Statement, env: &mut Pascal
         } => {
             env.function_params.insert(
                 name.to_lowercase(),
-                params.iter().map(|param| param.type_hint.clone()).collect(),
+                params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect(),
             );
             let mut scoped = env.clone();
             for param in params {
@@ -19667,7 +19668,7 @@ fn normalize_pascal_enum_indexed_array_decls(
                     else {
                         continue;
                     };
-                    decl.type_hint = Some(normalized_type_hint);
+                    decl.type_hint = Some(normalized_type_hint.into());
                     decl.array_bounds = Some(vec![
                         Expression::new(ExprKind::Lit(Literal::Int(0))),
                         Expression::new(ExprKind::Lit(Literal::Int(count as i64 - 1))),
@@ -19773,7 +19774,7 @@ fn normalize_pascal_subrange_indexed_array_decls(
                     else {
                         continue;
                     };
-                    decl.type_hint = Some(normalized_type_hint);
+                    decl.type_hint = Some(normalized_type_hint.into());
                     decl.array_bounds =
                         Some(vec![Expression::int(0), Expression::int(count as i64 - 1)]);
                     if decl.init.is_none() {
@@ -19881,7 +19882,7 @@ fn default_init_enum_indexed_arrays_stmt(
                         })
                     {
                         decl.init = Some(null_array_initializer(count));
-                        decl.type_hint = Some(normalized_type_hint);
+                        decl.type_hint = Some(normalized_type_hint.into());
                         decl.array_bounds = Some(vec![
                             Expression::new(ExprKind::Lit(Literal::Int(0))),
                             Expression::new(ExprKind::Lit(Literal::Int(count as i64 - 1))),
@@ -22514,7 +22515,7 @@ fn synthesize_pascal_assert_error_proc_var() -> Statement {
     Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident("AssertErrorProc".to_string()),
-            type_hint: Some("TAssertErrorProc".to_string()),
+            type_hint: Some("TAssertErrorProc".to_string().into()),
             init: Some(Expression::null()),
             array_bounds: None,
             with_events: false }],
@@ -23202,13 +23203,13 @@ fn synthesize_pascal_except_state_vars() -> Statement {
         declarations: vec![
             VarDeclarator {
                 pattern: BindingPattern::Ident("ExceptObject".to_string()),
-                type_hint: Some("TObject".to_string()),
+                type_hint: Some("TObject".to_string().into()),
                 init: Some(Expression::null()),
                 array_bounds: None,
                 with_events: false },
             VarDeclarator {
                 pattern: BindingPattern::Ident("ExceptAddr".to_string()),
-                type_hint: Some("Pointer".to_string()),
+                type_hint: Some("Pointer".to_string().into()),
                 init: Some(Expression::null()),
                 array_bounds: None,
                 with_events: false },
@@ -24527,7 +24528,7 @@ fn rewrite_pascal_heap_allocation_stmt(
             for decl in declarations {
                 if let BindingPattern::Ident(name) = &decl.pattern {
                     if let Some(type_hint) = &decl.type_hint {
-                        var_types.insert(name.to_lowercase(), type_hint.clone());
+                        var_types.insert(name.to_lowercase(), type_hint.clone().to_string());
                     }
                 }
                 if let Some(init) = &mut decl.init {
@@ -24568,7 +24569,7 @@ fn rewrite_pascal_heap_allocation_stmt(
             let mut scoped = var_types.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    scoped.insert(param.name.to_lowercase(), type_hint.clone());
+                    scoped.insert(param.name.to_lowercase(), type_hint.clone().to_string());
                 }
             }
             rewrite_pascal_heap_allocation_body(body, struct_names, &mut scoped);
@@ -24731,7 +24732,7 @@ fn rewrite_pascal_heap_allocation_member(
         ClassMember::Constructor { params, body, .. } => {
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    var_types.insert(param.name.to_lowercase(), type_hint.clone());
+                    var_types.insert(param.name.to_lowercase(), type_hint.clone().to_string());
                 }
             }
             rewrite_pascal_heap_allocation_body(body, struct_names, &mut var_types);
@@ -24751,7 +24752,7 @@ fn rewrite_pascal_heap_allocation_member(
             if let Some(setter) = setter {
                 let mut scoped = var_types.clone();
                 if let Some(type_hint) = &setter.param.type_hint {
-                    scoped.insert(setter.param.name.to_lowercase(), type_hint.clone());
+                    scoped.insert(setter.param.name.to_lowercase(), type_hint.clone().to_string());
                 }
                 rewrite_pascal_heap_allocation_body(&mut setter.body, struct_names, &mut scoped);
             }
@@ -25730,7 +25731,7 @@ fn specialize_pascal_generic_class_methods(
             }
             for param in params {
                 if let Some(type_hint) = &mut param.type_hint {
-                    *type_hint = replace_pascal_generic_type_text(type_hint, &type_map);
+                    *type_hint = replace_pascal_generic_type_text(type_hint, &type_map).into();
                 }
             }
             if let Some(ret) = return_type {
@@ -26106,7 +26107,7 @@ fn rewrite_pascal_generic_types_stmt(
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
                 if let Some(type_hint) = &mut decl.type_hint {
-                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map).into();
                 }
                 if let Some(init) = &mut decl.init {
                     rewrite_pascal_generic_types_expr(init, type_map);
@@ -26191,7 +26192,7 @@ fn rewrite_pascal_generic_types_member(
             }
             if let Some(setter) = setter {
                 if let Some(type_hint) = &mut setter.param.type_hint {
-                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map).into();
                 }
                 for stmt in &mut setter.body {
                     rewrite_pascal_generic_types_stmt(stmt, type_map);
@@ -26201,7 +26202,7 @@ fn rewrite_pascal_generic_types_member(
         ClassMember::Constructor { params, body, .. } => {
             for param in params {
                 if let Some(type_hint) = &mut param.type_hint {
-                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map);
+                    *type_hint = replace_pascal_generic_type_text(type_hint, type_map).into();
                 }
             }
             for stmt in body {
@@ -29060,7 +29061,8 @@ fn collect_pascal_rtti_metadata_body(body: &[Statement], metadata: &mut PascalRt
                                         .map(|param| {
                                             param
                                                 .type_hint
-                                                .clone()
+                                                .as_deref()
+                                                .map(str::to_string)
                                                 .unwrap_or_else(|| "Variant".to_string())
                                         })
                                         .collect(),
@@ -32726,7 +32728,7 @@ fn default_form_instance_name(class_name: &str) -> String {
 fn gcl_owner_param() -> Param {
     Param {
         name: "AOwner".to_string(),
-        type_hint: Some("TObject".to_string()),
+        type_hint: Some("TObject".to_string().into()),
         default: None,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -32950,7 +32952,7 @@ fn lower_pascal_builtin_helper_members(
         let mut lifted_params = Vec::with_capacity(params.len() + 1);
         lifted_params.push(Param {
             name: "Self".to_string(),
-            type_hint: Some(target_name.to_string()),
+            type_hint: Some(target_name.to_string().into()),
             default: None,
             pass_by: if pascal_helper_assigns_self(body) {
                 PassBy::Ref
@@ -33459,7 +33461,7 @@ fn lower_pascal_goto_block(body: Vec<Statement>) -> Vec<Statement> {
     prelude.push(Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(pc_name.clone()),
-            type_hint: Some("Integer".to_string()),
+            type_hint: Some("Integer".to_string().into()),
             init: Some(pascal_int(0)),
             array_bounds: None,
             with_events: false }],
@@ -33687,7 +33689,7 @@ fn build_var_declarators(
         .into_iter()
         .map(|n| VarDeclarator {
             pattern: BindingPattern::Ident(n),
-            type_hint: type_hint.clone(),
+            type_hint: type_hint.clone().map(Into::into),
             init: init.clone(),
             array_bounds: array_bounds.clone(),
             with_events: false })
@@ -33729,7 +33731,7 @@ fn walk_const_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
 
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(name),
-        type_hint,
+        type_hint: type_hint.map(Into::into),
         init,
         array_bounds: None,
         with_events: false })
@@ -33770,7 +33772,7 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(name),
-                    type_hint: Some(type_ref_to_string(&inner)),
+                    type_hint: Some(type_ref_to_string(&inner).into()),
                     init: None,
                     array_bounds: None,
                     with_events: false }],
@@ -33788,7 +33790,7 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(name),
-                        type_hint: Some(type_ref_to_string(&inner)),
+                        type_hint: Some(type_ref_to_string(&inner).into()),
                         init: None,
                         array_bounds: None,
                         with_events: false }],
@@ -33807,7 +33809,7 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(name),
-                        type_hint: Some(format!("^{}", target)),
+                        type_hint: Some(format!("^{}", target).into()),
                         init: None,
                         array_bounds: None,
                         with_events: false }],
@@ -33819,7 +33821,7 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(name),
-                    type_hint: Some(type_ref_to_string(&inner)),
+                    type_hint: Some(type_ref_to_string(&inner).into()),
                     init: None,
                     array_bounds: None,
                     with_events: false }],
@@ -33837,7 +33839,7 @@ fn walk_type_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(name),
-                        type_hint: Some(aliased),
+                        type_hint: Some(aliased.into()),
                         init: None,
                         array_bounds: None,
                         with_events: false }],
@@ -34588,7 +34590,7 @@ fn walk_class_property_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
                                     let setter_name = property_accessor_name(spec);
                                     let param = Param {
                                         name: "value".to_string(),
-                                        type_hint: type_hint.clone(),
+                                        type_hint: type_hint.clone().map(Into::into),
                                         default: None,
                                         pass_by: PassBy::Value,
                                         is_rest: false,
@@ -36029,7 +36031,7 @@ fn walk_param(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
         .into_iter()
         .map(|n| Param {
             name: n,
-            type_hint: type_hint.clone(),
+            type_hint: type_hint.clone().map(Into::into),
             default: default.clone(),
             pass_by,
             is_rest: false,
@@ -36223,7 +36225,7 @@ fn walk_for_statement(pair: Pair<Rule>) -> Result<StmtKind, String> {
         Statement::new(StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(var_name.clone()),
-                type_hint: Some(type_hint),
+                type_hint: Some(type_hint.into()),
                 init: Some(start_expr),
                 array_bounds: None,
                 with_events: false }],
@@ -38456,7 +38458,7 @@ fn lower_pascal_file_io_body(
                 );
                 companions.push(VarDeclarator {
                     pattern: BindingPattern::Ident(path_var),
-                    type_hint: Some("String".to_string()),
+                    type_hint: Some("String".to_string().into()),
                     init: Some(Expression::string("")),
                     array_bounds: None,
                     with_events: false });

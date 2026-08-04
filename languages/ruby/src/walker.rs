@@ -2352,6 +2352,7 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
         name: "main".into(),
         language: Lang::Ruby,
         body,
+            scheduling: Default::default(),
         imports })
 }
 

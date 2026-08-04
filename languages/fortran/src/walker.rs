@@ -156,6 +156,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name,
         language: Lang::Fortran,
         body,
+            scheduling: Default::default(),
         imports })
 }
 
@@ -683,7 +684,7 @@ fn walk_var_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     }
                     declarations.push(VarDeclarator {
                         pattern: BindingPattern::Ident(nm),
-                        type_hint: type_hint.clone(),
+                        type_hint: type_hint.clone().map(Into::into),
                         init,
                         array_bounds: has_array_bounds.then_some(dim_bounds),
                         with_events: false });
@@ -728,7 +729,7 @@ fn walk_enum_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             statements.push(Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(name),
-                    type_hint: Some("integer".to_string()),
+                    type_hint: Some("integer".to_string().into()),
                     init: Some(init),
                     array_bounds: None,
                     with_events: false }],
@@ -831,7 +832,7 @@ fn walk_procedure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         .or_else(|| Some("procedure".to_string()));
                     declarations.push(VarDeclarator {
                         pattern: BindingPattern::Ident(name),
-                        type_hint,
+                        type_hint: type_hint.map(Into::into),
                         init,
                         array_bounds: None,
                         with_events: false });
@@ -3662,7 +3663,7 @@ fn build_fortran_namelist_temp_decl(name: &str) -> Statement {
     Statement::new(StmtKind::VarDecl {
         declarations: vec![VarDeclarator {
             pattern: BindingPattern::Ident(name.to_string()),
-            type_hint: Some("character(len=4096)".to_string()),
+            type_hint: Some("character(len=4096)".to_string().into()),
             init: Some(Expression::string("")),
             array_bounds: None,
             with_events: false }],
@@ -3829,7 +3830,7 @@ fn bind_fortran_param_declarations(params: &mut [Param], body: &mut Vec<Statemen
                                         .map(fortran_type_hint_array_rank)
                                         .unwrap_or(0)
                             {
-                                param.type_hint = declaration_type_hint;
+                                param.type_hint = declaration_type_hint.map(Into::into);
                             }
                             if matches!(param.pass_by, PassBy::Value)
                                 && (declaration.array_bounds.is_some()
@@ -3911,7 +3912,7 @@ fn apply_fortran_param_declaration_modes_from_pair(params: &mut [Param], pair: P
                     };
 
                     if param.type_hint.is_none() {
-                        param.type_hint = type_hint.clone();
+                        param.type_hint = type_hint.clone().map(Into::into);
                     }
 
                     if let Some(mode) = intent_mode {
@@ -3967,7 +3968,7 @@ fn apply_fortran_param_declaration_modes_from_pair(params: &mut [Param], pair: P
             };
 
             if param.type_hint.is_none() {
-                param.type_hint = Some(type_hint.clone());
+                param.type_hint = Some(type_hint.clone().into());
             }
 
             if let Some(mode) = intent_mode {
@@ -4138,7 +4139,7 @@ fn normalize_fortran_function_result(
             Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(result_var.clone()),
-                    type_hint: return_type.clone(),
+                    type_hint: return_type.clone().map(Into::into),
                     init: None,
                     array_bounds: None,
                     with_events: false }],
@@ -6864,7 +6865,7 @@ fn lower_fortran_array_return_calls_with_env(
                     let result_type = return_type.take();
                     params.push(Param {
                         name: FORTRAN_ARRAY_RESULT_PARAM.to_string(),
-                        type_hint: result_type,
+                        type_hint: result_type.map(Into::into),
                         default: None,
                         pass_by: PassBy::Out,
                         is_rest: false,
@@ -7082,7 +7083,7 @@ fn lower_fortran_array_return_calls_in_members(
                     let result_type = return_type.take();
                     params.push(Param {
                         name: FORTRAN_ARRAY_RESULT_PARAM.to_string(),
-                        type_hint: result_type,
+                        type_hint: result_type.map(Into::into),
                         default: None,
                         pass_by: PassBy::Out,
                         is_rest: false,
@@ -9575,7 +9576,7 @@ fn build_fortran_typed_array_map(
 ) -> Expression {
     let mut params = vec![Param {
         name: item_name.to_string(),
-        type_hint: item_type_hint,
+        type_hint: item_type_hint.map(Into::into),
         default: None,
         pass_by: PassBy::Value,
         is_rest: false,
@@ -10201,7 +10202,10 @@ fn lower_fortran_body_intrinsics(params: &[Param], body: &mut Vec<Statement>) {
     let mut type_env = HashMap::new();
     for param in params {
         if let Some(type_hint) = &param.type_hint {
-            type_env.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+            type_env.insert(
+                param.name.to_ascii_lowercase(),
+                type_hint.spelling().to_string(),
+            );
         }
     }
     lower_fortran_body_intrinsics_with_env(body, &mut type_env);
@@ -10288,7 +10292,7 @@ fn lower_fortran_body_intrinsics_with_env(
                 let mut nested_env = type_env.clone();
                 for param in params {
                     if let Some(type_hint) = &param.type_hint {
-                        nested_env.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+                        nested_env.insert(param.name.to_ascii_lowercase(), type_hint.clone().to_string());
                     }
                 }
                 lower_fortran_body_intrinsics_with_env(body, &mut nested_env);
@@ -10448,7 +10452,7 @@ fn collect_fortran_complex_type_env(body: &[Statement], type_env: &mut HashMap<S
             StmtKind::FunctionDecl { params, body, .. } => {
                 for param in params {
                     if let Some(type_hint) = &param.type_hint {
-                        type_env.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+                        type_env.insert(param.name.to_ascii_lowercase(), type_hint.clone().to_string());
                     }
                 }
                 collect_fortran_complex_type_env(body, type_env);
@@ -10568,7 +10572,7 @@ fn lower_fortran_complex_expressions_with_env(
                 let mut nested_env = type_env.clone();
                 for param in params {
                     if let Some(type_hint) = &param.type_hint {
-                        nested_env.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+                        nested_env.insert(param.name.to_ascii_lowercase(), type_hint.clone().to_string());
                     }
                 }
                 lower_fortran_complex_expressions_with_env(body, &mut nested_env);
@@ -10842,7 +10846,7 @@ fn rewrite_fortran_complex_expressions_in_expr(
                             let mut nested_env = type_env.clone();
                             if let Some(first_param) = params.first_mut() {
                                 if first_param.type_hint.is_none() {
-                                    first_param.type_hint = Some(item_type_hint.clone());
+                                    first_param.type_hint = Some(item_type_hint.clone().into());
                                 }
                                 nested_env.insert(
                                     first_param.name.to_ascii_lowercase(),
@@ -10868,7 +10872,7 @@ fn rewrite_fortran_complex_expressions_in_expr(
             let mut nested_env = type_env.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    nested_env.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+                    nested_env.insert(param.name.to_ascii_lowercase(), type_hint.clone().to_string());
                 }
             }
             rewrite_fortran_complex_lambda_body(body, &nested_env);
@@ -10978,7 +10982,7 @@ fn force_fortran_complex_array_value(expr: &mut Expression, type_env: &HashMap<S
                         let mut nested_env = type_env.clone();
                         if let Some(first_param) = params.first_mut() {
                             if first_param.type_hint.is_none() {
-                                first_param.type_hint = Some("complex".to_string());
+                                first_param.type_hint = Some("complex".to_string().into());
                             }
                             nested_env.insert(
                                 first_param.name.to_ascii_lowercase(),
@@ -11022,7 +11026,7 @@ fn force_fortran_complex_array_value(expr: &mut Expression, type_env: &HashMap<S
             let mut nested_env = type_env.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    nested_env.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+                    nested_env.insert(param.name.to_ascii_lowercase(), type_hint.clone().to_string());
                 }
             }
             rewrite_fortran_complex_lambda_body(body, &nested_env);

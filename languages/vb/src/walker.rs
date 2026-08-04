@@ -94,6 +94,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::VB,
         body: synthesized,
+            scheduling: Default::default(),
         imports };
     normalize_vb_type_hint_whitespace(&mut module);
     rewrite_vb_import_aliases(&mut module);
@@ -951,11 +952,22 @@ fn trim_vb_type_hint(type_hint: &mut Option<String>) {
     }
 }
 
+/// Same trim for a DECLARED type — a `Param`/`VarDeclarator` hint, which
+/// carries its binding alongside the spelling. Rewrites only the spelling.
+fn trim_vb_declared_type_hint(type_hint: &mut Option<vybe_ast::TypeHint>) {
+    if let Some(value) = type_hint {
+        let trimmed = value.trim().to_string();
+        if trimmed.len() != value.spelling().len() {
+            value.set_spelling(trimmed);
+        }
+    }
+}
+
 fn normalize_vb_type_hint_whitespace_statement(stmt: &mut Statement) {
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
-                trim_vb_type_hint(&mut decl.type_hint);
+                trim_vb_declared_type_hint(&mut decl.type_hint);
             }
         }
         StmtKind::FunctionDecl {
@@ -965,7 +977,7 @@ fn normalize_vb_type_hint_whitespace_statement(stmt: &mut Statement) {
             ..
         } => {
             for param in params {
-                trim_vb_type_hint(&mut param.type_hint);
+                trim_vb_declared_type_hint(&mut param.type_hint);
             }
             trim_vb_type_hint(return_type);
             normalize_vb_type_hint_whitespace_statements(body);
@@ -1028,7 +1040,7 @@ fn normalize_vb_type_hint_whitespace_member(member: &mut ClassMember) {
         }
         ClassMember::Constructor { params, body, .. } => {
             for param in params {
-                trim_vb_type_hint(&mut param.type_hint);
+                trim_vb_declared_type_hint(&mut param.type_hint);
             }
             normalize_vb_type_hint_whitespace_statements(body);
         }
@@ -1043,7 +1055,7 @@ fn normalize_vb_type_hint_whitespace_member(member: &mut ClassMember) {
                 normalize_vb_type_hint_whitespace_statements(getter);
             }
             if let Some(setter) = setter {
-                trim_vb_type_hint(&mut setter.param.type_hint);
+                trim_vb_declared_type_hint(&mut setter.param.type_hint);
                 normalize_vb_type_hint_whitespace_statements(&mut setter.body);
             }
         }
@@ -1847,6 +1859,18 @@ fn normalize_vb_char_type_hint(type_hint: &mut Option<String>) {
     }
 }
 
+/// `Char` storage folds onto `String` for a DECLARED type too — spelling only.
+fn normalize_vb_char_declared_type_hint(type_hint: &mut Option<vybe_ast::TypeHint>) {
+    if type_hint
+        .as_deref()
+        .is_some_and(|hint| vb_canonical_type_name(hint) == "Char")
+    {
+        if let Some(value) = type_hint {
+            value.set_spelling("String");
+        }
+    }
+}
+
 fn normalize_vb_char_storage_statements(body: &mut [Statement]) {
     for stmt in body {
         normalize_vb_char_storage_statement(stmt);
@@ -1857,7 +1881,7 @@ fn normalize_vb_char_storage_statement(stmt: &mut Statement) {
     match &mut stmt.kind {
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
-                normalize_vb_char_type_hint(&mut decl.type_hint);
+                normalize_vb_char_declared_type_hint(&mut decl.type_hint);
             }
         }
         StmtKind::FunctionDecl {
@@ -1867,7 +1891,7 @@ fn normalize_vb_char_storage_statement(stmt: &mut Statement) {
             ..
         } => {
             for param in params {
-                normalize_vb_char_type_hint(&mut param.type_hint);
+                normalize_vb_char_declared_type_hint(&mut param.type_hint);
             }
             normalize_vb_char_type_hint(return_type);
             normalize_vb_char_storage_statements(body);
@@ -1948,7 +1972,7 @@ fn normalize_vb_char_storage_member(member: &mut ClassMember) {
         }
         ClassMember::Constructor { params, body, .. } => {
             for param in params {
-                normalize_vb_char_type_hint(&mut param.type_hint);
+                normalize_vb_char_declared_type_hint(&mut param.type_hint);
             }
             normalize_vb_char_storage_statements(body);
         }
@@ -1963,7 +1987,7 @@ fn normalize_vb_char_storage_member(member: &mut ClassMember) {
                 normalize_vb_char_storage_statements(getter);
             }
             if let Some(setter) = setter {
-                normalize_vb_char_type_hint(&mut setter.param.type_hint);
+                normalize_vb_char_declared_type_hint(&mut setter.param.type_hint);
                 normalize_vb_char_storage_statements(&mut setter.body);
             }
         }
@@ -3746,12 +3770,12 @@ fn normalize_vb_xml_statement(stmt: &mut Statement, state: &mut VbXmlNormalizeSt
                     if let BindingPattern::Ident(name) = &decl.pattern {
                         if vb_expr_is_xml_document_value(init) {
                             if decl.type_hint.is_none() {
-                                decl.type_hint = Some("XDocument".to_string());
+                                decl.type_hint = Some("XDocument".to_string().into());
                             }
                             state.document_locals.insert(name.to_ascii_lowercase());
                         } else if vb_expr_is_xml_value(init) {
                             if decl.type_hint.is_none() {
-                                decl.type_hint = Some("XElement".to_string());
+                                decl.type_hint = Some("XElement".to_string().into());
                             }
                             let key = name.to_ascii_lowercase();
                             state.element_locals.insert(key.clone());
@@ -5125,7 +5149,7 @@ fn rewrite_vb_interface_dispatch_type_hint_statement(
                         if !interfaces.contains(&inferred.to_ascii_lowercase())
                             && !matches!(inferred.as_str(), "Object" | "Array")
                         {
-                            decl.type_hint = Some(inferred);
+                            decl.type_hint = Some(inferred.into());
                         }
                     }
                 }
@@ -10563,6 +10587,11 @@ fn normalize_vb_convert_change_type_reflection_expr(
     locals: &VbConvertReflectionLocals,
 ) {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                normalize_vb_convert_change_type_reflection_expr(child, locals);
+            }
+        }
         ExprKind::Ident(name) => {
             if let Some(value) = locals.values.get(&name.to_ascii_lowercase()) {
                 *expr = value.clone();
@@ -12787,7 +12816,7 @@ fn vb_reflection_substitute_ctor_type_param(
             .as_deref()
             .is_some_and(|hint| hint.eq_ignore_ascii_case("T"))
         {
-            param.type_hint = Some(actual.to_string());
+            param.type_hint = Some(actual.to_string().into());
         }
     }
 }
@@ -16094,7 +16123,7 @@ fn emit_vb_object_init_iife(new_call: Expression, props: Vec<(String, Expression
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__obj".into()),
-                type_hint,
+                type_hint: type_hint.map(Into::into),
                 init: Some(new_call),
                 array_bounds: None,
                 with_events: false }],
@@ -16138,7 +16167,7 @@ fn emit_vb_collection_init_iife(new_call: Expression, elements: Vec<Expression>)
         StmtKind::VarDecl {
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident("__obj".into()),
-                type_hint,
+                type_hint: type_hint.map(Into::into),
                 init: Some(new_call),
                 array_bounds: None,
                 with_events: false }],
@@ -17076,7 +17105,7 @@ fn rewrite_vb_aliases_in_statement(stmt: &mut Statement, aliases: &HashMap<Strin
         }
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
-                rewrite_vb_alias_in_type_hint(&mut decl.type_hint, aliases);
+                rewrite_vb_alias_in_declared_type_hint(&mut decl.type_hint, aliases);
                 if let Some(init) = &mut decl.init {
                     rewrite_vb_aliases_in_expr(init, aliases);
                 }
@@ -17293,9 +17322,23 @@ fn rewrite_vb_aliases_in_member(member: &mut ClassMember, aliases: &HashMap<Stri
 }
 
 fn rewrite_vb_alias_in_param(param: &mut Param, aliases: &HashMap<String, String>) {
-    rewrite_vb_alias_in_type_hint(&mut param.type_hint, aliases);
+    rewrite_vb_alias_in_declared_type_hint(&mut param.type_hint, aliases);
     if let Some(default) = &mut param.default {
         rewrite_vb_aliases_in_expr(default, aliases);
+    }
+}
+
+/// Alias rewriting for a DECLARED type — spelling only, binding preserved.
+fn rewrite_vb_alias_in_declared_type_hint(
+    type_hint: &mut Option<vybe_ast::TypeHint>,
+    aliases: &HashMap<String, String>,
+) {
+    if let Some(current) = type_hint.as_ref() {
+        if let Some(rewritten) = rewrite_vb_alias_type_name(current, aliases) {
+            if let Some(value) = type_hint.as_mut() {
+                value.set_spelling(rewritten);
+            }
+        }
     }
 }
 
@@ -17334,6 +17377,11 @@ fn rewrite_vb_alias_name(name: &str, aliases: &HashMap<String, String>) -> Optio
 
 fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, String>) {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_vb_aliases_in_expr(child, aliases);
+            }
+        }
         ExprKind::Ident(name) => {
             if let Some(path) = aliases.get(name) {
                 *expr = build_dotted_expr(path);
@@ -17824,6 +17872,11 @@ fn normalize_vb_date_literal_statement(
 
 fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String, Expression>) {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                normalize_vb_date_literal_expr(child, dates);
+            }
+        }
         ExprKind::Ident(name) => {
             if let Some(value) = dates.get(&name.to_ascii_lowercase()) {
                 *expr = value.clone();
@@ -19557,6 +19610,11 @@ fn normalize_vb_delegate_binding_expr(
     bindings: &HashMap<String, VbDelegateBinding>,
 ) {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                normalize_vb_delegate_binding_expr(child, delegates, locals, bindings);
+            }
+        }
         ExprKind::Member {
             object,
             field,
@@ -19953,7 +20011,7 @@ fn vb_delegate_return_type_for_type(
 fn vb_delegate_param(idx: usize, type_hint: Option<String>, pass_by: PassBy) -> Param {
     Param {
         name: format!("__vb_delegate_arg{idx}"),
-        type_hint,
+        type_hint: type_hint.map(Into::into),
         default: None,
         pass_by,
         is_rest: false,
@@ -20404,7 +20462,7 @@ fn rewrite_vb_generic_new_factory_statement(
             let mut scoped = locals.clone();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    scoped.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+                    scoped.insert(param.name.to_ascii_lowercase(), type_hint.clone().to_string());
                 }
             }
             rewrite_vb_generic_new_factory_statements(body, factories, &mut scoped);
@@ -20460,7 +20518,10 @@ fn rewrite_vb_generic_new_factory_member(
             let mut locals = HashMap::new();
             for param in params {
                 if let Some(type_hint) = &param.type_hint {
-                    locals.insert(param.name.to_ascii_lowercase(), type_hint.clone());
+                    locals.insert(
+                        param.name.to_ascii_lowercase(),
+                        type_hint.spelling().to_string(),
+                    );
                 }
             }
             rewrite_vb_generic_new_factory_statements(body, factories, &mut locals);
@@ -22539,7 +22600,8 @@ fn normalize_vb_dotnet_collection_statement(
                     {
                         let mut local_type = decl
                             .type_hint
-                            .clone()
+                            .as_deref()
+                            .map(str::to_string)
                             .unwrap_or_else(|| "Array".to_string());
                         if let Some(base_type) = vb_rectangular_array_element_type(&local_type) {
                             local_type = format!("{base_type}()");
@@ -22550,7 +22612,7 @@ fn normalize_vb_dotnet_collection_statement(
                             format!("$element:{}", name.to_ascii_lowercase()),
                             vb_array_element_type_name(&local_type),
                         );
-                        locals.insert(name.to_ascii_lowercase(), local_type);
+                        locals.insert(name.to_ascii_lowercase(), local_type.to_string());
                     }
                     if let Some(type_name) = decl
                         .type_hint
@@ -22954,7 +23016,7 @@ fn normalize_vb_dotnet_collection_member_body(
             StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(alias.clone()),
-                    type_hint: Some(type_name.clone()),
+                    type_hint: Some(type_name.clone().into()),
                     init: Some(Expression::new(ExprKind::Member {
                         object: Box::new(Expression::new(ExprKind::This)),
                         field: field.clone(),
@@ -28826,6 +28888,13 @@ fn wrap_vb_resume_next(stmt: Statement, span: Span) -> Statement {
 
 fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
     match &mut expr.kind {
+        ExprKind::Async(op) => {
+            let mut changed = false;
+            for child in op.children_mut() {
+                changed |= rewrite_vb_err_expr(child);
+            }
+            changed
+        }
         ExprKind::Member { object, field, .. } => {
             let mut used = rewrite_vb_err_expr(object);
             if is_vb_err_ident(object) {
@@ -29985,7 +30054,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     _ => String::new() };
                 members.push(ClassMember::Field {
                     name: field_name,
-                    type_hint: d.type_hint,
+                    type_hint: d.type_hint.as_deref().map(str::to_string),
                     init: d.init,
                     modifiers: module_field_modifiers(),
                     with_events: d.with_events,
@@ -30041,14 +30110,14 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 modifiers.is_readonly = true;
                 members.push(ClassMember::Field {
                     name: name.clone(),
-                    type_hint: decl.type_hint.clone(),
+                    type_hint: decl.type_hint.clone().as_deref().map(str::to_string),
                     init: Some(init.clone()),
                     modifiers,
                     with_events: false,
                     array_bounds: None });
                 members.push(ClassMember::Const {
                     name,
-                    type_hint: decl.type_hint,
+                    type_hint: decl.type_hint.as_deref().map(str::to_string),
                     value: init,
                     visibility: vis });
             }
@@ -30060,7 +30129,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         _ => String::new() };
                     members.push(ClassMember::Field {
                         name: field_name,
-                        type_hint: d.type_hint,
+                        type_hint: d.type_hint.as_deref().map(str::to_string),
                         init: d.init,
                         modifiers: module_field_modifiers(),
                         with_events: d.with_events,
@@ -30077,7 +30146,7 @@ fn parse_module_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     _ => String::new() };
                 members.push(ClassMember::Field {
                     name: field_name,
-                    type_hint: d.type_hint,
+                    type_hint: d.type_hint.as_deref().map(str::to_string),
                     init: d.init,
                     modifiers,
                     with_events: d.with_events,
@@ -30343,7 +30412,7 @@ fn parse_auto_property_as_field(pair: Pair<Rule>) -> Result<VarDeclarator, Strin
 
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(name),
-        type_hint: var_type,
+        type_hint: var_type.map(Into::into),
         init: initializer,
         array_bounds: None,
         with_events: is_with_events })
@@ -30404,7 +30473,7 @@ fn parse_auto_property_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
     };
     let mut members = vec![ClassMember::Property {
         name: name.clone(),
-        type_hint: type_hint.clone(),
+        type_hint: type_hint.clone().as_deref().map(str::to_string),
         getter,
         setter: auto_setter,
         is_auto: override_storage_name.is_none(),
@@ -30420,7 +30489,7 @@ fn parse_auto_property_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
         }
         members.push(ClassMember::Field {
             name: override_storage_name.clone().unwrap_or_else(|| name.clone()),
-            type_hint: type_hint.clone(),
+            type_hint: type_hint.clone().as_deref().map(str::to_string),
             init: Some(init),
             modifiers: field_modifiers,
             with_events: d.with_events,
@@ -30429,7 +30498,7 @@ fn parse_auto_property_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
     for target in implemented_targets {
         members.push(ClassMember::Property {
             name: target.forwarder,
-            type_hint: type_hint.clone(),
+            type_hint: type_hint.clone().as_deref().map(str::to_string),
             getter: Some(vec![Statement::new(StmtKind::Return(Some(Expression::new(
                 ExprKind::Member {
                     object: Box::new(Expression::new(ExprKind::This)),
@@ -31944,7 +32013,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 modifiers.is_readonly = true;
                 let mut member = ClassMember::Field {
                     name: name.clone(),
-                    type_hint: decl.type_hint.clone(),
+                    type_hint: decl.type_hint.clone().as_deref().map(str::to_string),
                     init: Some(init.clone()),
                     modifiers,
                     with_events: false,
@@ -31956,7 +32025,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 members.push(member);
                 members.push(ClassMember::Const {
                     name,
-                    type_hint: decl.type_hint,
+                    type_hint: decl.type_hint.as_deref().map(str::to_string),
                     value: init,
                     visibility: vis });
             }
@@ -31968,7 +32037,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         _ => String::new() };
                     let mut member = ClassMember::Field {
                         name: field_name,
-                        type_hint: d.type_hint,
+                        type_hint: d.type_hint.as_deref().map(str::to_string),
                         init: d.init,
                         modifiers: Modifiers::default(),
                         with_events: d.with_events,
@@ -31988,7 +32057,7 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     _ => String::new() };
                 let mut member = ClassMember::Field {
                     name: field_name,
-                    type_hint: d.type_hint,
+                    type_hint: d.type_hint.as_deref().map(str::to_string),
                     init: d.init,
                     modifiers,
                     with_events: d.with_events,
@@ -33595,7 +33664,7 @@ fn parse_property_decl_to_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, 
                 Some(PropertySetter {
                     param: Param {
                         name: "value".into(),
-                        type_hint: return_type.clone(),
+                        type_hint: return_type.clone().map(Into::into),
                         default: None,
                         pass_by: PassBy::Value,
                         is_rest: false,
@@ -33819,7 +33888,7 @@ fn parse_parameter(pair: Pair<Rule>) -> Result<Param, String> {
 
     Ok(Param {
         name,
-        type_hint: param_type,
+        type_hint: param_type.map(Into::into),
         default: default_value,
         pass_by,
         is_rest: is_param_array,
@@ -33865,7 +33934,7 @@ fn parse_const_statement(pair: Pair<Rule>) -> Result<(Visibility, VarDeclarator)
         visibility,
         VarDeclarator {
             pattern: BindingPattern::Ident(name),
-            type_hint,
+            type_hint: type_hint.map(Into::into),
             init,
             array_bounds: None,
             with_events: false },
@@ -34083,7 +34152,7 @@ fn parse_dim_statement(pair: Pair<Rule>) -> Result<Vec<VarDeclarator>, String> {
 
         decls.push(VarDeclarator {
             pattern: BindingPattern::Ident(name),
-            type_hint,
+            type_hint: type_hint.map(Into::into),
             init,
             array_bounds,
             with_events: false });
@@ -34594,7 +34663,7 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(name),
-                    type_hint: var_type,
+                    type_hint: var_type.map(Into::into),
                     init: initializer,
                     array_bounds: None,
                     with_events: false }],
@@ -34767,7 +34836,7 @@ fn parse_for_statement(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut declarations = vec![
         VarDeclarator {
             pattern: BindingPattern::Ident(variable.clone()),
-            type_hint: variable_type,
+            type_hint: variable_type.map(Into::into),
             init: Some(start),
             array_bounds: None,
             with_events: false },
@@ -36972,7 +37041,7 @@ fn parse_for_each_statement(pair: Pair<Rule>) -> Result<Statement, String> {
             Statement::new(StmtKind::VarDecl {
                 declarations: vec![VarDeclarator {
                     pattern: BindingPattern::Ident(variable),
-                    type_hint: Some(type_hint),
+                    type_hint: Some(type_hint.into()),
                     init: Some(Expression::ident(&source_var)),
                     array_bounds: None,
                     with_events: false }],
@@ -37380,7 +37449,7 @@ fn parse_field_decl(pair: Pair<Rule>) -> Result<VarDeclarator, String> {
 
     Ok(VarDeclarator {
         pattern: BindingPattern::Ident(field_name),
-        type_hint: field_type,
+        type_hint: field_type.map(Into::into),
         init: field_init,
         array_bounds: field_bounds,
         with_events: is_with_events })
@@ -37879,7 +37948,7 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                         _ => String::new() };
                     let mut member = ClassMember::Field {
                         name: field_name,
-                        type_hint: d.type_hint,
+                        type_hint: d.type_hint.as_deref().map(str::to_string),
                         init: d.init,
                         modifiers: Modifiers::default(),
                         with_events: d.with_events,
@@ -37899,7 +37968,7 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                     _ => String::new() };
                 let mut member = ClassMember::Field {
                     name: field_name,
-                    type_hint: d.type_hint,
+                    type_hint: d.type_hint.as_deref().map(str::to_string),
                     init: d.init,
                     modifiers,
                     with_events: d.with_events,

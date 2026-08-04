@@ -47,6 +47,7 @@ pub fn register() {
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: None,
+        expand_source: None,
     });
     vybe_platform_dotnet::winforms::form_modules::register(
         vybe_platform_dotnet::winforms::form_modules::FormModuleLanguage {

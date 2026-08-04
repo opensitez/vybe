@@ -36,7 +36,8 @@ pub fn register() {
         profile_source,
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
-        register_tree: Some(tree_register::register_namespace_tree) });
+        register_tree: Some(tree_register::register_namespace_tree),
+        expand_source: None });
     // Dart records compare by value while Lists compare by reference, so the
     // equality fallback deep-compares only tagged tuples (see vybe_compiler::emitter).
     vybe_runtime::registry::register_hooks(

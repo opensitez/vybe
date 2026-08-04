@@ -226,7 +226,13 @@ top_level_function_or_variable = _{
 }
 
 function_declaration = {
-    type_annotation? ~ ident_name ~ type_params?
+    // `await f();` in statement position must NOT parse as a declaration of
+    // `f` with type "await" (the same disease the `yield` comment on
+    // `statement` documents — a contextual keyword swallowed as a
+    // type_annotation, leaving an EMPTY function that shadows the real one
+    // and silently swallows the await).
+    !await_kw
+    ~ type_annotation? ~ ident_name ~ type_params?
     ~ "(" ~ param_list? ~ ")"
     ~ (async_kw | sync_kw)? ~ generator_marker? ~ function_body
 }

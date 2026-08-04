@@ -47,9 +47,9 @@ pub fn normalize_class(
     span: Span,
     name: &str,
     parents: &[String],
-    interfaces: &[String],
+    _interfaces: &[String],
     members: &[ClassMember],
-    modifiers: &ClassModifiers,
+    _modifiers: &ClassModifiers,
 ) -> NormalClass {
     let mut m = NormalMembers::default();
 
