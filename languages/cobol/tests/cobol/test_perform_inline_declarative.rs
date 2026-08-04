@@ -266,9 +266,14 @@ fn perform_varying_with_float_step_compiles() {
 
 #[test]
 fn perform_until_exit_on_two_conditions_and() {
+    // Both counters must move TOWARD the condition, or `AND` never holds: B
+    // started at 5 and counted DOWN, so `B > 3` was false from the second pass
+    // on and the loop never ended — `cobc -x -free` hangs on the old form too,
+    // so it was not a Vybe bug but an invalid program. Counting both up ends at
+    // A = B = 4, which is the value this test already asserted.
     let out = run_prints(&p(
-        "01 A PIC 9 VALUE 0.\n01 B PIC 9 VALUE 5.",
-        "    PERFORM UNTIL A > 3 AND B > 3\n        ADD 1 TO A\n        SUBTRACT 1 FROM B\n    END-PERFORM.\n    DISPLAY A.",
+        "01 A PIC 9 VALUE 0.\n01 B PIC 9 VALUE 0.",
+        "    PERFORM UNTIL A > 3 AND B > 3\n        ADD 1 TO A\n        ADD 1 TO B\n    END-PERFORM.\n    DISPLAY A.",
     ));
     assert_eq!(out, vec!["4"]);
 }

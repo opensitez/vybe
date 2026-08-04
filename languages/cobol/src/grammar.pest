@@ -689,7 +689,7 @@ move_stmt = {
   | kw_move ~ expression ~ kw_to ~ move_target+
 }
 
-data_target = { (ident_name | kw_sd) ~ subscript_or_refmod? ~ qualification? }
+data_target = { (ident_name | kw_sd) ~ subscript_or_refmod? ~ qualification* }
 
 move_target = { data_target }
 
@@ -1341,7 +1341,11 @@ new_expr = { kw_new ~ ident_name ~ ("(" ~ arg_list? ~ ")")? }
 
 // Identifiers with optional subscript, reference modification, or qualification
 qualified_ident = {
-    ident_name ~ subscript_or_refmod? ~ qualification?
+    // `qualification*`, not `?`: COBOL qualifies as far out as it needs to —
+    // `NAME OF L3 OF L2 OF L1`. With one optional level the parser took
+    // `NAME OF L3` and then started a SECOND operand at `L2 OF L1`, so a
+    // three-level DISPLAY printed two values.
+    ident_name ~ subscript_or_refmod? ~ qualification*
   | kw_self
 }
 

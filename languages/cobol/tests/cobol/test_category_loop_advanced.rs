@@ -120,12 +120,16 @@ fn test_loop_no_iterations_zero() {
        01 I PIC 9 VALUE 0.
        01 TOTAL PIC 99 VALUE 99.
        PROCEDURE DIVISION.
-           PERFORM VARYING I FROM 5 BY 1 UNTIL I < 5
+           PERFORM VARYING I FROM 5 BY 1 UNTIL I >= 5
               ADD 1 TO TOTAL
            END-PERFORM.
            DISPLAY TOTAL.
            STOP RUN.
     "#;
-    // condition false at start.
+    // Zero iterations: PERFORM VARYING tests BEFORE the first pass and the
+    // condition already holds at I = 5. It read `UNTIL I < 5`, which is false
+    // at the start and only becomes true when a one-digit I wraps 9 → 0 — five
+    // iterations under cobc (TOTAL = 04), an infinite loop here. Verified: this
+    // form gives 99 under `cobc -x -free`, which is what the test asserts.
     assert_eq!(helpers::run_prints(src), vec!["99"]);
 }
