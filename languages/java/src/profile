@@ -9,6 +9,11 @@ name = "java"
 extensions = ["java"]
 
 [compiler]
+# Declared types CONVERT the value they bind (assignment, declaration and
+# parameter entry alike). Stated explicitly rather than inherited: the platform
+# default is `true`, and inheriting it silently gave Python coercive semantics
+# it never chose.
+coerces_value_to_type_hint = true
 field_hiding = true            # static-type field resolution: subclass field hides parent, distinct slots
 function_return    = "explicit"
 self_keyword       = "this"
@@ -132,23 +137,15 @@ __java_xml_node_name = { emit = "common:xml.node_name",           min_args = 1, 
 __j_object_notify   = { emit = "common:threading.monitor_notify", min_args = 1, max_args = 1 }
 __j_object_notify_all = { emit = "common:threading.monitor_notify_all", min_args = 1, max_args = 1 }
 
+# `java.util.EnumSet` is NOT here. It is tree data in `platforms/jvm`
+# (`tree_register::insert_java_util_enum_set`) — statics, instance methods and
+# declared return types under `jvm.java.util.EnumSet` — so Kotlin, or any
+# language that mounts the `jvm.java` root, reaches the same one class. These
+# fifteen rows plus a Java-walker call rewrite were what made a `java.util`
+# class the property of one frontend.
+
 # ── Type parsing / conversion ─────────────────────────────────────────────────
 
-__java_enum_set_none_of = { emit = "common:java.enum_set_none_of", min_args = 1, max_args = 1 }
-__java_enum_set_all_of = { emit = "common:java.enum_set_all_of", min_args = 1, max_args = 1 }
-__java_enum_set_of = { emit = "common:java.enum_set_of", min_args = 1, max_args = 255 }
-__java_enum_set_copy_of = { emit = "common:java.enum_set_copy_of", min_args = 1, max_args = 1 }
-__java_enum_set_complement_of = { emit = "common:java.enum_set_complement_of", min_args = 1, max_args = 1 }
-__java_enum_set_range = { emit = "common:java.enum_set_range", min_args = 3, max_args = 3 }
-__java_enum_set_add = { emit = "common:java.enum_set_add", min_args = 2, max_args = 2 }
-__java_enum_set_add_all = { emit = "common:java.enum_set_add_all", min_args = 2, max_args = 2 }
-__java_enum_set_contains = { emit = "common:java.enum_set_contains", min_args = 2, max_args = 2 }
-__java_enum_set_contains_all = { emit = "common:java.enum_set_contains_all", min_args = 2, max_args = 2 }
-__java_enum_set_remove = { emit = "common:java.enum_set_remove", min_args = 2, max_args = 2 }
-__java_enum_set_equals = { emit = "common:java.enum_set_equals", min_args = 2, max_args = 2 }
-__java_enum_set_hash_code = { emit = "common:java.enum_set_hash_code", min_args = 1, max_args = 1 }
-__java_enum_set_iterator = { emit = "common:java.enum_set_iterator", min_args = 1, max_args = 1 }
-__java_enum_set_get_class = { emit = "common:java.enum_set_get_class", min_args = 1, max_args = 1 }
 __java_instant_compare_to = { emit = "common:jvm.java.instant_compare_to", min_args = 2, max_args = 2 }
 __java_instant_equals = { emit = "common:jvm.java.instant_equals", min_args = 2, max_args = 2 }
 __java_instant_is_before = { emit = "common:jvm.java.instant_is_before", min_args = 2, max_args = 2 }
@@ -803,6 +800,22 @@ path = "jvm.java.io"
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES
 # ────────────────────────────────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTIN SLOTS — what an operator does to a BUILT-IN type (builtinslotplan §2d)
+# ────────────────────────────────────────────────────────────────────────────
+
+[builtin_slots.string]
+# The per-operand cast `+` applies when either side is a String (JLS §15.18.1,
+# specified as `String.valueOf`). The platform default is the ECMA coercion,
+# which renders `4.0` as `4` and never consults an object's ToString slot —
+# both wrong for Java. Measured against `/usr/bin/java`: `"" + 4.0` is `4.0`,
+# and a class with `toString(){ return this.s; }` renders through it.
+#
+# This is the SAME binding string interpolation reads, so the two cannot drift
+# (`project_interpolation_tostring_slot`). It is a slot, not a hook: the
+# question "what does operator X do to built-in type Y" is a slot by rule.
+to_string = "common:jvm.java.to_string"
 
 [namespaces]
 use_dotnet = false

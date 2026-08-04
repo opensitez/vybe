@@ -121,4 +121,5 @@ kotlin_run_cases! {
             println(windows.size)
             println(windows.joinToString("|"))
         }
-    "##, vec![String::from("5"), String::from("ab|bc|cc|cb|ba")]) }
+    "##, vec![String::from("5"), String::from("ab|bc|cc|cb|ba")]),
+}

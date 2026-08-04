@@ -1990,171 +1990,30 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Result<StmtKind, String> {
         );
     });
 
-    // JLS §8.9: each constant is an instance of the enum class. Constants
-    // become static instances (`Season.SPRING = new Season("SPRING", 0, …)`);
-    // name()/ordinal()/toString()/values()/valueOf() are synthesized unless
-    // the body declares them.
-    let simple_param = |n: &str| Param {
-        name: n.to_string(),
-        type_hint: None,
-        default: None,
-        pass_by: PassBy::Value,
-        is_rest: false,
-        is_kwargs: false,
-        is_optional: false,
-        is_nullable: false };
-    let this_field = |f: &str| {
-        Expression::new(ExprKind::Member {
-            object: Box::new(Expression::new(ExprKind::This)),
-            field: f.to_string(),
-            null_safe: false })
-    };
-    let stamp = |field: &str, param: &str| {
-        Statement::new(StmtKind::Assign {
-            targets: vec![this_field(field)],
-            value: Expression::ident(param), by_ref: false })
-    };
-
-    let mut has_ctor = false;
-    for member in body_members.iter_mut() {
-        if let ClassMember::Constructor { params, body, .. } = member {
-            has_ctor = true;
-            params.insert(0, simple_param("__ordinal"));
-            params.insert(0, simple_param("__name"));
-            body.insert(0, stamp("__ordinal", "__ordinal"));
-            body.insert(0, stamp("__name", "__name"));
-        }
-    }
-    if !has_ctor {
-        body_members.push(ClassMember::Constructor {
-            name: None,
-            params: vec![simple_param("__name"), simple_param("__ordinal")],
-            body: vec![stamp("__name", "__name"), stamp("__ordinal", "__ordinal")],
-            base_args: None,
-            initializer_target: ConstructorInitializerTarget::Base,
-            visibility: ParsedModifiers::default().visibility });
-    }
-
-    let user_method_names: Vec<String> = body_members
-        .iter()
-        .filter_map(|m| match m {
-            ClassMember::Method(s) => match &s.kind {
-                StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
-                _ => None },
-            _ => None })
-        .collect();
-    let make_method = |mname: &str, params: Vec<Param>, body: Vec<Statement>, is_static: bool| {
-        let mut modifiers = Modifiers::default();
-        modifiers.is_static = is_static;
-        ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
-            name: mname.to_string(),
-            params,
-            return_type: None,
-            body,
-            modifiers,
-            handles: vec![],
-            is_async: false,
-            is_generator: false,
-            is_sub: false })))
-    };
-    for (mname, field) in [
-        ("name", "__name"),
-        ("ordinal", "__ordinal"),
-        ("toString", "__name"),
-    ] {
-        if !user_method_names.iter().any(|n| n == mname) {
-            body_members.push(make_method(
-                mname,
-                vec![],
-                vec![Statement::new(StmtKind::Return(Some(this_field(field))))],
-                false,
-            ));
-        }
-    }
-
-    let member_access = |m: &str| {
-        Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident(&name)),
-            field: m.to_string(),
-            null_safe: false })
-    };
-    if !user_method_names.iter().any(|n| n == "values") {
-        let values_array = Expression::new(ExprKind::Array(
-            enum_members
-                .iter()
-                .map(|m| ArrayElement {
-                    key: None,
-                    value: member_access(&m.name),
-                    spread: false,
-                    by_ref: false })
-                .collect(),
-        ));
-        body_members.push(make_method(
-            "values",
-            vec![],
-            vec![Statement::new(StmtKind::Return(Some(values_array)))],
-            true,
-        ));
-    }
-    if !user_method_names.iter().any(|n| n == "valueOf") {
-        let mut body: Vec<Statement> = enum_members
-            .iter()
-            .map(|m| {
-                Statement::new(StmtKind::If {
-                    cond: java_binary(
-                        BinOp::Eq,
-                        Expression::ident("__s"),
-                        Expression::string(&m.name),
-                    ),
-                    then_body: vec![Statement::new(StmtKind::Return(Some(member_access(
-                        &m.name,
-                    ))))],
-                    elifs: vec![],
-                    else_body: None })
-            })
-            .collect();
-        body.push(Statement::new(StmtKind::Throw {
-            expr: Some(Expression::new(ExprKind::New {
-                class: Box::new(Expression::ident("IllegalArgumentException")),
-                args: vec![Argument::positional(java_binary(
-                    BinOp::Add,
-                    Expression::string(&format!("No enum constant {name}.")),
-                    Expression::ident("__s"),
-                ))] })),
-            cause: None }));
-        // Not named `valueOf` — that name is intercepted by shared compiler
-        // paths before the user-class static dispatch. The tostring post-pass
-        // rewrites `EnumType.valueOf(x)` calls to this name.
-        body_members.push(make_method(
-            "__j_enum_value_of",
-            vec![simple_param("__s")],
-            body,
-            true,
-        ));
-    }
-
-    // Constants as static instance fields: `Mode.ON = new Mode("ON", 0, …)`.
+    // JLS §8.9: each constant is an instance of the enum class. The whole
+    // `java.lang.Enum` surface — the implicit `__name`/`__ordinal` ctor
+    // params, name()/ordinal()/toString()/values()/valueOf(), and the
+    // constants themselves — is a JDK class, so it is declared ONCE in
+    // `platforms/jvm` and every JVM frontend installs the same one. It used
+    // to be hand-built right here, which made a JDK class the property of
+    // this frontend.
+    //
     // Emitted as a plain ClassDecl — NOT StmtKind::EnumDecl — because the
     // shared EnumDecl path registers ordinal tables that constant-fold
     // `Mode.ON` member reads to F64 ordinals, breaking instance identity.
-    for (i, m) in enum_members.iter().enumerate() {
-        let mut args = vec![
-            Argument::positional(Expression::string(&m.name)),
-            Argument::positional(Expression::int(i as i64)),
-        ];
-        args.extend(member_ctor_args[i].clone());
-        let mut modifiers = Modifiers::default();
-        modifiers.is_static = true;
-        body_members.push(ClassMember::Field {
+    let constants: Vec<vybe_platform_jvm::lang_enum::EnumConstant> = enum_members
+        .iter()
+        .zip(member_ctor_args.iter())
+        .map(|(m, args)| vybe_platform_jvm::lang_enum::EnumConstant {
             name: m.name.clone(),
-            type_hint: Some(name.clone()),
-            init: Some(Expression::new(ExprKind::New {
-                class: Box::new(Expression::ident(&name)),
-                args })),
-            modifiers,
-            with_events: false,
-            array_bounds: None });
-    }
+            ctor_args: args.clone() })
+        .collect();
+    vybe_platform_jvm::lang_enum::install(
+        &name,
+        &constants,
+        &mut body_members,
+        vybe_platform_jvm::lang_enum::Accessors::Methods,
+    );
 
     let enum_member_names: Vec<String> = enum_members
         .iter()
@@ -12916,10 +12775,11 @@ fn rewrite_java_tostring_expr(
                     locals,
                 );
             }
-            if let Some(rewritten) = rewrite_java_enum_set_static_call(callee, args, enum_values) {
-                *expr = rewritten;
-                return;
-            }
+            // `EnumSet.*` is NOT rewritten. It is tree data in `platforms/jvm`
+            // (`jvm.java.util.EnumSet`), reached by the common resolver — the
+            // rewrite that used to live here prepended a compile-time name
+            // array and folded each constant to its ordinal, which made a
+            // `java.util` class unreachable from any other frontend.
             // `EnumType.valueOf(x)` → the walker-synthesized static (the
             // `valueOf` name is intercepted before user-class static dispatch).
             if let ExprKind::Member { object, field, .. } = &mut callee.kind {
@@ -12931,38 +12791,14 @@ fn rewrite_java_tostring_expr(
                     }
                 }
             }
-            // println(Object) prints String.valueOf(x) → x.toString()
-            // (java.io.PrintStream). Wrap args whose static type is a user
-            // class with toString or an enum constant (JLS §8.9.3 toString).
-            if let ExprKind::Ident(fn_name) = &callee.kind {
-                if matches!(
-                    fn_name.as_str(),
-                    "__j_println" | "__j_print" | "__java_println" | "__java_print"
-                ) {
-                    for arg in &mut *args {
-                        if java_print_arg_needs_tostring(
-                            &arg.value,
-                            tostring_classes,
-                            enum_values,
-                            current_class,
-                            locals,
-                        ) {
-                            let receiver = arg.value.clone();
-                            arg.value = java_tostring_call(receiver);
-                        }
-                    }
-                }
-                if fn_name == "__java_string_concat" {
-                    for arg in &mut *args {
-                        if java_expr_enum_type(&arg.value, enum_values, current_class, locals)
-                            .is_some()
-                        {
-                            let receiver = arg.value.clone();
-                            arg.value = java_tostring_call(receiver);
-                        }
-                    }
-                }
-            }
+            // `println(Object)` and `+` are NOT rewritten here either. They
+            // are specified as `String.valueOf(x)` (java.io.PrintStream /
+            // JLS §15.18.1), and that is now emitted by
+            // `platforms/jvm::object_adapter`, which dispatches on the VALUE
+            // at runtime. Wrapping the ARGUMENT EXPRESSION only worked when
+            // this pass could infer the argument's static type, so the same
+            // value one binding later rendered differently — the exact defect
+            // Kotlin removed with `wrap_printable_arg`.
             if let ExprKind::Member { object, field, .. } = &mut callee.kind {
                 if args.is_empty() {
                     if let ExprKind::Ident(ref name) = object.kind {
@@ -13068,27 +12904,9 @@ fn rewrite_java_tostring_expr(
                     }
                 }
                 if let ExprKind::Ident(ref name) = object.kind {
-                    if java_type_is_enum_set(locals.get(name).map(String::as_str)) {
-                        if let Some(internal) = java_enum_set_method_name(field) {
-                            let mut new_args = Vec::with_capacity(args.len() + 1);
-                            new_args.push(Argument::positional((**object).clone()));
-                            new_args.extend(args.iter().cloned().map(|mut arg| {
-                                if matches!(field.as_str(), "add" | "contains" | "remove") {
-                                    if let Some(name_expr) =
-                                        java_enum_member_arg_to_name(&arg.value, enum_values)
-                                    {
-                                        arg.value = name_expr;
-                                    }
-                                }
-                                arg
-                            }));
-                            *expr = Expression::new(ExprKind::Call {
-                                callee: Box::new(Expression::ident(internal)),
-                                args: new_args,
-                                optional: false });
-                            return;
-                        }
-                    }
+                    // An `EnumSet` receiver is not rewritten either: the
+                    // declared local type resolves to the `jvm.java.util.EnumSet`
+                    // tree node, whose `methods` carry the same emits.
                     if java_type_is_uuid(locals.get(name).map(String::as_str)) {
                         if let Some(internal) = java_uuid_method_name(field) {
                             let mut new_args = Vec::with_capacity(args.len() + 1);
@@ -13406,16 +13224,16 @@ fn rewrite_java_tostring_expr(
                         return;
                     }
                 }
-                if field == "toString"
-                    && java_expr_has_user_tostring(object, tostring_classes, current_class, locals)
-                {
-                    *field = "tostring".to_string();
-                }
-                if field == "toString"
-                    && java_expr_enum_type(object, enum_values, current_class, locals).is_some()
-                {
-                    *field = "tostring".to_string();
-                }
+                // `x.toString()` is NOT rewritten here. It used to be renamed
+                // to the canonical spelling whenever this pass could infer
+                // that the receiver's class declares `toString` — which was
+                // backwards twice over: where the inference succeeded the
+                // renamed call did not resolve (`[object C1]`), and where it
+                // failed the untouched call already worked, because the
+                // profile's `toString = invoke:toString` reaches the method
+                // through its ProtocolSlot. The slot is the mechanism
+                // (flexclassplan: languages bind, they don't name); a
+                // syntactic rewrite that second-guesses it can only subtract.
             } else {
                 rewrite_java_tostring_expr(
                     callee,
@@ -13705,65 +13523,6 @@ fn rewrite_java_switch_enum_label(
         null_safe: false });
 }
 
-fn rewrite_java_enum_set_static_call(
-    callee: &Expression,
-    args: &[Argument],
-    enum_values: &HashMap<String, Vec<String>>,
-) -> Option<Expression> {
-    let ExprKind::Member { object, field, .. } = &callee.kind else {
-        return None;
-    };
-    if !java_member_chain_ends_with(object, "EnumSet") {
-        return None;
-    }
-    let names = match field.as_str() {
-        "noneOf" | "allOf" => {
-            let enum_name = args
-                .first()
-                .and_then(|arg| java_string_literal(&arg.value))?;
-            java_enum_names_expr(enum_values, enum_name)?
-        }
-        "of" => {
-            let enum_name = args
-                .first()
-                .and_then(|arg| java_enum_type_from_member_expr(&arg.value))?;
-            java_enum_names_expr(enum_values, enum_name)?
-        }
-        "range" => {
-            let enum_name = args
-                .first()
-                .and_then(|arg| java_enum_type_from_member_expr(&arg.value))?;
-            java_enum_names_expr(enum_values, enum_name)?
-        }
-        "copyOf" | "complementOf" => Expression::null(),
-        _ => return None };
-    let internal = match field.as_str() {
-        "noneOf" => "__java_enum_set_none_of",
-        "allOf" => "__java_enum_set_all_of",
-        "of" => "__java_enum_set_of",
-        "copyOf" => "__java_enum_set_copy_of",
-        "complementOf" => "__java_enum_set_complement_of",
-        "range" => "__java_enum_set_range",
-        _ => return None };
-    let mut new_args = Vec::with_capacity(args.len() + 1);
-    match field.as_str() {
-        "copyOf" | "complementOf" => new_args.extend(args.iter().cloned()),
-        "of" | "range" => {
-            new_args.push(Argument::positional(names));
-            new_args.extend(args.iter().cloned().map(|mut arg| {
-                if let Some(name_expr) = java_enum_member_arg_to_name(&arg.value, enum_values) {
-                    arg.value = name_expr;
-                }
-                arg
-            }));
-        }
-        _ => new_args.push(Argument::positional(names)) }
-    Some(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::ident(internal)),
-        args: new_args,
-        optional: false }))
-}
-
 fn java_member_chain_ends_with(expr: &Expression, expected: &str) -> bool {
     let mut parts = Vec::new();
     collect_member_chain(expr, &mut parts).is_some() && parts.last().copied() == Some(expected)
@@ -13784,75 +13543,6 @@ fn java_enum_type_from_member_expr(expr: &Expression) -> Option<&str> {
         }
     }
     None
-}
-
-/// EnumSet internals take ordinal indices at value boundaries
-/// (`names[value]` lookups). Convert an enum-constant expression
-/// (`Color.GREEN`) to its declaration index, and an enum-typed variable
-/// to an `.ordinal()` call.
-fn java_enum_member_arg_to_name(
-    arg: &Expression,
-    enum_values: &HashMap<String, Vec<String>>,
-) -> Option<Expression> {
-    if let ExprKind::Member { object, field, .. } = &arg.kind {
-        if let ExprKind::Ident(type_name) = &object.kind {
-            let base = type_name.rsplit('.').next().unwrap_or(type_name);
-            if let Some(index) = enum_values
-                .get(base)
-                .and_then(|members| members.iter().position(|m| m == field))
-            {
-                return Some(Expression::int(index as i64));
-            }
-        }
-    }
-    None
-}
-
-fn java_enum_names_expr(
-    enum_values: &HashMap<String, Vec<String>>,
-    enum_name: &str,
-) -> Option<Expression> {
-    let base = enum_name.rsplit('.').next().unwrap_or(enum_name);
-    let values = enum_values.get(base)?;
-    Some(Expression::new(ExprKind::Array(
-        values
-            .iter()
-            .map(|name| ArrayElement {
-                key: None,
-                value: Expression::string(name),
-                spread: false,
-                by_ref: false })
-            .collect(),
-    )))
-}
-
-fn java_type_is_enum_set(type_name: Option<&str>) -> bool {
-    let Some(type_name) = type_name else {
-        return false;
-    };
-    let base = type_name
-        .rsplit('.')
-        .next()
-        .unwrap_or(type_name)
-        .split('<')
-        .next()
-        .unwrap_or(type_name)
-        .trim();
-    base == "EnumSet"
-}
-
-fn java_enum_set_method_name(method: &str) -> Option<&'static str> {
-    Some(match method {
-        "add" => "__java_enum_set_add",
-        "addAll" => "__java_enum_set_add_all",
-        "contains" => "__java_enum_set_contains",
-        "containsAll" => "__java_enum_set_contains_all",
-        "remove" => "__java_enum_set_remove",
-        "equals" => "__java_enum_set_equals",
-        "hashCode" => "__java_enum_set_hash_code",
-        "iterator" => "__java_enum_set_iterator",
-        "getClass" => "__java_enum_set_get_class",
-        _ => return None })
 }
 
 fn java_type_is_map(type_name: Option<&str>) -> bool {

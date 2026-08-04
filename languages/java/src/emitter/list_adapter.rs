@@ -2133,12 +2133,10 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     chunks[current].emit_op(Op::DROP, line);
 
     let mut worker = create_function_chunk("__java_thread_worker", 1);
-    let current_key = worker.add_constant(Value::String(Arc::from("__j_current_thread")));
-    let run_key = worker.add_constant(Value::String(Arc::from("__j_runnable_run")));
     let target_key = worker.add_constant(Value::String(Arc::from("__target")));
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
-    worker.emit_op_u16(Op::GLOBAL_SET, current_key, line);
-    worker.emit_op_u16(Op::GLOBAL_GET, run_key, line);
+    vybe_compiler::primitives::globals::emit_write(&mut worker, "__j_current_thread", line);
+    vybe_compiler::primitives::globals::emit_read(&mut worker, "__j_runnable_run", line);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
     worker.emit_struct_field_op(Op::STRUCT_GET, 0, target_key, line);
     worker.emit_op_u8(Op::CALL_REF, 1, line);

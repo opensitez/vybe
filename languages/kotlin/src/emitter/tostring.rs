@@ -102,6 +102,20 @@ pub fn emit_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// Push i32 `1` when the object in `slot` fills [`ProtocolSlot::ToString`].
+///
+/// The same key `expressions::emit_rich_to_string` reads, asked as a question
+/// so the answer can be used to ORDER the probes rather than only to call it.
+fn emit_has_to_string_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    let key = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::ToString).as_str(),
+    )));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+}
+
 /// Push i32 `1` when the object in `slot` carries [`SET_MARKER`].
 fn emit_is_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -113,8 +127,24 @@ fn emit_is_set(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
     chunks[current].emit_op(Op::I32_EQZ, line);
 }
 
-/// An object: a `Set`, a `Map`, else its own `toString`, else the ECMA coercion.
+/// An object: its own `toString`, else a `Set`, else a `Map`, else the ECMA
+/// coercion.
+///
+/// **The slot is probed FIRST.** An object that fills `ProtocolSlot::ToString`
+/// has said how it renders, and no structural guess may override that. The
+/// Set/Map probes are inferences from SHAPE — `emit_has_dict_keys` asks whether
+/// the object carries `__keys`, which an ordinary class instance can also carry
+/// — so running them first let a declared `toString` be shadowed by a
+/// coincidence. Measured on a Kotlin `enum class`: `println(Color.RED)` printed
+/// `{name=RED, ordinal=0}`, the map rendering of the constant's own fields,
+/// instead of `RED`.
 fn emit_object_to_string(chunks: &mut Vec<Chunk>, current: usize, v: u16, line: u32) {
+    emit_has_to_string_slot(chunks, current, v, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    expressions::emit_rich_to_string(&mut chunks[current], v, line);
+    chunks[current].emit_else(line);
+
     emit_is_set(chunks, current, v, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
@@ -138,6 +168,10 @@ fn emit_object_to_string(chunks: &mut Vec<Chunk>, current: usize, v: u16, line: 
     // second copy of the calling convention that would drift from it.
     expressions::emit_rich_to_string(&mut chunks[current], v, line);
 
+    // One `end` per `if_value` above — slot, set, map. Getting this count
+    // wrong does not fail to compile: it silently rebalances the surrounding
+    // blocks, and every later value renders as its NEIGHBOUR.
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
 }

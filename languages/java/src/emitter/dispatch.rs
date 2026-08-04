@@ -59,9 +59,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             if argc == 0 {
                 chunks[current].emit_string_const("", line);
             } else {
-                let to_str = chunks[current].add_import("ecma:string", "String");
-                chunks[current].emit_op_u16(Op::CALL_IMPORT, to_str, line);
-                chunks[current].emit(1, line);
+                // `println(Object)` IS `String.valueOf(x)` (java.io.PrintStream),
+                // which reaches the object's ToString slot.
+                super::string_adapter::emit_value_of(chunks, current, line);
             }
             host::emit(&mut chunks[current], "wasi:logging/logging", "log", 1, line);
             emit_print_stream_sentinel(&mut chunks[current], line);
@@ -71,11 +71,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks[current].emit_string_const("", line);
             }
             // Real WASI stdout (the old target, `wasi:cli.print`, never
-            // existed as a host fn). Import tables are PER CHUNK —
-            // register on the chunk whose CALL_IMPORT indexes them.
-            let to_str = chunks[current].add_import("ecma:string", "String");
-            chunks[current].emit_op_u16(Op::CALL_IMPORT, to_str, line);
-            chunks[current].emit(1, line);
+            // existed as a host fn).
+            super::string_adapter::emit_value_of(chunks, current, line);
             emit_stdout_text(&mut chunks[current], line);
             emit_print_stream_sentinel(&mut chunks[current], line);
         }
@@ -579,51 +576,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.bitset_hash_code" => {
             super::bitset_adapter::emit_hash_code(chunks, current, line);
-        }
-        "java.enum_set_none_of" => {
-            super::enum_set_adapter::emit_none_of(chunks, current, line);
-        }
-        "java.enum_set_all_of" => {
-            super::enum_set_adapter::emit_all_of(chunks, current, line);
-        }
-        "java.enum_set_of" => {
-            super::enum_set_adapter::emit_of(chunks, current, argc, line);
-        }
-        "java.enum_set_copy_of" => {
-            super::enum_set_adapter::emit_copy_of(chunks, current, line);
-        }
-        "java.enum_set_complement_of" => {
-            super::enum_set_adapter::emit_complement_of(chunks, current, line);
-        }
-        "java.enum_set_range" => {
-            super::enum_set_adapter::emit_range(chunks, current, line);
-        }
-        "java.enum_set_add" => {
-            super::enum_set_adapter::emit_add(chunks, current, line);
-        }
-        "java.enum_set_add_all" => {
-            super::enum_set_adapter::emit_add_all(chunks, current, line);
-        }
-        "java.enum_set_contains" => {
-            super::enum_set_adapter::emit_contains(chunks, current, line);
-        }
-        "java.enum_set_contains_all" => {
-            super::enum_set_adapter::emit_contains_all(chunks, current, line);
-        }
-        "java.enum_set_remove" => {
-            super::enum_set_adapter::emit_remove(chunks, current, line);
-        }
-        "java.enum_set_equals" => {
-            super::enum_set_adapter::emit_equals(chunks, current, line);
-        }
-        "java.enum_set_hash_code" => {
-            super::enum_set_adapter::emit_hash_code(chunks, current, line);
-        }
-        "java.enum_set_iterator" => {
-            super::enum_set_adapter::emit_iterator(chunks, current, line);
-        }
-        "java.enum_set_get_class" => {
-            super::enum_set_adapter::emit_get_class(chunks, current, line);
         }
         "java.instant_of_epoch_second" => {
             super::instant_adapter::emit_of_epoch_second(chunks, current, argc, line);

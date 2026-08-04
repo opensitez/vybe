@@ -285,4 +285,5 @@ kotlin_run_cases! {
             println(grouped[3]!!.joinToString(","))
             println(grouped[4]!!.first())
         }
-    "#, &["ONE,TWO", "FOUR"]) }
+    "#, &["ONE,TWO", "FOUR"]),
+}

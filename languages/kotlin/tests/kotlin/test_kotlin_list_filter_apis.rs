@@ -141,4 +141,5 @@ kotlin_run_cases! {
         "true",
         "true",
         "true",
-    ]) }
+    ]),
+}

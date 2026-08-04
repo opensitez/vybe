@@ -584,6 +584,12 @@ pub fn parse(source: &str) -> Result<Module, String> {
     KOTLIN_NULLABLE_CTOR_CLASSES.with(|set| set.borrow_mut().clear());
     KOTLIN_SIMPLE_FUNCTIONS.with(|map| map.borrow_mut().clear());
 
+    // An `enum class`'s constants are built by its `__static_init_block__`
+    // (platforms/jvm `lang_enum`), and a static initializer only runs because
+    // something calls it. Before the package wrapper below, so the calls sit
+    // beside the declarations rather than outside the namespace.
+    vybe_platform_jvm::lang_enum::inject_static_init_calls(&mut body);
+
     if let Some(name) = package_name.filter(|name| !name.is_empty()) {
         let has_main = body.iter().any(|stmt| {
             matches!(
@@ -4161,14 +4167,40 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Option<Statement> {
         }
     }
 
-    Some(Statement::new(StmtKind::EnumDecl {
+    // A Kotlin `enum class` IS `java.lang.Enum` — its constants are OBJECTS
+    // carrying `name`/`ordinal`, and `Color.RED == Color.RED` is reference
+    // identity. `StmtKind::EnumDecl` is the OTHER enum model: the TS-shaped
+    // bidirectional int object (`primitives/enums.rs`), where a constant is a
+    // bare ordinal. Kotlin used it, so `println(Color.RED)` printed `0` and
+    // `.name` / `.ordinal` were `undefined` — measured before this changed.
+    //
+    // So install the same JDK surface Java does, from the same place, and
+    // differ only where the languages genuinely differ: Kotlin spells
+    // `name`/`ordinal` as PROPERTIES.
+    let constants: Vec<vybe_platform_jvm::lang_enum::EnumConstant> = members
+        .iter()
+        .map(|m| vybe_platform_jvm::lang_enum::EnumConstant {
+            name: m.name.clone(),
+            ctor_args: m
+                .constructor_args
+                .iter()
+                .cloned()
+                .map(Argument::positional)
+                .collect() })
+        .collect();
+    vybe_platform_jvm::lang_enum::install(
+        &name,
+        &constants,
+        &mut body_members,
+        vybe_platform_jvm::lang_enum::Accessors::Properties,
+    );
+
+    Some(Statement::new(StmtKind::ClassDecl {
         name,
-        members,
-        visibility: Visibility::Public,
-        is_flags: false,
-        backing_type: None,
+        parents: vec![],
         interfaces: vec![],
-        body_members,
+        members: body_members,
+        modifiers: ClassModifiers::default(),
         decorators }))
 }
 

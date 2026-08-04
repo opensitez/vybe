@@ -40,8 +40,11 @@ pub fn emit_starts_with(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
     );
 }
 
+/// `String.valueOf(x)` — `java.lang.String`, so the rendering itself lives in
+/// `platforms/jvm` and Kotlin reaches the identical one. This was
+/// `ecma:string.String`, which never consults the object's ToString slot.
 pub fn emit_value_of(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(&mut chunks[current], "ecma:string", "String", 1, line);
+    vybe_platform_jvm::emitter::object_adapter::emit_to_string(chunks, current, line);
 }
 
 pub fn emit_concat(chunks: &mut [Chunk], current: usize, line: u32) {
