@@ -44,7 +44,10 @@ enum Shape {
     /// `name => { includes: [...], declarations: "…", body: "…", expect: [...] }`
     /// — C's spelling, where the program is assembled from three parts rather
     /// than given as one source.
-    CFields }
+    CFields,
+    /// The same fields with no `expect:` — `c_compile_cases!`, whose whole
+    /// assertion is `compile_ok`. Parsed identically, emitted as compile mode.
+    CFieldsCompile }
 
 fn shape_of(macro_name: &str) -> Option<Shape> {
     Some(match macro_name {
@@ -62,6 +65,11 @@ fn shape_of(macro_name: &str) -> Option<Shape> {
         "go_compile_cases" | "compile_cases" => Shape::Compile,
         "go_compile_fail_cases" => Shape::CompileFail,
         "c_cases" | "c_run_cases" => Shape::CFields,
+        // Same braced fields, minus `expect:` — the case asserted only that the
+        // frontend accepts the program. 647 of C's tests are this one macro,
+        // and an unknown macro name is skipped in silence, so the gap showed
+        // only against the cargo log: 7,512 there against 6,865 files.
+        "c_compile_cases" => Shape::CFieldsCompile,
         _ => return None })
 }
 
@@ -205,7 +213,7 @@ fn parse_entries(
             // `{ includes: [...], decls|declarations: "…", body: "…",
             //    expect: [...] }` — order is not fixed and `includes` is
             //   optional, so read by KEY rather than by position.
-            Shape::CFields => {
+            Shape::CFields | Shape::CFieldsCompile => {
                 if src[at] != b'{' {
                     anyhow::bail!("expected `{{` in C case `{name}`");
                 }
@@ -274,7 +282,13 @@ fn parse_entries(
                 Case {
                     name,
                     source: body,
-                    expected: Some(expected),
+                    // `None` is what routes the case to compile mode. It has to
+                    // come from the MACRO, not from an empty `expect:` list — a
+                    // run case that legitimately prints nothing is a different
+                    // thing from one that was never meant to run.
+                    expected: match shape {
+                        Shape::CFieldsCompile => None,
+                        _ => Some(expected) },
                     expect_failure: false,
                     single_line: false,
                     run_only: false,
@@ -648,10 +662,20 @@ pub fn test_fns_in_file(text: &str) -> Vec<Case> {
     let src = text.as_bytes();
     let mut cases = Vec::new();
     let mut at = 0usize;
+    let consts = const_fns(text);
 
     while let Some(found) = text[at..].find("#[test]") {
         let start = at + found;
         at = start + "#[test]".len();
+
+        // A COMMENTED-OUT test is not a test. `test_dart_apis.rs` parks one on
+        // a `// #[test] fn pattern_matching() { … }` line; extracting it minted
+        // a file for a case cargo does not run, which shows up as a suite that
+        // has MORE tests than the corpus.
+        let line_start = text[..start].rfind('\n').map(|o| o + 1).unwrap_or(0);
+        if text[line_start..start].contains("//") {
+            continue;
+        }
 
         let Some(name_at) = text[at..].find("fn ") else { break };
         let name_start = at + name_at + 3;
@@ -667,7 +691,7 @@ pub fn test_fns_in_file(text: &str) -> Vec<Case> {
         let body = &text[brace..body_end];
         at = body_end;
 
-        if let Some(case) = case_from_body(name, body) {
+        if let Some(case) = case_from_body(name, body, &consts) {
             cases.push(case);
         }
     }
@@ -682,12 +706,12 @@ pub fn test_fns_in_file(text: &str) -> Vec<Case> {
 /// `helper(source, expected)` and takes the DATA DIVISION as the program, so
 /// every emitted file put its declarations inside the PROCEDURE DIVISION and
 /// no longer compiled.
-fn wrapper_two_sources(text: &str) -> Option<(String, String)> {
+fn wrapper_two_sources(text: &str, consts: &[(String, String)]) -> Option<(String, String)> {
     let t = text.trim().trim_start_matches('&').trim();
     let open = t.find('(')?;
     let name = t[..open].trim();
     if name.is_empty()
-        || name.starts_with("run_")
+        || is_run_helper(name)
         || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
     {
         return None;
@@ -697,19 +721,87 @@ fn wrapper_two_sources(text: &str) -> Option<(String, String)> {
         return None;
     }
     let args = t[open + 1..close].trim_start();
-    if !starts_string_literal(args.as_bytes(), 0) {
-        return None;
-    }
-    let (first, end) = rustlit::scan(args.as_bytes(), 0).ok()?;
+    let (first, end) = scan_source_arg(args, consts)?;
     let rest = args[end..].trim_start().trim_start_matches(',').trim_start();
-    if !starts_string_literal(rest.as_bytes(), 0) {
-        return None;
-    }
-    let (second, _) = rustlit::scan(rest.as_bytes(), 0).ok()?;
+    let (second, _) = scan_source_arg(rest, consts)?;
     Some((first, second))
 }
 
-fn case_from_body(name: String, body: &str) -> Option<Case> {
+/// One argument of a source-building wrapper: a literal, or a call to a local
+/// constant function that returns one.
+///
+/// `compile_ok(&p(d(), "    COMPUTE R = FUNCTION SQRT(16)."))` is COBOL's
+/// spelling for 94 of its tests — the DATA DIVISION is shared by a whole module
+/// so it lives in `fn d() -> &'static str`. Requiring a literal in that slot
+/// left `cics_full`, `intrinsics`, `enterprise` and `embedded_sql` extracting
+/// almost nothing.
+fn scan_source_arg(arg: &str, consts: &[(String, String)]) -> Option<(String, usize)> {
+    if starts_string_literal(arg.as_bytes(), 0) {
+        return rustlit::scan(arg.as_bytes(), 0).ok();
+    }
+    let open = arg.find('(')?;
+    let name = arg[..open].trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    // Zero arguments only: anything else is a call this cannot evaluate.
+    if !arg[open + 1..].trim_start().starts_with(')') {
+        return None;
+    }
+    let end = open + 1 + arg[open + 1..].find(')')? + 1;
+    let text = consts.iter().find(|(n, _)| n == name)?.1.clone();
+    Some((text, end))
+}
+
+/// Module-level `fn <name>() -> &'static str { "…" }` — a shared source
+/// fragment, referenced by call rather than by name.
+fn const_fns(text: &str) -> Vec<(String, String)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while let Some(found) = text[at..].find("fn ") {
+        let start = at + found;
+        at = start + 3;
+        let mut end = at;
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            end += 1;
+        }
+        let name = text[at..end].to_string();
+        // `fn d()` and nothing else — a parameter means the body is not a
+        // constant.
+        let Some(rest) = text[end..].strip_prefix("()") else { continue };
+        let Some(brace) = rest.find('{') else { continue };
+        // A return type may sit between; `-> String` and `-> &'static str`
+        // both appear, and neither changes what the body is.
+        if rest[..brace].contains(';') {
+            continue;
+        }
+        let body_at = end + "()".len() + brace + 1;
+        let value_at = rustlit::skip_trivia(bytes, body_at);
+        if !starts_string_literal(bytes, value_at) {
+            continue;
+        }
+        let Ok((value, after)) = rustlit::scan(bytes, value_at) else { continue };
+        // The literal must BE the body: `{ "…" }`, not the first of several
+        // statements.
+        if bytes.get(rustlit::skip_trivia(bytes, after)) == Some(&b'}') {
+            out.push((name, value));
+        }
+    }
+    out
+}
+
+/// Is this a run helper, however it was imported?
+///
+/// COBOL writes `helpers::run_prints(src)` rather than importing the name, and
+/// a bare `starts_with("run_")` says no to that — which is why 31 of its
+/// modules (247 tests) extracted nothing at all. The call is the same call; the
+/// path in front of it is a Rust import detail.
+fn is_run_helper(name: &str) -> bool {
+    name.rsplit("::").next().is_some_and(|n| n.trim().starts_with("run_"))
+}
+
+fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Option<Case> {
     let bytes = body.as_bytes();
 
     // Locals, in two flavours the corpus mixes freely:
@@ -744,7 +836,7 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
                 }
             } else if let Some(open) = body[value_at..].find('(') {
                 let helper = body[value_at..value_at + open].trim();
-                if helper.starts_with("run_") {
+                if is_run_helper(helper) {
                     if let Some(close) = close_paren(bytes, value_at + open + 1) {
                         results.push((ident, body[value_at..close + 1].to_string()));
                     }
@@ -777,7 +869,7 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
             };
             let open = at + helper.len() + 1;
             let close = close_paren(bytes, open)?;
-            let Some((first, second)) = wrapper_two_sources(&body[open..close]) else {
+            let Some((first, second)) = wrapper_two_sources(&body[open..close], consts) else {
                 break;
             };
             return Some(Case {
@@ -851,7 +943,7 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
     let (lhs, expected_expr) = (args[..comma].trim(), args[comma + 1..].trim());
 
     // The asserted value is either the run call itself or a local holding it.
-    let call = if lhs.starts_with("run_") {
+    let call = if is_run_helper(lhs) {
         lhs.to_string()
     } else {
         let ident = lhs.trim_end_matches(".clone()").trim();
@@ -860,7 +952,7 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
 
     let open = call.find('(')?;
     let helper = call[..open].trim();
-    if !helper.starts_with("run_") {
+    if !is_run_helper(helper) {
         return None;
     }
     let inner = call[open + 1..call.rfind(')')?].trim();
@@ -943,6 +1035,18 @@ fn case_from_body(name: String, body: &str) -> Option<Case> {
 /// `vec!["a", "b"]`, `["a"]`, or a bare `"a"`.
 fn parse_expected(expr: &str) -> Option<Vec<String>> {
     let expr = expr.trim().trim_end_matches(';').trim();
+    // A COMMENT can sit between the source and the expectation, and the corpus
+    // uses that spot to explain a surprising value:
+    //
+    //     assert_eq!(
+    //         run_prints(r#"…"#),
+    //         // Dart's FileSystemEntity.parent on root returns root itself.
+    //         vec!["/"]
+    //     );
+    //
+    // Trimming whitespace alone leaves `//`, which matches no expectation form,
+    // so the case was returned as `None` and dropped in silence.
+    let expr = &expr[rustlit::skip_trivia(expr.as_bytes(), 0)..];
     if starts_string_literal(expr.as_bytes(), 0) {
         return Some(vec![crate::rustlit::scan(expr.as_bytes(), 0).ok()?.0]);
     }
@@ -950,6 +1054,19 @@ fn parse_expected(expr: &str) -> Option<Vec<String>> {
     // `assert_eq!(run_js(…), &["1","2"])` uses.
     let body = expr.strip_prefix('&').unwrap_or(expr).trim();
     let body = body.strip_prefix("vec!").unwrap_or(body).trim();
+    // `Vec::<String>::new()` — an expectation of NO output, which `vec![]`
+    // spells as an empty list but the turbofish form does not. A test whose
+    // whole point is that the program prints nothing (`exit(EXIT_FAILURE)`,
+    // a watcher that never fires) is exactly the one this dropped.
+    // A trailing comment is common on this form precisely because the empty
+    // expectation needs explaining: `Vec::<String>::new() // fine as long as
+    // nothing crashes`. No string literal can reach here, so splitting on `//`
+    // is safe.
+    if body.starts_with("Vec::")
+        && body.split("//").next().unwrap_or(body).trim_end().ends_with("new()")
+    {
+        return Some(Vec::new());
+    }
     if !body.starts_with('[') {
         return None;
     }

@@ -26,16 +26,28 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     let header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
     let body = case.source.trim_end();
 
+    // `c_compile_cases!` asserted `compile_ok` and nothing else. Compile mode
+    // runs `vybex -d`, which is that assertion exactly: the frontend accepts
+    // the program, and the body never executes — so a case whose body calls
+    // `popen`, `mkstemp` or `fork` stays as inert as it was under cargo.
+    //
+    // Assembling it as a RUN test instead would be worse than useless: main's
+    // return value is not the process status under Vybe, so `return EPERM;`
+    // would pass whatever the body did, while `cc` would report exit 1 as a
+    // failure the corpus never asserted.
     let Some(expected) = case.expected.as_ref() else {
         return Emitted {
-            text: format!("{header}{}\n", assemble(body, case.prelude.as_deref())),
+            text: format!(
+                "{header}// vybe-test-mode: compile\n{}\n",
+                assemble(body, case.prelude.as_deref(), false)
+            ),
             pairing: Pairing::Direct };
     };
 
     let prints = find_prints(body);
     if let Some(reason) = unpairable(body, case.prelude.as_deref(), &prints, expected.len()) {
         return Emitted {
-            text: format!("{header}{}\n", assemble(body, case.prelude.as_deref())),
+            text: format!("{header}{}\n", assemble(body, case.prelude.as_deref(), true)),
             pairing: Pairing::Unpairable(reason) };
     }
 
@@ -93,24 +105,30 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
         None => format!("{}{prologue}{}\n{epilogue}", &out[..pro_at], &out[pro_at..]) };
 
     Emitted {
-        text: format!("{header}{}\n", assemble(&body_out, case.prelude.as_deref())),
+        text: format!("{header}{}\n", assemble(&body_out, case.prelude.as_deref(), true)),
         pairing: Pairing::Direct }
 }
 
-/// What the corpus's `program_src` built, plus the headers the check needs.
-fn assemble(body: &str, prelude: Option<&str>) -> String {
+/// What the corpus's `program_src` built, plus — when `checks` — the headers
+/// the check code needs.
+fn assemble(body: &str, prelude: Option<&str>, checks: bool) -> String {
     let head = prelude.map(str::trim_end).unwrap_or("");
     let mut out = String::with_capacity(body.len() + head.len() + 128);
     // Headers FIRST: a declaration may itself call `printf`, and an include
     // that follows it would be too late.
     // `string.h` for `strcmp`, `assert.h` for the failure signal, `stdio.h`
     // for `snprintf` — added only when the source has not already.
+    //
+    // A compile-only case has no check code, and adding them there would break
+    // what it measures: `cover_headers_misc`, `cover_wchar_h` and `cover_uchar_h`
+    // exist to prove a program compiles with the includes it NAMES. Handing it
+    // three more can hide a missing header or invent one.
     for (needle, line) in [
         ("<stdio.h>", "#include <stdio.h>"),
         ("<string.h>", "#include <string.h>"),
         ("<assert.h>", "#include <assert.h>"),
     ] {
-        if !head.contains(needle) {
+        if checks && !head.contains(needle) {
             out.push_str(line);
             out.push('\n');
         }

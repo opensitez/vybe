@@ -97,6 +97,7 @@ fn cmd_extract(args: &[String]) -> Result<()> {
     anyhow::ensure!(!files.is_empty(), "no input files");
 
     let mut total = 0usize;
+    let mut compile_only = 0usize;
     let mut unpairable: Vec<(String, String)> = Vec::new();
 
     for input in files {
@@ -246,6 +247,12 @@ fn cmd_extract(args: &[String]) -> Result<()> {
             if let emit::go::Pairing::Unpairable(reason) = &pairing {
                 unpairable.push((slug.clone(), reason.clone()));
             }
+            // A compile case has no output to pair, so it is neither paired nor
+            // unpairable — counting it as "paired 1:1 into assertions" would
+            // overstate what the corpus checks.
+            if case.expected.is_none() {
+                compile_only += 1;
+            }
             let file_name = short_unique_name(&case.name, max_name, &mut used_names);
             std::fs::write(dir.join(format!("{file_name}.{file_ext}")), &text)?;
             total += 1;
@@ -254,8 +261,14 @@ fn cmd_extract(args: &[String]) -> Result<()> {
     }
 
     println!("\nextracted {total} file(s)");
+    if compile_only > 0 {
+        println!(
+            "{compile_only} compile-mode case(s): the source must be ACCEPTED, \
+             nothing is executed"
+        );
+    }
     if unpairable.is_empty() {
-        println!("all cases paired 1:1 into assertions");
+        println!("{} case(s) paired 1:1 into assertions", total - compile_only);
     } else {
         println!("{} case(s) could NOT be paired:", unpairable.len());
         for (slug, reason) in &unpairable {
