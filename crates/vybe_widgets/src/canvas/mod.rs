@@ -62,6 +62,35 @@ pub use recording::{DrawCmd, RecordingCanvas};
 pub use tinyskia::TinySkiaCanvas;
 pub use types::{Color, Font, FontStyle, FontWeight, Image, LineCap, LineJoin};
 
+/// Canvas draw-routing tracing: `0` unread, `1` off, `2` on.
+///
+/// Seeded from `VYBE_DBG_CANVAS` on first read so the environment variable keeps
+/// working, then settable at runtime by the debugger's `trace canvas on`. Every
+/// trace site reads through [`trace_enabled`], so the switch is global.
+static CANVAS_TRACE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// True when canvas draw-routing tracing is on. Zero-cost when off: one relaxed
+/// atomic load, no allocation, no environment lookup after the first call.
+pub fn trace_enabled() -> bool {
+    use std::sync::atomic::Ordering;
+    match CANVAS_TRACE.load(Ordering::Relaxed) {
+        0 => {
+            let on = std::env::var_os("VYBE_DBG_CANVAS").is_some();
+            CANVAS_TRACE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+        2 => true,
+        _ => false }
+}
+
+/// Turn canvas tracing on or off at runtime (the debugger's `trace canvas`).
+pub fn set_trace_enabled(on: bool) {
+    CANVAS_TRACE.store(
+        if on { 2 } else { 1 },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 /// HTML5-canvas-shaped immediate-mode drawing API.
 ///
 /// Implementations:

@@ -149,7 +149,7 @@ impl PanelWidget for Canvas {
     }
 
     fn render(&mut self, ctx: &mut RenderContext) {
-        if std::env::var_os("VYBE_DBG_CANVAS").is_some() {
+        if crate::canvas::trace_enabled() {
             let cmds = self.recording.commands_for_debug();
             let text_n = cmds.iter().filter(|c| format!("{:?}", c).starts_with("FillText")).count();
             eprintln!("[canvas] RENDER widget={:?} total_cmds={} filltext={}", self.name, cmds.len(), text_n);

@@ -67,7 +67,22 @@ pub struct GuiState {
     /// entry here. The host bridge looks at the form's child widgets
     /// FIRST, falls back to this overlay map only when no Canvas widget
     /// matches the requested control name.
-    pub overlay_canvases: HashMap<String, RecordingCanvas> }
+    pub overlay_canvases: HashMap<String, RecordingCanvas>,
+    /// Canvases whose NEXT draw op starts a fresh frame.
+    ///
+    /// A `RecordingCanvas` is retained-mode: it keeps every command until
+    /// someone clears it. SDL is immediate-mode and never clears — its frame
+    /// boundary is `SDL_UpdateWindowSurface`. Without this, an animated SDL
+    /// program appends a whole frame's commands per frame forever: the replay
+    /// cost grows without bound and every frame is drawn on top of the last.
+    ///
+    /// Marked at present, applied at the next DRAW (not at `getContext`, which
+    /// only fetches a handle) so the presented frame stays on screen until
+    /// something replaces it — i.e. double buffering.
+    ///
+    /// Only the SDL present path ever populates this, so every other canvas
+    /// consumer (.NET, Flutter, JS) is unaffected by construction.
+    pub pending_clear: std::collections::HashSet<String> }
 
 impl GuiState {
     pub fn new() -> Self {
@@ -85,7 +100,8 @@ impl GuiState {
             properties: Default::default(),
             needs_repaint: false,
             front_requested: false,
-            overlay_canvases: HashMap::new() }
+            overlay_canvases: HashMap::new(),
+            pending_clear: std::collections::HashSet::new() }
     }
 
     /// VM hot-reset (bucket D): drop all script-created GUI state — controls,
@@ -101,7 +117,7 @@ impl GuiState {
     ///
     /// Exact match wins. If not found, we do a case-insensitive match so VB-style
     /// callers can still reach controls regardless of source casing.
-    fn resolve_control_name(&self, control: &str) -> String {
+    pub fn resolve_control_name(&self, control: &str) -> String {
         if let Some(target) = self.control_aliases.get(control) {
             return target.clone();
         }
@@ -237,6 +253,24 @@ impl GuiState {
     /// Returns a `&mut RecordingCanvas` borrowed from one of the two
     /// sources. Always succeeds — for an unknown control name, the
     /// overlay map gains a new entry.
+    /// `find_canvas_mut` for a DRAW operation: applies a pending frame
+    /// boundary first (see [`GuiState::pending_clear`]).
+    ///
+    /// Use this from anything that RECORDS a command. `getContext` and other
+    /// handle lookups must keep using `find_canvas_mut`, or the frame would
+    /// reset halfway through when a caller re-fetches its context mid-frame.
+    pub fn find_canvas_for_draw(&mut self, control: &str) -> &mut RecordingCanvas {
+        let name = self.resolve_control_name(control);
+        let cleared = self.pending_clear.remove(&name);
+        if cleared {
+            self.find_canvas_mut(control).clear();
+        }
+        if vybe_widgets::canvas::trace_enabled() {
+            eprintln!("[canvas] draw ctrl={control:?} resolved={name:?} cleared={cleared}");
+        }
+        self.find_canvas_mut(control)
+    }
+
     pub fn find_canvas_mut(&mut self, control: &str) -> &mut RecordingCanvas {
         let name = self.resolve_control_name(control);
         // Step 1: search child widgets for a Canvas widget with this name.
@@ -505,6 +539,30 @@ impl GuiState {
                 let payload = match value.trim().parse::<f64>() {
                     Ok(n) => CommandValue::Number(n),
                     Err(_) => CommandValue::Text(value.to_string()) };
+                // `send_command` addresses a CHILD widget. The form is not one,
+                // so a width/height written to the form itself would be silently
+                // dropped and the window would keep the default size — which is
+                // what left every SDL program with a dead band below its
+                // surface (`SDL_CreateWindow(…, 800, 480, …)` → an 800x600
+                // form). Route it to the form's own dimensions instead.
+                // Belt and braces: a name is the form only if it is neither a
+                // registered control NOR an existing child widget. Testing only
+                // the registry would misroute a widget that was added without
+                // being registered, silently resizing the window instead.
+                let targets_form = !self.control_names.iter().any(|c| c == &name)
+                    && self.form.get_control_rect(&name).is_none();
+                if targets_form && matches!(prop_lower.as_str(), "width" | "height") {
+                    if let Ok(n) = value.trim().parse::<f64>() {
+                        if n >= 1.0 {
+                            if prop_lower == "width" {
+                                self.width = n as u32;
+                            } else {
+                                self.height = n as u32;
+                            }
+                            return;
+                        }
+                    }
+                }
                 self.form
                     .send_command(&name, &WidgetCommand::Custom(cmd, payload));
             }

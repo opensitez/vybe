@@ -79,7 +79,7 @@ mod canvas_impl {
                 "getContext",
                 Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
                     let ctrl_name = args.first().map(|v| format!("{}", v)).unwrap_or_default();
-                    // Touch find_canvas_mut to ensure storage exists.
+                    // Touch find_canvas_for_draw to ensure storage exists.
                     {
                         let _ = gui.lock().unwrap().find_canvas_mut(&ctrl_name);
                     }
@@ -152,7 +152,7 @@ mod canvas_impl {
                         } else {
                             FontStyle::Normal
                         } };
-                    gui.lock().unwrap().find_canvas_mut(&name).set_font(&font);
+                    gui.lock().unwrap().find_canvas_for_draw(&name).set_font(&font);
                     Value::Null
                 }),
             );
@@ -193,7 +193,7 @@ mod canvas_impl {
                         .unwrap_or(false);
                     gui.lock()
                         .unwrap()
-                        .find_canvas_mut(&name)
+                        .find_canvas_for_draw(&name)
                         .arc(x, y, r, start, end, ccw);
                     Value::Null
                 }),
@@ -262,7 +262,7 @@ mod canvas_impl {
                     let start = start_deg.to_radians();
                     let end = (start_deg + sweep_deg).to_radians();
                     let mut state = gui.lock().unwrap();
-                    let canvas = state.find_canvas_mut(&h);
+                    let canvas = state.find_canvas_for_draw(&h);
                     canvas.begin_path();
                     canvas.arc(cx, cy, r, start, end, false);
                     canvas.stroke();
@@ -292,7 +292,7 @@ mod canvas_impl {
                     let start = start_deg.to_radians();
                     let end = (start_deg + sweep_deg).to_radians();
                     let mut state = gui.lock().unwrap();
-                    let canvas = state.find_canvas_mut(&h);
+                    let canvas = state.find_canvas_for_draw(&h);
                     canvas.begin_path();
                     canvas.move_to(cx, cy);
                     canvas.line_to(cx + r * start.cos(), cy + r * start.sin());
@@ -323,7 +323,7 @@ mod canvas_impl {
                     let start = start_deg.to_radians();
                     let end = (start_deg + sweep_deg).to_radians();
                     let mut state = gui.lock().unwrap();
-                    let canvas = state.find_canvas_mut(&h);
+                    let canvas = state.find_canvas_for_draw(&h);
                     canvas.begin_path();
                     canvas.move_to(cx, cy);
                     canvas.line_to(cx + r * start.cos(), cy + r * start.sin());
@@ -353,7 +353,7 @@ mod canvas_impl {
                     let b = (f32_arg(args, 3).clamp(0.0, 255.0)) as u8;
                     let a = (f32_arg(args, 4).clamp(0.0, 255.0)) as u8;
                     let mut state = gui.lock().unwrap();
-                    let canvas = state.find_canvas_mut(&h);
+                    let canvas = state.find_canvas_for_draw(&h);
                     canvas.set_fill_color(Color::rgba(r, g_, b, a));
                     canvas.fill_rect(0.0, 0.0, 100_000.0, 100_000.0);
                     Value::Null
@@ -374,7 +374,7 @@ mod canvas_impl {
                     let y = f32_arg(args, 3);
                     gui.lock()
                         .unwrap()
-                        .find_canvas_mut(&name)
+                        .find_canvas_for_draw(&name)
                         .fill_text(&text, x, y);
                     Value::Null
                 }),
@@ -392,25 +392,74 @@ mod canvas_impl {
                     let y = f32_arg(args, 3);
                     gui.lock()
                         .unwrap()
-                        .find_canvas_mut(&name)
+                        .find_canvas_for_draw(&name)
                         .stroke_text(&text, x, y);
                     Value::Null
                 }),
             );
         }
-        // canvasDrawImage is left as a no-op until image loading is wired
-        // through the host (Layer 1 has the trait method but the host
-        // bridge doesn't yet decode an Image from a Value).
+        // canvasDrawImage(handle, pixels, srcW, srcH, x, y, dstW, dstH)
+        //
+        // `pixels` is a dense array of RGBA bytes, srcW*srcH*4 of them — the
+        // shape a software renderer produces. This is the blit path: a guest
+        // computes a whole frame into a byte buffer and hands it over once,
+        // instead of issuing a host call per primitive. Doom's renderer is
+        // exactly this, and so is any SDL program using a surface rather than
+        // the 2D renderer API.
+        //
+        // Layer 1 was already complete — `Image`, `Canvas::draw_image`,
+        // `RecordingCanvas` DrawImage recording/replay and the tiny_skia
+        // `draw_pixmap` blit all existed; only this decode was missing.
         {
             let gui = gui.clone();
             vm.register_host_fn(
                 "vybe:gui",
                 "canvasDrawImage",
-                Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-                    // TODO: when a host-side Image type lands, decode args[1]
-                    // into a `vybe_widgets::canvas::Image` and call
-                    // `canvas.draw_image(&img, x, y, w, h)`.
-                    let _ = gui;
+                Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                    let name = handle_name(args.first());
+                    let src_w = args.get(2).map(|v| v.as_f64() as u32).unwrap_or(0);
+                    let src_h = args.get(3).map(|v| v.as_f64() as u32).unwrap_or(0);
+                    if src_w == 0 || src_h == 0 {
+                        return Value::Null;
+                    }
+                    let x = f32_arg(args, 4);
+                    let y = f32_arg(args, 5);
+                    // Destination size defaults to the source size, so a
+                    // 1:1 blit needs only six arguments.
+                    let dst_w = args
+                        .get(6)
+                        .map(|v| v.as_f64() as f32)
+                        .filter(|v| *v > 0.0)
+                        .unwrap_or(src_w as f32);
+                    let dst_h = args
+                        .get(7)
+                        .map(|v| v.as_f64() as f32)
+                        .filter(|v| *v > 0.0)
+                        .unwrap_or(src_h as f32);
+
+                    let needed = (src_w as usize) * (src_h as usize) * 4;
+                    let mut bytes: Vec<u8> = Vec::with_capacity(needed);
+                    if let Some(Value::Object(obj)) = args.get(1) {
+                        let o = obj.lock().unwrap();
+                        if let vybe_runtime::value::ObjectKind::Array(items) = &o.kind {
+                            for v in items.iter().take(needed) {
+                                bytes.push(v.as_f64() as u8);
+                            }
+                        }
+                    }
+                    if bytes.len() < needed {
+                        // Short buffer: pad rather than panic. `Image::from_rgba`
+                        // debug-asserts the exact length, and a guest that
+                        // miscounts should get a visibly wrong frame, not a
+                        // host abort.
+                        bytes.resize(needed, 0);
+                    }
+
+                    let img = vybe_widgets::canvas::Image::from_rgba(src_w, src_h, bytes);
+                    gui.lock()
+                        .unwrap()
+                        .find_canvas_for_draw(&name)
+                        .draw_image(&img, x, y, dst_w, dst_h);
                     Value::Null
                 }),
             );
@@ -432,7 +481,7 @@ mod canvas_impl {
                 "canvasSetLineDashSolid",
                 Box::new(move |_ctx, args| {
                     let h = handle_name(args.first());
-                    gui.lock().unwrap().find_canvas_mut(&h).set_line_dash(&[]);
+                    gui.lock().unwrap().find_canvas_for_draw(&h).set_line_dash(&[]);
                     Value::Null
                 }),
             );
@@ -448,7 +497,7 @@ mod canvas_impl {
                     let d1 = f32_arg(args, 2);
                     gui.lock()
                         .unwrap()
-                        .find_canvas_mut(&h)
+                        .find_canvas_for_draw(&h)
                         .set_line_dash(&[d0, d1]);
                     Value::Null
                 }),
@@ -467,7 +516,7 @@ mod canvas_impl {
                     let d3 = f32_arg(args, 4);
                     gui.lock()
                         .unwrap()
-                        .find_canvas_mut(&h)
+                        .find_canvas_for_draw(&h)
                         .set_line_dash(&[d0, d1, d2, d3]);
                     Value::Null
                 }),
@@ -486,7 +535,7 @@ mod canvas_impl {
                     }
                     gui.lock()
                         .unwrap()
-                        .find_canvas_mut(&h)
+                        .find_canvas_for_draw(&h)
                         .set_line_dash(&intervals);
                     Value::Null
                 }),
@@ -530,7 +579,7 @@ mod canvas_impl {
                         _ => return Value::Null };
                     gui.lock()
                         .unwrap()
-                        .find_canvas_mut(&h)
+                        .find_canvas_for_draw(&h)
                         .set_line_dash(pattern);
                     Value::Null
                 }),
@@ -621,6 +670,14 @@ mod canvas_impl {
                         if matches!(rect, Value::Null) || matches!(rect, Value::I32(0)) || matches!(rect, Value::F64(0.0)) {
                             use_full = true;
                         } else if let Value::Object(obj) = rect {
+                            // `&rect` is a POINTER CELL — `{ __ref_kind: "cell",
+                            // __value: <struct> }` (see `primitives/pointers.rs`).
+                            // Unwrap it before looking for fields, or every
+                            // `SDL_FillRect(s, &r, c)` decoded to w=h=0 and
+                            // filled nothing while still "succeeding".
+                            let obj = match obj.lock().unwrap().properties.get("__value") {
+                                Some(Value::Object(inner)) => inner.clone(),
+                                _ => obj.clone() };
                             let obj_lock = obj.lock().unwrap();
                             if let Some(Value::Object(base_obj)) = obj_lock.properties.get("__base") {
                                 let base_lock = base_obj.lock().unwrap();
@@ -655,21 +712,47 @@ mod canvas_impl {
                     }
 
                     if let Some(c) = args.get(2) {
-                        let c_val = c.as_i32() as u32;
+                        // Read through f64, NOT `as_i32`: a packed colour with
+                        // alpha (0xFFRRGGBB = 4283879648 for cyan) exceeds
+                        // i32::MAX, and `as i32` SATURATES to 0x7FFFFFFF — which
+                        // unpacks to r=g=b=0xFF, so every colour rendered white.
+                        let c_val = c.as_f64() as u32;
                         let r = ((c_val >> 16) & 0xFF) as u8;
                         let g = ((c_val >> 8) & 0xFF) as u8;
                         let b = (c_val & 0xFF) as u8;
                         let a = ((c_val >> 24) & 0xFF) as u8;
                         let color = vybe_widgets::canvas::Color::rgba(r, g, b, if a == 0 { 255 } else { a });
-                        state.find_canvas_mut(&name).set_fill_color(color);
+                        state.find_canvas_for_draw(&name).set_fill_color(color);
                     }
 
-                    state.find_canvas_mut(&name).fill_rect(x, y, w, h);
+                    state.find_canvas_for_draw(&name).fill_rect(x, y, w, h);
                     Value::Null
                 }),
             );
         }
         
+        // sdlPresent(surface) — SDL's frame boundary.
+        //
+        // SDL is immediate-mode and never clears its surface; the program just
+        // redraws. A RecordingCanvas is retained-mode, so without a boundary an
+        // animated program's commands grow without bound and every frame paints
+        // over the last. This marks the canvas so the NEXT draw starts a fresh
+        // frame, which keeps the presented frame on screen until it is replaced.
+        {
+            let gui = gui.clone();
+            vm.register_host_fn(
+                "vybe:gui",
+                "sdlPresent",
+                Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
+                    let name = handle_name(args.first());
+                    let mut state = gui.lock().unwrap();
+                    let resolved = state.resolve_control_name(&name);
+                    state.pending_clear.insert(resolved);
+                    Value::Null
+                }),
+            );
+        }
+
         {
             let gui = gui.clone();
             vm.register_host_fn(
@@ -677,6 +760,9 @@ mod canvas_impl {
                 "sdlDrawLine",
                 Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
                     let name = handle_name(args.first());
+                    if vybe_widgets::canvas::trace_enabled() {
+                        eprintln!("[sdlDrawLine] argc={} arg0={:?} name={name:?}", args.len(), args.first());
+                    }
                     let x1 = f32_arg(args, 1);
                     let y1 = f32_arg(args, 2);
                     let x2 = f32_arg(args, 3);
@@ -684,17 +770,21 @@ mod canvas_impl {
 
                     let mut state = gui.lock().unwrap();
                     if let Some(c) = args.get(5) {
-                        let c_val = c.as_i32() as u32;
+                        // Read through f64, NOT `as_i32`: a packed colour with
+                        // alpha (0xFFRRGGBB = 4283879648 for cyan) exceeds
+                        // i32::MAX, and `as i32` SATURATES to 0x7FFFFFFF — which
+                        // unpacks to r=g=b=0xFF, so every colour rendered white.
+                        let c_val = c.as_f64() as u32;
                         let r = ((c_val >> 16) & 0xFF) as u8;
                         let g = ((c_val >> 8) & 0xFF) as u8;
                         let b = (c_val & 0xFF) as u8;
                         let a = ((c_val >> 24) & 0xFF) as u8;
                         let color = vybe_widgets::canvas::Color::rgba(r, g, b, if a == 0 { 255 } else { a });
-                        state.find_canvas_mut(&name).set_stroke_color(color);
-                        state.find_canvas_mut(&name).set_line_width(1.0);
+                        state.find_canvas_for_draw(&name).set_stroke_color(color);
+                        state.find_canvas_for_draw(&name).set_line_width(1.0);
                     }
                     
-                    let canvas = state.find_canvas_mut(&name);
+                    let canvas = state.find_canvas_for_draw(&name);
                     canvas.begin_path();
                     canvas.move_to(x1, y1);
                     canvas.line_to(x2, y2);
@@ -718,10 +808,20 @@ mod canvas_impl {
     /// The name form is what `getContext` already accepts (it stringifies its
     /// argument), and it is what SDL passes — `SDL_CreateWindow` stores the
     /// `<window>_surface` Canvas control's NAME as `sdl_surface`. Rejecting it
-    /// here returned an empty string, so `find_canvas_mut("")` recorded every
+    /// here returned an empty string, so `find_canvas_for_draw("")` recorded every
     /// `sdlDrawLine` into a canvas belonging to no control, which nothing
     /// paints: the call succeeded and the line never appeared.
     fn handle_name(arg: Option<&Value>) -> String {
+        if vybe_widgets::canvas::trace_enabled() {
+            let shape = match arg {
+                None => "None".to_string(),
+                Some(Value::Object(o)) => {
+                    let g = o.lock().unwrap();
+                    format!("Object(props={:?})", g.properties.keys().collect::<Vec<_>>())
+                }
+                Some(v) => format!("{:?}", v) };
+            eprintln!("[handle_name] arg={shape}");
+        }
         match arg {
             Some(Value::Object(obj)) => {
                 let o = obj.lock().unwrap();
@@ -767,7 +867,7 @@ mod canvas_impl {
             name,
             Box::new(move |_ctx, args| {
                 let h = handle_name(args.first());
-                f(gui.lock().unwrap().find_canvas_mut(&h));
+                f(gui.lock().unwrap().find_canvas_for_draw(&h));
                 Value::Null
             }),
         );
@@ -783,7 +883,7 @@ mod canvas_impl {
             name,
             Box::new(move |_ctx, args| {
                 let h = handle_name(args.first());
-                f(gui.lock().unwrap().find_canvas_mut(&h), f32_arg(args, 1));
+                f(gui.lock().unwrap().find_canvas_for_draw(&h), f32_arg(args, 1));
                 Value::Null
             }),
         );
@@ -800,7 +900,7 @@ mod canvas_impl {
             Box::new(move |_ctx, args| {
                 let h = handle_name(args.first());
                 f(
-                    gui.lock().unwrap().find_canvas_mut(&h),
+                    gui.lock().unwrap().find_canvas_for_draw(&h),
                     f32_arg(args, 1),
                     f32_arg(args, 2),
                 );
@@ -820,7 +920,7 @@ mod canvas_impl {
             Box::new(move |_ctx, args| {
                 let h = handle_name(args.first());
                 f(
-                    gui.lock().unwrap().find_canvas_mut(&h),
+                    gui.lock().unwrap().find_canvas_for_draw(&h),
                     f32_arg(args, 1),
                     f32_arg(args, 2),
                     f32_arg(args, 3),
@@ -842,7 +942,7 @@ mod canvas_impl {
             Box::new(move |_ctx, args| {
                 let h = handle_name(args.first());
                 f(
-                    gui.lock().unwrap().find_canvas_mut(&h),
+                    gui.lock().unwrap().find_canvas_for_draw(&h),
                     f32_arg(args, 1),
                     f32_arg(args, 2),
                     f32_arg(args, 3),
@@ -876,7 +976,7 @@ mod canvas_impl {
                     255
                 };
                 f(
-                    gui.lock().unwrap().find_canvas_mut(&h),
+                    gui.lock().unwrap().find_canvas_for_draw(&h),
                     Color::rgba(r, g, b, a),
                 );
                 Value::Null
@@ -895,7 +995,7 @@ mod canvas_impl {
             Box::new(move |_ctx, args| {
                 let h = handle_name(args.first());
                 let s = args.get(1).map(|v| format!("{}", v)).unwrap_or_default();
-                f(gui.lock().unwrap().find_canvas_mut(&h), &s);
+                f(gui.lock().unwrap().find_canvas_for_draw(&h), &s);
                 Value::Null
             }),
         );
