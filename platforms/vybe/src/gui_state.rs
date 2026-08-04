@@ -82,7 +82,60 @@ pub struct GuiState {
     ///
     /// Only the SDL present path ever populates this, so every other canvas
     /// consumer (.NET, Flutter, JS) is unaffected by construction.
-    pub pending_clear: std::collections::HashSet<String> }
+    pub pending_clear: std::collections::HashSet<String>,
+    /// Raw input events awaiting `SDL_PollEvent` (sdlplan.md Tier 1).
+    ///
+    /// The window layer pushes BOTH key edges and all mouse activity here;
+    /// widget focus dispatch is unaffected (it keeps its own pressed-only
+    /// route). Drained front-first, one event per poll, exactly SDL's queue
+    /// contract. Bounded so a program that never polls cannot grow it without
+    /// limit — SDL's own queue drops when full too.
+    pub input_events: std::collections::VecDeque<SdlInputEvent>,
+    /// Last observed mouse position + held-button mask, for
+    /// `SDL_GetMouseState` (buttons use SDL's 1<<(button-1) masks).
+    pub mouse_x: i32,
+    pub mouse_y: i32,
+    pub mouse_buttons: u32,
+    /// Current modifier mask for `SDL_GetModState` (KMOD_* bits).
+    pub mod_state: u32 }
+
+/// One raw input event, in SDL's own vocabulary — the window layer maps
+/// winit's types into this so the host fns and the C program agree on
+/// numbering without a second translation table.
+#[derive(Debug, Clone)]
+pub struct SdlInputEvent {
+    /// SDL_KEYDOWN / SDL_KEYUP / SDL_MOUSE* / SDL_QUIT / SDL_WINDOWEVENT.
+    pub event_type: u32,
+    /// SDLK_* keycode (keyboard events).
+    pub sym: i32,
+    /// SDL_SCANCODE_* (keyboard events).
+    pub scancode: i32,
+    /// KMOD_* mask at the time of the event.
+    pub mod_state: u32,
+    /// Pointer position (mouse events).
+    pub x: i32,
+    pub y: i32,
+    /// SDL_BUTTON_* index (button events).
+    pub button: u32,
+    /// Wheel delta (wheel events).
+    pub wheel_y: i32 }
+
+impl SdlInputEvent {
+    pub fn empty(event_type: u32) -> Self {
+        Self {
+            event_type,
+            sym: 0,
+            scancode: 0,
+            mod_state: 0,
+            x: 0,
+            y: 0,
+            button: 0,
+            wheel_y: 0 }
+    }
+}
+
+/// SDL's queue caps at 65535; anything past that is dropped on the floor.
+pub const SDL_INPUT_QUEUE_CAP: usize = 65535;
 
 impl GuiState {
     pub fn new() -> Self {
@@ -101,7 +154,39 @@ impl GuiState {
             needs_repaint: false,
             front_requested: false,
             overlay_canvases: HashMap::new(),
-            pending_clear: std::collections::HashSet::new() }
+            pending_clear: std::collections::HashSet::new(),
+            input_events: std::collections::VecDeque::new(),
+            mouse_x: 0,
+            mouse_y: 0,
+            mouse_buttons: 0,
+            mod_state: 0 }
+    }
+
+    /// Queue a raw input event for `SDL_PollEvent`, updating the sampled
+    /// mouse/modifier state `SDL_GetMouseState`/`SDL_GetModState` report.
+    pub fn push_input_event(&mut self, event: SdlInputEvent) {
+        match event.event_type {
+            // SDL_MOUSEMOTION / BUTTONDOWN / BUTTONUP
+            0x400..=0x402 => {
+                self.mouse_x = event.x;
+                self.mouse_y = event.y;
+                if event.button > 0 {
+                    let mask = 1u32 << (event.button - 1);
+                    if event.event_type == 0x401 {
+                        self.mouse_buttons |= mask;
+                    } else if event.event_type == 0x402 {
+                        self.mouse_buttons &= !mask;
+                    }
+                }
+            }
+            // SDL_KEYDOWN / SDL_KEYUP
+            0x300 | 0x301 => {
+                self.mod_state = event.mod_state;
+            }
+            _ => {} }
+        if self.input_events.len() < SDL_INPUT_QUEUE_CAP {
+            self.input_events.push_back(event);
+        }
     }
 
     /// VM hot-reset (bucket D): drop all script-created GUI state — controls,

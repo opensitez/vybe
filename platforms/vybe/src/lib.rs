@@ -15,9 +15,10 @@ pub mod canvas;
 pub mod controls;
 pub mod drawing;
 pub mod gui;
-
 #[cfg(feature = "gui")]
 pub mod gui_state;
+#[cfg(feature = "gui")]
+pub mod input; // SDL input queue + poll surface (sdlplan.md Tier 1)
 
 pub mod plugin;
 pub use plugin::Plugin;

@@ -438,15 +438,14 @@ mod canvas_impl {
                         .unwrap_or(src_h as f32);
 
                     let needed = (src_w as usize) * (src_h as usize) * 4;
-                    let mut bytes: Vec<u8> = Vec::with_capacity(needed);
-                    if let Some(Value::Object(obj)) = args.get(1) {
-                        let o = obj.lock().unwrap();
-                        if let vybe_runtime::value::ObjectKind::Array(items) = &o.kind {
-                            for v in items.iter().take(needed) {
-                                bytes.push(v.as_f64() as u8);
-                            }
-                        }
-                    }
+                    // One owner: ECMA decodes the storage, so an RGBA buffer
+                    // works whether the guest handed a plain Array or a
+                    // byte-backed Uint8Array.
+                    let mut bytes: Vec<u8> = args
+                        .get(1)
+                        .map(vybe_platform_ecma::typedarray::bytes_from_value)
+                        .unwrap_or_default();
+                    bytes.truncate(needed);
                     if bytes.len() < needed {
                         // Short buffer: pad rather than panic. `Image::from_rgba`
                         // debug-asserts the exact length, and a guest that
@@ -679,14 +678,20 @@ mod canvas_impl {
                                 Some(Value::Object(inner)) => inner.clone(),
                                 _ => obj.clone() };
                             let obj_lock = obj.lock().unwrap();
-                            if let Some(Value::Object(base_obj)) = obj_lock.properties.get("__base") {
-                                let base_lock = base_obj.lock().unwrap();
-                                if let vybe_runtime::value::ObjectKind::Array(ref arr) = base_lock.kind {
-                                    x = arr.get(0).map(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                                    y = arr.get(1).map(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                                    w = arr.get(2).map(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                                    h = arr.get(3).map(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                            if let Some(base_val @ Value::Object(base_obj)) =
+                                obj_lock.properties.get("__base")
+                            {
+                                // One owner: ECMA decodes indexed storage of
+                                // either backing (Array or Uint8Array).
+                                let nums =
+                                    vybe_platform_ecma::typedarray::numbers_from_value(base_val);
+                                if nums.len() >= 4 {
+                                    x = nums[0] as f32;
+                                    y = nums[1] as f32;
+                                    w = nums[2] as f32;
+                                    h = nums[3] as f32;
                                 } else {
+                                    let base_lock = base_obj.lock().unwrap();
                                     x = base_lock.properties.get("x").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
                                     y = base_lock.properties.get("y").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
                                     w = base_lock.properties.get("w").map(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -778,13 +783,17 @@ mod canvas_impl {
                                 _ => obj.clone(),
                             }
                         };
-                        let t = target.lock().unwrap();
-                        match &t.kind {
-                            vybe_runtime::value::ObjectKind::Array(items) => {
-                                items.iter().skip(start).take(cap).map(|x| x.as_f64()).collect()
-                            }
-                            _ => Vec::new(),
-                        }
+                        // One owner: ECMA (§23.2) decodes the storage — this
+                        // used to match `ObjectKind::Array` inline, so a
+                        // byte-backed (`Uint8Array`) pixel buffer decoded as
+                        // EMPTY and the frame went black.
+                        vybe_platform_ecma::typedarray::numbers_from_value(&Value::Object(
+                            target.clone(),
+                        ))
+                        .into_iter()
+                        .skip(start)
+                        .take(cap)
+                        .collect()
                     };
                     let indices: Vec<u8> = read_nums(args.get(1), (w as usize) * (h as usize))
                         .into_iter()

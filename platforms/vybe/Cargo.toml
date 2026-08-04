@@ -13,6 +13,7 @@ license.workspace = true
 gui = ["vybe_widgets"]
 
 [dependencies]
+vybe_platform_ecma = { workspace = true }
 inventory = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_widgets = { workspace = true, optional = true }
