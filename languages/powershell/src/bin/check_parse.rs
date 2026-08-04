@@ -17,7 +17,7 @@ fn main() {
         Rule::quoted_string,
         Rule::if_stmt,
         Rule::condition_expr,
-        Rule::condition_body,
+        Rule::expression,
         Rule::block,
     ];
 

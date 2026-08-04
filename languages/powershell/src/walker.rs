@@ -102,9 +102,20 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             Rule::break_stmt => return Ok(Some(parse_break_stmt(pair))),
             Rule::continue_stmt => return Ok(Some(parse_continue_stmt(pair))),
             Rule::param_stmt => return Ok(None),
+            // `[CmdletBinding()]`, `[OutputType(…)]` — declaration metadata that
+            // carries no runtime behaviour.
+            Rule::attribute_stmt => return Ok(None),
             Rule::using_stmt => return Ok(None),
             Rule::assignment_stmt => return Ok(Some(parse_assignment_statement(pair))),
             Rule::increment_stmt => return Ok(Some(parse_increment_statement(pair))),
+            Rule::expr_stmt => {
+                let expr = pair
+                    .into_inner()
+                    .next()
+                    .map(walk_expr)
+                    .unwrap_or_else(Expression::null);
+                return Ok(Some(Statement::new(StmtKind::Expr(expr))));
+            }
             Rule::command_stmt => return Ok(Some(parse_command_statement(pair))),
             _ => {
                 if let Some(stmt) = parse_statement_fallback(pair)? {
@@ -122,9 +133,10 @@ fn parse_statement_fallback(pair: Pair<Rule>) -> Result<Option<Statement>, Strin
     if body.is_empty() {
         return Ok(None);
     }
-    if pair.as_rule() == Rule::expr_text {
-        return Ok(Some(Statement::new(StmtKind::Expr(expr_from_text(body)))));
+    if pair.as_rule() == Rule::expression {
+        return Ok(Some(Statement::new(StmtKind::Expr(walk_expr(pair)))));
     }
+    let _ = body;
     Ok(None)
 }
 
@@ -166,14 +178,15 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             Rule::IDENT => {
                 name = child.as_str().trim().to_string();
             }
+            // Walk the DOTTED_NAME children, not the rule's raw text — the text
+            // still carries the leading `:` and would yield a parent named
+            // ": A" that resolves to nothing.
             Rule::class_heritage => {
-                for chunk in child
-                    .as_str()
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                {
-                    parents.push(chunk);
+                for base in child.into_inner() {
+                    let name = base.as_str().trim();
+                    if !name.is_empty() {
+                        parents.push(name.to_string());
+                    }
                 }
             }
             Rule::class_body => {
@@ -196,52 +209,140 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
 fn parse_class_body(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
     let mut members = Vec::new();
     for child in pair.into_inner() {
-        if child.as_rule() == Rule::class_member_decl && let Some(member) = parse_class_member(child)? {
+        if let Some(member) = parse_class_member(child)? {
             members.push(member);
         }
     }
     Ok(members)
 }
 
-fn parse_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
-    let mut inner = pair.into_inner();
-    if let Some(child) = inner.next() {
-        return match child.as_rule() {
-            Rule::class_function_decl => {
-                let statement = parse_function_decl(child)?;
-                Ok(Some(ClassMember::Method(Box::new(statement))))
-            }
-            Rule::class_field_decl => parse_class_field_decl(child).map(Some),
-            Rule::constructor_decl => parse_constructor_decl(child).map(Some),
-            _ => Ok(None),
-        };
-    }
-    Ok(None)
-}
-
-fn parse_class_field_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
+/// `[string] Speak() { … }` — a method, identified by its declared return type.
+fn parse_ps_method(pair: Pair<Rule>) -> Result<ClassMember, String> {
+    let mut is_static = false;
     let mut name = String::new();
-    let mut init = None;
+    let mut params = Vec::new();
+    let mut body = Vec::new();
+
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::var_ref => {
-                name = child.as_str().trim_start_matches('$').to_string();
+            Rule::class_modifier => {
+                if child.as_str().eq_ignore_ascii_case("static") {
+                    is_static = true;
+                }
             }
-            Rule::expr_text => {
-                init = Some(expr_from_text(child.as_str()));
+            Rule::member_name => name = child.as_str().to_string(),
+            Rule::function_params => params = parse_function_params(child),
+            Rule::block => {
+                body = implicit_return(parse_block_with_function_params(child, &mut params)?)
             }
             _ => {}
         }
     }
 
+    let mut modifiers = Modifiers::default();
+    modifiers.is_static = is_static;
+
+    Ok(ClassMember::Method(Box::new(Statement::new(
+        StmtKind::FunctionDecl {
+            name,
+            params,
+            body,
+            modifiers,
+            is_async: false,
+            is_generator: false,
+            is_sub: false,
+            return_type: None,
+            handles: Vec::new(),
+        },
+    ))))
+}
+
+/// `Animal([string]$name) { … }` — a constructor: class-named, no return type.
+fn parse_ps_constructor(pair: Pair<Rule>) -> Result<ClassMember, String> {
+    let mut name = None;
+    let mut params = Vec::new();
+    let mut body = Vec::new();
+    let mut base_args = None;
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::IDENT => name = Some(child.as_str().to_string()),
+            Rule::function_params => params = parse_function_params(child),
+            Rule::ctor_base => {
+                let args = child
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::arg_list)
+                    .map(walk_arg_list)
+                    .unwrap_or_default();
+                base_args = Some(args);
+            }
+            Rule::block => body = parse_block_with_function_params(child, &mut params)?,
+            _ => {}
+        }
+    }
+
+    Ok(ClassMember::Constructor {
+        name,
+        params,
+        body,
+        base_args,
+        initializer_target: ConstructorInitializerTarget::Base,
+        visibility: Visibility::Public,
+    })
+}
+
+/// `[string]$Name = 'x'` — a field, with an optional type and initialiser.
+fn parse_ps_property(pair: Pair<Rule>) -> Result<ClassMember, String> {
+    let mut is_static = false;
+    let mut type_hint = None;
+    let mut name = String::new();
+    let mut init = None;
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::class_modifier => {
+                if child.as_str().eq_ignore_ascii_case("static") {
+                    is_static = true;
+                }
+            }
+            Rule::type_literal => {
+                let t = type_literal_name(child.as_str()).trim();
+                if !t.is_empty() {
+                    type_hint = Some(t.to_string());
+                }
+            }
+            Rule::var_ref => {
+                name = scope_qualified_name(child.as_str().trim_start_matches('$')).to_string();
+            }
+            _ => init = Some(walk_expr(child)),
+        }
+    }
+
+    let mut modifiers = Modifiers::default();
+    modifiers.is_static = is_static;
+
     Ok(ClassMember::Field {
         name,
-        type_hint: None,
+        type_hint,
         init,
-        modifiers: Modifiers::default(),
+        modifiers,
         with_events: false,
         array_bounds: None,
     })
+}
+
+fn parse_class_member(pair: Pair<Rule>) -> Result<Option<ClassMember>, String> {
+    match pair.as_rule() {
+        Rule::ps_method => parse_ps_method(pair).map(Some),
+        Rule::ps_constructor => parse_ps_constructor(pair).map(Some),
+        Rule::ps_property => parse_ps_property(pair).map(Some),
+        Rule::class_function_decl => {
+            let statement = parse_function_decl(pair)?;
+            Ok(Some(ClassMember::Method(Box::new(statement))))
+        }
+        Rule::constructor_decl => parse_constructor_decl(pair).map(Some),
+        _ => Ok(None),
+    }
 }
 
 fn parse_constructor_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
@@ -277,7 +378,9 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 name = child.as_str().trim().to_string();
             }
             Rule::function_params => params = parse_function_params(child),
-            Rule::block => body = parse_block_with_function_params(child, &mut params)?,
+            Rule::block => {
+                body = implicit_return(parse_block_with_function_params(child, &mut params)?)
+            }
             _ => {}
         }
     }
@@ -319,19 +422,17 @@ fn parse_function_params(pair: Pair<Rule>) -> Vec<Param> {
 
         for piece in raw.into_inner() {
             match piece.as_rule() {
-                Rule::type_hint => {
-                    let inner = piece.as_str().trim();
-                    let inner = inner.trim_start_matches('[').trim_end_matches(']');
-                    let inner = inner.trim();
+                Rule::type_literal => {
+                    let inner = type_literal_name(piece.as_str()).trim();
                     if !inner.is_empty() {
                         type_hint = Some(inner.to_string());
                     }
                 }
                 Rule::var_ref | Rule::IDENT => {
-                    name = piece.as_str().trim_start_matches('$').to_string();
+                    name = scope_qualified_name(piece.as_str().trim_start_matches('$')).to_string();
                 }
-                Rule::expr_text => {
-                    default = Some(expr_from_text(piece.as_str()));
+                Rule::expression => {
+                    default = Some(walk_expr(piece));
                 }
                 _ => {}
             }
@@ -356,11 +457,10 @@ fn parse_function_params(pair: Pair<Rule>) -> Vec<Param> {
 }
 
 fn parse_param_stmt(pair: Pair<Rule>, out: &mut Vec<Param>) {
-    for child in pair.into_inner() {
-        if child.as_rule() == Rule::function_param_list {
-            out.extend(parse_function_params(child));
-        }
-    }
+    // Hand `parse_function_params` the ENCLOSING pair, not the
+    // `function_param_list` itself: it descends two levels, so passing the list
+    // skipped straight past every `function_param`.
+    out.extend(parse_function_params(pair));
 }
 
 fn parse_block_with_function_params(
@@ -368,26 +468,15 @@ fn parse_block_with_function_params(
     params: &mut Vec<Param>,
 ) -> Result<Vec<Statement>, String> {
     let mut body = Vec::new();
-    let mut consume_param_stmt = true;
 
+    // `statement` is a SILENT rule, so a block's children are the concrete
+    // statement rules (`assignment_stmt`, `command_stmt`, …) and never
+    // `Rule::statement` itself. Matching on that name here skipped every
+    // statement and left function and constructor bodies empty.
     for child in pair.into_inner() {
-        if child.as_rule() != Rule::statement {
+        if child.as_rule() == Rule::param_stmt {
+            parse_param_stmt(child, params);
             continue;
-        }
-
-        if consume_param_stmt {
-            let mut consumed = false;
-            for inner in child.clone().into_inner() {
-                if inner.as_rule() == Rule::param_stmt {
-                    parse_param_stmt(inner, params);
-                    consumed = true;
-                    break;
-                }
-            }
-            if consumed {
-                continue;
-            }
-            consume_param_stmt = false;
         }
 
         if let Some(stmt) = parse_statement(child)? {
@@ -406,19 +495,15 @@ fn parse_if_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::condition_expr => cond = Some(parse_condition(child.as_str())),
-            Rule::expr_text => cond = Some(expr_from_text(child.as_str())),
+            Rule::condition_expr => cond = Some(walk_condition(child)),
             Rule::block => then_body = parse_block_statements(child)?,
             Rule::elseif_stmt => {
                 let mut branch_cond = None;
                 let mut branch_body = Vec::new();
                 for part in child.into_inner() {
                     if part.as_rule() == Rule::condition_expr {
-                        branch_cond = Some(parse_condition(part.as_str()));
-                    } else if part.as_rule() == Rule::expr_text {
-                        branch_cond = Some(expr_from_text(part.as_str()));
-                    }
-                    if part.as_rule() == Rule::block {
+                        branch_cond = Some(walk_condition(part));
+                    } else if part.as_rule() == Rule::block {
                         branch_body = parse_block_statements(part)?;
                     }
                 }
@@ -443,13 +528,13 @@ fn parse_if_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     }))
 }
 
-fn parse_condition(raw: &str) -> Expression {
-    let text = raw.trim();
-    if is_fully_wrapped(text, '(', ')') {
-        return expr_from_text(strip_outer_parentheses(text));
-    }
-
-    expr_from_text(text)
+/// `condition_expr` wraps a parenthesised expression — unwrap to the inner
+/// `expression` pair rather than re-parsing the text.
+fn walk_condition(pair: Pair<Rule>) -> Expression {
+    pair.into_inner()
+        .find(|c| matches!(c.as_rule(), Rule::expression | Rule::command_pipeline))
+        .map(walk_expr)
+        .unwrap_or_else(Expression::null)
 }
 
 fn parse_foreach_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -459,8 +544,10 @@ fn parse_foreach_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::var_ref => iter_var = child.as_str().trim_start_matches('$').to_string(),
-            Rule::expr_text => iter = Some(expr_from_text(child.as_str())),
+            Rule::var_ref => {
+                iter_var = scope_qualified_name(child.as_str().trim_start_matches('$')).to_string()
+            }
+            Rule::expression | Rule::command_pipeline => iter = Some(walk_expr(child)),
             Rule::block => body = parse_block_statements(child)?,
             _ => {}
         }
@@ -484,11 +571,8 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::expr_text => {
-                expr = Some(expr_from_text(child.as_str()));
-            }
-            Rule::condition_expr => {
-                expr = Some(expr_from_text(child.as_str()));
+            Rule::expression => {
+                expr = Some(walk_expr(child));
             }
             Rule::switch_case => {
                 let mut branch_body = None;
@@ -496,13 +580,11 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
                 let is_default = child
                     .as_str()
                     .trim_start()
+                    .to_lowercase()
                     .starts_with("default");
 
                 for part in child.into_inner() {
                     match part.as_rule() {
-                        Rule::expr_text if !is_default => {
-                            branch_conditions.push(CaseCondition::Value(expr_from_text(part.as_str())));
-                        }
                         Rule::switch_case_body => {
                             branch_body = Some(parse_block_statements(part)?);
                         }
@@ -517,8 +599,9 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
                         Rule::switch_case_value => {
                             for inner in part.into_inner() {
                                 match inner.as_rule() {
-                                    Rule::expr_text => {
-                                        branch_conditions.push(CaseCondition::Value(expr_from_text(inner.as_str())));
+                                    Rule::expression => {
+                                        branch_conditions
+                                            .push(CaseCondition::Value(walk_expr(inner)));
                                     }
                                     Rule::switch_case_body => {
                                         branch_body = Some(parse_block_statements(inner)?);
@@ -555,96 +638,81 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
 }
 
 fn parse_for_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
-    let mut header = None;
+    let mut init = None;
+    let mut cond = None;
+    let mut update = None;
     let mut body = Vec::new();
 
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::for_header => header = Some(child.as_str().to_string()),
+            Rule::for_init => {
+                if let Some(inner) = child.into_inner().next() {
+                    init = parse_statement(inner)?;
+                }
+            }
+            Rule::for_cond => cond = Some(walk_expr(child)),
+            Rule::for_update => {
+                if let Some(inner) = child.into_inner().next() {
+                    update = parse_statement(inner)?;
+                }
+            }
             Rule::block => body = parse_block_statements(child)?,
             _ => {}
         }
     }
 
-    let header = header.unwrap_or_default();
-    let mut it = header.split(';').map(str::trim).collect::<Vec<_>>();
-    if it.len() < 3 {
-        it.resize(3, "");
-    }
-
-    let init = parse_for_part_expr(it[0]).filter(|expr| {
-        !matches!(expr.kind, ExprKind::Ident(_)) || !expr.as_ident_empty()
-    });
-    let cond = parse_for_part_expr(it[1]).filter(|expr| {
-        !matches!(expr.kind, ExprKind::Ident(_)) || !expr.as_ident_empty()
-    });
-    let update = parse_for_part_expr(it[2]).filter(|expr| {
-        !matches!(expr.kind, ExprKind::Ident(_)) || !expr.as_ident_empty()
-    });
-
     Ok(Statement::new(StmtKind::For {
-        init: init.map(|expr| Box::new(Statement::new(StmtKind::Expr(expr)))),
-        cond: cond,
-        update: update,
+        init: init.map(Box::new),
+        cond,
+        update: update.map(statement_to_expression),
         body,
     }))
 }
 
-fn parse_for_part_expr(text: &str) -> Option<Expression> {
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    if let Some((target, op, rhs)) = detect_assignment_like(text) {
-        let value = expr_from_text(rhs.as_str());
-        let lhs = assignment_target(&target);
-        return Some(match op.as_str() {
-            "=" => Expression::new(ExprKind::Assign {
-                target: Box::new(lhs),
+/// `StmtKind::For.update` is an `Expression`, but the update slot parses as a
+/// statement (`$i++`, `$i = $i + 1`). Re-shape assignment statements into the
+/// equivalent assignment expressions the shared loop lowering expects.
+fn statement_to_expression(stmt: Statement) -> Expression {
+    match stmt.kind {
+        StmtKind::Expr(expr) => expr,
+        StmtKind::Assign {
+            mut targets, value, ..
+        } => {
+            let target = if targets.is_empty() {
+                Expression::null()
+            } else {
+                targets.remove(0)
+            };
+            Expression::new(ExprKind::Assign {
+                target: Box::new(target),
                 value: Box::new(value),
-            }),
-            "+=" => binary_assign(lhs, BinOp::Add, value),
-            "-=" => binary_assign(lhs, BinOp::Sub, value),
-            "*=" => binary_assign(lhs, BinOp::Mul, value),
-            "/=" => binary_assign(lhs, BinOp::Div, value),
-            "%=" => binary_assign(lhs, BinOp::Mod, value),
-            "**=" => binary_assign(lhs, BinOp::Pow, value),
-            "&=" => binary_assign(lhs, BinOp::BitAnd, value),
-            "|=" => binary_assign(lhs, BinOp::BitOr, value),
-            "^=" => binary_assign(lhs, BinOp::BitXor, value),
-            "<<=" => binary_assign(lhs, BinOp::Shl, value),
-            ">>=" => binary_assign(lhs, BinOp::Shr, value),
-            "&&=" => binary_assign(lhs, BinOp::And, value),
-            "||=" => binary_assign(lhs, BinOp::Or, value),
-            "??=" => binary_assign(lhs, BinOp::NullCoalesce, value),
-            _ => Expression::new(ExprKind::Assign {
-                target: Box::new(lhs),
-                value: Box::new(value),
-            }),
-        });
+            })
+        }
+        StmtKind::CompoundAssign { target, op, value } => {
+            let bin = compound_to_binop(op);
+            binary_assign(target, bin, value)
+        }
+        _ => Expression::null(),
     }
-    if let Some(target_text) = text.strip_suffix("++") {
-        let target = assignment_target(target_text.trim());
-        Some(Expression::new(ExprKind::Assign {
-            target: Box::new(target.clone()),
-            value: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(target),
-                right: Box::new(Expression::int(1)),
-            })),
-        }))
-    } else if let Some(target_text) = text.strip_suffix("--") {
-        let target = assignment_target(target_text.trim());
-        Some(Expression::new(ExprKind::Assign {
-            target: Box::new(target.clone()),
-            value: Box::new(Expression::new(ExprKind::Binary {
-                op: BinOp::Sub,
-                left: Box::new(target),
-                right: Box::new(Expression::int(1)),
-            })),
-        }))
-    } else {
-        Some(expr_from_text(text))
+}
+
+fn compound_to_binop(op: CompoundOp) -> BinOp {
+    match op {
+        CompoundOp::Add => BinOp::Add,
+        CompoundOp::Sub => BinOp::Sub,
+        CompoundOp::Mul => BinOp::Mul,
+        CompoundOp::Div => BinOp::Div,
+        CompoundOp::Mod => BinOp::Mod,
+        CompoundOp::Pow => BinOp::Pow,
+        CompoundOp::BitAnd => BinOp::BitAnd,
+        CompoundOp::BitOr => BinOp::BitOr,
+        CompoundOp::BitXor => BinOp::BitXor,
+        CompoundOp::Shl => BinOp::Shl,
+        CompoundOp::Shr => BinOp::Shr,
+        CompoundOp::And => BinOp::And,
+        CompoundOp::Or => BinOp::Or,
+        CompoundOp::NullCoalesce => BinOp::NullCoalesce,
+        _ => BinOp::Add,
     }
 }
 
@@ -663,15 +731,11 @@ fn parse_while_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut cond = None;
     let mut body = Vec::new();
 
-        for child in pair.into_inner() {
-        if child.as_rule() == Rule::expr_text {
-            cond = Some(expr_from_text(child.as_str()));
-        }
-        if child.as_rule() == Rule::condition_expr {
-            cond = Some(parse_condition(child.as_str()));
-        }
-        if child.as_rule() == Rule::block {
-            body = parse_block_statements(child)?;
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::condition_expr => cond = Some(walk_condition(child)),
+            Rule::block => body = parse_block_statements(child)?,
+            _ => {}
         }
     }
 
@@ -690,15 +754,11 @@ fn parse_do_while_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::block => body = parse_block_statements(child)?,
-            Rule::do_while_tail => {
-                let text = child.as_str().trim().to_lowercase();
-                until = text.starts_with("until");
-                    for inner in child.into_inner() {
-                    if inner.as_rule() == Rule::expr_text {
-                        cond = Some(expr_from_text(inner.as_str()));
-                    }
+            Rule::do_while_while | Rule::do_while_until => {
+                until = child.as_rule() == Rule::do_while_until;
+                for inner in child.into_inner() {
                     if inner.as_rule() == Rule::condition_expr {
-                        cond = Some(parse_condition(inner.as_str()));
+                        cond = Some(walk_condition(inner));
                     }
                 }
             }
@@ -763,16 +823,16 @@ fn parse_catch_clause(pair: Pair<Rule>) -> Result<CatchClause, String> {
 fn parse_return_stmt(pair: Pair<Rule>) -> Statement {
     let expr = pair
         .into_inner()
-        .find(|c| c.as_rule() == Rule::expr_text)
-        .map(|c| expr_from_text(c.as_str()));
+        .find(|c| matches!(c.as_rule(), Rule::expression | Rule::command_pipeline))
+        .map(walk_expr);
     Statement::new(StmtKind::Return(expr))
 }
 
 fn parse_throw_stmt(pair: Pair<Rule>) -> Statement {
     let expr = pair
         .into_inner()
-        .find(|c| c.as_rule() == Rule::expr_text)
-        .map(|c| expr_from_text(c.as_str()));
+        .find(|c| c.as_rule() == Rule::expression)
+        .map(walk_expr);
     Statement::new(StmtKind::Throw {
         expr,
         cause: None,
@@ -806,14 +866,12 @@ fn parse_command_statement(pair: Pair<Rule>) -> Statement {
     if let Some(stmt) = parse_exit_command_statement(&text) {
         return stmt;
     }
-    let expr = match pair.as_rule() {
-        Rule::command_stmt => parse_command_line(&text)
-            .or_else(|| parse_pipeline(pair.clone()))
-            .unwrap_or_else(|| expr_from_text(&text)),
-        _ => parse_pipeline(pair)
-            .or_else(|| parse_command_line(&text))
-            .unwrap_or_else(|| expr_from_text(&text)),
-    };
+    // Prefer the PEST TREE over the text tokenizer. The text path splits on
+    // spaces without tracking parens, so `Write-Host (I 5)` came apart into
+    // `(I` and `5)`; the grammar already groups that correctly.
+    let expr = parse_pipeline(pair.clone())
+        .or_else(|| parse_command_line(&text))
+        .unwrap_or_else(|| expr_from_text(&text));
     Statement::new(StmtKind::Expr(expr))
 }
 
@@ -833,25 +891,27 @@ fn parse_exit_command_statement(text: &str) -> Option<Statement> {
 fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
     let mut target = None;
     let mut op = "=".to_string();
-    let mut rhs = String::new();
+    let mut rhs = None;
 
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::lvalue => {
-                target = Some(assignment_target(child.as_str()));
+                target = Some(walk_lvalue(child));
             }
             Rule::assignment_op => {
                 op = child.as_str().to_string();
             }
-            Rule::expr_text => {
-                rhs = child.as_str().to_string();
+            // `rhs_value` is a silent rule: the RHS arrives as either an
+            // `expression` or a `command_pipeline` (`$x = Get-Item | …`).
+            Rule::expression | Rule::command_pipeline => {
+                rhs = Some(walk_expr(child));
             }
             _ => {}
         }
     }
 
-    let target = target.unwrap_or_else(|| Expression::null());
-    let value = expr_from_text(rhs.as_str());
+    let target = target.unwrap_or_else(Expression::null);
+    let value = rhs.unwrap_or_else(Expression::null);
     let kind = match op.as_str() {
         "=" => StmtKind::Assign {
             targets: vec![target],
@@ -938,18 +998,21 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
 }
 
 fn parse_increment_statement(pair: Pair<Rule>) -> Statement {
-    let text = pair.as_str();
-    let (target_text, is_inc) = text
-        .trim_end()
-        .strip_suffix("++")
-        .map(|target| (target.trim(), true))
-        .or_else(|| text.trim_end().strip_suffix("--").map(|target| (target.trim(), false)))
-        .unwrap_or(("", false));
-    if target_text.is_empty() {
-        return Statement::new(StmtKind::Expr(Expression::null()));
+    let mut target = None;
+    let mut is_inc = true;
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::lvalue => target = Some(walk_lvalue(child)),
+            Rule::increment_op => is_inc = child.as_str() == "++",
+            _ => {}
+        }
     }
 
-    let target = assignment_target(target_text);
+    let Some(target) = target else {
+        return Statement::new(StmtKind::Expr(Expression::null()));
+    };
+
     Statement::new(StmtKind::CompoundAssign {
         target,
         op: if is_inc {
@@ -961,12 +1024,53 @@ fn parse_increment_statement(pair: Pair<Rule>) -> Statement {
     })
 }
 
-fn assignment_target(raw: &str) -> Expression {
-    let text = raw.trim();
-    if text.is_empty() {
-        return Expression::null();
+/// An assignment target: a variable, optionally followed by `.member` /
+/// `[index]` steps. Same node shapes the expression walker produces.
+fn walk_lvalue(pair: Pair<Rule>) -> Expression {
+    // A leading `[int]` is a type constraint on the target, not part of its
+    // identity — the shared compiler infers from the assigned value.
+    let mut inner = pair.into_inner().peekable();
+    if inner.peek().map(|p| p.as_rule()) == Some(Rule::type_literal) {
+        inner.next();
     }
-    parse_member_expression(text)
+
+    let mut expr = match inner.next() {
+        Some(p) if p.as_rule() == Rule::var_ref => walk_var_ref(p.as_str()),
+        Some(p) => walk_expr(p),
+        None => return Expression::null(),
+    };
+
+    for step in inner {
+        match step.as_rule() {
+            Rule::member_get => {
+                let name = step
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_str().trim_start_matches('$').to_string())
+                    .unwrap_or_default();
+                expr = Expression::new(ExprKind::Member {
+                    object: Box::new(expr),
+                    field: name,
+                    null_safe: false,
+                });
+            }
+            Rule::index_get => {
+                let index = step
+                    .into_inner()
+                    .next()
+                    .map(walk_expr)
+                    .unwrap_or_else(Expression::null);
+                expr = Expression::new(ExprKind::Index {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    null_safe: false,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    expr
 }
 
 fn parse_command_line(text: &str) -> Option<Expression> {
@@ -1000,140 +1104,6 @@ fn parse_command_line(text: &str) -> Option<Expression> {
     }
 
     Some(expr)
-}
-
-fn detect_assignment_like(text: &str) -> Option<(String, String, String)> {
-    let tokens = split_command_tokens(text);
-    if tokens.len() >= 3 && tokens[0].starts_with('$') && is_assignment_operator(&tokens[1]) {
-        let name = tokens[0].trim_start_matches('$').to_string();
-        let rhs = tokens[2..].join(" ");
-        let op = tokens[1].clone();
-        return Some((name, op, rhs));
-    }
-    for op in [
-        "??=",
-        "||=",
-        "&&=",
-        "<<=",
-        ">>=",
-        "**=",
-        "+=",
-        "-=",
-        "*=",
-        "/=",
-        "%=",
-        "&=",
-        "|=",
-        "^=",
-        "=",
-    ] {
-        if let Some((left, right)) = split_once(text, op) {
-            let left = left.trim();
-            let right = right.trim();
-            if left.is_empty() || !left.starts_with('$') {
-                continue;
-            }
-            return Some((left.to_string(), op.to_string(), right.to_string()));
-        }
-    }
-    None
-}
-
-fn is_assignment_operator(raw: &str) -> bool {
-    matches!(
-        raw,
-        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "&=" | "|=" | "^=" | "<<=" | ">>=" | "&&=" | "||=" | "??="
-    )
-}
-
-fn assign_statement(var_name: &str, op: &str, rhs: &str) -> StmtKind {
-    let value = expr_from_text(rhs);
-    match op {
-        "=" => StmtKind::VarDecl {
-            declarations: vec![VarDeclarator {
-                pattern: BindingPattern::Ident(var_name.to_string()),
-                type_hint: None,
-                init: Some(value),
-                array_bounds: None,
-                with_events: false,
-            }],
-            kind: VarDeclKind::Var,
-        },
-        "+=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Add,
-            value,
-        },
-        "-=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Sub,
-            value,
-        },
-        "*=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Mul,
-            value,
-        },
-        "/=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Div,
-            value,
-        },
-        "%=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Mod,
-            value,
-        },
-        "**=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Pow,
-            value,
-        },
-        "&=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::BitAnd,
-            value,
-        },
-        "|=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::BitOr,
-            value,
-        },
-        "^=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::BitXor,
-            value,
-        },
-        "<<=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Shl,
-            value,
-        },
-        ">>=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Shr,
-            value,
-        },
-        "&&=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::And,
-            value,
-        },
-        "||=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::Or,
-            value,
-        },
-        "??=" => StmtKind::CompoundAssign {
-            target: Expression::ident(var_name),
-            op: CompoundOp::NullCoalesce,
-            value,
-        },
-        _ => StmtKind::Expr(Expression::new(ExprKind::Assign {
-            target: Box::new(Expression::ident(var_name)),
-            value: Box::new(value),
-        })),
-    }
 }
 
 fn parse_pipeline(pair: Pair<Rule>) -> Option<Expression> {
@@ -1276,10 +1246,14 @@ fn parse_command_head(raw: &str) -> Expression {
         return Expression::null();
     }
     if looks_like_command_name(text) || is_path_like_command(text) {
-        Expression::ident(text)
-    } else {
-        parse_atom(text)
+        return Expression::ident(text);
     }
+    // A bare word in HEAD position is a command name, not the string argument
+    // `parse_atom` would produce — a string callee can never be callable.
+    if is_bare_command_word(text) {
+        return Expression::ident(text);
+    }
+    parse_atom(text)
 }
 
 fn is_path_like_command(text: &str) -> bool {
@@ -1382,111 +1356,803 @@ fn collect_command_tokens(pair: &Pair<Rule>, out: &mut Vec<String>) {
     }
 }
 
-fn parse_atom(raw: &str) -> Expression {
-    let text = raw.trim();
-    if text.is_empty() {
-        return Expression::null();
-    }
-    if looks_like_command_name(text) && !is_numeric_like(text) {
-        return Expression::ident(text);
-    }
-    expr_from_text(text)
-}
+// ────────────────────────────────────────────────────────────────────────────
+// Expression walking
+//
+// The pest expression grammar is the ONE place operator precedence is defined.
+// Nothing below re-splits source text on operator spellings — a text fragment
+// captured in command-token position is re-parsed through `Rule::expr_entry`,
+// i.e. through the same grammar, so there is a single source of truth.
+// ────────────────────────────────────────────────────────────────────────────
 
+/// Parse a text fragment in **expression mode** — a bare word is an identifier.
 fn expr_from_text(raw: &str) -> Expression {
     let text = raw.trim();
     if text.is_empty() {
         return Expression::null();
     }
+    parse_expr_fragment(text).unwrap_or_else(|| Expression::ident(text))
+}
 
-    if let Some(s) = strip_surrounded(text, '"') {
-        return parse_double_quoted_string(&s);
-    }
-    if let Some(s) = strip_surrounded(text, '\'') {
-        return Expression::string(&s);
-    }
-    if let Some((type_name, rhs)) = parse_ps_cast(text) {
-        return Expression::new(ExprKind::Cast {
-            expr: Box::new(expr_from_text(&rhs)),
-            type_name,
-        });
-    }
-    if let Some(expr) = parse_ps_array_literal(text) {
-        return expr;
-    }
-    if let Some(expr) = parse_ps_object_literal(text) {
-        return expr;
-    }
-    if let Some((from, to)) = parse_ps_range(text) {
-        return Expression::new(ExprKind::Range {
-            start: Box::new(expr_from_text(&from)),
-            end: Box::new(expr_from_text(&to)),
-            inclusive: true,
-        });
-    }
-    if let Ok(int) = text.parse::<i64>() {
-        return Expression::int(int);
-    }
-    if let Ok(float) = text.parse::<f64>() {
-        return Expression::float(float);
-    }
-    if matches!(text.to_lowercase().as_str(), "$true" | "true") {
-        return Expression::bool(true);
-    }
-    if matches!(text.to_lowercase().as_str(), "$false" | "false") {
-        return Expression::bool(false);
-    }
-    if text == "$null" {
+/// Parse a token in **command mode** — a bare word is a string argument, the
+/// way PowerShell treats `Write-Host FAIL`.
+fn parse_atom(raw: &str) -> Expression {
+    let text = raw.trim();
+    if text.is_empty() {
         return Expression::null();
     }
+    if is_bare_command_word(text) {
+        return Expression::string(text);
+    }
+    parse_expr_fragment(text).unwrap_or_else(|| Expression::string(text))
+}
 
-    for (op, bin) in [
-        (" -eq ", BinOp::Eq),
-        (" -ne ", BinOp::NotEq),
-        (" -gt ", BinOp::Gt),
-        (" -ge ", BinOp::GtEq),
-        (" -lt ", BinOp::Lt),
-        (" -le ", BinOp::LtEq),
-        (" -and ", BinOp::And),
-        (" -or ", BinOp::Or),
-        (" -in ", BinOp::In),
-        (" -notin ", BinOp::NotIn),
-        (" -contains ", BinOp::In),
-        (" -notcontains ", BinOp::NotIn),
-        (" -like ", BinOp::Like),
-        (" -match ", BinOp::Like),
-        (" -is ", BinOp::Is),
-        (" -isnot ", BinOp::IsNot),
-        (" -matchnot ", BinOp::NotIn),
+/// A token that carries no expression syntax at all — in command mode this is
+/// a literal string argument.
+fn is_bare_command_word(text: &str) -> bool {
+    !text.is_empty()
+        && !text.starts_with('$')
+        && !text.starts_with('@')
+        && !text.starts_with('[')
+        && !text.starts_with('(')
+        && !text.starts_with('"')
+        && !text.starts_with('\'')
+        && !text.starts_with('&')
+        && !is_numeric_like(text)
+        && text
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '\\' | '/' | '*'))
+        && text.chars().any(|c| c.is_alphabetic())
+}
+
+fn parse_expr_fragment(text: &str) -> Option<Expression> {
+    let pairs = super::PowerShellParser::parse(Rule::expr_entry, text).ok()?;
+    let root = pairs.into_iter().next()?;
+    let expr = root
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::expression)?;
+    Some(walk_expr(expr))
+}
+
+/// Walk one expression pair into the shared AST.
+fn walk_expr(pair: Pair<Rule>) -> Expression {
+    match pair.as_rule() {
+        // `(Get-Date)` is a command INVOCATION, not a read of a name. Only a
+        // lone bare word qualifies — `($x)` and `(1 + 2)` stay expressions.
+        Rule::paren_expr => match lone_bare_word(&pair) {
+            Some(name) => Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::ident(&name)),
+                args: Vec::new(),
+                optional: false,
+            }),
+            None => first_inner_expr(pair),
+        },
+
+        Rule::expression | Rule::expr_statement | Rule::for_cond | Rule::condition_expr => {
+            first_inner_expr(pair)
+        }
+
+        Rule::comma_expr => walk_comma_expr(pair),
+        Rule::ternary_expr => walk_ternary(pair),
+
+        Rule::logical_or
+        | Rule::logical_and
+        | Rule::comparison
+        | Rule::additive
+        | Rule::multiplicative
+        | Rule::power => walk_binary_chain(pair),
+
+        Rule::range_expr => walk_range(pair),
+        Rule::unary => walk_unary(pair),
+        Rule::cast_expr => walk_cast(pair),
+        Rule::postfix => walk_postfix(pair),
+
+        Rule::command_pipeline => walk_command_pipeline(pair),
+        Rule::command_segment => walk_command_segment_expr(pair),
+        Rule::array_expr => walk_array_expr(pair),
+        Rule::hash_literal => walk_hash_literal(pair),
+        Rule::sub_expr => walk_sub_expr(pair),
+        Rule::script_block_expr => walk_script_block_expr(pair),
+
+        Rule::number => walk_number(pair.as_str()),
+        Rule::quoted_string => {
+            let raw = pair.as_str();
+            parse_double_quoted_string(raw.get(1..raw.len().saturating_sub(1)).unwrap_or(""))
+        }
+        Rule::single_quoted_string => {
+            let raw = pair.as_str();
+            let inner = raw.get(1..raw.len().saturating_sub(1)).unwrap_or("");
+            Expression::string(&inner.replace("''", "'"))
+        }
+        Rule::var_ref => walk_var_ref(pair.as_str()),
+        Rule::type_literal => type_literal_expr(type_literal_name(pair.as_str())),
+        Rule::bare_word => walk_bare_word(pair.as_str()),
+
+        _ => first_inner_expr(pair),
+    }
+}
+
+/// The single `bare_word` a group bottoms out in, if the group contains nothing
+/// else — no operators, no arguments, no member access. Walks the single-child
+/// chain and gives up the moment a level has siblings.
+fn lone_bare_word(pair: &Pair<Rule>) -> Option<String> {
+    let mut current = pair.clone();
+    loop {
+        if current.as_rule() == Rule::bare_word {
+            return Some(current.as_str().to_string());
+        }
+        let mut inner = current.clone().into_inner();
+        let only = inner.next()?;
+        if inner.next().is_some() {
+            return None;
+        }
+        current = only;
+    }
+}
+
+fn first_inner_expr(pair: Pair<Rule>) -> Expression {
+    pair.into_inner()
+        .next()
+        .map(walk_expr)
+        .unwrap_or_else(Expression::null)
+}
+
+/// `1,2,3` builds an array; a single element passes straight through.
+fn walk_comma_expr(pair: Pair<Rule>) -> Expression {
+    let mut items: Vec<Expression> = pair.into_inner().map(walk_expr).collect();
+    match items.len() {
+        0 => Expression::null(),
+        1 => items.remove(0),
+        _ => Expression::new(ExprKind::Array(
+            items
+                .into_iter()
+                .map(|value| ArrayElement {
+                    key: None,
+                    value,
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        )),
+    }
+}
+
+fn walk_ternary(pair: Pair<Rule>) -> Expression {
+    let mut inner = pair.into_inner();
+    let cond = match inner.next() {
+        Some(p) => walk_expr(p),
+        None => return Expression::null(),
+    };
+    let Some(then_pair) = inner.next() else {
+        return cond;
+    };
+    let then_expr = walk_expr(then_pair);
+    let else_expr = inner.next().map(walk_expr).unwrap_or_else(Expression::null);
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(cond),
+        then: Box::new(then_expr),
+        else_: Box::new(else_expr),
+    })
+}
+
+/// Left-associative fold over `operand (op operand)*`.
+fn walk_binary_chain(pair: Pair<Rule>) -> Expression {
+    let mut inner = pair.into_inner();
+    let mut left = match inner.next() {
+        Some(p) => walk_expr(p),
+        None => return Expression::null(),
+    };
+    while let Some(op_pair) = inner.next() {
+        let Some(rhs_pair) = inner.next() else { break };
+        let right = walk_expr(rhs_pair);
+        left = build_binary(op_pair.as_str(), left, right);
+    }
+    left
+}
+
+fn walk_range(pair: Pair<Rule>) -> Expression {
+    let mut inner = pair.into_inner();
+    let start = match inner.next() {
+        Some(p) => walk_expr(p),
+        None => return Expression::null(),
+    };
+    match inner.next() {
+        Some(end) => Expression::new(ExprKind::Range {
+            start: Box::new(start),
+            end: Box::new(walk_expr(end)),
+            inclusive: true,
+        }),
+        None => start,
+    }
+}
+
+fn walk_unary(pair: Pair<Rule>) -> Expression {
+    let mut inner = pair.into_inner();
+    let Some(first) = inner.next() else {
+        return Expression::null();
+    };
+    if first.as_rule() != Rule::unary_op {
+        return walk_expr(first);
+    }
+    let op_text = first.as_str().trim().to_lowercase();
+    let operand = inner.next().map(walk_expr).unwrap_or_else(Expression::null);
+
+    // `-join` / `-split` in unary position are PowerShell's collection forms;
+    // keep them as ordinary method calls so shared dispatch owns them.
+    match op_text.as_str() {
+        "-join" => return method_call_expr(operand, "join", vec![Expression::string("")]),
+        "-split" => return method_call_expr(operand, "split", vec![Expression::string(" ")]),
+        _ => {}
+    }
+
+    let op = match op_text.as_str() {
+        "!" | "-not" => UnaryOp::Not,
+        "-bnot" => UnaryOp::BitNot,
+        "+" => UnaryOp::Pos,
+        _ => UnaryOp::Neg,
+    };
+    Expression::new(ExprKind::Unary {
+        op,
+        expr: Box::new(operand),
+    })
+}
+
+fn walk_cast(pair: Pair<Rule>) -> Expression {
+    let mut inner = pair.into_inner();
+    let type_name = inner
+        .next()
+        .map(|p| type_literal_name(p.as_str()).to_string())
+        .unwrap_or_default();
+    let expr = inner.next().map(walk_expr).unwrap_or_else(Expression::null);
+    Expression::new(ExprKind::Cast {
+        expr: Box::new(expr),
+        type_name,
+    })
+}
+
+fn walk_postfix(pair: Pair<Rule>) -> Expression {
+    let mut inner = pair.into_inner();
+    let mut expr = match inner.next() {
+        Some(p) => walk_expr(p),
+        None => return Expression::null(),
+    };
+
+    for op in inner {
+        match op.as_rule() {
+            Rule::member_get => {
+                let name = op
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_str().trim_start_matches('$').to_string())
+                    .unwrap_or_default();
+                expr = Expression::new(ExprKind::Member {
+                    object: Box::new(expr),
+                    field: normalize_member_name(&name),
+                    null_safe: false,
+                });
+            }
+            Rule::static_member => {
+                let name = op
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_default();
+                expr = Expression::new(ExprKind::Member {
+                    object: Box::new(expr),
+                    field: name,
+                    null_safe: false,
+                });
+            }
+            Rule::method_call | Rule::static_call => {
+                let is_static = op.as_rule() == Rule::static_call;
+                let mut parts = op.into_inner();
+                let name = parts
+                    .next()
+                    .map(|p| p.as_str().to_string())
+                    .unwrap_or_default();
+                let args = parts.next().map(walk_arg_list).unwrap_or_default();
+
+                // `[Animal]::new(…)` is construction, not a static call — hand
+                // the shared compiler the `New` node it already knows.
+                if is_static && name.eq_ignore_ascii_case("new") {
+                    if let Some(class) = type_name_of(&expr) {
+                        expr = Expression::new(ExprKind::New {
+                            class: Box::new(Expression::ident(&class)),
+                            args: args
+                                .into_iter()
+                                .map(|value| Argument {
+                                    value,
+                                    name: None,
+                                    by_ref: false,
+                                    spread: false,
+                                })
+                                .collect(),
+                        });
+                        continue;
+                    }
+                }
+
+                expr = method_call_expr(expr, &name, args);
+            }
+            Rule::index_get => {
+                let index = op
+                    .into_inner()
+                    .next()
+                    .map(walk_expr)
+                    .unwrap_or_else(Expression::null);
+                expr = Expression::new(ExprKind::Index {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    null_safe: false,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    expr
+}
+
+fn walk_arg_list(pair: Pair<Rule>) -> Vec<Expression> {
+    pair.into_inner().map(walk_expr).collect()
+}
+
+fn method_call_expr(receiver: Expression, name: &str, args: Vec<Expression>) -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::new(ExprKind::Member {
+            object: Box::new(receiver),
+            field: name.to_string(),
+            null_safe: false,
+        })),
+        args: args
+            .into_iter()
+            .map(|value| Argument {
+                value,
+                name: None,
+                by_ref: false,
+                spread: false,
+            })
+            .collect(),
+        optional: false,
+    })
+}
+
+/// `a | b | c` — each stage's value becomes argument 0 of the next callee, so
+/// the shared call resolution in `primitives/calls.rs` keeps full control.
+fn walk_command_pipeline(pair: Pair<Rule>) -> Expression {
+    let mut stages = pair.into_inner();
+    let mut expr = match stages.next() {
+        Some(p) => walk_expr(p),
+        None => return Expression::null(),
+    };
+
+    for stage in stages {
+        let (callee, mut args) = match stage.as_rule() {
+            Rule::command_segment => match parse_command_segment(stage) {
+                Some(parts) => parts,
+                None => continue,
+            },
+            _ => (walk_expr(stage), Vec::new()),
+        };
+
+        // The core pipeline cmdlets are collection operations. Rewriting them
+        // to the equivalent method call lets the existing `[array_methods]`
+        // dispatch handle them — no cmdlet builtins, no emitter arm.
+        if let ExprKind::Ident(name) = &callee.kind {
+            if let Some(method) = pipeline_cmdlet_method(name) {
+                let positional: Vec<Expression> = args
+                    .iter()
+                    .filter(|a| a.name.is_none())
+                    .map(|a| a.value.clone())
+                    .collect();
+                expr = match method {
+                    // `… | Out-Null` discards the pipeline value.
+                    "" => Expression::null(),
+                    m => method_call_expr(expr, m, positional),
+                };
+                continue;
+            }
+        }
+        args.insert(
+            0,
+            Argument {
+                value: expr,
+                name: None,
+                by_ref: false,
+                spread: false,
+            },
+        );
+        expr = Expression::new(ExprKind::Call {
+            callee: Box::new(callee),
+            args,
+            optional: false,
+        });
+    }
+
+    expr
+}
+
+/// The method a pipeline cmdlet is equivalent to, including its `?` / `%`
+/// aliases. `""` means the stage drops the value (`Out-Null`).
+fn pipeline_cmdlet_method(name: &str) -> Option<&'static str> {
+    match name.to_lowercase().as_str() {
+        "where-object" | "where" | "?" => Some("Where"),
+        "foreach-object" | "foreach" | "%" => Some("ForEach"),
+        "sort-object" | "sort" => Some("Sort"),
+        "measure-object" | "measure" => Some("Count"),
+        "out-null" => Some(""),
+        _ => None,
+    }
+}
+
+/// A bare command invocation used where an expression is expected: `(hi 'PASS')`.
+fn walk_command_segment_expr(pair: Pair<Rule>) -> Expression {
+    match parse_command_segment(pair) {
+        Some((callee, args)) => Expression::new(ExprKind::Call {
+            callee: Box::new(callee),
+            args,
+            optional: false,
+        }),
+        None => Expression::null(),
+    }
+}
+
+fn walk_array_expr(pair: Pair<Rule>) -> Expression {
+    Expression::new(ExprKind::Array(
+        pair.into_inner()
+            .map(|p| ArrayElement {
+                key: None,
+                value: walk_expr(p),
+                spread: false,
+                by_ref: false,
+            })
+            .collect(),
+    ))
+}
+
+fn walk_hash_literal(pair: Pair<Rule>) -> Expression {
+    let mut props = Vec::new();
+    for entry in pair.into_inner() {
+        if entry.as_rule() != Rule::hash_entry {
+            continue;
+        }
+        let mut parts = entry.into_inner();
+        let Some(key_pair) = parts.next() else { continue };
+        let key = hash_key_text(key_pair);
+        let value = parts.next().map(walk_expr).unwrap_or_else(Expression::null);
+        props.push(ObjectProperty::KeyValue {
+            key: Expression::string(&key),
+            value,
+        });
+    }
+    Expression::new(ExprKind::Object(props))
+}
+
+fn hash_key_text(pair: Pair<Rule>) -> String {
+    let inner = pair.into_inner().next();
+    match inner {
+        Some(p) => {
+            let raw = p.as_str();
+            match p.as_rule() {
+                Rule::quoted_string | Rule::single_quoted_string => raw
+                    .get(1..raw.len().saturating_sub(1))
+                    .unwrap_or("")
+                    .to_string(),
+                _ => raw.to_string(),
+            }
+        }
+        None => String::new(),
+    }
+}
+
+/// `$( … )` — a statement list whose value is the last expression.
+fn walk_sub_expr(pair: Pair<Rule>) -> Expression {
+    let stmts = collect_statements(pair);
+    last_expression_of(stmts)
+}
+
+/// A script block is a lambda. PowerShell binds the current pipeline item to
+/// `$_`, so unless the block declares its own `param(…)` the walker gives it a
+/// single implicit `_` parameter — that is what makes `{ $_ -gt 2 }` receive the
+/// element the shared HOF dispatch passes in.
+fn walk_script_block_expr(pair: Pair<Rule>) -> Expression {
+    let mut params = Vec::new();
+    let mut body = Vec::new();
+
+    for child in pair.into_inner() {
+        if child.as_rule() == Rule::param_stmt {
+            parse_param_stmt(child, &mut params);
+            continue;
+        }
+        if let Ok(Some(stmt)) = parse_statement(child) {
+            body.push(stmt);
+        }
+    }
+
+    if params.is_empty() {
+        params.push(Param {
+            name: "_".to_string(),
+            type_hint: None,
+            default: None,
+            pass_by: PassBy::Value,
+            is_rest: false,
+            is_kwargs: false,
+            is_optional: true,
+            is_nullable: false,
+        });
+    }
+
+    Expression::new(ExprKind::Lambda {
+        params,
+        body: LambdaBody::Block(implicit_return(body)),
+        is_async: false,
+        captures: Vec::new(),
+    })
+}
+
+/// PowerShell yields the value of a trailing expression rather than requiring
+/// `return`. Rewriting that last statement here keeps the shared compiler
+/// generic — the same normalization Ruby's walker does.
+fn implicit_return(mut body: Vec<Statement>) -> Vec<Statement> {
+    let Some(last) = body.pop() else {
+        return body;
+    };
+    let replaced = match last.kind {
+        StmtKind::Expr(expr) => Statement::new(StmtKind::Return(Some(expr))),
+        _ => last,
+    };
+    body.push(replaced);
+    body
+}
+
+fn collect_statements(pair: Pair<Rule>) -> Vec<Statement> {
+    let mut out = Vec::new();
+    for child in pair.into_inner() {
+        if let Ok(Some(stmt)) = parse_statement(child) {
+            out.push(stmt);
+        }
+    }
+    out
+}
+
+fn last_expression_of(stmts: Vec<Statement>) -> Expression {
+    match stmts.into_iter().last() {
+        Some(stmt) => match stmt.kind {
+            StmtKind::Expr(expr) => expr,
+            _ => Expression::null(),
+        },
+        None => Expression::null(),
+    }
+}
+
+fn walk_number(raw: &str) -> Expression {
+    let text = raw.trim();
+    let lower = text.to_lowercase();
+
+    if let Some(hex) = lower.strip_prefix("0x") {
+        if let Ok(v) = i64::from_str_radix(hex, 16) {
+            return Expression::int(v);
+        }
+    }
+
+    // Size suffixes: 1kb, 2mb, …
+    for (suffix, factor) in [
+        ("kb", 1024_i64),
+        ("mb", 1024 * 1024),
+        ("gb", 1024 * 1024 * 1024),
+        ("tb", 1024_i64 * 1024 * 1024 * 1024),
+        ("pb", 1024_i64 * 1024 * 1024 * 1024 * 1024),
     ] {
-        if let Some((left, right)) = split_once(text, op) {
-            return Expression::new(ExprKind::Binary {
-                op: bin,
-                left: Box::new(expr_from_text(left)),
-                right: Box::new(expr_from_text(right)),
-            });
+        if let Some(head) = lower.strip_suffix(suffix) {
+            if let Ok(v) = head.parse::<f64>() {
+                return Expression::int((v * factor as f64) as i64);
+            }
         }
     }
 
-    if text.starts_with('$') {
-        return parse_member_expression(text);
+    let stripped = lower.trim_end_matches(['l', 'd']);
+    if let Ok(v) = stripped.parse::<i64>() {
+        return Expression::int(v);
     }
-
-    if is_fully_wrapped(text, '(', ')') {
-        return parse_script_expression(text);
+    if let Ok(v) = stripped.parse::<f64>() {
+        return Expression::float(v);
     }
+    Expression::int(0)
+}
 
-    if text.contains('.') || text.contains('[') {
-        return parse_member_expression(text);
+fn walk_var_ref(raw: &str) -> Expression {
+    let name = raw.trim_start_matches('$').trim_matches(|c| c == '{' || c == '}');
+    match name.to_lowercase().as_str() {
+        "true" => Expression::bool(true),
+        "false" => Expression::bool(false),
+        "null" => Expression::null(),
+        "this" => Expression::new(ExprKind::This),
+        _ => Expression::ident(scope_qualified_name(name)),
     }
+}
 
-    if looks_like_command_invocation(text) {
-        if let Some(expr) = parse_command_line(text) {
-            return expr;
+/// PowerShell scope modifiers (`$script:x`, `$global:x`, `$local:x`, `$env:x`)
+/// are not part of the variable's identity — `$script:count` and `$count` name
+/// the same storage at script scope. Drop the modifier so both spellings
+/// resolve to one binding; keep `env:` since it names a different store.
+fn scope_qualified_name(name: &str) -> &str {
+    match name.split_once(':') {
+        Some((scope, rest))
+            if matches!(
+                scope.to_lowercase().as_str(),
+                "script" | "global" | "local" | "private" | "using" | "variable"
+            ) && !rest.is_empty() =>
+        {
+            rest
         }
+        _ => name,
     }
+}
 
-    Expression::ident(text)
+fn walk_bare_word(raw: &str) -> Expression {
+    match raw.to_lowercase().as_str() {
+        "true" => Expression::bool(true),
+        "false" => Expression::bool(false),
+        "null" => Expression::null(),
+        _ => Expression::ident(raw),
+    }
+}
+
+/// The class name behind a `[Type]` literal, once the walker has turned it into
+/// a string. The FULL dotted name is kept: `[System.Text.StringBuilder]` has to
+/// stay whole so the shared namespace resolver can match it through the dotnet
+/// tree-mount. Truncating to the last segment would discard exactly what
+/// `resolve_profile_namespace_chain` matches on.
+fn type_name_of(expr: &Expression) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Ident(name) if !name.trim().is_empty() => Some(name.clone()),
+        ExprKind::Member { object, field, .. } => {
+            Some(format!("{}.{}", type_name_of(object)?, field))
+        }
+        _ => None,
+    }
+}
+
+/// `[System.Math]` becomes the member chain `System.Math`, the same shape the
+/// C# walker produces for a dotted `System.*` name. That is what lets the shared
+/// namespace resolver reach it through the dotnet tree-mount — a plain string
+/// object could never resolve.
+fn type_literal_expr(name: &str) -> Expression {
+    let name = name.trim();
+    if name.is_empty() {
+        return Expression::null();
+    }
+    let mut segments = name.split('.').filter(|s| !s.is_empty());
+    let Some(first) = segments.next() else {
+        return Expression::null();
+    };
+    let mut expr = Expression::ident(first);
+    for seg in segments {
+        expr = Expression::new(ExprKind::Member {
+            object: Box::new(expr),
+            field: seg.to_string(),
+            null_safe: false,
+        });
+    }
+    expr
+}
+
+/// PowerShell's `.Count` / `.Length` are the same idea as JS `.length`, so the
+/// walker rewrites them the way PHP's `count($a)` becomes `a.length`. Anything
+/// else keeps its spelling and resolves through the profile.
+fn normalize_member_name(name: &str) -> String {
+    match name.to_lowercase().as_str() {
+        "count" | "length" => "length".to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn type_literal_name(raw: &str) -> &str {
+    raw.trim().trim_start_matches('[').trim_end_matches(']')
+}
+
+/// Map a PowerShell operator spelling onto the shared `BinOp`.
+fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression {
+    let op_text = op_raw.trim().to_lowercase();
+    let symbolic = matches!(op_text.as_str(), "+" | "-" | "*" | "/" | "%" | "**");
+
+    let word = if symbolic {
+        op_text.clone()
+    } else {
+        let stripped = op_text.trim_start_matches('-');
+        // `-ceq` / `-ieq` are the case-sensitive / case-insensitive forms of
+        // `-eq`; they select comparison casing, not a different operator.
+        match stripped.strip_prefix('c').or_else(|| stripped.strip_prefix('i')) {
+            Some(rest) if is_comparison_word(rest) => rest.to_string(),
+            _ => stripped.to_string(),
+        }
+    };
+
+    // `-contains` / `-notcontains` take the collection on the LEFT, the inverse
+    // of `-in` / `-notin`. Swapping the operands is what makes both spellings
+    // reach the same shared `In` lowering.
+    let (op, left, right) = match word.as_str() {
+        "contains" => (BinOp::In, right, left),
+        "notcontains" => (BinOp::NotIn, right, left),
+        other => {
+            let op = match other {
+                "+" => BinOp::Add,
+                "-" => BinOp::Sub,
+                "*" => BinOp::Mul,
+                "/" => BinOp::Div,
+                "%" => BinOp::Mod,
+                "**" => BinOp::Pow,
+                "eq" => BinOp::Eq,
+                "ne" => BinOp::NotEq,
+                "gt" => BinOp::Gt,
+                "ge" => BinOp::GtEq,
+                "lt" => BinOp::Lt,
+                "le" => BinOp::LtEq,
+                "and" => BinOp::And,
+                "or" => BinOp::Or,
+                "xor" => BinOp::Xor,
+                "in" => BinOp::In,
+                "notin" => BinOp::NotIn,
+                "is" => BinOp::Is,
+                "isnot" => BinOp::IsNot,
+                "like" | "match" => BinOp::Like,
+                "band" => BinOp::BitAnd,
+                "bor" => BinOp::BitOr,
+                "bxor" => BinOp::BitXor,
+                "shl" => BinOp::Shl,
+                "shr" => BinOp::Shr,
+                "join" => {
+                    return method_call_expr(left, "join", vec![right]);
+                }
+                "split" => {
+                    return method_call_expr(left, "split", vec![right]);
+                }
+                "replace" => {
+                    return method_call_expr(left, "replace", vec![right]);
+                }
+                "notlike" | "notmatch" => {
+                    return Expression::new(ExprKind::Unary {
+                        op: UnaryOp::Not,
+                        expr: Box::new(Expression::new(ExprKind::Binary {
+                            op: BinOp::Like,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        })),
+                    });
+                }
+                _ => BinOp::Eq,
+            };
+            (op, left, right)
+        }
+    };
+
+    Expression::new(ExprKind::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
+}
+
+fn is_comparison_word(word: &str) -> bool {
+    matches!(
+        word,
+        "eq" | "ne"
+            | "gt"
+            | "ge"
+            | "lt"
+            | "le"
+            | "like"
+            | "notlike"
+            | "match"
+            | "notmatch"
+            | "contains"
+            | "notcontains"
+            | "in"
+            | "notin"
+            | "replace"
+            | "split"
+            | "join"
+    )
 }
 
 fn parse_double_quoted_string(text: &str) -> Expression {
@@ -1591,161 +2257,26 @@ fn parse_double_quoted_string(text: &str) -> Expression {
     }
 }
 
+/// The body of a `$( … )` / `${ … }` interpolation. PowerShell allows a whole
+/// statement list here, so fall back to parsing statements and taking the last
+/// expression when it is not a single expression.
 fn parse_script_expression(raw: &str) -> Expression {
     let text = raw.trim();
     if text.is_empty() {
         return Expression::null();
     }
 
-    let text = strip_outer_parentheses(text);
-    if text.is_empty() {
-        return Expression::null();
+    if let Some(expr) = parse_expr_fragment(text) {
+        return expr;
     }
 
-    if has_binary_operator(text) {
-        return expr_from_text(text);
+    match super::PowerShellParser::parse(Rule::program, text) {
+        Ok(mut pairs) => match pairs.next() {
+            Some(root) => last_expression_of(collect_statements(root)),
+            None => Expression::null(),
+        },
+        Err(_) => Expression::string(text),
     }
-
-    let mut parts = split_with_depth(text, '.', 0)
-        .into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>();
-
-    if parts.is_empty() {
-        return Expression::ident(text);
-    }
-
-    let mut expr = parse_script_head(parts.remove(0));
-    for part in parts {
-        expr = apply_script_segment(expr, &part);
-    }
-
-    expr
-}
-
-fn has_binary_operator(text: &str) -> bool {
-    for (op, _) in [
-        (" -eq ", BinOp::Eq),
-        (" -ne ", BinOp::NotEq),
-        (" -gt ", BinOp::Gt),
-        (" -ge ", BinOp::GtEq),
-        (" -lt ", BinOp::Lt),
-        (" -le ", BinOp::LtEq),
-        (" -and ", BinOp::And),
-        (" -or ", BinOp::Or),
-        (" -in ", BinOp::In),
-        (" -notin ", BinOp::NotIn),
-        (" -contains ", BinOp::In),
-        (" -notcontains ", BinOp::NotIn),
-        (" -like ", BinOp::Like),
-        (" -matchnot ", BinOp::NotIn),
-        (" -match ", BinOp::Like),
-        (" -is ", BinOp::Is),
-        (" -isnot ", BinOp::IsNot),
-    ] {
-        if text.contains(op) {
-            return true;
-        }
-    }
-    false
-}
-
-fn parse_script_head(raw: String) -> Expression {
-    let text = raw.trim();
-    if text.is_empty() {
-        return Expression::null();
-    }
-
-    if text.starts_with('$') {
-        return parse_member_expression(text);
-    }
-
-    if is_fully_wrapped(text, '(', ')') {
-        return parse_script_expression(&text[1..text.len() - 1]);
-    }
-
-    if looks_like_command_invocation(text) {
-        if let Some(expr) = parse_command_line(text) {
-            return expr;
-        }
-    }
-
-    expr_from_text(text)
-}
-
-fn apply_script_segment(object: Expression, segment: &str) -> Expression {
-    if segment.is_empty() {
-        return object;
-    }
-
-    if let Some((name, args)) = parse_call_segment(segment) {
-        let callee = Expression::new(ExprKind::Member {
-            object: Box::new(object),
-            field: name.to_string(),
-            null_safe: false,
-        });
-        let args = parse_call_args(args);
-        return Expression::new(ExprKind::Call {
-            callee: Box::new(callee),
-            args,
-            optional: false,
-        });
-    }
-
-    if let Some((_, tail)) = segment.split_once('[') {
-        if let Some(close) = tail.rfind(']') {
-            let index = expr_from_text(&tail[..close]);
-            return Expression::new(ExprKind::Index {
-                object: Box::new(object),
-                index: Box::new(index),
-                null_safe: false,
-            });
-        }
-    }
-
-    Expression::new(ExprKind::Member {
-        object: Box::new(object),
-        field: segment.to_string(),
-        null_safe: false,
-    })
-}
-
-fn parse_call_segment(segment: &str) -> Option<(&str, &str)> {
-    if segment.is_empty() || !segment.ends_with(')') {
-        return None;
-    }
-
-    let open = segment.find('(')?;
-    if open == 0 || open == segment.len() - 1 {
-        return None;
-    }
-
-    let chars: Vec<char> = segment.chars().collect();
-    let open_idx = segment[..open].chars().count();
-    let close = find_matching_in_chars(&chars, open_idx, '(', ')')?;
-    if close + 1 != chars.len() {
-        return None;
-    }
-
-    let name = segment[..open].trim();
-    if name.is_empty() {
-        return None;
-    }
-
-    Some((name, &segment[open + 1..segment.len() - 1]))
-}
-
-fn parse_call_args(raw: &str) -> Vec<Argument> {
-    if raw.trim().is_empty() {
-        return Vec::new();
-    }
-
-    split_top_level(raw, ',')
-        .into_iter()
-        .filter(|s| !s.trim().is_empty())
-        .map(|arg| Argument::positional(expr_from_text(arg.trim())))
-        .collect()
 }
 
 fn is_numeric_like(raw: &str) -> bool {
@@ -1755,98 +2286,6 @@ fn is_numeric_like(raw: &str) -> bool {
     }
 
     text.parse::<i64>().is_ok() || text.parse::<f64>().is_ok() || text == "$null"
-}
-
-fn parse_ps_cast(text: &str) -> Option<(String, String)> {
-    let trimmed = text.trim();
-    if !trimmed.starts_with('[') {
-        return None;
-    }
-
-    let close = trimmed.find(']')?;
-    let type_name = trimmed[1..close].trim();
-    if type_name.is_empty() {
-        return None;
-    }
-
-    let rhs = trimmed[close + 1..].trim();
-    if rhs.is_empty() {
-        return None;
-    }
-
-    Some((type_name.to_string(), rhs.to_string()))
-}
-
-fn parse_ps_array_literal(text: &str) -> Option<Expression> {
-    let trimmed = text.trim();
-    if !(trimmed.starts_with("@(") && trimmed.ends_with(')')) {
-        return None;
-    }
-
-    let inner = trimmed[2..trimmed.len() - 1].trim();
-    if inner.is_empty() {
-        return Some(Expression::new(ExprKind::Array(Vec::new())));
-    }
-
-    let elements = split_top_level(inner, ',')
-        .into_iter()
-        .filter(|s| !s.trim().is_empty())
-        .map(|value| ArrayElement {
-            key: None,
-            value: expr_from_text(value.trim()),
-            spread: false,
-            by_ref: false,
-        })
-        .collect();
-
-    Some(Expression::new(ExprKind::Array(elements)))
-}
-
-fn parse_ps_object_literal(text: &str) -> Option<Expression> {
-    let trimmed = text.trim();
-    if !(trimmed.starts_with("@{") && trimmed.ends_with('}')) {
-        return None;
-    }
-
-    let inner = trimmed[2..trimmed.len() - 1].trim();
-    if inner.is_empty() {
-        return Some(Expression::new(ExprKind::Object(Vec::new())));
-    }
-
-    let properties = split_object_fields(inner)
-        .into_iter()
-        .filter_map(|item| {
-            let mut parts = item.splitn(2, '=').collect::<Vec<_>>();
-            if parts.len() != 2 {
-                parts = item.splitn(2, ':').collect();
-                if parts.len() != 2 {
-                    return None;
-                }
-            }
-
-            let key = parts[0].trim();
-            let value = parts[1].trim();
-            if key.is_empty() || value.is_empty() {
-                return None;
-            }
-
-            Some(ObjectProperty::KeyValue {
-                key: Expression::string(key),
-                value: expr_from_text(value),
-            })
-        })
-        .collect::<Vec<_>>();
-
-    Some(Expression::new(ExprKind::Object(properties)))
-}
-
-fn parse_ps_range(text: &str) -> Option<(String, String)> {
-    let trimmed = text.trim();
-    let (left, right) = split_once(trimmed, "..")?;
-    if left.is_empty() || right.is_empty() {
-        return None;
-    }
-    Some((left.to_string(), right.to_string()))
 }
 
 fn looks_like_command_invocation(raw: &str) -> bool {
@@ -1879,59 +2318,6 @@ fn parse_powershell_escape(next: char) -> Option<char> {
     }
 }
 
-fn split_object_fields(text: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
-
-    for (idx, ch) in text.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-
-        if ch == '`' {
-            escaped = true;
-            continue;
-        }
-
-        if in_single {
-            if ch == '\'' {
-                in_single = false;
-            }
-            continue;
-        }
-
-        if in_double {
-            if ch == '"' {
-                in_double = false;
-            }
-            continue;
-        }
-
-        match ch {
-            '\'' => in_single = true,
-            '"' => in_double = true,
-            '(' | '{' | '[' => depth += 1,
-            ')' | '}' | ']' => depth = depth.saturating_sub(1),
-            ',' | ';' if depth == 0 => {
-                fields.push(text[start..idx].trim().to_string());
-                start = idx + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-
-    if start <= text.len() {
-        fields.push(text[start..].trim().to_string());
-    }
-
-    fields.into_iter().filter(|f| !f.is_empty()).collect()
-}
-
 fn looks_like_command_name(raw: &str) -> bool {
     let mut chars = raw.chars();
     let Some(first) = chars.next() else {
@@ -1947,24 +2333,6 @@ fn looks_like_command_name(raw: &str) -> bool {
 
 fn is_ps_variable_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == ':'
-}
-
-fn is_fully_wrapped(text: &str, open: char, close: char) -> bool {
-    if text.is_empty() || !text.starts_with(open) || !text.ends_with(close) {
-        return false;
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    find_matching_in_chars(&chars, 0, open, close)
-        .is_some_and(|idx| idx == chars.len() - 1)
-}
-
-fn strip_outer_parentheses(text: &str) -> &str {
-    let mut out = text.trim();
-    while is_fully_wrapped(out, '(', ')') {
-        out = out[1..out.len() - 1].trim();
-    }
-    out
 }
 
 fn find_matching_in_chars(chars: &[char], open_idx: usize, open: char, close: char) -> Option<usize> {
@@ -2046,158 +2414,6 @@ fn find_matching_in_chars(chars: &[char], open_idx: usize, open: char, close: ch
     }
 
     None
-}
-
-fn split_top_level(text: &str, sep: char) -> Vec<String> {
-    let mut parts: Vec<String> = Vec::new();
-    let mut depth = 0isize;
-    let mut start = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
-
-    for (idx, ch) in text.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-
-        if ch == '`' {
-            escaped = true;
-            continue;
-        }
-
-        if in_single {
-            if ch == '\'' {
-                in_single = false;
-            }
-            continue;
-        }
-
-        if in_double {
-            if ch == '"' {
-                in_double = false;
-                continue;
-            }
-            match ch {
-                '(' | '[' => depth += 1,
-                ')' | ']' => depth -= 1,
-                _ => {}
-            }
-            continue;
-        }
-
-        if ch == '\'' {
-            in_single = true;
-            continue;
-        }
-
-        if ch == '"' {
-            in_double = true;
-            continue;
-        }
-
-        match ch {
-            '(' | '[' => depth += 1,
-            ')' | ']' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
-            }
-            _ => {}
-        }
-
-        if ch == sep && depth == 0 {
-            parts.push(text[start..idx].to_string());
-            start = idx + ch.len_utf8();
-        }
-    }
-
-    parts.push(text[start..].to_string());
-    parts
-}
-
-fn parse_member_expression(raw: &str) -> Expression {
-    let mut pieces = split_with_depth(raw, '.', 0)
-        .into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>();
-
-    if pieces.is_empty() {
-        return Expression::ident(raw);
-    }
-
-    let root = pieces.remove(0);
-    let base = if root.starts_with('$') {
-        Expression::ident(root.trim_start_matches('$'))
-    } else {
-        Expression::ident(&root)
-    };
-
-    pieces.into_iter().fold(base, |expr, field| {
-        if let Some((_, tail)) = field.split_once('[') {
-            if let Some(close) = tail.rfind(']') {
-                let index = expr_from_text(&tail[..close]);
-                Expression::new(ExprKind::Index {
-                    object: Box::new(expr),
-                    index: Box::new(index),
-                    null_safe: false,
-                })
-            } else {
-                Expression::new(ExprKind::Member {
-                    object: Box::new(expr),
-                    field: field,
-                    null_safe: false,
-                })
-            }
-        } else {
-            Expression::new(ExprKind::Member {
-                object: Box::new(expr),
-                field,
-                null_safe: false,
-            })
-        }
-    })
-}
-
-fn split_once<'a>(input: &'a str, op: &'a str) -> Option<(&'a str, &'a str)> {
-    input.find(op).map(|idx| {
-        let left = input[..idx].trim();
-        let right = input[idx + op.len()..].trim();
-        (left, right)
-    })
-}
-
-fn strip_surrounded(text: &str, quote: char) -> Option<String> {
-    if text.len() >= 2 && text.starts_with(quote) && text.ends_with(quote) {
-        Some(text[1..text.len() - 1].to_string())
-    } else {
-        None
-    }
-}
-
-fn split_with_depth(text: &str, sep: char, start_depth: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut depth = start_depth;
-    let mut start = 0;
-    let mut last = 0usize;
-    for (i, ch) in text.char_indices() {
-        match ch {
-            '[' | '(' => depth += 1,
-            ']' | ')' => depth = depth.saturating_sub(1),
-            c if c == sep && depth == 0 => {
-                out.push(text[start..i].to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-        last = i + ch.len_utf8();
-    }
-    if start <= last {
-        out.push(text[start..].to_string());
-    }
-    out
 }
 
 fn split_command_tokens(input: &str) -> Vec<String> {

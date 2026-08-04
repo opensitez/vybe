@@ -3,11 +3,25 @@ name = "powershell"
 extensions = ["ps", "ps1", "psm1", "psd1"]
 
 [compiler]
+# Declared types CONVERT the value they bind (assignment, declaration and
+# parameter entry alike). Stated explicitly rather than inherited: the platform
+# default is `true`, and inheriting it silently gave Python coercive semantics
+# it never chose.
+coerces_value_to_type_hint = true
+# The implicit-output rule is applied by the walker (`implicit_return`), which
+# rewrites a trailing expression statement into a `Return` — one mechanism, not
+# two, so the shared compiler stays generic.
 function_return = "explicit"
 case_sensitive = false
 self_keyword = "this"
 constructor_name = "constructor"
 uses_common_resolver = true
+
+# Route class declarations through `normalize_class.rs` -> `NormalClass` ->
+# the shared `class_normalize::emit::emit_class_from_ast` pipeline, the same
+# path C# and VB take. Without this the normalizer is registered but never
+# consulted, so constructors are never wired.
+uses_normalize_class = true
 
 [builtins]
 
@@ -25,6 +39,42 @@ exit = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 }
 
 ToString = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
 tostring = { emit = "common:dotnet.tostring_runtime", min_args = 0, max_args = 1 }
+
+# .NET method spellings, routed to the SAME shared emitters C#/VB use. The
+# language is case-insensitive, so `case_sensitive = false` in [compiler] makes
+# one canonical spelling cover `ToUpper` / `toupper` / `TOUPPER`.
+ToUpper       = { emit = "common:strings.to_upper",    min_args = 0, max_args = 0 }
+ToLower       = { emit = "common:strings.to_lower",    min_args = 0, max_args = 0 }
+Trim          = { emit = "common:strings.trim",        min_args = 0, max_args = 1 }
+TrimStart     = { emit = "common:str_trim_start",      min_args = 0, max_args = 1 }
+TrimEnd       = { emit = "common:str_trim_end",        min_args = 0, max_args = 1 }
+StartsWith    = { emit = "common:str_starts_with",     min_args = 1, max_args = 1 }
+EndsWith      = { emit = "common:str_ends_with",       min_args = 1, max_args = 1 }
+Replace       = { emit = "common:strings.replace",     min_args = 2, max_args = 2 }
+Split         = { emit = "common:strings.split",       min_args = 1, max_args = 2 }
+Substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
+PadLeft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
+PadRight      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
+ToCharArray   = { emit = "common:str_split",           min_args = 0, max_args = 0 }
+Insert        = { emit = "common:str_insert",          min_args = 2, max_args = 2 }
+
+# Collection surface.
+Add           = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
+Clear         = { emit = "common:collections.clear",   min_args = 0, max_args = 0 }
+Clone         = { emit = "common:collections.slice",   min_args = 0, max_args = 0 }
+Reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
+Sort          = { emit = "common:collections.sorted",  min_args = 0, max_args = 1 }
+Join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
+
+# `Contains` and `IndexOf` are shared spellings across strings and collections;
+# the receiver decides at runtime, so route through the polymorphic path.
+Contains      = { emit = "invoke:Contains",            min_args = 1, max_args = 1 }
+IndexOf       = { emit = "invoke:IndexOf",             min_args = 1, max_args = 2 }
+
+[array_methods]
+# PowerShell's .ForEach() yields the results, so it maps rather than iterates.
+ForEach   = "__array_map"
+Where     = "__array_filter"
 
 # ────────────────────────────────────────────────────────────────────────────
 # builtinslotplan.md — built-in type spellings and slot bindings

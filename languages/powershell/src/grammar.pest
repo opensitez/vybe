@@ -1,13 +1,21 @@
 WHITESPACE = _{ " " | "\t" | "\r" }
 NEWLINE = _{ "\r\n" | "\n" | "\r" }
-COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* }
+COMMENT = _{ block_comment | line_comment }
+block_comment = _{ "<#" ~ (!"#>" ~ ANY)* ~ "#>" }
+line_comment = _{ "#" ~ (!NEWLINE ~ ANY)* }
 
 terminator = _{ ";" | NEWLINE }
 separator = _{ WHITESPACE | terminator }
 eat_terminators = _{ terminator* }
 eat_separators = _{ separator* }
+// Whitespace and newlines only — never a ";", so it can sit next to a rule
+// that needs the ";" itself (the `for` header).
+eat_ws_nl = _{ (WHITESPACE | NEWLINE)* }
 
 program = { SOI ~ eat_separators ~ (statement ~ eat_separators)* ~ EOI }
+
+// Entry point for re-parsing a captured text fragment as an expression.
+expr_entry = { SOI ~ expression ~ EOI }
 
 statement = _{
     namespace_decl
@@ -26,8 +34,10 @@ statement = _{
   | break_stmt
   | continue_stmt
   | using_stmt
+  | attribute_stmt
   | assignment_stmt
   | increment_stmt
+  | expr_stmt
   | COMMENT
   | command_stmt
 }
@@ -37,98 +47,278 @@ block = { "{" ~ eat_separators ~ (statement ~ eat_separators)* ~ "}" }
 ws = _{ " " | "\t" | "\r" }
 ws1 = _{ (" " | "\t" | "\r")+ }
 
+// ── Keyword tokens ──────────────────────────────────────────────────────────
+// Each keyword is an ATOMIC rule carrying its own word boundary. A non-atomic
+// `^"class" ~ ws1` can never match: pest skips the implicit WHITESPACE before
+// evaluating `ws1`, so the separator it is looking for is already gone. Putting
+// the boundary inside an atomic rule is the documented fix.
+kw_class     = @{ ^"class" ~ !ident_tail }
+kw_function  = @{ ^"function" ~ !ident_tail }
+kw_namespace = @{ ^"namespace" ~ !ident_tail }
+kw_param     = @{ ^"param" ~ !ident_tail }
+kw_if        = @{ ^"if" ~ !ident_tail }
+kw_elseif    = @{ ^"elseif" ~ !ident_tail }
+kw_else      = @{ ^"else" ~ !ident_tail }
+kw_while     = @{ ^"while" ~ !ident_tail }
+kw_until     = @{ ^"until" ~ !ident_tail }
+kw_foreach   = @{ ^"foreach" ~ !ident_tail }
+kw_for       = @{ ^"for" ~ !ident_tail }
+kw_switch    = @{ ^"switch" ~ !ident_tail }
+kw_do        = @{ ^"do" ~ !ident_tail }
+kw_try       = @{ ^"try" ~ !ident_tail }
+kw_catch     = @{ ^"catch" ~ !ident_tail }
+kw_finally   = @{ ^"finally" ~ !ident_tail }
+kw_return    = @{ ^"return" ~ !ident_tail }
+kw_throw     = @{ ^"throw" ~ !ident_tail }
+kw_break     = @{ ^"break" ~ !ident_tail }
+kw_continue  = @{ ^"continue" ~ !ident_tail }
+kw_using     = @{ ^"using" ~ !ident_tail }
+kw_in        = @{ ^"in" ~ !ident_tail }
+kw_base      = @{ ^"base" ~ !ident_tail }
+kw_default   = @{ ^"default" ~ !ident_tail }
+ident_tail   = _{ ASCII_ALPHANUMERIC | "_" | "-" }
+
 IDENT = @{ (ASCII_ALPHANUMERIC | "_" | "-" )+ }
 DOT_NAME = @{ (ASCII_ALPHANUMERIC | "_" | "-" | "." )+ }
 namespace_name = @{ DOT_NAME }
 DOTTED_NAME = @{ (ASCII_ALPHANUMERIC | "_" | "-" | "." )+ }
 
-var_ref = @{ "$" ~ (ASCII_ALPHANUMERIC | "_" | "-")+ }
+var_ref = @{ "$" ~ ("{" ~ (!"}" ~ ANY)+ ~ "}" | (ASCII_ALPHANUMERIC | "_" | ":")+) }
 
-namespace_decl = { ^"namespace" ~ ws1 ~ namespace_name ~ ws* ~ block }
+namespace_decl = { kw_namespace ~ namespace_name ~ block }
 
-class_decl = { ^"class" ~ ws1 ~ IDENT ~ ws* ~ class_heritage? ~ ws* ~ class_body }
+class_decl = { kw_class ~ IDENT ~ class_heritage? ~ class_body }
 class_heritage = { ":" ~ ws* ~ DOTTED_NAME ~ (ws* ~ "," ~ ws* ~ DOTTED_NAME)* }
-class_body = { "{" ~ eat_terminators ~ (class_member_decl ~ eat_terminators)* ~ "}" }
+class_body = { "{" ~ eat_separators ~ (class_member_decl ~ eat_separators)* ~ "}" }
 
-class_member_decl = { constructor_decl | class_function_decl | class_field_decl }
-class_function_decl = { ^"function" ~ ws1 ~ function_name ~ ws* ~ function_params? ~ ws* ~ block }
-class_field_decl = { var_ref ~ ws* ~ "=" ~ ws* ~ expr_text }
-constructor_decl = { ^"constructor" ~ ws* ~ function_params? ~ ws* ~ block }
+// PowerShell class members. A METHOD declares a return type (`[string] Speak()`);
+// a CONSTRUCTOR is the same shape without one and named for the class. That is
+// the real disambiguator in the language, so it is the one used here.
+class_member_decl = _{ ps_method | ps_constructor | ps_property | class_function_decl | constructor_decl }
+class_modifier = @{ (^"static" | ^"hidden") ~ !(ASCII_ALPHANUMERIC | "_") }
+ps_method = { (class_modifier ~ eat_separators)* ~ type_literal ~ eat_separators ~ member_name ~ eat_separators ~ function_params ~ eat_separators ~ block }
+ps_constructor = { (class_modifier ~ eat_separators)* ~ IDENT ~ eat_separators ~ function_params ~ eat_separators ~ ctor_base? ~ eat_separators ~ block }
+ctor_base = { ":" ~ eat_separators ~ kw_base ~ eat_separators ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
+ps_property = { (class_modifier ~ eat_separators)* ~ type_literal? ~ eat_separators ~ var_ref ~ (ws* ~ "=" ~ ws* ~ ternary_expr)? }
+class_function_decl = { kw_function ~ function_name ~ function_params? ~ block }
+constructor_decl = { ^"constructor" ~ function_params? ~ block }
 
-function_decl = { ^"function" ~ ws1 ~ function_name ~ ws* ~ function_params? ~ ws* ~ block }
-param_stmt = { ^"param" ~ ws* ~ "(" ~ ws* ~ function_param_list? ~ ws* ~ ")" }
+function_decl = { kw_function ~ function_name ~ function_params? ~ block }
+param_stmt = { kw_param ~ eat_separators ~ "(" ~ eat_separators ~ function_param_list? ~ eat_separators ~ ")" }
 function_name = @{ IDENT | var_ref }
-function_params = { "(" ~ ws* ~ function_param_list? ~ ws* ~ ")" }
-function_param_list = { function_param ~ (ws* ~ "," ~ ws* ~ function_param)* }
-function_param = { type_hint? ~ ws* ~ (var_ref | IDENT) ~ (ws* ~ "=" ~ ws* ~ expr_text)? }
-type_hint = { "[" ~ (ASCII_ALPHANUMERIC | "_" | "-" | "." | "[" | "]" | ":" | " ")* ~ "]" }
+function_params = { "(" ~ eat_separators ~ function_param_list? ~ eat_separators ~ ")" }
+function_param_list = { function_param ~ (eat_separators ~ "," ~ eat_separators ~ function_param)* }
+function_param = { (type_literal ~ eat_separators)* ~ (var_ref | IDENT) ~ (ws* ~ "=" ~ ws* ~ ternary_expr)? }
 
-if_stmt = { ^"if" ~ ws* ~ condition_expr ~ ws* ~ block ~ ws* ~ (elseif_stmt ~ ws*)* ~ else_stmt? }
-elseif_stmt = { ^"elseif" ~ ws* ~ condition_expr ~ ws* ~ block ~ ws* }
-else_stmt = { ^"else" ~ ws* ~ block }
+if_stmt = { kw_if ~ condition_expr ~ block ~ (eat_separators ~ elseif_stmt)* ~ (eat_separators ~ else_stmt)? }
+elseif_stmt = { kw_elseif ~ condition_expr ~ block }
+else_stmt = { kw_else ~ block }
 
-while_stmt = { ^"while" ~ ws* ~ condition_expr ~ ws* ~ block }
+while_stmt = { kw_while ~ condition_expr ~ block }
 
-foreach_stmt = { ^"foreach" ~ ws* ~ "(" ~ ws* ~ var_ref ~ ws* ~ ^"in" ~ ws* ~ expr_until_rparen ~ ")" ~ ws* ~ block }
+foreach_stmt = { kw_foreach ~ "(" ~ eat_separators ~ var_ref ~ kw_in ~ paren_body ~ eat_separators ~ ")" ~ block }
 
-switch_stmt = { ^"switch" ~ ws* ~ "(" ~ ws* ~ expr_until_rparen ~ ws* ~ ")" ~ ws* ~ "{" ~ ws* ~ switch_case* ~ "}" }
+switch_stmt = { kw_switch ~ switch_flag* ~ "(" ~ eat_separators ~ paren_body ~ eat_separators ~ ")" ~ eat_separators ~ "{" ~ eat_separators ~ (switch_case ~ eat_separators)* ~ "}" }
+switch_flag = @{ "-" ~ (ASCII_ALPHANUMERIC)+ }
 switch_case = { switch_default_case | switch_case_value }
-switch_default_case = { ^"default" ~ ws* ~ switch_case_body }
-switch_case_value = { expr_text ~ ws* ~ switch_case_body }
-switch_case_body = { "{" ~ (statement ~ eat_terminators)* ~ "}" }
+switch_default_case = { kw_default ~ switch_case_body }
+switch_case_value = { expression ~ ws* ~ switch_case_body }
+switch_case_body = { "{" ~ eat_separators ~ (statement ~ eat_separators)* ~ "}" }
 
-for_stmt = { ^"for" ~ ws* ~ "(" ~ ws* ~ for_header ~ ")" ~ ws* ~ block }
-for_header = @{ (!")" ~ ANY)* }
+for_stmt = { kw_for ~ eat_ws_nl ~ "(" ~ eat_ws_nl ~ for_init? ~ eat_ws_nl ~ ";" ~ eat_ws_nl ~ for_cond? ~ eat_ws_nl ~ ";" ~ eat_ws_nl ~ for_update? ~ eat_ws_nl ~ ")" ~ eat_ws_nl ~ block }
+for_init = { simple_statement }
+for_cond = { expression }
+for_update = { simple_statement }
+simple_statement = _{ assignment_stmt | increment_stmt | expr_statement }
+expr_statement = { expression }
 
-assignment_stmt = { lvalue ~ ws* ~ assignment_op ~ ws* ~ expr_text }
+assignment_stmt = { lvalue ~ ws* ~ assignment_op ~ ws* ~ rhs_value }
+// RHS may be a pipeline: `$x = Get-Item | Select-Object -First 1`.
+rhs_value = _{ (expression ~ &(ws* ~ (terminator | EOI | "}"))) | command_pipeline }
 increment_stmt = { lvalue ~ ws* ~ increment_op }
-lvalue = { var_ref ~ (member_access | index_access)* }
-member_access = { "." ~ (IDENT | var_ref | DOTTED_NAME) }
-index_access = { "[" ~ ws* ~ expr_text ~ ws* ~ "]" }
+lvalue = { type_literal? ~ var_ref ~ (member_get | index_get)* }
 assignment_op = { "??=" | "||=" | "&&=" | "<<=" | ">>=" | "**=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "=" }
 increment_op = { "++" | "--" }
 
-do_while_stmt = { ^"do" ~ ws* ~ block ~ ws* ~ do_while_tail }
+do_while_stmt = { kw_do ~ block ~ eat_separators ~ do_while_tail }
 do_while_tail = _{ do_while_while | do_while_until }
-do_while_while = { ^"while" ~ ws* ~ condition_expr }
-do_while_until = { ^"until" ~ ws* ~ condition_expr }
+do_while_while = { kw_while ~ condition_expr }
+do_while_until = { kw_until ~ condition_expr }
 
-try_stmt = { ^"try" ~ ws* ~ block ~ catch_clause* ~ finally_clause? }
-catch_clause = { ^"catch" ~ ws* ~ catch_header? ~ ws* ~ block }
-catch_header = { "(" ~ ws* ~ var_ref ~ ws* ~ ")" }
-finally_clause = { ^"finally" ~ ws* ~ block }
+try_stmt = { kw_try ~ block ~ (eat_separators ~ catch_clause)* ~ (eat_separators ~ finally_clause)? }
+catch_clause = { kw_catch ~ catch_header? ~ block }
+catch_header = { "(" ~ ws* ~ var_ref ~ ws* ~ ")" | type_literal }
+finally_clause = { kw_finally ~ block }
 
-return_stmt = { ^"return" ~ ws* ~ expr_text? }
-throw_stmt = { ^"throw" ~ ws* ~ expr_text? }
-break_stmt = { ^"break" ~ ws* ~ integer? }
-continue_stmt = { ^"continue" ~ ws* ~ integer? }
+return_stmt = { kw_return ~ rhs_value? }
+throw_stmt = { kw_throw ~ expression? }
+break_stmt = { kw_break ~ integer? }
+continue_stmt = { kw_continue ~ integer? }
 integer = @{ ASCII_DIGIT+ }
 
-using_stmt = { ^"using" ~ ws+ ~ using_target }
-using_target = { ^"namespace" ~ ws* ~ DOTTED_NAME | DOTTED_NAME | var_ref }
+using_stmt = { kw_using ~ using_target }
+using_target = { kw_namespace ~ DOTTED_NAME | DOTTED_NAME | var_ref }
 
+// A bracketed run that ends the line is an attribute, not a cast: the `&`
+// lookahead is what keeps `[int]$x = 5` an assignment.
+expr_stmt = { &("(" | "$" | "[" | "@") ~ expression ~ &(ws* ~ (terminator | EOI | "}")) }
+
+attribute_stmt = { type_literal+ ~ !(ws* ~ (var_ref | "::" | "." | "[" | "(" | "@" | "\"" | "'")) }
+
+condition_expr = { "(" ~ eat_separators ~ paren_body ~ eat_separators ~ ")" }
+
+// A parenthesised group holds a PIPELINE, not just an expression: `(Get-Item)`,
+// `($x | Measure-Object)`. Try the pure expression first and require it to reach
+// the closing paren — if it stops short (a bare command head, or a `|`), fall
+// back to the command pipeline form.
+paren_body = _{ (expression ~ &(eat_separators ~ ")")) | command_pipeline }
+command_pipeline = { pipeline_head ~ (ws* ~ "|" ~ ws* ~ command_segment)* }
+pipeline_head = _{ (expression ~ &(ws* ~ ("|" | ")"))) | command_segment }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Command / pipeline layer (PowerShell "command mode")
+//
+// In command mode a bare token is a STRING argument, not an identifier, and
+// `-Name` is a parameter rather than an operator. That mode split is real
+// PowerShell semantics, so the token model stays — but every token that is not
+// a bare word is parsed by the expression grammar below, so there is exactly
+// one place that knows operator precedence.
+// ────────────────────────────────────────────────────────────────────────────
+// `.` (dot-source) and `&` (call) are invocation operators, not member access:
+// they are only these when followed by whitespace.
+invoke_op = @{ ("." | "&") ~ &(" " | "\t") }
 command_stmt = { pipeline_expr }
 pipeline_expr = { command_segment ~ (ws* ~ "|" ~ ws* ~ command_segment)* }
-command_segment = { command_head ~ command_arg* }
-command_head = { !(keyword ~ ws_boundary) ~ command_token }
-command_arg = { command_token }
-command_token = { quoted_string | single_quoted_string | script_block | bare_token }
+// NOTE: no explicit separator between head and args — pest skips implicit
+// WHITESPACE between terms in a non-atomic rule, so an explicit `ws1` here
+// would never match (the whitespace is already consumed).
+command_segment = { invoke_op? ~ command_head ~ command_arg* ~ redirection? }
+// `> file`, `>> file`, `2>&1`
+redirection = { redirect_op ~ command_token? }
+redirect_op = @{ ASCII_DIGIT? ~ (">>" | ">") ~ ("&" ~ ASCII_DIGIT)? }
+command_head = { !keyword ~ !(number ~ !command_name_char) ~ command_token }
+command_name_char = _{ ASCII_ALPHANUMERIC | "_" | "-" | "." | ":" | "\\" | "/" }
+command_arg = { command_param | command_token }
+command_param = @{ "-" ~ (ASCII_ALPHANUMERIC | "_")+ ~ (":" ~ (!(WHITESPACE | NEWLINE | ";" | "|") ~ ANY)+)? }
+command_token = { here_string_double | here_string_single | quoted_string | single_quoted_string | script_block | sub_expr | array_expr | hash_literal | paren_expr | type_literal | var_ref | bare_token }
 script_block = {
     "{" ~ (script_block | quoted_string | single_quoted_string | (!("{" | "}") ~ ANY))* ~ "}"
 }
-condition_expr = { "(" ~ ws* ~ condition_body ~ ws* ~ ")" }
-condition_body = { (!")" ~ ANY)+ }
-expr_until_rparen = @{ (!")" ~ ANY)+ }
 bare_token = @{ (!("|" | NEWLINE | ";" | "{" | "}" | "(" | ")" | "\"" | "'" | WHITESPACE) ~ ANY)+ }
 
-expr_text = @{
-    object_literal
-  | array_literal
-  | (!(";" | NEWLINE | "|") ~ ANY)+
-}
-array_literal = @{ "@(" ~ (!")" ~ ANY)* ~ ")" }
-object_literal = @{ "@{" ~ (!"}" ~ ANY)* ~ "}" }
-quoted_string = @{ "\"" ~ ( "\\\"" | "\\\\" | "\\`" ~ ANY | (!"\"" ~ ANY) )* ~ "\"" }
-single_quoted_string = @{ "'" ~ ( "\\'" | "\\\\" | "\\`" ~ ANY | (!"'" ~ ANY) )* ~ "'" }
-keyword = @{ ^"if" | ^"elseif" | ^"else" | ^"while" | ^"foreach" | ^"for" | ^"switch" | ^"do" | ^"try" | ^"return" | ^"throw" | ^"break" | ^"continue" | ^"using" | ^"param" | ^"class" | ^"namespace" | ^"function" }
+keyword = @{ (^"if" | ^"elseif" | ^"else" | ^"while" | ^"foreach" | ^"for" | ^"switch" | ^"do" | ^"try" | ^"catch" | ^"finally" | ^"return" | ^"throw" | ^"break" | ^"continue" | ^"using" | ^"param" | ^"class" | ^"namespace" | ^"function") ~ !(ASCII_ALPHANUMERIC | "_" | "-") }
 ws_boundary = _{ WHITESPACE | NEWLINE | "{" | "}" | "(" | ")" | ";" | "|" }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Expression grammar — the ONE place operator precedence is defined.
+//
+// PowerShell precedence, lowest to highest:
+//   -or/-xor  <  -and  <  comparison  <  range  <  additive  <  multiplicative
+//             <  exponent  <  unary/cast  <  postfix  <  primary
+// ────────────────────────────────────────────────────────────────────────────
+ident_char = _{ ASCII_ALPHANUMERIC | "_" }
+
+// `,` is PowerShell's array-construction operator: `$a = 1,2,3`. It lives at the
+// top of the expression chain, so list contexts that split on commas themselves
+// (argument lists, `@(…)` elements, hash values) use `ternary_expr` instead.
+expression = { comma_expr }
+comma_expr = { ternary_expr ~ (ws* ~ "," ~ ws* ~ ternary_expr)* }
+
+ternary_expr = { logical_or ~ (ws* ~ "?" ~ ws* ~ ternary_expr ~ ws* ~ ":" ~ ws* ~ ternary_expr)? }
+
+logical_or  = { logical_and ~ (ws* ~ or_op ~ ws* ~ logical_and)* }
+or_op       = @{ "-" ~ (^"or" | ^"xor") ~ !ident_char }
+
+logical_and = { comparison ~ (ws* ~ and_op ~ ws* ~ comparison)* }
+and_op      = @{ "-" ~ ^"and" ~ !ident_char }
+
+comparison  = { range_expr ~ (ws* ~ cmp_op ~ ws* ~ range_expr)* }
+// The bare word must be tried BEFORE the case-modifier form: `e?` is greedy in
+// a PEG and does not backtrack, so `("c"|"i")? ~ cmp_word` would consume the
+// `i` of `-is` / `-in` and then fail to match a word.
+cmp_op      = @{ "-" ~ (cmp_word | (^"c" | ^"i") ~ cmp_word) ~ !ident_char }
+// Longest-first: `like` before `le`, `notin` before `not`, `isnot` before `is`.
+cmp_word    = _{
+    ^"notcontains" | ^"notlike" | ^"notmatch" | ^"notin"
+  | ^"contains" | ^"replace" | ^"split" | ^"join"
+  | ^"like" | ^"match" | ^"isnot"
+  | ^"band" | ^"bor" | ^"bxor" | ^"shl" | ^"shr"
+  | ^"eq" | ^"ne" | ^"ge" | ^"gt" | ^"le" | ^"lt" | ^"is" | ^"in" | ^"f"
+}
+
+range_expr  = { additive ~ (ws* ~ ".." ~ ws* ~ additive)? }
+
+additive    = { multiplicative ~ (ws* ~ add_op ~ ws* ~ multiplicative)* }
+// `-` is subtraction only when NOT followed by a letter — that keeps `-eq`,
+// `-and`, `-not`, … out of the additive level.
+add_op      = @{ "+" ~ !"+" | "-" ~ !(ASCII_ALPHA | "-") }
+
+multiplicative = { power ~ (ws* ~ mul_op ~ ws* ~ power)* }
+mul_op      = @{ "*" ~ !"*" | "/" | "%" }
+
+power       = { unary ~ (ws* ~ pow_op ~ ws* ~ unary)* }
+pow_op      = @{ "**" }
+
+unary       = { unary_op ~ ws* ~ unary | cast_expr | postfix }
+unary_op    = @{
+    "!"
+  | "-" ~ (^"not" | ^"bnot" | ^"join" | ^"split") ~ !ident_char
+  | "-" ~ !(ASCII_ALPHA | "-")
+  | "+" ~ !"+"
+}
+cast_expr   = { type_literal ~ ws* ~ unary }
+
+postfix     = { primary ~ postfix_op* }
+postfix_op  = _{ method_call | static_call | static_member | member_get | index_get }
+method_call = { "." ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
+static_call = { "::" ~ member_name ~ "(" ~ eat_separators ~ arg_list? ~ eat_separators ~ ")" }
+static_member = { "::" ~ member_name }
+member_get  = { "." ~ (member_name | var_ref) }
+index_get   = { "[" ~ eat_separators ~ expression ~ eat_separators ~ "]" }
+member_name = @{ (ASCII_ALPHANUMERIC | "_")+ }
+arg_list    = { ternary_expr ~ (eat_separators ~ "," ~ eat_separators ~ ternary_expr)* }
+
+primary = _{
+    here_string_double
+  | here_string_single
+  | sub_expr
+  | paren_expr
+  | array_expr
+  | hash_literal
+  | script_block_expr
+  | number
+  | quoted_string
+  | single_quoted_string
+  | var_ref
+  | type_literal
+  | bare_word
+}
+
+paren_expr   = { "(" ~ eat_separators ~ paren_body ~ eat_separators ~ ")" }
+// `$( … )` and `@( … )` hold statements, not just one expression.
+sub_expr     = { "$(" ~ eat_separators ~ (statement ~ eat_separators)* ~ ")" }
+// Elements may be commands too: `@(Get-ChildItem)`.
+array_expr   = { "@(" ~ eat_separators ~ (array_element ~ eat_separators ~ ("," ~ eat_separators ~ array_element ~ eat_separators)*)? ~ ")" }
+array_element = _{ (ternary_expr ~ &(eat_separators ~ ("," | ")"))) | command_pipeline }
+hash_literal = { "@{" ~ eat_separators ~ (hash_entry ~ eat_separators ~ (("," | ";")? ~ eat_separators ~ hash_entry ~ eat_separators)*)? ~ ")"? ~ "}" }
+hash_entry   = { hash_key ~ ws* ~ "=" ~ ws* ~ ternary_expr }
+hash_key     = { quoted_string | single_quoted_string | number | bare_word }
+script_block_expr = { "{" ~ eat_separators ~ (statement ~ eat_separators)* ~ "}" }
+
+number = @{
+    "0" ~ (^"x") ~ ASCII_HEX_DIGIT+
+  | ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? ~ (^"kb" | ^"mb" | ^"gb" | ^"tb" | ^"pb" | ^"l" | ^"d")?
+  | "." ~ ASCII_DIGIT+
+}
+
+// Balanced brackets, so `[int[]]` and `[Collections.Generic.List[string]]` work
+// while `[System.Math]::Abs(…)` stops at its OWN closing bracket rather than
+// swallowing the `::Abs` that follows.
+type_literal = @{ "[" ~ type_body ~ "]" }
+type_body    = _{ (!("[" | "]") ~ ANY | "[" ~ type_body ~ "]")* }
+bare_word    = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+
+here_string_double = @{ "@\"" ~ (!(NEWLINE ~ "\"@") ~ ANY)* ~ NEWLINE ~ "\"@" }
+here_string_single = @{ "@'" ~ (!(NEWLINE ~ "'@") ~ ANY)* ~ NEWLINE ~ "'@" }
+quoted_string = @{ "\"" ~ ( "\\\"" | "\\\\" | "`" ~ ANY | (!"\"" ~ ANY) )* ~ "\"" }
+single_quoted_string = @{ "'" ~ ( "''" | (!"'" ~ ANY) )* ~ "'" }

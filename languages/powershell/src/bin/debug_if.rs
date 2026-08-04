@@ -49,12 +49,12 @@ fn main() {
         Err(e) => println!("condition_expr err: {e}"),
     }
 
-    println!("--- condition_body ---");
-    match PowerShellParser::parse(Rule::condition_body, &src) {
+    println!("--- expression ---");
+    match PowerShellParser::parse(Rule::expression, &src) {
         Ok(mut p) => println!(
-            "condition_body ok: {}",
+            "expression ok: {}",
             p.next().unwrap().as_str().replace('\n', "\\n")
         ),
-        Err(e) => println!("condition_body err: {e}"),
+        Err(e) => println!("expression err: {e}"),
     }
 }
