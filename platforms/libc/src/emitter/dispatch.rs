@@ -249,6 +249,9 @@ pub fn emit_math(name: &str, chunks: &mut [Chunk], current: usize, line: u32) ->
 }
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    if super::sdl::emit_sdl(name, chunks, current, argc, line) {
+        return true;
+    }
     if emit_math(name, chunks, current, line) {
         return true;
     }

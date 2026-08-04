@@ -211,7 +211,7 @@ uses_common_resolver = true
 "SDL_GetWindowSurface" = { emit = "common:libc.sdl.SDL_GetWindowSurface", min_args = 1, max_args = 1 }
 "SDL_FillRect" = { emit = "common:libc.sdl.SDL_FillRect", min_args = 3, max_args = 3 }
 "SDL_UpdateWindowSurface" = { emit = "common:libc.sdl.SDL_UpdateWindowSurface", min_args = 1, max_args = 1 }
-"SDL_DrawText" = { emit = "common:libc.sdl.SDL_DrawText", min_args = 4, max_args = 4 }
+"SDL_DrawText" = { emit = "common:libc.sdl.SDL_DrawText", min_args = 5, max_args = 5 }
 "SDL_DrawLine" = { emit = "common:libc.sdl.SDL_DrawLine", min_args = 6, max_args = 6 }
 "SDL_Delay" = { emit = "common:libc.sdl.SDL_Delay", min_args = 1, max_args = 1 }
 "SDL_MapRGB" = { emit = "common:libc.sdl.SDL_MapRGB", min_args = 4, max_args = 4 }

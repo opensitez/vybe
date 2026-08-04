@@ -24,6 +24,7 @@ pub mod string_adapter;
 pub mod string_runtime;
 pub mod thread_adapter;
 pub mod time_adapter;
+pub mod sdl;
 pub mod tree_register;
 pub mod uchar_adapter;
 pub mod wchar_adapter;
