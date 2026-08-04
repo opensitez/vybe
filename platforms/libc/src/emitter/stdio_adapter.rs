@@ -1158,7 +1158,8 @@ pub fn char_to_str_runtime_helper() -> Statement {
         "__libc_char_to_str",
         vec!["v"],
         vec![
-            // typeof v === "string" → string already; clip at NUL.
+            // typeof v === "string" → string already; clip at NUL. indexOf +
+            // substring, not split — split doesn't resolve in the C runtime.
             if_stmt(
                 bin(
                     BinOp::Eq,
@@ -1167,10 +1168,14 @@ pub fn char_to_str_runtime_helper() -> Statement {
                         expr: Box::new(ident("v")) }),
                     lit_str("string"),
                 ),
-                vec![ret(e(ExprKind::Index {
-                    object: Box::new(call_member(ident("v"), "split", vec![lit_str("\0")])),
-                    index: Box::new(lit_int(0)),
-                    null_safe: false }))],
+                vec![
+                    var_decl("k", call_member(ident("v"), "indexOf", vec![lit_str("\0")])),
+                    ret(ternary(
+                        bin(BinOp::Lt, ident("k"), lit_int(0)),
+                        ident("v"),
+                        call_member(ident("v"), "substring", vec![lit_int(0), ident("k")]),
+                    )),
+                ],
                 None,
             ),
             var_decl("a", ident("v")),
@@ -1195,31 +1200,51 @@ pub fn char_to_str_runtime_helper() -> Statement {
                 ))],
                 None,
             ),
-            var_decl("parts", e(ExprKind::Array(vec![]))),
+            // Accumulate into a STRING — array push/join don't resolve in the
+            // C runtime; string `+` does.
+            var_decl("out", lit_str("")),
             var_decl("i", lit_int(0)),
             while_stmt(
                 bin(BinOp::Lt, ident("i"), member(ident("a"), "length")),
                 vec![
                     var_decl("c", index_a_i),
+                    // NUL terminates — and so does reading past a string
+                    // base's end (`"abcd"[4]` is undefined where C has '\0').
                     if_stmt(
-                        bin(BinOp::Eq, ident("c"), lit_int(0)),
-                        vec![ret(call_member(ident("parts"), "join", vec![lit_str("")]))],
-                        None,
-                    ),
-                    expr_stmt(call_member(
-                        ident("parts"),
-                        "push",
-                        vec![ternary(
+                        bin(
+                            BinOp::Or,
+                            bin(BinOp::Eq, ident("c"), lit_int(0)),
                             bin(
                                 BinOp::Eq,
                                 e(ExprKind::Unary {
                                     op: UnaryOp::Typeof,
                                     expr: Box::new(ident("c")) }),
-                                lit_str("string"),
+                                lit_str("undefined"),
                             ),
-                            ident("c"),
-                            call(member(ident("String"), "fromCharCode"), vec![ident("c")]),
-                        )],
+                        ),
+                        vec![ret(ident("out"))],
+                        None,
+                    ),
+                    expr_stmt(assign_expr(
+                        ident("out"),
+                        bin(
+                            BinOp::Add,
+                            ident("out"),
+                            ternary(
+                                bin(
+                                    BinOp::Eq,
+                                    e(ExprKind::Unary {
+                                        op: UnaryOp::Typeof,
+                                        expr: Box::new(ident("c")) }),
+                                    lit_str("string"),
+                                ),
+                                ident("c"),
+                                call(
+                                    member(ident("String"), "fromCharCode"),
+                                    vec![ident("c")],
+                                ),
+                            ),
+                        ),
                     )),
                     expr_stmt(assign_expr(
                         ident("i"),
@@ -1227,7 +1252,7 @@ pub fn char_to_str_runtime_helper() -> Statement {
                     )),
                 ],
             ),
-            ret(call_member(ident("parts"), "join", vec![lit_str("")])),
+            ret(ident("out")),
         ],
     )
 }

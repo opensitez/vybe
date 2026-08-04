@@ -53,6 +53,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".to_string(),
         language: Lang::Unknown,
         body: full_body,
+            scheduling: Default::default(),
         imports: Vec::new() })
 }
 
@@ -61,7 +62,23 @@ struct Walker {
     /// struct/union name → ordered field names (for zero-init at decl site)
     structs: HashMap<String, Vec<String>>,
     /// struct name → field → (bitfield width, is_signed) for `int x : N` members.
-    struct_bitfields: HashMap<String, HashMap<String, (i64, bool)>>,
+    struct_bitfields: HashMap<String, HashMap<String, (i64, bool, bool)>>,
+    /// struct tag → `(start, len)` runs inside the flattened field list that
+    /// came from an UNNAMED anonymous struct/union member. A braced entry in a
+    /// positional initializer maps to the whole run, not to one field.
+    struct_anon_groups: HashMap<String, Vec<(usize, usize)>>,
+    /// struct tag → ordered bitfield members `(name, width)` — `None` names are
+    /// UNNAMED bitfields, which exist only for layout (`:4` padding, `:0`
+    /// unit break). Feeds sizeof's allocation-unit packing.
+    struct_bitfield_seq: HashMap<String, Vec<(Option<String>, i64)>>,
+    /// Tags declared with the `union` keyword.
+    union_tags: HashSet<String>,
+    /// tag → shared-storage REGIONS. A union tag has one region holding all
+    /// its members; a struct tag gets one region per flattened anonymous
+    /// union. Each region is a list of members, each member a list of scalar
+    /// leaves. Writing one member's leaf re-derives every other member's
+    /// overlapping leaves (the object model has no shared bytes to alias).
+    union_regions: HashMap<String, Vec<Vec<Vec<UnionLeaf>>>>,
     /// struct/union name → field name → field type (for nested struct handling)
     struct_field_types: HashMap<String, HashMap<String, String>>,
     /// struct/union tag → strictest `alignas` requested by any MEMBER.
@@ -180,6 +197,94 @@ struct PpCond {
     parent_active: bool,
     taken: bool,
     active: bool }
+
+/// Pre-parse textual expansion — C's inclusion model. `#include "file"`
+/// splices the file's text AT THE DIRECTIVE, so the whole stream assembles
+/// BEFORE macros and conditionals run over it (that ordering is what makes
+/// include guards and macro-before-include work). System includes stay in
+/// place as interface markers. `__FILE__`/`__LINE__` resolve here, per
+/// source file, because only this hook ever knows the real path — the same
+/// invariant as PHP's magic-constant rewrite, minus the dynamic half C
+/// cannot have.
+pub fn expand_source(path: &std::path::Path, source: &str) -> Result<String, String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut once: HashSet<std::path::PathBuf> = HashSet::new();
+    let mut active: Vec<std::path::PathBuf> = Vec::new();
+    expand_file_into(path, source, &mut out, &mut once, &mut active, 0)?;
+    Ok(out.join("\n"))
+}
+
+fn expand_file_into(
+    path: &std::path::Path,
+    source: &str,
+    out: &mut Vec<String>,
+    once: &mut HashSet<std::path::PathBuf>,
+    active: &mut Vec<std::path::PathBuf>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > 64 {
+        return Err(format!(
+            "#include nesting deeper than 64 at {}",
+            path.display()
+        ));
+    }
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    active.push(canon.clone());
+    let dir = path.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let file_literal = format!("\"{}\"", path.display());
+    let source = splice_preprocessor_lines(source);
+
+    for (idx, raw_line) in source.lines().enumerate() {
+        let trimmed = raw_line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('#') {
+            let directive = rest.trim_start();
+            if directive.starts_with("pragma") && directive.contains("once") {
+                once.insert(canon.clone());
+                continue;
+            }
+            if let Some(after) = directive.strip_prefix("include") {
+                let spec = after.trim();
+                if let Some(name) = spec
+                    .strip_prefix('"')
+                    .and_then(|r| r.split('"').next())
+                    .filter(|n| !n.is_empty())
+                {
+                    let candidates = [dir.join(name), std::path::PathBuf::from(name)];
+                    if let Some(found) = candidates.iter().find(|c| c.is_file()) {
+                        let target = found
+                            .canonicalize()
+                            .unwrap_or_else(|_| found.to_path_buf());
+                        // `#pragma once` and true cycles both SKIP; include
+                        // guards handle repeats the C way once the stream
+                        // reaches the preprocessor.
+                        if once.contains(&target) || active.contains(&target) {
+                            continue;
+                        }
+                        let text = std::fs::read_to_string(found).map_err(|e| {
+                            format!("cannot read include '{}': {e}", found.display())
+                        })?;
+                        expand_file_into(found, &text, out, once, active, depth + 1)?;
+                        continue;
+                    }
+                }
+                // System header, or a quoted file that does not exist:
+                // keep the line — the preprocessor treats it as an
+                // interface marker (macro seeding, constant injection).
+                out.push(raw_line.to_string());
+                continue;
+            }
+            // Other directives pass through untouched — `__LINE__` inside a
+            // #define body must expand at its USE site, not here.
+            out.push(raw_line.to_string());
+            continue;
+        }
+        let mut line = replace_word(raw_line, "__FILE__", &file_literal);
+        line = replace_word(&line, "__LINE__", &(idx + 1).to_string());
+        out.push(line);
+    }
+    active.pop();
+    Ok(())
+}
 
 fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
     let mut out = Vec::new();
@@ -1707,6 +1812,188 @@ impl Walker {
                 ("REG_ESPACE", 12),
             ],
             "math.h" | "cmath" => &[],
+            // SDL2 — the constants Doom's input/event loop reads
+            // (`sdlplan.md` Tier 1). Values are SDL2's own; chocolate-doom
+            // includes `SDL.h` via its include path, so every common spelling
+            // of the header maps here.
+            "SDL.h" | "SDL2/SDL.h" | "SDL_events.h" | "SDL2/SDL_events.h"
+            | "SDL_keycode.h" | "SDL2/SDL_keycode.h" | "SDL_scancode.h"
+            | "SDL2/SDL_scancode.h" | "SDL_mouse.h" | "SDL2/SDL_mouse.h" => &[
+                // ── event types ──
+                ("SDL_QUIT", 0x100),
+                ("SDL_WINDOWEVENT", 0x200),
+                ("SDL_KEYDOWN", 0x300),
+                ("SDL_KEYUP", 0x301),
+                ("SDL_TEXTINPUT", 0x303),
+                ("SDL_MOUSEMOTION", 0x400),
+                ("SDL_MOUSEBUTTONDOWN", 0x401),
+                ("SDL_MOUSEBUTTONUP", 0x402),
+                ("SDL_MOUSEWHEEL", 0x403),
+                // ── init flags ──
+                ("SDL_INIT_TIMER", 0x1),
+                ("SDL_INIT_AUDIO", 0x10),
+                ("SDL_INIT_VIDEO", 0x20),
+                ("SDL_INIT_JOYSTICK", 0x200),
+                ("SDL_INIT_EVERYTHING", 0xF231),
+                ("SDL_WINDOWPOS_UNDEFINED", 0x1FFF0000),
+                ("SDL_WINDOWPOS_CENTERED", 0x2FFF0000),
+                // ── window events ──
+                ("SDL_WINDOWEVENT_EXPOSED", 3),
+                ("SDL_WINDOWEVENT_RESIZED", 5),
+                ("SDL_WINDOWEVENT_FOCUS_GAINED", 12),
+                ("SDL_WINDOWEVENT_FOCUS_LOST", 13),
+                ("SDL_WINDOWEVENT_CLOSE", 14),
+                // ── buttons / state ──
+                ("SDL_BUTTON_LEFT", 1),
+                ("SDL_BUTTON_MIDDLE", 2),
+                ("SDL_BUTTON_RIGHT", 3),
+                ("SDL_PRESSED", 1),
+                ("SDL_RELEASED", 0),
+                // ── modifiers ──
+                ("KMOD_NONE", 0),
+                ("KMOD_LSHIFT", 0x1),
+                ("KMOD_RSHIFT", 0x2),
+                ("KMOD_LCTRL", 0x40),
+                ("KMOD_RCTRL", 0x80),
+                ("KMOD_LALT", 0x100),
+                ("KMOD_RALT", 0x200),
+                ("KMOD_SHIFT", 0x3),
+                ("KMOD_CTRL", 0xC0),
+                ("KMOD_ALT", 0x300),
+                // ── keycodes (printable = ASCII; specials = 0x40000000|scancode) ──
+                ("SDLK_0", 48),
+                ("SDLK_1", 49),
+                ("SDLK_2", 50),
+                ("SDLK_3", 51),
+                ("SDLK_4", 52),
+                ("SDLK_5", 53),
+                ("SDLK_6", 54),
+                ("SDLK_7", 55),
+                ("SDLK_8", 56),
+                ("SDLK_9", 57),
+                ("SDLK_a", 97),
+                ("SDLK_b", 98),
+                ("SDLK_c", 99),
+                ("SDLK_d", 100),
+                ("SDLK_e", 101),
+                ("SDLK_f", 102),
+                ("SDLK_g", 103),
+                ("SDLK_h", 104),
+                ("SDLK_i", 105),
+                ("SDLK_j", 106),
+                ("SDLK_k", 107),
+                ("SDLK_l", 108),
+                ("SDLK_m", 109),
+                ("SDLK_n", 110),
+                ("SDLK_o", 111),
+                ("SDLK_p", 112),
+                ("SDLK_q", 113),
+                ("SDLK_r", 114),
+                ("SDLK_s", 115),
+                ("SDLK_t", 116),
+                ("SDLK_u", 117),
+                ("SDLK_v", 118),
+                ("SDLK_w", 119),
+                ("SDLK_x", 120),
+                ("SDLK_y", 121),
+                ("SDLK_z", 122),
+                ("SDLK_BACKSPACE", 8),
+                ("SDLK_TAB", 9),
+                ("SDLK_RETURN", 13),
+                ("SDLK_ESCAPE", 27),
+                ("SDLK_SPACE", 32),
+                ("SDLK_MINUS", 45),
+                ("SDLK_EQUALS", 61),
+                ("SDLK_DELETE", 127),
+                ("SDLK_CAPSLOCK", 0x40000039),
+                ("SDLK_F1", 0x4000003A),
+                ("SDLK_F2", 0x4000003B),
+                ("SDLK_F3", 0x4000003C),
+                ("SDLK_F4", 0x4000003D),
+                ("SDLK_F5", 0x4000003E),
+                ("SDLK_F6", 0x4000003F),
+                ("SDLK_F7", 0x40000040),
+                ("SDLK_F8", 0x40000041),
+                ("SDLK_F9", 0x40000042),
+                ("SDLK_F10", 0x40000043),
+                ("SDLK_F11", 0x40000044),
+                ("SDLK_F12", 0x40000045),
+                ("SDLK_PAUSE", 0x40000048),
+                ("SDLK_INSERT", 0x40000049),
+                ("SDLK_HOME", 0x4000004A),
+                ("SDLK_PAGEUP", 0x4000004B),
+                ("SDLK_END", 0x4000004D),
+                ("SDLK_PAGEDOWN", 0x4000004E),
+                ("SDLK_RIGHT", 0x4000004F),
+                ("SDLK_LEFT", 0x40000050),
+                ("SDLK_DOWN", 0x40000051),
+                ("SDLK_UP", 0x40000052),
+                ("SDLK_LCTRL", 0x400000E0),
+                ("SDLK_LSHIFT", 0x400000E1),
+                ("SDLK_LALT", 0x400000E2),
+                ("SDLK_RCTRL", 0x400000E4),
+                ("SDLK_RSHIFT", 0x400000E5),
+                ("SDLK_RALT", 0x400000E6),
+                // ── scancodes (letters 4..29, digits 30..39, rest per spec) ──
+                ("SDL_SCANCODE_A", 4),
+                ("SDL_SCANCODE_B", 5),
+                ("SDL_SCANCODE_C", 6),
+                ("SDL_SCANCODE_D", 7),
+                ("SDL_SCANCODE_E", 8),
+                ("SDL_SCANCODE_F", 9),
+                ("SDL_SCANCODE_G", 10),
+                ("SDL_SCANCODE_H", 11),
+                ("SDL_SCANCODE_I", 12),
+                ("SDL_SCANCODE_J", 13),
+                ("SDL_SCANCODE_K", 14),
+                ("SDL_SCANCODE_L", 15),
+                ("SDL_SCANCODE_M", 16),
+                ("SDL_SCANCODE_N", 17),
+                ("SDL_SCANCODE_O", 18),
+                ("SDL_SCANCODE_P", 19),
+                ("SDL_SCANCODE_Q", 20),
+                ("SDL_SCANCODE_R", 21),
+                ("SDL_SCANCODE_S", 22),
+                ("SDL_SCANCODE_T", 23),
+                ("SDL_SCANCODE_U", 24),
+                ("SDL_SCANCODE_V", 25),
+                ("SDL_SCANCODE_W", 26),
+                ("SDL_SCANCODE_X", 27),
+                ("SDL_SCANCODE_Y", 28),
+                ("SDL_SCANCODE_Z", 29),
+                ("SDL_SCANCODE_RETURN", 40),
+                ("SDL_SCANCODE_ESCAPE", 41),
+                ("SDL_SCANCODE_BACKSPACE", 42),
+                ("SDL_SCANCODE_TAB", 43),
+                ("SDL_SCANCODE_SPACE", 44),
+                ("SDL_SCANCODE_F1", 58),
+                ("SDL_SCANCODE_F2", 59),
+                ("SDL_SCANCODE_F3", 60),
+                ("SDL_SCANCODE_F4", 61),
+                ("SDL_SCANCODE_F5", 62),
+                ("SDL_SCANCODE_F6", 63),
+                ("SDL_SCANCODE_F7", 64),
+                ("SDL_SCANCODE_F8", 65),
+                ("SDL_SCANCODE_F9", 66),
+                ("SDL_SCANCODE_F10", 67),
+                ("SDL_SCANCODE_F11", 68),
+                ("SDL_SCANCODE_F12", 69),
+                ("SDL_SCANCODE_HOME", 74),
+                ("SDL_SCANCODE_PAGEUP", 75),
+                ("SDL_SCANCODE_DELETE", 76),
+                ("SDL_SCANCODE_END", 77),
+                ("SDL_SCANCODE_PAGEDOWN", 78),
+                ("SDL_SCANCODE_RIGHT", 79),
+                ("SDL_SCANCODE_LEFT", 80),
+                ("SDL_SCANCODE_DOWN", 81),
+                ("SDL_SCANCODE_UP", 82),
+                ("SDL_SCANCODE_LCTRL", 224),
+                ("SDL_SCANCODE_LSHIFT", 225),
+                ("SDL_SCANCODE_LALT", 226),
+                ("SDL_SCANCODE_RCTRL", 228),
+                ("SDL_SCANCODE_RSHIFT", 229),
+                ("SDL_SCANCODE_RALT", 230),
+            ],
             _ => &[] };
         for (name, val) in defs {
             // Only inject if not already defined by user
@@ -1845,7 +2132,7 @@ impl Walker {
                     for (idx, param) in params.iter().enumerate() {
                         if let Some(type_hint) = &param.type_hint {
                             let previous_type =
-                                self.var_types.insert(param.name.clone(), type_hint.clone());
+                                self.var_types.insert(param.name.clone(), type_hint.clone().to_string());
                             scoped_param_types.push((param.name.clone(), previous_type));
                             let previous_size = self.var_sizes.insert(
                                 param.name.clone(),
@@ -1862,7 +2149,7 @@ impl Walker {
                                 self.current_char_param_indices
                                     .insert(param.name.clone(), idx);
                                 scoped_char_params.push(param.name.clone());
-                            } else if type_hint == "func" {
+                            } else if &**type_hint == "func" {
                                 self.function_pointer_vars.insert(param.name.clone());
                                 self.current_function_pointer_names.push(param.name.clone());
                             } else if self.is_carray_compatible_pointer_param(type_hint) {
@@ -2002,7 +2289,10 @@ impl Walker {
         }
         self.function_param_types.insert(
             name.clone(),
-            params.iter().map(|param| param.type_hint.clone()).collect(),
+            params
+                .iter()
+                .map(|param| param.type_hint.as_deref().map(str::to_string))
+                .collect(),
         );
         if let Some(ref return_type) = return_type {
             self.function_return_types
@@ -2107,6 +2397,17 @@ impl Walker {
                                             return_type.push_str(" *");
                                         }
                                         type_hint = Some(format!("func() -> {}", return_type));
+                                        // `int (*a[])()` — an ARRAY of function
+                                        // pointers, not one pointer: keep the
+                                        // array marker so the param registers
+                                        // as a carray view (call sites wrap
+                                        // fixed arrays into carray objects).
+                                        if decl_text.contains('[') {
+                                            if let Some(hint) = &mut type_hint {
+                                                hint.push(' ');
+                                                hint.push_str(ARRAY_PARAM_MARKER);
+                                            }
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -2139,7 +2440,7 @@ impl Walker {
                         if !pname.is_empty() {
                             params.push(Param {
                                 name: pname,
-                                type_hint,
+                                type_hint: type_hint.map(Into::into),
                                 default: None,
                                 pass_by: PassBy::Value,
                                 is_rest: false,
@@ -2217,7 +2518,7 @@ impl Walker {
                 }
             }
             // typedef struct {...} Name; → register Name as struct alias.
-            if let Some((tag, fields, field_types, bitfields)) =
+            if let Some((tag, fields, field_types, bitfields, _anon_groups)) =
                 self.struct_def_from_specifiers(specs)
             {
                 for name in &names {
@@ -2245,12 +2546,16 @@ impl Walker {
                 }
                 let mut next_val: i64 = 0;
                 for member in &members {
-                    let val = extract_enum_val(&member.value, next_val);
+                    let val = member
+                        .value
+                        .as_ref()
+                        .and_then(|e| self.eval_int_expr(e))
+                        .unwrap_or_else(|| extract_enum_val(&member.value, next_val));
                     self.enum_constants.insert(member.name.clone(), val);
                     out.push(stmt(StmtKind::VarDecl {
                         declarations: vec![VarDeclarator {
                             pattern: BindingPattern::Ident(member.name.clone()),
-                            type_hint: Some("int".to_string()),
+                            type_hint: Some("int".to_string().into()),
                             init: Some(expr(ExprKind::Lit(Literal::Int(val)))),
                             array_bounds: None,
                             with_events: false }],
@@ -2274,7 +2579,7 @@ impl Walker {
         let Some(specs) = specs else { return };
 
         // A struct/union/enum definition with a body.
-        if let Some((tag, fields, _field_types, _bitfields)) =
+        if let Some((tag, fields, _field_types, _bitfields, _anon_groups)) =
             self.struct_def_from_specifiers(&specs)
         {
             if let Some(tag) = tag.clone() {
@@ -2292,12 +2597,16 @@ impl Walker {
             // Auto-increment value starting from 0, incremented per member.
             let mut next_val: i64 = 0;
             for member in &members {
-                let val = extract_enum_val(&member.value, next_val);
+                let val = member
+                    .value
+                    .as_ref()
+                    .and_then(|e| self.eval_int_expr(e))
+                    .unwrap_or_else(|| extract_enum_val(&member.value, next_val));
                 self.enum_constants.insert(member.name.clone(), val);
                 out.push(stmt(StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(member.name.clone()),
-                        type_hint: Some("int".to_string()),
+                        type_hint: Some("int".to_string().into()),
                         init: Some(expr(ExprKind::Lit(Literal::Int(val)))),
                         array_bounds: None,
                         with_events: false }],
@@ -2583,8 +2892,8 @@ impl Walker {
                 let init_is_heap_array = init
                     .as_ref()
                     .map(|i| {
-                        matches!(i.kind, ExprKind::Array(_))
-                            || matches!(&i.kind, ExprKind::Cast { expr, .. } if matches!(expr.kind, ExprKind::Array(_)))
+                        memory::is_heap_allocation(i)
+                            || matches!(&i.kind, ExprKind::Cast { expr, .. } if memory::is_heap_allocation(expr))
                     })
                     .unwrap_or(false);
                 if is_pointer_decl && init_is_heap_array && !was_array_decl {
@@ -2595,6 +2904,21 @@ impl Walker {
                 } else if init_is_string
                     || (is_pointer_decl && !init_is_addr_of && !is_null_pointer_init(&init))
                 {
+                    // `char *d = dest;` where dest is a NON-char pointer (the
+                    // void* param of a memcpy-like helper): d walks BYTES of
+                    // whatever dest points at, not a string — keep it a plain
+                    // pointer so `*d++` takes the carray promotion path.
+                    let init_nonchar_pointer = !init_is_string
+                        && init
+                            .as_ref()
+                            .and_then(|i| match &i.kind {
+                                ExprKind::Ident(src) => self.var_types.get(src),
+                                _ => None })
+                            .map(|ty| ty.contains('*') && !ty.contains("char"))
+                            .unwrap_or(false);
+                    if init_nonchar_pointer {
+                        self.pointer_vars.insert(name.clone());
+                    } else {
                     self.char_pointers.insert(name.clone());
                     if let Some(ExprKind::Lit(Literal::Str(s))) = init.as_ref().map(|i| &i.kind) {
                         self.char_string_values.insert(name.clone(), s.clone());
@@ -2602,6 +2926,7 @@ impl Walker {
                     if let Some((base, offset)) = char_pointer_offset_from_init(&init) {
                         self.char_pointer_offsets
                             .insert(name.clone(), (base, offset));
+                    }
                     }
                 }
                 if is_pointer_decl {
@@ -2626,12 +2951,107 @@ impl Walker {
                 if is_file_pointer_type {
                     // FILE* is modeled as an opaque integer handle, not as a carray/scalar-cell pointer.
                 } else {
-                    if matches!(init.as_ref().map(|i| &i.kind), Some(ExprKind::Array(elems)) if elems.is_empty())
+                    // THE DECLARATION IS WHERE THE ELEMENT TYPE LIVES.
+                    //
+                    // `malloc`/`calloc` size their result in BYTES because the
+                    // call site cannot know the type it is assigned to. Storage
+                    // is ELEMENT-indexed, so the byte count becomes a length
+                    // only here, divided by `sizeof(pointee)`:
+                    //
+                    //   unsigned char *p = malloc(16)        16 / 1  → 16
+                    //   int           *p = malloc(10 * 4)    40 / 4  → 10
+                    //   int           *p = calloc(n, 4)      4n / 4  → n
+                    //
+                    // A pointer to a STRUCT is different in kind: `p->field` is
+                    // a named member, not an index, so a single struct's worth
+                    // of bytes becomes a zeroed struct. More than one stays an
+                    // array — `calloc(3, sizeof(S))` really is three.
+                    let pointee = normalized_c_type_name(&type_text);
+                    let element_size = self.sizeof_type_text(&pointee).max(1);
+                    // A pointer cast is a no-op in this model, but it HIDES the
+                    // allocation from shape probes — `(struct Point*)calloc(…)`
+                    // is a Cast around the Call. Probe through it.
+                    let peeled = |i: &Expression| match &i.kind {
+                        ExprKind::Cast { expr, .. } => (**expr).clone(),
+                        _ => i.clone() };
+                    let allocated_elements = init
+                        .as_ref()
+                        .map(&peeled)
+                        .as_ref()
+                        .and_then(memory::heap_allocation_count)
+                        .and_then(|bytes| self.eval_int_expr(bytes))
+                        .map(|bytes| bytes / element_size);
+                    // A struct with a FLEXIBLE ARRAY MEMBER is always ONE
+                    // allocation however many bytes it asks for — that is the
+                    // point of `malloc(sizeof(S) + n * sizeof(T))`. Dividing
+                    // its byte count by the struct size makes a 24-byte
+                    // single-struct allocation look like six structs.
+                    let has_flexible_member = self
+                        .struct_field_types
+                        .get(&pointee)
+                        .map(|types| types.values().any(|t| t.trim_end().ends_with("[]")))
+                        .unwrap_or(false);
+                    let init_is_allocation = init
+                        .as_ref()
+                        .map(&peeled)
+                        .map(|i| memory::is_heap_allocation(&i))
+                        .unwrap_or(false);
+                    // One struct unless the byte count says otherwise:
+                    // `calloc(3, sizeof(S))` really is three. An unsized or
+                    // non-constant allocation carries no usable count, so it
+                    // stays a single struct — the historical shape.
+                    let struct_fields = self.structs.get(&pointee).cloned();
+                    let is_struct_array =
+                        !has_flexible_member && allocated_elements.is_some_and(|n| n > 1);
+                    if let Some(fields) = struct_fields.clone().filter(|_| init_is_allocation && !is_struct_array)
                     {
-                        let pointee = normalized_c_type_name(&type_text);
-                        if let Some(fields) = self.structs.get(&pointee).cloned() {
-                            init = Some(self.zero_struct(Some(&pointee), &fields));
+                        init = Some(self.zero_struct(Some(&pointee), &fields));
+                    } else if let Some(fields) = struct_fields.filter(|_| init_is_allocation) {
+                        // A struct ARRAY with a known count materializes as a
+                        // literal array of zeroed structs — the shape the
+                        // struct-element machinery downstream already handles
+                        // (it is what a literal `[0,0,0]` init became).
+                        let count = allocated_elements.unwrap_or(1).max(1) as usize;
+                        let elems: Vec<ArrayElement> = (0..count)
+                            .map(|_| ArrayElement {
+                                value: self.zero_struct(Some(&pointee), &fields),
+                                spread: false,
+                                key: None,
+                                by_ref: false })
+                            .collect();
+                        init = Some(expr(ExprKind::Array(elems)));
+                    } else if init_is_allocation {
+                        if let Some(allocation) = init.take() {
+                            // Peel only what we know is an allocation — a cast
+                            // around anything else keeps its shape.
+                            let rescaled = memory::rescale_heap_allocation(
+                                peeled(&allocation),
+                                element_size,
+                            );
+                            // Stage 1 (`cmemoryplan.md`): an UNSIGNED byte
+                            // pointee gets the typed byte backing. `char` is
+                            // deliberately EXCLUDED — char buffers are
+                            // modelled as strings and `%s`/`str*` sit on that.
+                            //
+                            // Tested on the RAW declaration text:
+                            // `normalized_c_type_name` STRIPS `unsigned `, so
+                            // the pointee arrives as plain "char" and a gate on
+                            // it can never fire (measured: p[1]=300 stayed 300).
+                            let byte_backed = type_text.contains("unsigned char")
+                                || type_text
+                                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                                    .any(|w| w == "uint8_t" || w == "uint8");
+                            init = Some(if byte_backed {
+                                memory::retype_heap_allocation_as_bytes(rescaled)
+                            } else {
+                                rescaled
+                            });
                         }
+                    } else if let Some(allocation) = init.take() {
+                        init = Some(memory::rescale_heap_allocation(
+                            allocation,
+                            element_size,
+                        ));
                     }
                     // Non-char pointer variable — decide scalar-cell vs carray.
                     // If the walked init is already a carray object (e.g. from `&arr[n]`),
@@ -3008,7 +3428,19 @@ impl Walker {
             }
             // Record sizeof for this variable.
             // NOTE: compute from init elem count when array_bounds has been cleared by zero-fill.
-            let sz = if is_pointer_decl {
+            let sz = if is_function_pointer_decl && declarator_text.contains('[') {
+                // `int (*arr[])() = {f, f, f}` — an ARRAY of pointers: 8 per
+                // element, count from bounds or the initializer list.
+                let count = declared_array_bounds
+                    .as_ref()
+                    .and_then(|b| b.first())
+                    .and_then(|b| self.eval_int_expr(b))
+                    .or_else(|| match init.as_ref().map(|i| &i.kind) {
+                        Some(ExprKind::Array(e)) => Some(e.len() as i64),
+                        _ => None })
+                    .unwrap_or(1);
+                8 * count
+            } else if is_pointer_decl {
                 8
             } else if let Some(ref bounds) = declared_array_bounds {
                 let base = sizeof_from_type_text(&type_text);
@@ -3056,10 +3488,13 @@ impl Walker {
                 if let Some(size) = self.var_sizes.get(&name).copied() {
                     self.var_sizes.insert(mangled.clone(), size);
                 }
+                if let Some(a) = self.var_alignments.get(&name).copied() {
+                    self.var_alignments.insert(mangled.clone(), a);
+                }
                 self.static_globals.push(stmt(StmtKind::VarDecl {
                     declarations: vec![VarDeclarator {
                         pattern: BindingPattern::Ident(mangled),
-                        type_hint: Some(emitted_type_hint.clone()),
+                        type_hint: Some(emitted_type_hint.clone().into()),
                         init,
                         array_bounds,
                         with_events: false }],
@@ -3101,7 +3536,7 @@ impl Walker {
             }
             declarations.push(VarDeclarator {
                 pattern: BindingPattern::Ident(emit_name),
-                type_hint: Some(emitted_type_hint),
+                type_hint: Some(emitted_type_hint.into()),
                 init,
                 array_bounds,
                 with_events: false });
@@ -3267,12 +3702,99 @@ impl Walker {
     ) -> Expression {
         let elems = match raw.kind {
             ExprKind::Array(elems) => elems,
+            // Designated initializers arrive as an Object; positional entries
+            // mixed among them carry ordinal (integer) keys. Resolve both
+            // against the declared field order. Unions keep their historical
+            // passthrough shape — zero-filling their other members would
+            // fabricate storage the shared-member model does not have.
+            ExprKind::Object(props)
+                if !type_name.trim_start().starts_with("union") =>
+            {
+                return self.convert_object_init_to_struct_typed(type_name, props, fields);
+            }
             other => return expr(other) };
         if elems.is_empty() {
             return expr(ExprKind::Array(elems));
         }
 
         let normalized_type = normalized_c_type_name(type_name);
+        // A positional union initializer initializes the FIRST member only
+        // (C 6.7.9p10); the other members are views over the same storage, so
+        // their DIRECT scalar leaves derive from the value instead of
+        // zero-filling (u = {65} makes u.c read 65, not 0).
+        if self.union_tags.contains(&normalized_type) {
+            let field_types = self.struct_field_types.get(&normalized_type).cloned();
+            let bitfields = self.struct_bitfields.get(&normalized_type).cloned();
+            let Some(first) = fields.first().cloned() else {
+                return expr(ExprKind::Object(Vec::new()));
+            };
+            let first_value = elems
+                .into_iter()
+                .next()
+                .map(|e| e.value)
+                .unwrap_or_else(|| expr(ExprKind::Lit(Literal::Int(0))));
+            let converted = self.convert_struct_field_value(
+                &first,
+                field_types.as_ref(),
+                bitfields.as_ref(),
+                first_value.clone(),
+            );
+            let mut done: Vec<String> = vec![first.clone()];
+            let mut props = vec![ObjectProperty::KeyValue {
+                key: expr(ExprKind::Lit(Literal::Str(first))),
+                value: converted }];
+            if let Some(region) = self
+                .union_regions
+                .get(&normalized_type)
+                .and_then(|rs| rs.first())
+            {
+                if let Some(leaf0) = region.first().and_then(|m| m.first()) {
+                    if leaf0.bits.is_none() {
+                        for other in region.iter().skip(1) {
+                            for ol in other {
+                                let [PathTok::F(f)] = ol.path.as_slice() else {
+                                    continue;
+                                };
+                                if ol.off < leaf0.off
+                                    || ol.off + ol.width > leaf0.off + leaf0.width
+                                    || ol.bits.is_some()
+                                {
+                                    continue;
+                                }
+                                let byte_shift = 8 * (ol.off - leaf0.off);
+                                let derived = if ol.width < leaf0.width || byte_shift > 0 {
+                                    union_mask_expr(
+                                        first_value.clone(),
+                                        byte_shift,
+                                        8 * ol.width.min(4),
+                                    )
+                                } else {
+                                    first_value.clone()
+                                };
+                                done.push(f.clone());
+                                props.push(ObjectProperty::KeyValue {
+                                    key: expr(ExprKind::Lit(Literal::Str(f.clone()))),
+                                    value: derived });
+                            }
+                        }
+                    }
+                }
+            }
+            for f in fields {
+                if done.contains(f) {
+                    continue;
+                }
+                let value = field_types
+                    .as_ref()
+                    .and_then(|t| t.get(f))
+                    .map(|ft| self.zero_value_for_field_type(ft))
+                    .unwrap_or_else(|| expr(ExprKind::Lit(Literal::Int(0))));
+                props.push(ObjectProperty::KeyValue {
+                    key: expr(ExprKind::Lit(Literal::Str(f.clone()))),
+                    value });
+            }
+            return expr(ExprKind::Object(props));
+        }
         let field_types = self.struct_field_types.get(&normalized_type).cloned();
         let brace_elision_items = if elems.len() == 1 {
             if let ExprKind::Array(inner) = &elems[0].value.kind {
@@ -3326,54 +3848,57 @@ impl Walker {
                 .collect();
             return expr(ExprKind::Object(props));
         }
+        let bitfields = self.struct_bitfields.get(&normalized_type).cloned();
+        let anon_groups = self.struct_anon_groups.get(&normalized_type).cloned();
         let mut props = Vec::new();
-        for (i, el) in elems.into_iter().enumerate() {
-            let Some(fname) = fields.get(i).cloned() else {
-                continue;
-            };
-            let ft = field_types.as_ref().and_then(|t| t.get(&fname));
-            let value = match ft {
-                // Array field (`Entry entries[4]`, `int m[2][3]`): a zero element
-                // (the `{0}` idiom) builds the zero array shape; otherwise keep.
-                Some(ft) if ft.replace(' ', "").contains('[') => {
-                    if is_zero_int_expr(&el.value) {
-                        self.zero_value_for_field_type(ft)
-                    } else if let (base, _, true) = split_array_type_text(ft) {
-                        let normalized_base = normalized_c_type_name(base);
-                        if let (Some(nested_fields), ExprKind::Array(items)) =
-                            (self.structs.get(&normalized_base), &el.value.kind)
-                        {
-                            let converted = items
-                                .iter()
-                                .map(|item| ArrayElement {
-                                    key: item.key.clone(),
-                                    value: self.convert_array_init_to_struct_typed(
-                                        base,
-                                        item.value.clone(),
-                                        nested_fields,
-                                    ),
-                                    spread: item.spread,
-                                    by_ref: item.by_ref })
-                                .collect();
-                            expr(ExprKind::Array(converted))
-                        } else {
-                            el.value
-                        }
-                    } else {
-                        el.value
+        let mut cursor = 0usize;
+        for el in elems.into_iter() {
+            // A braced entry landing on the first field of an UNNAMED
+            // anonymous-aggregate run (`struct { int a; int b; };`) initializes
+            // the whole run — `{ {1, 2}, 3 }` is a=1, b=2, c=3, never a=[1,2].
+            if let ExprKind::Array(items) = &el.value.kind {
+                if let Some(&(start, len)) = anon_groups
+                    .as_ref()
+                    .and_then(|gs| gs.iter().find(|(s, _)| *s == cursor))
+                {
+                    let mut items = items.clone().into_iter();
+                    for k in 0..len {
+                        let Some(fname) = fields.get(start + k).cloned() else {
+                            break;
+                        };
+                        let value = items
+                            .next()
+                            .map(|it| it.value)
+                            .unwrap_or_else(|| expr(ExprKind::Lit(Literal::Int(0))));
+                        let value = self.convert_struct_field_value(
+                            &fname,
+                            field_types.as_ref(),
+                            bitfields.as_ref(),
+                            value,
+                        );
+                        props.push(ObjectProperty::KeyValue {
+                            key: expr(ExprKind::Lit(Literal::Str(fname))),
+                            value });
                     }
+                    cursor = start + len;
+                    continue;
                 }
-                // Nested struct field: recurse into a nested `{...}`.
-                Some(ft) if self.structs.contains_key(&normalized_c_type_name(ft)) => {
-                    let nf = self.structs[&normalized_c_type_name(ft)].clone();
-                    self.convert_array_init_to_struct_typed(ft, el.value, &nf)
-                }
-                _ => el.value };
+            }
+            let Some(fname) = fields.get(cursor).cloned() else {
+                break;
+            };
+            cursor += 1;
+            let value = self.convert_struct_field_value(
+                &fname,
+                field_types.as_ref(),
+                bitfields.as_ref(),
+                el.value,
+            );
             props.push(ObjectProperty::KeyValue {
                 key: expr(ExprKind::Lit(Literal::Str(fname))),
                 value });
         }
-        for i in props.len()..fields.len() {
+        for i in cursor..fields.len() {
             let value = field_types
                 .as_ref()
                 .and_then(|t| t.get(&fields[i]))
@@ -3386,6 +3911,250 @@ impl Walker {
         expr(ExprKind::Object(props))
     }
 
+    /// Convert ONE field's initializer value by its declared type: array
+    /// fields keep/build their array shape, nested struct fields recurse, and
+    /// bitfield members get the store-side mask (`{7}` into `signed int a:3`
+    /// reads back -1, exactly as an assignment would).
+    fn convert_struct_field_value(
+        &self,
+        fname: &str,
+        field_types: Option<&HashMap<String, String>>,
+        bitfields: Option<&HashMap<String, (i64, bool, bool)>>,
+        value: Expression,
+    ) -> Expression {
+        let ft = field_types.and_then(|t| t.get(fname));
+        let value = match ft {
+            // Array field (`Entry entries[4]`, `int m[2][3]`): a zero element
+            // (the `{0}` idiom) builds the zero array shape; otherwise keep.
+            Some(ft) if ft.replace(' ', "").contains('[') => {
+                if is_zero_int_expr(&value) {
+                    self.zero_value_for_field_type(ft)
+                } else if let (base, _, true) = split_array_type_text(ft) {
+                    let normalized_base = normalized_c_type_name(base);
+                    if let (Some(nested_fields), ExprKind::Array(items)) =
+                        (self.structs.get(&normalized_base), &value.kind)
+                    {
+                        let converted = items
+                            .iter()
+                            .map(|item| ArrayElement {
+                                key: item.key.clone(),
+                                value: self.convert_array_init_to_struct_typed(
+                                    base,
+                                    item.value.clone(),
+                                    nested_fields,
+                                ),
+                                spread: item.spread,
+                                by_ref: item.by_ref })
+                            .collect();
+                        expr(ExprKind::Array(converted))
+                    } else {
+                        value
+                    }
+                } else {
+                    value
+                }
+            }
+            // Nested struct field: recurse into a nested `{...}`.
+            Some(ft) if self.structs.contains_key(&normalized_c_type_name(ft)) => {
+                let nf = self.structs[&normalized_c_type_name(ft)].clone();
+                self.convert_array_init_to_struct_typed(ft, value, &nf)
+            }
+            _ => value };
+        match bitfields.and_then(|b| b.get(fname)) {
+            Some(&(width, signed, is_bool)) => apply_bitfield_mask(value, width, signed, is_bool),
+            None => value,
+        }
+    }
+
+    /// Resolve a designated (Object-shaped) initializer against the struct's
+    /// declared field order: string keys are field designators, integer keys
+    /// are positional entries continuing from the field AFTER the most recent
+    /// designated one (C 6.7.9p17). Unmentioned fields zero-fill.
+    fn convert_object_init_to_struct_typed(
+        &self,
+        type_name: &str,
+        props_in: Vec<ObjectProperty>,
+        fields: &[String],
+    ) -> Expression {
+        let normalized_type = normalized_c_type_name(type_name);
+        let field_types = self.struct_field_types.get(&normalized_type).cloned();
+        let bitfields = self.struct_bitfields.get(&normalized_type).cloned();
+        let mut values: Vec<Option<Expression>> = Vec::new();
+        values.resize_with(fields.len(), || None);
+        let mut cursor = 0usize;
+        for prop in props_in {
+            let ObjectProperty::KeyValue { key, value } = prop else {
+                continue;
+            };
+            match &key.kind {
+                ExprKind::Lit(Literal::Str(name)) => {
+                    if let Some(pos) = fields.iter().position(|f| f == name) {
+                        values[pos] = Some(value);
+                        cursor = pos + 1;
+                    }
+                }
+                ExprKind::Lit(Literal::Int(_)) => {
+                    if cursor < fields.len() {
+                        values[cursor] = Some(value);
+                        cursor += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut props = Vec::new();
+        for (i, fname) in fields.iter().enumerate() {
+            let value = match values[i].take() {
+                Some(v) => self.convert_struct_field_value(
+                    fname,
+                    field_types.as_ref(),
+                    bitfields.as_ref(),
+                    v,
+                ),
+                None => field_types
+                    .as_ref()
+                    .and_then(|t| t.get(fname))
+                    .map(|ft| self.zero_value_for_field_type(ft))
+                    .unwrap_or_else(|| expr(ExprKind::Lit(Literal::Int(0)))) };
+            props.push(ObjectProperty::KeyValue {
+                key: expr(ExprKind::Lit(Literal::Str(fname.clone()))),
+                value });
+        }
+        expr(ExprKind::Object(props))
+    }
+
+    /// Enumerate the scalar cells of a type: where each lives (byte offset),
+    /// how wide it is, and — for bitfields — which bits of its cell. Arrays
+    /// expand per constant element, structs recurse via their declared
+    /// offsets, nested unions overlay every member at the same offset.
+    fn union_member_leaves(
+        &self,
+        type_text: &str,
+        prefix: Vec<PathTok>,
+        base_off: i64,
+        out: &mut Vec<UnionLeaf>,
+    ) {
+        if let (base, count, true) = split_array_type_text(type_text) {
+            let esz = self.sizeof_type_text(base).max(1);
+            for k in 0..count.clamp(0, 64) {
+                let mut p = prefix.clone();
+                p.push(PathTok::I(k));
+                self.union_member_leaves(base, p, base_off + k * esz, out);
+            }
+            return;
+        }
+        let tag = normalized_c_type_name(type_text);
+        if let Some(fields) = self.structs.get(&tag).cloned() {
+            let ftypes = self.struct_field_types.get(&tag).cloned().unwrap_or_default();
+            // All-bitfield struct: bit offsets accumulate in declaration
+            // order over 32-bit units.
+            if let Some(bf) = self.struct_bitfields.get(&tag) {
+                if !bf.is_empty() && fields.iter().all(|f| bf.contains_key(f)) {
+                    let bf = bf.clone();
+                    let mut bit = 0i64;
+                    for f in &fields {
+                        let (w, _, _) = bf[f];
+                        if (bit % 32) + w > 32 {
+                            bit = ((bit + 31) / 32) * 32;
+                        }
+                        let word = bit / 32;
+                        let mut p = prefix.clone();
+                        p.push(PathTok::F(f.clone()));
+                        out.push(UnionLeaf {
+                            path: p,
+                            off: base_off + word * 4,
+                            width: 4,
+                            bits: Some((bit - word * 32, w)) });
+                        bit += w;
+                    }
+                    return;
+                }
+            }
+            let is_union = self.union_tags.contains(&tag);
+            for f in &fields {
+                let ft = ftypes.get(f).cloned().unwrap_or_else(|| "int".to_string());
+                let off = if is_union {
+                    0
+                } else {
+                    self.offsetof_struct_field(&tag, f)
+                };
+                let mut p = prefix.clone();
+                p.push(PathTok::F(f.clone()));
+                self.union_member_leaves(&ft, p, base_off + off, out);
+            }
+            return;
+        }
+        let w = self.sizeof_type_text(type_text).clamp(1, 8);
+        out.push(UnionLeaf {
+            path: prefix,
+            off: base_off,
+            width: w,
+            bits: None });
+    }
+
+    /// Build one shared-storage region over `fields[start .. start+len]` of
+    /// `tag`. `groups` (relative to `start`) marks consecutive runs that came
+    /// from ONE anonymous struct member — a run is a single region member
+    /// whose fields lay out sequentially; everything else overlays at 0.
+    fn build_union_region(
+        &self,
+        tag: &str,
+        start: usize,
+        len: usize,
+        groups: &[(usize, usize)],
+        union_runs: &[(usize, usize)],
+    ) -> Vec<Vec<UnionLeaf>> {
+        let Some(fields) = self.structs.get(tag).cloned() else {
+            return Vec::new();
+        };
+        let ftypes = self.struct_field_types.get(tag).cloned().unwrap_or_default();
+        let mut members = Vec::new();
+        let mut i = 0usize;
+        while i < len {
+            // A run that came from an anonymous UNION overlays — each of its
+            // fields is its OWN member at offset 0, not a sequential layout.
+            if let Some(&(_, ul)) = union_runs
+                .iter()
+                .find(|(us, _)| *us == i || *us == start + i)
+            {
+                for k in 0..ul {
+                    let Some(f) = fields.get(start + i + k) else {
+                        break;
+                    };
+                    let ft = ftypes.get(f).cloned().unwrap_or_else(|| "int".to_string());
+                    let mut leaves = Vec::new();
+                    self.union_member_leaves(&ft, vec![PathTok::F(f.clone())], 0, &mut leaves);
+                    members.push(leaves);
+                }
+                i += ul;
+                continue;
+            }
+            let run = groups
+                .iter()
+                .find(|(gs, _)| *gs == i || *gs == start + i)
+                .map(|&(_, gl)| gl)
+                .unwrap_or(1);
+            let mut leaves = Vec::new();
+            let mut off = 0i64;
+            for k in 0..run {
+                let Some(f) = fields.get(start + i + k) else {
+                    break;
+                };
+                let ft = ftypes.get(f).cloned().unwrap_or_else(|| "int".to_string());
+                if run > 1 {
+                    off = align_up(off, alignof_from_type_text(&ft));
+                }
+                self.union_member_leaves(&ft, vec![PathTok::F(f.clone())], off, &mut leaves);
+                if run > 1 {
+                    off += self.sizeof_type_text(&ft).max(1);
+                }
+            }
+            members.push(leaves);
+            i += run;
+        }
+        members
+    }
+
     /// If the specifiers declare a struct/union with a body, return
     /// `(optional tag name, field names)`.
     fn struct_def_from_specifiers(
@@ -3395,7 +4164,8 @@ impl Walker {
         Option<String>,
         Vec<String>,
         HashMap<String, String>,
-        HashMap<String, (i64, bool)>,
+        HashMap<String, (i64, bool, bool)>,
+        Vec<(usize, usize)>,
     )> {
         for p in specs.clone().into_inner() {
             if p.as_rule() == Rule::type_specifier || p.as_rule() == Rule::type_specifier_strict {
@@ -3409,6 +4179,10 @@ impl Walker {
                         let mut fields = Vec::new();
                         let mut field_types = HashMap::new();
                         let mut bitfields = HashMap::new();
+                        let mut anon_groups = Vec::new();
+                        let mut bitfield_seq = Vec::new();
+                        let mut anon_union_runs = Vec::new();
+                        let is_union_def = ts.as_str().trim_start().starts_with("union");
                         let mut has_body = false;
                         let outer_align =
                             std::mem::replace(&mut self.current_struct_max_align, 0);
@@ -3422,6 +4196,9 @@ impl Walker {
                                         &mut fields,
                                         &mut field_types,
                                         &mut bitfields,
+                                        &mut anon_groups,
+                                        &mut bitfield_seq,
+                                        &mut anon_union_runs,
                                     );
                                 }
                                 _ => {}
@@ -3442,8 +4219,49 @@ impl Walker {
                                     self.struct_bitfields
                                         .insert(tag_name.clone(), bitfields.clone());
                                 }
+                                if !anon_groups.is_empty() {
+                                    self.struct_anon_groups
+                                        .insert(tag_name.clone(), anon_groups.clone());
+                                }
+                                if !bitfield_seq.is_empty() {
+                                    self.struct_bitfield_seq
+                                        .insert(tag_name.clone(), bitfield_seq.clone());
+                                }
+                                if is_union_def {
+                                    self.union_tags.insert(tag_name.clone());
+                                }
+                                // Shared-storage regions: the whole tag when it
+                                // IS a union, plus one per flattened anonymous
+                                // union inside a struct. Built after the maps
+                                // above so leaf enumeration can resolve types.
+                                let mut regions = Vec::new();
+                                if is_union_def {
+                                    let n = fields.len();
+                                    let union_runs: Vec<(usize, usize)> = anon_union_runs
+                                        .iter()
+                                        .map(|(s, l, _)| (*s, *l))
+                                        .collect();
+                                    regions.push(self.build_union_region(
+                                        tag_name,
+                                        0,
+                                        n,
+                                        &anon_groups,
+                                        &union_runs,
+                                    ));
+                                } else {
+                                    for (start, len, inner) in &anon_union_runs {
+                                        regions.push(self.build_union_region(
+                                            tag_name, *start, *len, inner, &[],
+                                        ));
+                                    }
+                                }
+                                regions.retain(|r| r.len() > 1);
+                                if !regions.is_empty() {
+                                    self.union_regions
+                                        .insert(tag_name.clone(), regions);
+                                }
                             }
-                            return Some((tag, fields, field_types, bitfields));
+                            return Some((tag, fields, field_types, bitfields, anon_groups));
                         }
                     }
                 }
@@ -3457,7 +4275,10 @@ impl Walker {
         member: Pair<Rule>,
         fields: &mut Vec<String>,
         field_types: &mut HashMap<String, String>,
-        bitfields: &mut HashMap<String, (i64, bool)>,
+        bitfields: &mut HashMap<String, (i64, bool, bool)>,
+        anon_groups: &mut Vec<(usize, usize)>,
+        bitfield_seq: &mut Vec<(Option<String>, i64)>,
+        anon_union_runs: &mut Vec<(usize, usize, Vec<(usize, usize)>)>,
     ) {
         let mut member_type = None;
         let mut anonymous_aggregate = None;
@@ -3468,22 +4289,32 @@ impl Walker {
                 if let Some(a) = alignas_value_from_text(p.as_str()) {
                     self.current_struct_max_align = self.current_struct_max_align.max(a);
                 }
-                if let Some((None, fields, field_types, bitfields)) =
+                if let Some((None, fields, field_types, bitfields, groups)) =
                     self.struct_def_from_specifiers(&p)
                 {
-                    anonymous_aggregate = Some((fields, field_types, bitfields));
+                    let is_union = p.as_str().trim_start().starts_with("union");
+                    anonymous_aggregate = Some((fields, field_types, bitfields, groups, is_union));
                 }
                 member_type = Some(self.type_text(p));
             } else if p.as_rule() == Rule::struct_declarator_list {
                 for d in p.into_inner() {
                     // struct_declarator = declarator ~ (":" ~ assignment_expression)?
+                    //                   | ":" ~ assignment_expression   (unnamed)
                     let (field_decl, bit_width) = if d.as_rule() == Rule::struct_declarator {
                         let mut inner = d.into_inner();
-                        let Some(decl) = inner.next() else { continue };
+                        let Some(first) = inner.next() else { continue };
+                        if first.as_rule() != Rule::declarator {
+                            // Unnamed bitfield: no member, layout only. `:0`
+                            // closes the current allocation unit.
+                            if let Ok(w) = first.as_str().trim().parse::<i64>() {
+                                bitfield_seq.push((None, w));
+                            }
+                            continue;
+                        }
                         let width = inner
                             .next()
                             .and_then(|w| w.as_str().trim().parse::<i64>().ok());
-                        (decl, width)
+                        (first, width)
                     } else {
                         (d, None) // fallback for old grammar (Rule::declarator)
                     };
@@ -3497,9 +4328,19 @@ impl Walker {
                                 .as_ref()
                                 .map(|t| t.contains("unsigned"))
                                 .unwrap_or(false);
+                            // A `bool a : 1` bitfield converts by `!= 0`, not by
+                            // masking — `s.a = 2` reads back 1, never 0.
+                            let is_bool = member_type
+                                .as_ref()
+                                .map(|t| t.contains("bool") || t.contains("_Bool"))
+                                .unwrap_or(false);
                             if let Some(width) = bit_width {
                                 if width > 0 {
-                                    bitfields.insert(n.clone(), (width, !is_unsigned));
+                                    bitfields.insert(
+                                        n.clone(),
+                                        (width, !is_unsigned && !is_bool, is_bool),
+                                    );
+                                    bitfield_seq.push((Some(n.clone()), width));
                                 }
                             }
                             if let Some(ref ty) = member_type {
@@ -3517,7 +4358,7 @@ impl Walker {
                                     .unwrap_or(0);
                                 let pointer_suffix = "*".repeat(pointer_prefix);
                                 let base_ty =
-                                    if let Some((anon_fields, anon_field_types, anon_bitfields)) =
+                                    if let Some((anon_fields, anon_field_types, anon_bitfields, _, _)) =
                                         anonymous_aggregate.clone()
                                     {
                                         let anon_name = format!("__anon_struct_{}", n);
@@ -3546,7 +4387,19 @@ impl Walker {
             }
         }
         if fields.len() == field_count_before {
-            if let Some((anon_fields, anon_field_types, anon_bitfields)) = anonymous_aggregate {
+            if let Some((anon_fields, anon_field_types, anon_bitfields, anon_inner_groups, is_union)) =
+                anonymous_aggregate
+            {
+                if !anon_fields.is_empty() {
+                    anon_groups.push((field_count_before, anon_fields.len()));
+                    if is_union {
+                        anon_union_runs.push((
+                            field_count_before,
+                            anon_fields.len(),
+                            anon_inner_groups,
+                        ));
+                    }
+                }
                 for field in anon_fields {
                     fields.push(field);
                 }
@@ -3578,7 +4431,7 @@ impl Walker {
     /// Resolve the struct field list referenced by a declaration's specifiers
     /// (either an inline body or a previously-registered struct name).
     fn struct_type_of_specifiers(&mut self, specs: &Pair<Rule>) -> Option<Vec<String>> {
-        if let Some((_, fields, _, _)) = self.struct_def_from_specifiers(specs) {
+        if let Some((_, fields, _, _, _)) = self.struct_def_from_specifiers(specs) {
             return Some(fields);
         }
         for p in specs.clone().into_inner() {
@@ -3718,32 +4571,62 @@ impl Walker {
                             // ordering and dropped the index whenever both were
                             // present, so `.arr[1] = 5` set `arr` to 5 outright
                             // instead of `arr[1]`.
-                            let mut path: Vec<Result<String, i64>> = Vec::new();
+                            let mut path: Vec<Desig> = Vec::new();
                             let mut init_value = None;
                             for p in di.into_inner() {
                                 match p.as_rule() {
-                                    Rule::ident_name => path.push(Ok(p.as_str().to_string())),
+                                    Rule::ident_name => {
+                                        path.push(Desig::Field(p.as_str().to_string()))
+                                    }
                                     Rule::initializer => {
                                         init_value = Some(self.walk_initializer(p))
                                     }
-                                    Rule::assignment_expression => {
-                                        let idx = self.walk_assignment(p);
-                                        path.push(Err(self.eval_int_expr(&idx).unwrap_or(0)));
+                                    Rule::designator_index => {
+                                        let mut nums = p.into_inner().map(|e| {
+                                            let idx = self.walk_assignment(e);
+                                            self.eval_int_expr(&idx).unwrap_or(0)
+                                        });
+                                        let lo = nums.next().unwrap_or(0);
+                                        path.push(match nums.next() {
+                                            Some(hi) => Desig::Range(lo, hi),
+                                            None => Desig::Index(lo) });
                                     }
                                     _ => {}
                                 }
                             }
                             let Some(value) = init_value else { continue };
                             if path.is_empty() {
-                                elems.push(ArrayElement {
-                                    key: None,
-                                    value,
-                                    spread: false,
-                                    by_ref: false });
+                                // Positional entry. After a field designator the
+                                // literal has become an Object; keep the entry in
+                                // encounter order under an ordinal key so the
+                                // struct-typed conversion can map it to the field
+                                // FOLLOWING the last designated one (C 6.7.9p17)
+                                // instead of dropping it.
+                                if is_object {
+                                    let ordinal = props.len() as i64;
+                                    props.push(ObjectProperty::KeyValue {
+                                        key: expr(ExprKind::Lit(Literal::Int(ordinal))),
+                                        value });
+                                } else {
+                                    elems.push(ArrayElement {
+                                        key: None,
+                                        value,
+                                        spread: false,
+                                        by_ref: false });
+                                }
                                 continue;
                             }
-                            if matches!(path.first(), Some(Ok(_))) {
-                                is_object = true;
+                            if matches!(path.first(), Some(Desig::Field(_))) {
+                                if !is_object {
+                                    is_object = true;
+                                    // `{1, .c = 3}` — positionals seen before the
+                                    // first designator move into ordinal slots.
+                                    for (k, el) in elems.drain(..).enumerate() {
+                                        props.push(ObjectProperty::KeyValue {
+                                            key: expr(ExprKind::Lit(Literal::Int(k as i64))),
+                                            value: el.value });
+                                    }
+                                }
                                 let mut slot = expr(ExprKind::Object(std::mem::take(&mut props)));
                                 Self::place_designated(&mut slot, &path, value);
                                 if let ExprKind::Object(p) = slot.kind {
@@ -3785,17 +4668,18 @@ impl Walker {
 
     /// Assemble one designated-initializer entry into `slot`.
     ///
-    /// `path` is the designator chain — `Ok(field)` or `Err(index)` — so
-    /// `.arr[1] = 5` arrives as `[Ok("arr"), Err(1)]`. Missing array elements
-    /// are zero-filled, which is what C guarantees for anything a designated
-    /// initializer does not mention.
-    fn place_designated(slot: &mut Expression, path: &[Result<String, i64>], value: Expression) {
+    /// `path` is the designator chain, so `.arr[1] = 5` arrives as
+    /// `[Field("arr"), Index(1)]` and the GNU range `.arr[1 ... 3] = 7` as
+    /// `[Field("arr"), Range(1, 3)]`. Missing array elements are zero-filled,
+    /// which is what C guarantees for anything a designated initializer does
+    /// not mention.
+    fn place_designated(slot: &mut Expression, path: &[Desig], value: Expression) {
         let Some((head, rest)) = path.split_first() else {
             *slot = value;
             return;
         };
         match head {
-            Ok(field) => {
+            Desig::Field(field) => {
                 if !matches!(slot.kind, ExprKind::Object(_)) {
                     slot.kind = ExprKind::Object(Vec::new());
                 }
@@ -3823,24 +4707,39 @@ impl Walker {
                     }
                 }
             }
-            Err(index) => {
-                if !matches!(slot.kind, ExprKind::Array(_)) {
-                    slot.kind = ExprKind::Array(Vec::new());
+            Desig::Index(index) => {
+                Self::place_designated_at_index(slot, *index, rest, value);
+            }
+            // GNU range designator: every index in `lo ..= hi` gets the value.
+            Desig::Range(lo, hi) => {
+                for i in *lo..=(*hi).max(*lo) {
+                    Self::place_designated_at_index(slot, i, rest, value.clone());
                 }
-                let ExprKind::Array(elems) = &mut slot.kind else {
-                    return;
-                };
-                let idx = (*index).max(0) as usize;
-                while elems.len() <= idx {
-                    elems.push(ArrayElement {
-                        key: None,
-                        value: expr(ExprKind::Lit(Literal::Int(0))),
-                        spread: false,
-                        by_ref: false });
-                }
-                Self::place_designated(&mut elems[idx].value, rest, value);
             }
         }
+    }
+
+    fn place_designated_at_index(
+        slot: &mut Expression,
+        index: i64,
+        rest: &[Desig],
+        value: Expression,
+    ) {
+        if !matches!(slot.kind, ExprKind::Array(_)) {
+            slot.kind = ExprKind::Array(Vec::new());
+        }
+        let ExprKind::Array(elems) = &mut slot.kind else {
+            return;
+        };
+        let idx = index.max(0) as usize;
+        while elems.len() <= idx {
+            elems.push(ArrayElement {
+                key: None,
+                value: expr(ExprKind::Lit(Literal::Int(0))),
+                spread: false,
+                by_ref: false });
+        }
+        Self::place_designated(&mut elems[idx].value, rest, value);
     }
 
     fn walk_initializer_list(&mut self, list_pair: Pair<Rule>) -> Expression {
@@ -3864,22 +4763,38 @@ impl Walker {
 
                     if desig.is_empty() {
                         if let Some(v) = value_pair {
-                            elems.push(ArrayElement {
-                                key: None,
-                                value: self.walk_initializer(v),
-                                spread: false,
-                                by_ref: false });
+                            let value = self.walk_initializer(v);
+                            // Positional after a field designator: ordinal key,
+                            // resolved against the field order at conversion.
+                            if is_object {
+                                let ordinal = props.len() as i64;
+                                props.push(ObjectProperty::KeyValue {
+                                    key: expr(ExprKind::Lit(Literal::Int(ordinal))),
+                                    value });
+                            } else {
+                                elems.push(ArrayElement {
+                                    key: None,
+                                    value,
+                                    spread: false,
+                                    by_ref: false });
+                            }
                         }
                         continue;
                     }
 
-                    let mut path: Vec<Result<String, i64>> = Vec::new();
+                    let mut path: Vec<Desig> = Vec::new();
                     for p in desig {
                         match p.as_rule() {
-                            Rule::ident_name => path.push(Ok(p.as_str().to_string())),
-                            Rule::assignment_expression => {
-                                let idx_expr = self.walk_assignment(p.clone());
-                                path.push(Err(self.eval_int_expr(&idx_expr).unwrap_or(0)));
+                            Rule::ident_name => path.push(Desig::Field(p.as_str().to_string())),
+                            Rule::designator_index => {
+                                let mut nums = p.clone().into_inner().map(|e| {
+                                    let idx_expr = self.walk_assignment(e);
+                                    self.eval_int_expr(&idx_expr).unwrap_or(0)
+                                });
+                                let lo = nums.next().unwrap_or(0);
+                                path.push(match nums.next() {
+                                    Some(hi) => Desig::Range(lo, hi),
+                                    None => Desig::Index(lo) });
                             }
                             _ => {}
                         }
@@ -3889,8 +4804,15 @@ impl Walker {
 
                     // A leading FIELD designator makes the whole literal an
                     // object; a leading INDEX keeps it an array.
-                    if matches!(path.first(), Some(Ok(_))) {
-                        is_object = true;
+                    if matches!(path.first(), Some(Desig::Field(_))) {
+                        if !is_object {
+                            is_object = true;
+                            for (k, el) in elems.drain(..).enumerate() {
+                                props.push(ObjectProperty::KeyValue {
+                                    key: expr(ExprKind::Lit(Literal::Int(k as i64))),
+                                    value: el.value });
+                            }
+                        }
                         let mut slot = expr(ExprKind::Object(std::mem::take(&mut props)));
                         Self::place_designated(&mut slot, &path, value);
                         if let ExprKind::Object(p) = slot.kind {
@@ -4087,6 +5009,69 @@ impl Walker {
         }
 
         0
+    }
+
+    /// Build `l.f == r.f && ...` over a struct value pair whose type resolves
+    /// from a variable's declared type; nested struct fields recurse. None
+    /// when the type (and so the field list) is unknown.
+    fn struct_fields_equal_expr(
+        &self,
+        left: &Expression,
+        right: &Expression,
+        depth: usize,
+    ) -> Option<Expression> {
+        let tag_of = |e: &Expression| -> Option<String> {
+            if let ExprKind::Ident(n) = &e.kind {
+                let ty = self.var_types.get(n)?;
+                let t = normalized_c_type_name(ty);
+                if self.structs.contains_key(&t) {
+                    return Some(t);
+                }
+            }
+            None
+        };
+        let ltag = tag_of(left)?;
+        if tag_of(right)? != ltag {
+            return None;
+        }
+        self.struct_equal_by_tag(left, right, &ltag, depth)
+    }
+
+    fn struct_equal_by_tag(
+        &self,
+        left: &Expression,
+        right: &Expression,
+        tag: &str,
+        depth: usize,
+    ) -> Option<Expression> {
+        if depth > 4 {
+            return None;
+        }
+        let fields = self.structs.get(tag)?.clone();
+        let field_types = self.struct_field_types.get(tag).cloned();
+        let mut cond: Option<Expression> = None;
+        for f in &fields {
+            let l = member(left.clone(), f);
+            let r = member(right.clone(), f);
+            let nested_tag = field_types
+                .as_ref()
+                .and_then(|t| t.get(f))
+                .map(|ft| normalized_c_type_name(ft))
+                .filter(|t| self.structs.contains_key(t));
+            let piece = match nested_tag {
+                Some(t) => self.struct_equal_by_tag(&l, &r, &t, depth + 1)?,
+                None => expr(ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(l),
+                    right: Box::new(r) }) };
+            cond = Some(match cond {
+                Some(c) => expr(ExprKind::Binary {
+                    op: BinOp::And,
+                    left: Box::new(c),
+                    right: Box::new(piece) }),
+                None => piece });
+        }
+        cond
     }
 
     fn struct_fields_from_type_text(&self, type_text: &str) -> Option<&Vec<String>> {
@@ -4610,6 +5595,33 @@ impl Walker {
         if let Some(block) = block {
             if block.as_rule() == Rule::compound_statement {
                 self.collect_switch_cases(block, &mut cases, &mut default, &mut default_pos);
+            } else {
+                // Braceless body — `switch (0) case 0: stmt;` — the single
+                // labeled statement IS the whole case list.
+                let mut pending_conditions = Vec::new();
+                let mut cur_body = Vec::new();
+                let mut in_default = false;
+                let mut started = false;
+                self.collect_switch_statement(
+                    block,
+                    &mut cases,
+                    &mut default,
+                    &mut default_pos,
+                    &mut pending_conditions,
+                    &mut cur_body,
+                    &mut in_default,
+                    &mut started,
+                );
+                if started {
+                    flush_switch_case(
+                        &mut pending_conditions,
+                        &mut cur_body,
+                        in_default,
+                        &mut cases,
+                        &mut default,
+                        &mut default_pos,
+                    );
+                }
             }
         }
         // Post-process fallthrough: if a case body doesn't end with break/return,
@@ -5063,6 +6075,24 @@ impl Walker {
             if let Some(rewrite) = self.rewrite_union_member_assignment(&target, value.clone()) {
                 return rewrite;
             }
+            // `*p++ = v` arrives as a Sequence (promote, save, advance, cell
+            // READ) — retarget the write at the cell; value evaluates once.
+            if let ExprKind::Sequence(parts) = &target.kind {
+                if parts.len() >= 2
+                    && matches!(
+                        parts.last().map(|l| &l.kind),
+                        Some(ExprKind::Index { .. } | ExprKind::Member { .. })
+                    )
+                {
+                    let mut seq = parts.clone();
+                    let cell = seq.pop().unwrap();
+                    seq.push(expr(ExprKind::Assign {
+                        target: Box::new(cell.clone()),
+                        value: Box::new(value) }));
+                    seq.push(cell);
+                    return expr(ExprKind::Sequence(seq));
+                }
+            }
             if let Some(ptr_name) = carray_deref_target_name(&target) {
                 return dynamic_carray_deref_write(ident(&ptr_name), value);
             }
@@ -5072,7 +6102,7 @@ impl Walker {
             // Assigning to a bitfield member (`b.val = 7` for `: 2`) wraps to the
             // declared bit width (unsigned → mask; signed → mask + sign-extend).
             let value = match self.bitfield_of_member(&target) {
-                Some((width, signed)) => apply_bitfield_mask(value, width, signed),
+                Some((width, signed, is_bool)) => apply_bitfield_mask(value, width, signed, is_bool),
                 None => value };
             let value = if let ExprKind::Ident(name) = &target.kind {
                 if let Some(type_text) = self.var_types.get(name) {
@@ -5134,7 +6164,7 @@ impl Walker {
             let rhs_raw = self.rewrite_char_ptr_arith(rhs_raw);
             let rhs = self.rewrite_carray_ptr_arith(rhs_raw);
             let rhs = match self.bitfield_of_member(&target) {
-                Some((width, signed)) => apply_bitfield_mask(rhs, width, signed),
+                Some((width, signed, is_bool)) => apply_bitfield_mask(rhs, width, signed, is_bool),
                 None => rhs };
             // Compound assignment through a pointer deref (`*p *= 2`) must write
             // back through the cell, the same as a plain `*p = ...` does.
@@ -5228,11 +6258,95 @@ impl Walker {
         target
     }
 
+    /// Writing one union member's scalar leaf re-derives every OTHER member's
+    /// leaves that its bytes cover — the object model has no shared storage,
+    /// so aliasing is materialized at the write. `u.i = 0xFF` also stores
+    /// `u.b.a = (u.i >> 0) & 15`, `u.c = u.i & 0xFF`, `u.arr[0] = u.i`.
+    /// Leaves WIDER than the written range (write `u.c`, read `u.i`) stay
+    /// stale — composing cells needs byte storage (Stage 2).
+    fn rewrite_union_region_assignment(
+        &self,
+        target: &Expression,
+        value: &Expression,
+    ) -> Option<Expression> {
+        let (root, toks) = union_target_path(target)?;
+        if toks.is_empty() {
+            return None;
+        }
+        let type_text = self.var_types.get(&root)?;
+        let tag = normalized_c_type_name(type_text);
+        let regions = self.union_regions.get(&tag)?;
+        let ftypes = self.struct_field_types.get(&tag);
+        for region in regions {
+            for (mi, member) in region.iter().enumerate() {
+                let Some(leaf) = member
+                    .iter()
+                    .find(|l| l.path == toks && l.bits.is_none())
+                else {
+                    continue;
+                };
+                let mut seq = vec![assign_expr(target.clone(), value.clone())];
+                for (oi, other) in region.iter().enumerate() {
+                    if oi == mi {
+                        continue;
+                    }
+                    // A char-array member views the written cell as bytes;
+                    // keep the historical whole-array byte split (element
+                    // writes into the char-as-string model don't stick).
+                    if let Some(PathTok::F(root_field)) =
+                        other.first().and_then(|l| l.path.first())
+                    {
+                        let char_array = ftypes
+                            .and_then(|t| t.get(root_field))
+                            .filter(|ty| ty.contains("char") && ty.contains('['));
+                        if let Some(ty) = char_array {
+                            if leaf.off == 0 && leaf.width >= 4 {
+                                let bound =
+                                    array_bound_from_type_text(ty).unwrap_or(4);
+                                seq.push(assign_expr(
+                                    union_path_expr(
+                                        &root,
+                                        &[PathTok::F(root_field.clone())],
+                                    ),
+                                    int_to_byte_array(
+                                        union_path_expr(&root, &leaf.path),
+                                        bound,
+                                    ),
+                                ));
+                            }
+                            continue;
+                        }
+                    }
+                    for ol in other {
+                        if ol.off < leaf.off || ol.off + ol.width > leaf.off + leaf.width {
+                            continue; // not contained in the written range
+                        }
+                        let read = union_path_expr(&root, &leaf.path);
+                        let byte_shift = 8 * (ol.off - leaf.off);
+                        let derived = match ol.bits {
+                            Some((sh, bw)) => union_mask_expr(read, byte_shift + sh, bw),
+                            None if ol.width < leaf.width || byte_shift > 0 => {
+                                union_mask_expr(read, byte_shift, 8 * ol.width.min(4))
+                            }
+                            None => read };
+                        seq.push(assign_expr(union_path_expr(&root, &ol.path), derived));
+                    }
+                }
+                seq.push(value.clone());
+                return Some(expr(ExprKind::Sequence(seq)));
+            }
+        }
+        None
+    }
+
     fn rewrite_union_member_assignment(
         &self,
         target: &Expression,
         value: Expression,
     ) -> Option<Expression> {
+        if let Some(rewrite) = self.rewrite_union_region_assignment(target, &value) {
+            return Some(rewrite);
+        }
         let ExprKind::Member { object, field, .. } = &target.kind else {
             return None;
         };
@@ -5478,6 +6592,43 @@ impl Walker {
         src: Expression,
         bytes: Expression,
     ) -> Expression {
+        // `memcpy(&i, &f, 4)` between SCALARS — the byte-copy idiom for type
+        // punning. Bytes aren't modeled, so copy the VALUE (an integer
+        // destination truncates like a cast); real bit patterns need the
+        // Stage 2 byte-addressed store.
+        if let (
+            ExprKind::Unary {
+                op: UnaryOp::AddrOf,
+                expr: d },
+            ExprKind::Unary {
+                op: UnaryOp::AddrOf,
+                expr: s_inner },
+        ) = (&dst.kind, &src.kind)
+        {
+            if let ExprKind::Ident(dn) = &d.kind {
+                let is_plain_scalar = self
+                    .var_types
+                    .get(dn)
+                    .map(|ty| {
+                        !ty.contains('[')
+                            && !ty.contains('*')
+                            && !self.structs.contains_key(&normalized_c_type_name(ty))
+                    })
+                    .unwrap_or(false);
+                if is_plain_scalar {
+                    let dst_ty = self.var_types.get(dn).cloned().unwrap_or_default();
+                    let read = (**s_inner).clone();
+                    let value = if normalized_c_type_name(&dst_ty).contains("int") {
+                        expr(ExprKind::Cast {
+                            expr: Box::new(read),
+                            type_name: "int".to_string() })
+                    } else {
+                        read
+                    };
+                    return assign_expr(ident(dn), value);
+                }
+            }
+        }
         if let Some((dst_name, dst_offset)) = char_buffer_target_offset(&dst) {
             self.char_pointers.insert(dst_name.clone());
             let count = self.byte_count_to_usize(&bytes).unwrap_or(0);
@@ -6333,7 +7484,7 @@ impl Walker {
 
     /// If `target` is a struct bitfield member (`obj.field` where `field` is a
     /// `: N` bitfield), return its `(width, is_signed)`.
-    fn bitfield_of_member(&self, target: &Expression) -> Option<(i64, bool)> {
+    fn bitfield_of_member(&self, target: &Expression) -> Option<(i64, bool, bool)> {
         let ExprKind::Member { object, field, .. } = &target.kind else {
             return None;
         };
@@ -6968,6 +8119,23 @@ impl Walker {
             return args;
         };
         for (arg_index, spec) in printf_value_specs(format_text).into_iter().enumerate() {
+            // `%s` of a char buffer that is an ARRAY at runtime (an
+            // uninitialized `char b[5]` written through a promoted pointer)
+            // must NUL-clip and join, not stringify to "a,b,c,…".
+            if spec == 's' {
+                let Some(arg) = args.get_mut(arg_index + 1) else {
+                    break;
+                };
+                if let ExprKind::Ident(name) = &arg.value.kind {
+                    if self.is_char_array_var(name) || self.carray_ptr_vars.contains(name) {
+                        arg.value = call_expr(
+                            ident("__libc_char_to_str"),
+                            vec![arg.value.clone()],
+                        );
+                    }
+                }
+                continue;
+            }
             if !matches!(spec, 'd' | 'i' | 'u' | 'x' | 'X' | 'o') {
                 continue;
             }
@@ -7251,6 +8419,15 @@ impl Walker {
 
         match op {
             BinOp::Eq | BinOp::NotEq => {
+                // `(void*)arr == (void*)&arr` — an array and its own address
+                // compare EQUAL (same address, different type). Resolved at
+                // compile time; `&arr` must stay AddrOf-shaped so
+                // pointer-to-array params keep working.
+                if self.is_addr_of_same_array(&left, &right)
+                    || self.is_addr_of_same_array(&right, &left)
+                {
+                    return expr(ExprKind::Lit(Literal::Bool(matches!(op, BinOp::Eq))));
+                }
                 if let (Some((left_base, left_index)), Some((right_base, right_index))) = (
                     self.address_linear_index(&left),
                     self.address_linear_index(&right),
@@ -7301,6 +8478,20 @@ impl Walker {
                 }
                 if left_is_carray_obj {
                     return pointers::carray_advance(left_carray_expr.clone(), *right);
+                }
+                // `&x + 1` — the one-past-the-end pointer over a SCALAR is a
+                // one-element carray view; it exists to be compared, not read.
+                if let ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr: inner } = &left.kind
+                {
+                    if let ExprKind::Ident(n) = &inner.kind {
+                        return pointers::make_carray_ptr(ident(n), *right);
+                    }
+                }
+                // `(int[]){1,2,3} + 3` — a compound literal decays like any array.
+                if matches!(left.kind, ExprKind::Array(_)) {
+                    return pointers::make_carray_ptr(*left, *right);
                 }
             }
             BinOp::Sub => {
@@ -7373,6 +8564,29 @@ impl Walker {
                 if left_is_array_var && (right_is_carray_obj || right_is_carray_var) {
                     return carray_ptr_relational_to_array_start(*right, *left, op, false);
                 }
+                // carray vs `&scalar` — view the address as a zero-index
+                // carray over the same base, so `&x + 1 > &x` compares indices.
+                let addr_as_carray = |e: &Expression| -> Option<Expression> {
+                    if let ExprKind::Unary {
+                        op: UnaryOp::AddrOf,
+                        expr: inner } = &e.kind
+                    {
+                        if let ExprKind::Ident(n) = &inner.kind {
+                            return Some(pointers::make_carray_ptr(ident(n), int_lit(0)));
+                        }
+                    }
+                    None
+                };
+                if left_is_carray_obj || left_is_carray_var {
+                    if let Some(r) = addr_as_carray(&right) {
+                        return carray_ptr_relational(left_carray_expr.clone(), r, op);
+                    }
+                }
+                if right_is_carray_obj || right_is_carray_var {
+                    if let Some(l) = addr_as_carray(&left) {
+                        return carray_ptr_relational(l, right_carray_expr.clone(), op);
+                    }
+                }
             }
             _ => {}
         }
@@ -7387,6 +8601,22 @@ impl Walker {
         pointer_address_alias_comparison_side(&self.pointer_address_aliases, left, right).or_else(
             || pointer_address_alias_comparison_side(&self.pointer_address_aliases, right, left),
         )
+    }
+
+    fn is_addr_of_same_array(&self, a: &Expression, b: &Expression) -> bool {
+        let ExprKind::Ident(an) = &a.kind else {
+            return false;
+        };
+        let ExprKind::Unary {
+            op: UnaryOp::AddrOf,
+            expr: inner } = &b.kind
+        else {
+            return false;
+        };
+        matches!(&inner.kind, ExprKind::Ident(bn) if bn == an)
+            && (self.is_fixed_array_var(an)
+                || self.array_ptr_vars.contains(an)
+                || self.is_char_array_var(an))
     }
 
     fn address_linear_index(&self, value: &Expression) -> Option<(String, i64)> {
@@ -8239,7 +9469,7 @@ impl Walker {
                                 optional: false })) });
                     }
                 }
-                if let Some((width, signed)) = self.bitfield_of_member(&operand) {
+                if let Some((width, signed, _)) = self.bitfield_of_member(&operand) {
                     return bitfield_inc_dec_expr(operand, width, signed, 1, false, None);
                 }
                 expr(ExprKind::Unary {
@@ -8260,7 +9490,7 @@ impl Walker {
                         ]));
                     }
                 }
-                if let Some((width, signed)) = self.bitfield_of_member(&operand) {
+                if let Some((width, signed, _)) = self.bitfield_of_member(&operand) {
                     return bitfield_inc_dec_expr(operand, width, signed, -1, false, None);
                 }
                 expr(ExprKind::Unary {
@@ -8314,7 +9544,17 @@ impl Walker {
         let mut it = pair.into_inner();
         let type_name = it.next().unwrap();
         let tn = type_name.as_str().trim().to_string();
-        let operand = self.walk_unary(it.next().unwrap());
+        let operand_pair = it.next().unwrap();
+        // The classic offsetof idiom `(size_t)&(((struct S*)0)->m)` (usually a
+        // user macro). A member address on a NULL pointer only ever means "the
+        // member's offset" — resolve it at compile time like real offsetof.
+        if !tn.contains('*') {
+            if let Some((ty, field)) = offsetof_idiom_parts(operand_pair.as_str()) {
+                let offset = self.offsetof_struct_field(&ty, &field);
+                return expr(ExprKind::Lit(Literal::Int(offset)));
+            }
+        }
+        let operand = self.walk_unary(operand_pair);
         let operand = self.rewrite_char_ptr_arith(operand);
         let operand = self.rewrite_carray_ptr_arith(operand);
         if tn.contains('*') {
@@ -8331,6 +9571,43 @@ impl Walker {
                     return self.zero_struct(Some(&base), &fields);
                 }
             }
+            // `(int*)arr` over a 2-D array — flatten row-major, so `p[2]` on
+            // an `int[2][2]` reads row 1 col 0. Compile-time row concat: a
+            // READ view; writes through it do not alias the source rows.
+            if let ExprKind::Ident(name) = &operand.kind {
+                if let Some(vt) = self.var_types.get(name).cloned() {
+                    if vt.matches('[').count() >= 2
+                        && !self
+                            .structs
+                            .contains_key(&normalized_c_type_name(&tn.replace('*', "")))
+                    {
+                        let rows = vt
+                            .split('[')
+                            .nth(1)
+                            .and_then(|s| s.split(']').next())
+                            .and_then(|s| s.trim().parse::<i64>().ok())
+                            .unwrap_or(0);
+                        if rows >= 2 {
+                            let row = |i: i64| {
+                                expr(ExprKind::Index {
+                                    object: Box::new(ident(name)),
+                                    index: Box::new(int_lit(i)),
+                                    null_safe: false })
+                            };
+                            let flat = expr(ExprKind::Call {
+                                callee: Box::new(expr(ExprKind::Member {
+                                    object: Box::new(row(0)),
+                                    field: "concat".to_string(),
+                                    null_safe: false })),
+                                args: (1..rows)
+                                    .map(|i| Argument::positional(row(i)))
+                                    .collect(),
+                                optional: false });
+                            return pointers::make_carray_ptr(flat, int_lit(0));
+                        }
+                    }
+                }
+            }
             // `(char*)&scalar_int` — type punning: view the integer's object
             // representation as bytes. Decompose into little-endian bytes with
             // WASM integer ops (`>>` + `& 0xFF`) and wrap in a carray, so
@@ -8338,6 +9615,31 @@ impl Walker {
             // snapshot at the cast site (write-back through the char* is not
             // modeled — Vybe scalars are values, not bytes in linear memory).
             if normalized_c_type_name(&tn.replace('*', "")) == "char" {
+                // `(char*)&arr[k]` — a BYTE view over an element array: scale
+                // the index so pointer subtraction counts bytes
+                // (`(char*)&arr[1] - (char*)&arr[0] == sizeof(int)`). By this
+                // point `&arr[k]` is already a carray object. Reads through it
+                // still see whole elements — byte reads of array elements need
+                // the Stage 2 byte store either way.
+                if let (Some(base_name), Some(elem_index)) = (
+                    carray_base_ident(&operand),
+                    carray_object_literal_idx(&operand),
+                ) {
+                    let esz = self
+                        .var_types
+                        .get(&base_name)
+                        .map(|ty| {
+                            let (b, _, _) = split_array_type_text(ty);
+                            self.sizeof_type_text(b).max(1)
+                        })
+                        .unwrap_or(1);
+                    if esz > 1 {
+                        return pointers::make_carray_ptr(
+                            ident(&base_name),
+                            int_lit(elem_index * esz),
+                        );
+                    }
+                }
                 if let ExprKind::Ident(name) = &operand.kind {
                     if self.array_ptr_vars.contains(name) || self.is_fixed_array_var(name) {
                         return pointers::make_carray_ptr(operand, int_lit(0));
@@ -8425,6 +9727,33 @@ impl Walker {
             }
             return operand;
         }
+        // An `alignas(N)` variable's address is observable only through integer
+        // casts (`((uintptr_t)&x % N) == 0`). Objects here have no numeric
+        // address, so hand out the declared alignment itself — the one address
+        // property C guarantees. Must run BEFORE the intptr passthrough below
+        // or it never fires. (Such an address does not survive a round-trip
+        // back to a usable pointer; alignas'd pointers have no such use today.)
+        if tn.contains("int") || tn.contains("long") || tn.contains("size_t") {
+            let aligned_var = match &operand.kind {
+                ExprKind::Unary {
+                    op: UnaryOp::AddrOf,
+                    expr: inner } => match &inner.kind {
+                    // `&x` is already an address, whatever x's shape.
+                    ExprKind::Ident(n) => Some((n, false)),
+                    _ => None },
+                // A bare identifier is an address only when it DECAYS (arrays).
+                ExprKind::Ident(n) => Some((n, true)),
+                _ => None };
+            if let Some((name, needs_decay)) = aligned_var {
+                if let (Some(alignment), Some(type_text)) =
+                    (self.var_alignments.get(name), self.var_types.get(name))
+                {
+                    if !needs_decay || type_text.contains('[') {
+                        return expr(ExprKind::Lit(Literal::Int(*alignment)));
+                    }
+                }
+            }
+        }
         // intptr_t/uintptr_t must preserve pointer payloads so pointer round-trips
         // like (intptr_t)&x then (int*)p do not coerce through Number(NaN).
         if tn.contains("intptr_t") || tn.contains("uintptr_t") {
@@ -8468,15 +9797,6 @@ impl Walker {
         } else {
             return operand;
         };
-        if let ExprKind::Ident(name) = &operand.kind {
-            if let (Some(alignment), Some(type_text)) =
-                (self.var_alignments.get(name), self.var_types.get(name))
-            {
-                if type_text.contains('[') {
-                    return expr(ExprKind::Lit(Literal::Int(*alignment)));
-                }
-            }
-        }
         // Casting a char-buffer element (`(int)s[4]`) to a numeric type must read
         // its char code, not coerce the 1-char string through Number → NaN.
         let operand = if canon != "char" && self.is_char_index_read(&operand) {
@@ -8605,6 +9925,58 @@ impl Walker {
                                     assign_expr(ident(name), advance),
                                     ident(&tmp),
                                 ]))
+                            } else if self.pointer_vars.contains(name)
+                                || self
+                                    .var_types
+                                    .get(name)
+                                    .map(|t| t.contains('*'))
+                                    .unwrap_or(false)
+                            {
+                                // A pointer of unknown runtime shape (params
+                                // land here): lazily PROMOTE to a carray view
+                                // over whatever it points at, then advance.
+                                // The pre-increment position survives in the
+                                // temp — registered as a carray var so `*p++`
+                                // takes the carray deref arms downstream.
+                                // Numeric `p + 1` on the raw array was a
+                                // silent no-op-or-NaN before this.
+                                let id = self.tmp_counter;
+                                self.tmp_counter += 1;
+                                let tmp = format!("__c_post{id}");
+                                self.carray_ptr_vars.insert(tmp.clone());
+                                let promote = assign_expr(
+                                    ident(name),
+                                    expr(ExprKind::Ternary {
+                                        cond: Box::new(pointers::is_carray_ptr_kind(ident(
+                                            name,
+                                        ))),
+                                        then: Box::new(ident(name)),
+                                        else_: Box::new(pointers::make_carray_ptr(
+                                            ident(name),
+                                            int_lit(0),
+                                        )) }),
+                                );
+                                self.carray_ptr_vars.insert(name.clone());
+                                // The temp must SNAPSHOT base+idx — the advance
+                                // mutates the shared object, and an aliasing
+                                // temp would advance with it (writes landed one
+                                // cell late).
+                                let snapshot = pointers::make_carray_ptr(
+                                    expr(ExprKind::Member {
+                                        object: Box::new(ident(name)),
+                                        field: CARRAY_BASE_KEY.to_string(),
+                                        null_safe: false }),
+                                    expr(ExprKind::Member {
+                                        object: Box::new(ident(name)),
+                                        field: CARRAY_IDX_KEY.to_string(),
+                                        null_safe: false }),
+                                );
+                                expr(ExprKind::Sequence(vec![
+                                    promote,
+                                    assign_expr(ident(&tmp), snapshot),
+                                    pointers::carray_advance_inplace(name, int_lit(1)),
+                                    ident(&tmp),
+                                ]))
                             } else {
                                 let id = self.tmp_counter;
                                 self.tmp_counter += 1;
@@ -8622,7 +9994,7 @@ impl Walker {
                                 ]))
                             }
                         } else {
-                            if let Some((width, signed)) = self.bitfield_of_member(&base) {
+                            if let Some((width, signed, _)) = self.bitfield_of_member(&base) {
                                 let tmp = format!("__c_bitfield_post{}", self.tmp_counter);
                                 self.tmp_counter += 1;
                                 return bitfield_inc_dec_expr(
@@ -8677,7 +10049,7 @@ impl Walker {
                                 ]))
                             }
                         } else {
-                            if let Some((width, signed)) = self.bitfield_of_member(&base) {
+                            if let Some((width, signed, _)) = self.bitfield_of_member(&base) {
                                 let tmp = format!("__c_bitfield_post{}", self.tmp_counter);
                                 self.tmp_counter += 1;
                                 return bitfield_inc_dec_expr(
@@ -13607,24 +14979,49 @@ impl Walker {
                     let mut it = args.into_iter();
                     if let (Some(addr), Some(delta)) = (it.next(), it.next()) {
                         let target = atomic_pointer_target(addr.value);
-                        return call_expr(
-                            expr(ExprKind::Lambda {
-                                params: vec![],
-                                body: LambdaBody::Block(vec![
-                                    var_decl_stmt("__c_atomic_old", target.clone()),
-                                    stmt(StmtKind::Expr(assign_expr(
-                                        target,
-                                        expr(ExprKind::Binary {
-                                            op: BinOp::Add,
-                                            left: Box::new(ident("__c_atomic_old")),
-                                            right: Box::new(delta.value) }),
-                                    ))),
-                                    stmt(StmtKind::Return(Some(ident("__c_atomic_old")))),
-                                ]),
-                                is_async: false,
-                                captures: vec![] }),
-                            vec![],
-                        );
+                        // Flat sequence, not an IIFE — a lambda closing over the
+                        // atomic target emits bytecode the VM rejects when the
+                        // call's VALUE is consumed (`int old = atomic_fetch_add(..)`).
+                        return expr(ExprKind::Sequence(vec![
+                            assign_expr(ident("__c_atomic_old"), target.clone()),
+                            assign_expr(
+                                target,
+                                expr(ExprKind::Binary {
+                                    op: BinOp::Add,
+                                    left: Box::new(ident("__c_atomic_old")),
+                                    right: Box::new(delta.value) }),
+                            ),
+                            ident("__c_atomic_old"),
+                        ]));
+                    }
+                    return int_lit(0);
+                }
+                "ATOMIC_VAR_INIT" | "atomic_var_init" => {
+                    let mut it = args.into_iter();
+                    if let Some(v) = it.next() {
+                        return v.value;
+                    }
+                    return int_lit(0);
+                }
+                "atomic_fetch_and" | "atomic_fetch_or" | "atomic_fetch_xor" => {
+                    let op = match name.as_str() {
+                        "atomic_fetch_and" => BinOp::BitAnd,
+                        "atomic_fetch_or" => BinOp::BitOr,
+                        _ => BinOp::BitXor };
+                    let mut it = args.into_iter();
+                    if let (Some(addr), Some(operand)) = (it.next(), it.next()) {
+                        let target = atomic_pointer_target(addr.value);
+                        return expr(ExprKind::Sequence(vec![
+                            assign_expr(ident("__c_atomic_old"), target.clone()),
+                            assign_expr(
+                                target,
+                                expr(ExprKind::Binary {
+                                    op,
+                                    left: Box::new(ident("__c_atomic_old")),
+                                    right: Box::new(operand.value) }),
+                            ),
+                            ident("__c_atomic_old"),
+                        ]));
                     }
                     return int_lit(0);
                 }
@@ -13632,24 +15029,20 @@ impl Walker {
                     let mut it = args.into_iter();
                     if let (Some(addr), Some(delta)) = (it.next(), it.next()) {
                         let target = atomic_pointer_target(addr.value);
-                        return call_expr(
-                            expr(ExprKind::Lambda {
-                                params: vec![],
-                                body: LambdaBody::Block(vec![
-                                    var_decl_stmt("__c_atomic_old", target.clone()),
-                                    stmt(StmtKind::Expr(assign_expr(
-                                        target,
-                                        expr(ExprKind::Binary {
-                                            op: BinOp::Sub,
-                                            left: Box::new(ident("__c_atomic_old")),
-                                            right: Box::new(delta.value) }),
-                                    ))),
-                                    stmt(StmtKind::Return(Some(ident("__c_atomic_old")))),
-                                ]),
-                                is_async: false,
-                                captures: vec![] }),
-                            vec![],
-                        );
+                        // Flat sequence, not an IIFE — a lambda closing over the
+                        // atomic target emits bytecode the VM rejects when the
+                        // call's VALUE is consumed (`int old = atomic_fetch_add(..)`).
+                        return expr(ExprKind::Sequence(vec![
+                            assign_expr(ident("__c_atomic_old"), target.clone()),
+                            assign_expr(
+                                target,
+                                expr(ExprKind::Binary {
+                                    op: BinOp::Sub,
+                                    left: Box::new(ident("__c_atomic_old")),
+                                    right: Box::new(delta.value) }),
+                            ),
+                            ident("__c_atomic_old"),
+                        ]));
                     }
                     return int_lit(0);
                 }
@@ -13726,6 +15119,17 @@ impl Walker {
                     // and had this written inline; routing it here is what lets
                     // the REPRESENTATION change in one place later, and is what
                     // makes cross-language memory interop possible at all.
+                    //
+                    // Sized in BYTES, which is what C says and all this call
+                    // site can know — the element type lives at the
+                    // DECLARATION, which rescales the count (and turns a
+                    // single-struct allocation into a zeroed struct). An
+                    // allocation that never reaches a typed declaration keeps
+                    // its byte length: over-allocated for a wide element, never
+                    // under, so reads stay correct.
+                    if let Some(size) = args.into_iter().next() {
+                        return memory::heap_zeroed_array_sized(size.value);
+                    }
                     return memory::heap_array(Vec::new());
                 }
                 // `SDL_CreateRGBSurface(flags, w, h, depth, r, g, b, a)`.
@@ -13756,6 +15160,7 @@ impl Walker {
                     return int_lit(4096);
                 }
                 "alloca" => {
+                    // Byte-counted like `malloc` — same reasoning.
                     return memory::heap_array(Vec::new());
                 }
                 "posix_memalign" => {
@@ -13810,20 +15215,40 @@ impl Walker {
                     }
                     return expr(ExprKind::Array(Vec::new()));
                 }
-                // calloc(count, size) → pre-filled zero array
+                // calloc(count, size) → pre-filled zero array.
+                //
+                // `count` is an ELEMENT count, which is exactly what a carray
+                // indexes, so this needs no byte conversion. It used to accept
+                // only a literal and `unwrap_or(0)` everything else, so
+                // `calloc(w * h, 1)` — chocolate-doom's screen allocation —
+                // silently produced an EMPTY array and every pixel read NaN.
+                // `calloc(count, size)` allocates `count * size` BYTES, the
+                // same currency `malloc` uses, so both take one path and the
+                // DECLARATION divides by the element width exactly once.
                 "calloc" => {
-                    let count_val = args
-                        .into_iter()
-                        .next()
-                        .and_then(|a| {
-                            if let ExprKind::Lit(Literal::Int(n)) = &a.value.kind {
-                                Some(*n as usize)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(0);
-                    return memory::heap_zeroed_array(count_val);
+                    let mut it = args.into_iter();
+                    let Some(count) = it.next() else {
+                        return memory::heap_array(Vec::new());
+                    };
+                    let size = it.next().map(|a| a.value);
+                    let bytes = match size {
+                        None => count.value,
+                        Some(size) => {
+                            match (
+                                self.eval_int_expr(&count.value),
+                                self.eval_int_expr(&size),
+                            ) {
+                                // Fold when both are visible — keeps the common
+                                // `calloc(64000, 1)` a plain literal.
+                                (Some(c), Some(s)) => int_lit(c.saturating_mul(s)),
+                                // `calloc(n, 1)` — the byte count IS the count.
+                                (_, Some(1)) => count.value,
+                                _ => expr(ExprKind::Binary {
+                                    op: BinOp::Mul,
+                                    left: Box::new(count.value),
+                                    right: Box::new(size) }) }
+                        } };
+                    return memory::heap_zeroed_array_sized(bytes);
                 }
                 "free" => {
                     // noop — GC handles deallocation. Routed through the shared
@@ -13942,17 +15367,18 @@ impl Walker {
                         let left = self.value_from_c_address_arg(a.value);
                         let right = self.value_from_c_address_arg(b.value);
                         if self.is_struct_value_expr(&left) && self.is_struct_value_expr(&right) {
-                            let left_json =
-                                call_expr(member(ident("JSON"), "stringify"), vec![left]);
-                            let right_json =
-                                call_expr(member(ident("JSON"), "stringify"), vec![right]);
-                            return expr(ExprKind::Ternary {
-                                cond: Box::new(expr(ExprKind::Binary {
-                                    op: BinOp::Eq,
-                                    left: Box::new(left_json),
-                                    right: Box::new(right_json) })),
-                                then: Box::new(int_lit(0)),
-                                else_: Box::new(int_lit(1)) });
+                            // Compare field-wise — the field list is known at
+                            // compile time, and C's memcmp==0 on two structs of
+                            // the same type is exactly "all members equal"
+                            // (equal members ⇒ equal padding-free bytes here).
+                            // A nonzero result only promises "differs", not the
+                            // byte-order sign real memcmp would give.
+                            if let Some(cond) = self.struct_fields_equal_expr(&left, &right, 0) {
+                                return expr(ExprKind::Ternary {
+                                    cond: Box::new(cond),
+                                    then: Box::new(int_lit(0)),
+                                    else_: Box::new(int_lit(1)) });
+                            }
                         }
                         return memcmp_expr(left, right, bytes.value);
                     }
@@ -15028,6 +16454,23 @@ fn fold_binary(mut operands: Vec<Expression>, ops: Vec<String>) -> Expression {
     let apply = |output: &mut Vec<Expression>, op: BinOp| {
         let right = output.pop().unwrap();
         let left = output.pop().unwrap();
+        // A shift of 32+ must fold at compile time: the runtime `<<`/`>>`
+        // operates on 32-bit lanes, so `1LL << 40` would wrap to 256.
+        if matches!(op, BinOp::Shl | BinOp::Shr) {
+            if let (ExprKind::Lit(Literal::Int(l)), ExprKind::Lit(Literal::Int(r))) =
+                (&left.kind, &right.kind)
+            {
+                if *r >= 32 && *r < 64 {
+                    let v = if matches!(op, BinOp::Shl) {
+                        l.wrapping_shl(*r as u32)
+                    } else {
+                        l >> r
+                    };
+                    output.push(Expression::new(ExprKind::Lit(Literal::Int(v))));
+                    return;
+                }
+            }
+        }
         output.push(Expression::new(ExprKind::Binary {
             op,
             left: Box::new(left),
@@ -15396,8 +16839,129 @@ fn literal_signed_int_value(value: &Expression) -> Option<i64> {
 
 /// Wrap a value to a bitfield of `width` bits: `v & ((1<<width)-1)`, then for a
 /// signed bitfield sign-extend (`>= 1<<(width-1)` → subtract `1<<width`).
-fn apply_bitfield_mask(value: Expression, width: i64, signed: bool) -> Expression {
-    if width <= 0 || width >= 64 {
+/// Parse the null-pointer offsetof idiom `&(((struct S*)0)->m)` into its
+/// `("struct S", "m")` parts. Returns None for anything not of that shape.
+fn offsetof_idiom_parts(text: &str) -> Option<(String, String)> {
+    let t = text.trim().strip_prefix('&')?.trim();
+    let (lhs, rhs) = t.split_once("->")?;
+    let field = rhs.trim().trim_end_matches(')').trim().to_string();
+    if field.is_empty()
+        || !field
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    let lhs = lhs.trim().trim_end_matches(')').trim_end();
+    let lhs = lhs.strip_suffix('0')?.trim_end();
+    let lhs = lhs.strip_suffix(')')?;
+    let open = lhs.rfind('(')?;
+    let ty = lhs[open + 1..].trim().trim_end_matches('*').trim().to_string();
+    if ty.is_empty() {
+        return None;
+    }
+    Some((ty, field))
+}
+
+/// One step of a designated-initializer chain: `.field`, `[index]`, or the
+/// GNU range `[lo ... hi]`.
+enum Desig {
+    Field(String),
+    Index(i64),
+    Range(i64, i64),
+}
+
+/// One step of a union member-access path: `.field` or a constant `[index]`.
+#[derive(Clone, PartialEq, Debug)]
+enum PathTok {
+    F(String),
+    I(i64),
+}
+
+/// One scalar cell of a union member, positioned within the union's storage.
+/// `path` is relative to the union-typed variable (or the struct holding an
+/// anonymous union region); `bits` is set when the leaf is a bitfield over
+/// the 4-byte cell at `off`.
+#[derive(Clone, Debug)]
+struct UnionLeaf {
+    path: Vec<PathTok>,
+    off: i64,
+    width: i64,
+    bits: Option<(i64, i64)>,
+}
+
+fn union_path_expr(root: &str, toks: &[PathTok]) -> Expression {
+    let mut e = ident(root);
+    for t in toks {
+        e = match t {
+            PathTok::F(f) => expr(ExprKind::Member {
+                object: Box::new(e),
+                field: f.clone(),
+                null_safe: false }),
+            PathTok::I(i) => expr(ExprKind::Index {
+                object: Box::new(e),
+                index: Box::new(int_lit(*i)),
+                null_safe: false }) };
+    }
+    e
+}
+
+/// `(read >> shift) & ((1 << bits) - 1)` — a narrower view over a wider cell,
+/// little-endian like every target this compiles for.
+fn union_mask_expr(read: Expression, shift: i64, bits: i64) -> Expression {
+    let shifted = if shift > 0 {
+        expr(ExprKind::Binary {
+            op: BinOp::Shr,
+            left: Box::new(read),
+            right: Box::new(int_lit(shift)) })
+    } else {
+        read
+    };
+    if bits >= 32 {
+        return shifted;
+    }
+    expr(ExprKind::Binary {
+        op: BinOp::BitAnd,
+        left: Box::new(shifted),
+        right: Box::new(int_lit((1i64 << bits) - 1)) })
+}
+
+/// Decompose `u.s.y` / `u.arr[1]` into the root identifier and its path.
+/// Only constant indices participate — a runtime index cannot be matched
+/// against the compile-time leaf table.
+fn union_target_path(e: &Expression) -> Option<(String, Vec<PathTok>)> {
+    match &e.kind {
+        ExprKind::Ident(n) => Some((n.clone(), Vec::new())),
+        ExprKind::Member { object, field, .. } => {
+            let (root, mut toks) = union_target_path(object)?;
+            toks.push(PathTok::F(field.clone()));
+            Some((root, toks))
+        }
+        ExprKind::Index { object, index, .. } => {
+            let ExprKind::Lit(Literal::Int(i)) = index.kind else {
+                return None;
+            };
+            let (root, mut toks) = union_target_path(object)?;
+            toks.push(PathTok::I(i));
+            Some((root, toks))
+        }
+        _ => None }
+}
+
+fn apply_bitfield_mask(value: Expression, width: i64, signed: bool, is_bool: bool) -> Expression {
+    if is_bool {
+        // C boolean conversion: any nonzero value stores as 1.
+        return expr(ExprKind::Ternary {
+            cond: Box::new(expr(ExprKind::Binary {
+                op: BinOp::NotEq,
+                left: Box::new(value),
+                right: Box::new(int_lit(0)) })),
+            then: Box::new(int_lit(1)),
+            else_: Box::new(int_lit(0)) });
+    }
+    // An unsigned `:32` holds the full u32 range already, and the emitted
+    // BitAnd runs in 32-bit lanes — masking would fold 4294967295 to -1.
+    if width <= 0 || width >= 64 || (!signed && width >= 32) {
         return value;
     }
     let mask = (1i64 << width) - 1;
@@ -15434,7 +16998,7 @@ fn bitfield_inc_dec_expr(
         op: if delta >= 0 { BinOp::Add } else { BinOp::Sub },
         left: Box::new(target.clone()),
         right: Box::new(int_lit(delta.abs())) });
-    let write = assign_expr(target.clone(), apply_bitfield_mask(value, width, signed));
+    let write = assign_expr(target.clone(), apply_bitfield_mask(value, width, signed, false));
     if !post {
         return expr(ExprKind::Sequence(vec![write, target]));
     }
@@ -15634,12 +17198,36 @@ impl Walker {
         if let Some(field_types) = self.struct_field_types.get(tag) {
             if let Some(bitfields) = self.struct_bitfields.get(tag) {
                 if !bitfields.is_empty() && fields.iter().all(|f| bitfields.contains_key(f)) {
-                    let bits: i64 = fields
-                        .iter()
-                        .filter_map(|f| bitfields.get(f).map(|(width, _)| *width))
-                        .sum();
-                    let units = ((bits + 31) / 32).max(1);
-                    let size = units * 4;
+                    // Pack the DECLARED sequence (named + unnamed) into 32-bit
+                    // allocation units; an unnamed `:0` closes the open unit.
+                    let size = if let Some(seq) = self.struct_bitfield_seq.get(tag) {
+                        let mut units = 1i64;
+                        let mut bits_in_unit = 0i64;
+                        for (name, width) in seq {
+                            if *width == 0 && name.is_none() {
+                                if bits_in_unit > 0 {
+                                    units += 1;
+                                    bits_in_unit = 0;
+                                }
+                                continue;
+                            }
+                            if bits_in_unit + width > 32 {
+                                units += 1;
+                                bits_in_unit = 0;
+                            }
+                            bits_in_unit += width;
+                        }
+                        if bits_in_unit == 0 && units > 1 {
+                            units -= 1;
+                        }
+                        units * 4
+                    } else {
+                        let bits: i64 = fields
+                            .iter()
+                            .filter_map(|f| bitfields.get(f).map(|(width, _, _)| *width))
+                            .sum();
+                        ((bits + 31) / 32).max(1) * 4
+                    };
                     return if has_array { size * array_count } else { size };
                 }
             }
@@ -16181,8 +17769,10 @@ impl Walker {
                 sizeof_from_type_text(ty)
             });
         }
-        if let Some((_, rhs)) = text.rsplit_once(',') {
-            return self.sizeof_from_expr_text(rhs.trim());
+        if !text.contains('(') {
+            if let Some((_, rhs)) = text.rsplit_once(',') {
+                return self.sizeof_from_expr_text(rhs.trim());
+            }
         }
         if text.parse::<f64>().is_ok() && text.contains('.') {
             return Some(8);
@@ -16199,10 +17789,29 @@ impl Walker {
             }
         }
         if text.contains('?') && text.contains(':') {
+            // `sizeof(1 ? s1 : s2)` is the size of the COMMON TYPE of the
+            // branches, not of the condition. The usual arithmetic conversions
+            // pick the wider branch (`1 ? 2 : 3.0` is double), so resolve both
+            // and keep the max.
+            if let Some((_, rest)) = text.split_once('?') {
+                if let Some((then_branch, else_branch)) = rest.rsplit_once(':') {
+                    let t = self.sizeof_from_expr_text(then_branch.trim());
+                    let e = self.sizeof_from_expr_text(else_branch.trim());
+                    match (t, e) {
+                        (Some(a), Some(b)) => return Some(a.max(b)),
+                        (Some(a), None) | (None, Some(a)) => return Some(a),
+                        (None, None) => {}
+                    }
+                }
+            }
             return Some(if text.contains('.') { 8 } else { 4 });
         }
         if let Some(base_name) = text.split('[').next().map(|s| s.trim()) {
             if base_name != text {
+                // An element of a function-pointer ARRAY is a pointer.
+                if self.function_pointer_vars.contains(base_name) {
+                    return Some(8);
+                }
                 if let Some(ty) = self.var_types.get(base_name) {
                     let dims = text.matches('[').count().max(1);
                     return Some(self.sizeof_indexed_expr(base_name, ty, dims));
@@ -17999,21 +19608,6 @@ fn concat_sequence_to_string(mut pieces: Vec<Expression>) -> Expression {
     current
 }
 
-fn nested_designated_object(mut fields: Vec<String>, value: Expression) -> Expression {
-    let Some(field) = fields.pop() else {
-        return value;
-    };
-    let mut current = expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
-        key: expr(ExprKind::Lit(Literal::Str(field))),
-        value }]));
-    while let Some(field) = fields.pop() {
-        current = expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
-            key: expr(ExprKind::Lit(Literal::Str(field))),
-            value: current }]));
-    }
-    current
-}
-
 fn merge_designated_value(slot: &mut Expression, value: Expression) {
     if let ExprKind::Object(existing) = &mut slot.kind {
         if let ExprKind::Object(provided) = value.kind {
@@ -18531,7 +20125,11 @@ fn should_wrap_pointer_init_as_carray(
 ) -> bool {
     match init.as_ref().map(|e| &e.kind) {
         Some(ExprKind::Ident(name)) => array_vars.contains(name),
-        Some(ExprKind::Array(_)) => true,
+        // The allocation SHAPE is owned by `primitives/memory.rs` — ask it
+        // rather than re-deriving it here, so a representation change lands in
+        // one place. A bare `malloc`/`calloc`/`realloc` call is still matched
+        // by name for the paths that reach here before builtin lowering.
+        Some(_) if init.as_ref().is_some_and(memory::is_heap_allocation) => true,
         Some(ExprKind::Call { callee, .. }) => {
             matches!(&callee.kind, ExprKind::Ident(name) if name == "malloc" || name == "calloc" || name == "realloc")
         }
@@ -18628,6 +20226,23 @@ fn carray_ptr_equality(left: Expression, right: Expression) -> Expression {
         op: BinOp::And,
         left: Box::new(base_eq),
         right: Box::new(idx_eq) })
+}
+
+/// The literal `__idx` of a carray OBJECT literal, when constant.
+fn carray_object_literal_idx(e: &Expression) -> Option<i64> {
+    let ExprKind::Object(props) = &e.kind else {
+        return None;
+    };
+    for p in props {
+        if let ObjectProperty::KeyValue { key, value } = p {
+            if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == CARRAY_IDX_KEY) {
+                if let ExprKind::Lit(Literal::Int(i)) = value.kind {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn carray_ptr_relational(left: Expression, right: Expression, op: BinOp) -> Expression {

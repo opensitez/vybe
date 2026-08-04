@@ -364,7 +364,7 @@ pub fn runtime_helpers() -> Vec<Statement> {
     let mut decl = function("__libc_str_to_wide", vec!["s"], body);
     if let StmtKind::FunctionDecl { params, .. } = &mut decl.kind {
         if let Some(p) = params.first_mut() {
-            p.type_hint = Some("char*".to_string());
+            p.type_hint = Some("char*".to_string().into());
         }
     }
     let wcsncpy_body = vec![

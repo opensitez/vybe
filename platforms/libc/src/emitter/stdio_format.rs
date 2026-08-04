@@ -196,7 +196,8 @@ const FPAD: u16 = 20; // 1 when a custom pad char was given
 const POS: u16 = 21; // positional arg number from `%N$` (scratch)
 const SAVEI: u16 = 22; // saved `I` for positional-arg rewind (scratch)
 const NULPOS: u16 = 23; // index of the first NUL in a `%s` argument (scratch)
-const NLOCALS: u16 = 24;
+const LONGMOD: u16 = 24; // 1 when an `l`/`j`/`z`/`t`/`L` length modifier was seen
+const NLOCALS: u16 = 25;
 
 fn lg(c: &mut Chunk, s: u16) {
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
@@ -468,6 +469,8 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     ls(&mut c, CUSTPAD);
     ci(&mut c, -1);
     ls(&mut c, PREC);
+    core_wasm::i32_const(&mut c, 0, 0);
+    ls(&mut c, LONGMOD);
 
     // spec block — "continue outer" from inside spec = br to ol
     // depths inside spec: spec=0, ol=1, ob=2
@@ -519,6 +522,31 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     read_ch(&mut c, FMT, I, FLEN, CH, str_ccat);
 
     // width loop
+    // `%*d` — a `*` width comes from the NEXT argument (C 7.21.6.1p5).
+    {
+        let star = c.emit_block(0);
+        lg(&mut c, I);
+        lg(&mut c, FLEN);
+        c.emit_op(Op::I32_GE_S, 0);
+        c.emit_br_if(0, 0);
+        lg(&mut c, FMT);
+        lg(&mut c, I);
+        hc(&mut c, str_ccat, 2);
+        c.emit_op(Op::I32_FROM_F64, 0);
+        ci(&mut c, 42);
+        c.emit_op(Op::I32_NE, 0);
+        c.emit_br_if(0, 0);
+        lg(&mut c, ARGS);
+        lg(&mut c, AIDX);
+        hc(&mut c, arr_at, 2);
+        hc(&mut c, num_num, 1);
+        c.emit_op(Op::I32_FROM_F64, 0);
+        ls(&mut c, WIDTH);
+        inc(&mut c, AIDX);
+        inc(&mut c, I);
+        c.emit_end(0);
+        c.patch_block(star);
+    }
     {
         let wl = c.emit_block(0);
         let (wlp, _) = c.emit_loop_s(0);
@@ -636,6 +664,16 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         c.emit_op(Op::I32_EQZ, 0);
         c.emit_br_if(1, 0);
 
+        // Everything except `h`/`hh` widens past 32 bits — record it so `%lu`
+        // and `%llu` keep their full value where `%u` reduces mod 2^32.
+        lg(&mut c, CH);
+        ci(&mut c, 104);
+        c.emit_op(Op::I32_NE, 0); // h
+        c.emit_if(0);
+        core_wasm::i32_const(&mut c, 0, 1);
+        ls(&mut c, LONGMOD);
+        c.emit_end(0);
+
         inc(&mut c, I);
         c.emit_br(0, 0);
         c.emit_end(0);
@@ -673,6 +711,24 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     // does not consume an argument. Other conversions load the next variadic
     // value and fill RAW.
     let conv_done = c.emit_block(0);
+    {
+        // Unknown conversion char → emit it verbatim, consume nothing.
+        let known = c.emit_block(0);
+        for ch in [37i32, 115, 100, 105, 117, 102, 70, 101, 69, 112, 120, 88, 111, 99, 103, 71]
+        {
+            lg(&mut c, CONV);
+            ci(&mut c, ch);
+            c.emit_op(Op::I32_EQ, 0);
+            c.emit_br_if(0, 0);
+        }
+        lg(&mut c, CONV);
+        c.emit_op(Op::F64_FROM_I32, 0);
+        hc(&mut c, str_fcc, 1);
+        ls(&mut c, RAW);
+        c.emit_br(1, 0);
+        c.emit_end(0);
+        c.patch_block(known);
+    }
     {
         let pct = c.emit_block(0);
         lg(&mut c, CONV);
@@ -728,9 +784,6 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     );
     conv_radix(
         &mut c, math_trunc, num_radix, str_upper, str_cat, 111, 8, false, "0",
-    );
-    conv_radix(
-        &mut c, math_trunc, num_radix, str_upper, str_cat, 98, 2, false, "",
     );
     conv_g(&mut c, num_prec, str_upper, str_cat, str_slice);
     conv_c(&mut c, num_num, str_fcc);
@@ -1090,9 +1143,23 @@ fn conv_u(c: &mut Chunk, num_radix: u16) {
     ci(c, 117);
     c.emit_op(Op::I32_NE, 0);
     c.emit_br_if(0, 0);
-    // C `%u` expects a 32-bit unsigned view of the argument.
-    // Keep positive values as-is; for negatives, add 2^32 (e.g. -1 -> 4294967295).
+    // C `%u` expects a 32-bit unsigned view of the argument: reduce mod 2^32
+    // first (unsigned arithmetic that overflowed upstream, e.g. UINT_MAX + 1,
+    // arrives here as 2^32), then lift negatives (e.g. -1 -> 4294967295).
+    lg(c, LONGMOD);
+    c.emit_op(Op::I32_EQZ, 0);
+    c.emit_if_value(0);
     lg(c, N);
+    lg(c, N);
+    cf(c, 4294967296.0);
+    c.emit_op(Op::F64_DIV, 0);
+    c.emit_op(Op::F64_TRUNC, 0);
+    cf(c, 4294967296.0);
+    c.emit_op(Op::F64_MUL, 0);
+    c.emit_op(Op::F64_SUB, 0);
+    c.emit_else(0);
+    lg(c, N);
+    c.emit_end(0);
     ls(c, SAVEI);
     lg(c, SAVEI);
     cf(c, 0.0);

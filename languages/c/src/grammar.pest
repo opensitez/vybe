@@ -85,12 +85,14 @@ gcc_attribute = {
 }
 
 struct_or_union_spec = {
-    ("struct" | "union") ~ gcc_attribute* ~ ident_name? ~ ("{" ~ struct_member* ~ "}")?
+    ("struct" | "union") ~ (gcc_attribute | alignment_specifier)* ~ ident_name? ~ ("{" ~ struct_member* ~ "}")?
 }
 
 struct_member = { declaration_specifiers ~ struct_declarator_list? ~ ";" }
 struct_declarator_list = { struct_declarator ~ ("," ~ struct_declarator)* }
-struct_declarator = { declarator ~ (":" ~ assignment_expression)? }
+// The declarator-less form is an UNNAMED bitfield (`unsigned int :4;`,
+// `int :0;`) — it occupies layout but declares no member.
+struct_declarator = { declarator ~ (":" ~ assignment_expression)? | ":" ~ assignment_expression }
 
 enum_spec = {
     "enum" ~ ident_name? ~ ("{" ~ enumerator_list? ~ "}")?
@@ -124,9 +126,9 @@ type_specifier = {
 // We ban a typedef_name from following a strict specifier to prevent greedily
 // consuming the declarator name.
 declaration_specifiers = {
-    (type_qualifier | alignment_specifier | gcc_attribute | "typedef")+ ~ typedef_name
+    (type_qualifier | alignment_specifier | gcc_attribute | "typedef")+ ~ typedef_name ~ type_qualifier*
     | (type_qualifier | alignment_specifier | gcc_attribute | "typedef")* ~ type_specifier_strict ~ (type_qualifier | alignment_specifier | gcc_attribute | type_specifier_strict)*
-    | typedef_name
+    | typedef_name ~ type_qualifier*
 }
 
 // ── Declarations ──────────────────────────────────────────────────────────
@@ -161,7 +163,14 @@ declarator_suffix = _{
     array_suffix
     | param_suffix
 }
-array_suffix = { "[" ~ ("static" ~ declaration_specifiers?)? ~ assignment_expression? ~ "]" }
+// C99 6.7.5.3: `static` and type qualifiers may appear inside a parameter's
+// array brackets (`int arr[restrict 5]`, `int arr[static 5]`). Silent — the
+// walker only ever looks for the size expression.
+// Atomic: in a non-atomic rule the implicit whitespace would run BEFORE the
+// lookahead, which then sees the size digit and rejects `[static 5]`.
+static_kw = @{ "static" ~ !(ASCII_ALPHANUMERIC | "_") }
+array_qual = _{ static_kw | ptr_qual }
+array_suffix = { "[" ~ array_qual* ~ assignment_expression? ~ "]" }
 param_suffix = { "(" ~ parameter_list? ~ ")" }
 
 parameter_list = {
@@ -190,8 +199,12 @@ initializer_list = { "{" ~ (designated_init ~ ("," ~ designated_init)* ~ ","?)? 
 // Kept flat (no wrapper rule) so children stay `ident_name` /
 // `assignment_expression` and existing walker arms still match; the trailing
 // `initializer` is the value.
+// One `[...]` designator; the optional `... hi` tail is the GNU range
+// extension (`.arr[1 ... 3] = 7`). Its own rule so the walker can tell one
+// bracket holding a range from two consecutive index brackets.
+designator_index = { "[" ~ assignment_expression ~ ("..." ~ assignment_expression)? ~ "]" }
 designated_init = {
-    (("." ~ ident_name) | ("[" ~ assignment_expression ~ "]"))+ ~ "=" ~ initializer
+    (("." ~ ident_name) | designator_index)+ ~ "=" ~ initializer
     | initializer
 }
 

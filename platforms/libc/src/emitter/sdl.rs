@@ -457,6 +457,87 @@ pub fn emit_sdl_delay(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     emit_zero_i32(chunks, current, line);
 }
 
+// ── Tier 2: timing (`sdlplan.md`) ───────────────────────────────────────────
+//
+// All three ride `wasi:clocks/monotonic-clock.now` (f64 NANOSECONDS since
+// process start — the same clock `SDL_Delay` subscribes against), so ticks
+// and delays can never drift apart.
+
+/// `SDL_GetTicks()` → milliseconds since start.
+pub fn emit_sdl_get_ticks(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let now_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "now");
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, now_idx, line);
+    chunks[current].emit(0, line);
+    chunks[current].emit_f64_const(1_000_000.0, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+}
+
+/// `SDL_GetPerformanceCounter()` → the raw nanosecond counter.
+pub fn emit_sdl_get_performance_counter(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let now_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "now");
+    chunks[current].emit_op_u16(Op::CALL_IMPORT, now_idx, line);
+    chunks[current].emit(0, line);
+}
+
+/// `SDL_GetPerformanceFrequency()` → counts per second: nanoseconds → 1e9.
+pub fn emit_sdl_get_performance_frequency(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
+    chunks[current].emit_f64_const(1_000_000_000.0, line);
+}
+
+// ── Tier 1: input (`sdlplan.md`) ────────────────────────────────────────────
+//
+// The HOST fills the `SDL_Event` struct — it can mutate the pointee object
+// directly — so each of these stays a plain call instead of a field-copy
+// sequence in bytecode.
+
+/// `SDL_PollEvent(SDL_Event *e)` → 1 if an event was dequeued, else 0.
+pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_gui_call(chunks, current, "sdlPollEvent", 1, line);
+}
+
+/// `SDL_PushEvent(SDL_Event *e)` → 1 on success. Real SDL API — and the
+/// headless test path for the queue.
+pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_gui_call(chunks, current, "sdlPushEvent", 1, line);
+}
+
+/// `SDL_GetMouseState(int *x, int *y)` → held-button mask. The host writes
+/// through the out-pointers.
+pub fn emit_sdl_get_mouse_state(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    // Pad missing out-pointers so the host always sees two args.
+    for _ in argc..2 {
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+    }
+    emit_gui_call(chunks, current, "sdlGetMouseState", 2, line);
+}
+
+/// `SDL_GetModState()` → KMOD_* mask.
+pub fn emit_sdl_get_mod_state(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    emit_gui_call(chunks, current, "sdlGetModState", 0, line);
+}
+
+/// `SDL_PumpEvents()` — the winit loop pumps for us; nothing to do.
+pub fn emit_sdl_pump_events(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    emit_zero_i32(chunks, current, line);
+}
+
+/// `SDL_PeepEvents(...)` → 0 events, dropping every argument.
+pub fn emit_sdl_peep_events(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    emit_zero_i32(chunks, current, line);
+}
+
 pub fn emit_sdl_show_window(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let window = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, window, line);
@@ -557,6 +638,42 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
         }
         "sdl.SDL_BlitPaletted" | "libc.sdl.SDL_BlitPaletted" => {
             emit_sdl_blit_paletted(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_PollEvent" | "libc.sdl.SDL_PollEvent" => {
+            emit_sdl_poll_event(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_PushEvent" | "libc.sdl.SDL_PushEvent" => {
+            emit_sdl_push_event(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetMouseState" | "libc.sdl.SDL_GetMouseState" => {
+            emit_sdl_get_mouse_state(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetModState" | "libc.sdl.SDL_GetModState" => {
+            emit_sdl_get_mod_state(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_PumpEvents" | "libc.sdl.SDL_PumpEvents" => {
+            emit_sdl_pump_events(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_PeepEvents" | "libc.sdl.SDL_PeepEvents" => {
+            emit_sdl_peep_events(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetTicks" | "libc.sdl.SDL_GetTicks" => {
+            emit_sdl_get_ticks(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetPerformanceCounter" | "libc.sdl.SDL_GetPerformanceCounter" => {
+            emit_sdl_get_performance_counter(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_GetPerformanceFrequency" | "libc.sdl.SDL_GetPerformanceFrequency" => {
+            emit_sdl_get_performance_frequency(chunks, current, argc, line);
             true
         }
         "sdl.SDL_FillRect" | "libc.sdl.SDL_FillRect" => {

@@ -36,6 +36,7 @@ pub fn register() {
         emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: None,
         register_tree: Some(tree_register::register_namespace_tree),
+        expand_source: Some(walker::expand_source),
     });
 }
 

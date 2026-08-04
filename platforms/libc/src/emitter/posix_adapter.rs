@@ -700,6 +700,33 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
             "sockaddr_un",
             &[("sun_family", "int"), ("sun_path", "char[108]")],
         )],
+        // SDL2 event structs (`sdlplan.md` Tier 1). SDL_Event is a UNION in
+        // real SDL; here it is a struct carrying every view Doom reads —
+        // `type`, `key.keysym.*`, `motion.*`, `button.*`, `wheel.*` — which is
+        // exactly the shape the host's `sdlPollEvent` fills.
+        "SDL.h" | "SDL2/SDL.h" | "SDL_events.h" | "SDL2/SDL_events.h" => vec![
+            ("SDL_Keysym", &[("sym", "int"), ("scancode", "int"), ("mod", "int")]),
+            (
+                "SDL_KeyboardEvent",
+                &[("keysym", "SDL_Keysym"), ("state", "int"), ("type", "int")],
+            ),
+            ("SDL_MouseMotionEvent", &[("x", "int"), ("y", "int"), ("state", "int")]),
+            (
+                "SDL_MouseButtonEvent",
+                &[("button", "int"), ("x", "int"), ("y", "int"), ("state", "int")],
+            ),
+            ("SDL_MouseWheelEvent", &[("x", "int"), ("y", "int")]),
+            (
+                "SDL_Event",
+                &[
+                    ("type", "int"),
+                    ("key", "SDL_KeyboardEvent"),
+                    ("motion", "SDL_MouseMotionEvent"),
+                    ("button", "SDL_MouseButtonEvent"),
+                    ("wheel", "SDL_MouseWheelEvent"),
+                ],
+            ),
+        ],
         _ => Vec::new() }
 }
 

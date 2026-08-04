@@ -227,6 +227,18 @@ uses_common_resolver = true
 # and present it. Doom's `I_FinishUpdate` in one call. Destination size is
 # optional and defaults to the source size.
 "SDL_BlitPaletted" = { emit = "common:libc.sdl.SDL_BlitPaletted", min_args = 5, max_args = 7 }
+# Tier 1 — input (`sdlplan.md`). PollEvent/PushEvent take &event; the HOST
+# fills/reads the struct, so the emitters are plain calls.
+"SDL_PollEvent"     = { emit = "common:libc.sdl.SDL_PollEvent",     min_args = 1, max_args = 1 }
+"SDL_PushEvent"     = { emit = "common:libc.sdl.SDL_PushEvent",     min_args = 1, max_args = 1 }
+"SDL_GetMouseState" = { emit = "common:libc.sdl.SDL_GetMouseState", min_args = 0, max_args = 2 }
+"SDL_GetModState"   = { emit = "common:libc.sdl.SDL_GetModState",   min_args = 0, max_args = 0 }
+"SDL_PumpEvents"    = { emit = "common:libc.sdl.SDL_PumpEvents",    min_args = 0, max_args = 0 }
+"SDL_PeepEvents"    = { emit = "common:libc.sdl.SDL_PeepEvents",    min_args = 0, max_args = 6 }
+# Tier 2 — timing. All three ride the monotonic clock SDL_Delay already uses.
+"SDL_GetTicks"                = { emit = "common:libc.sdl.SDL_GetTicks",                min_args = 0, max_args = 0 }
+"SDL_GetPerformanceCounter"   = { emit = "common:libc.sdl.SDL_GetPerformanceCounter",   min_args = 0, max_args = 0 }
+"SDL_GetPerformanceFrequency" = { emit = "common:libc.sdl.SDL_GetPerformanceFrequency", min_args = 0, max_args = 0 }
 "SDL_ShowSimpleMessageBox" = { emit = "common:libc.sdl.SDL_ShowSimpleMessageBox", min_args = 4, max_args = 4 }
 
 [[esm_default]]
