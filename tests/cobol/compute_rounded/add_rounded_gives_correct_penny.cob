@@ -1,0 +1,21 @@
+*> vybe-test: cobol/compute_rounded/add_rounded_gives_correct_penny_rounding
+*> origin: languages/cobol/tests/cobol/test_compute_rounded.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 TAX PIC 9(5)V99 VALUE 0.
+01 RATE PIC 9V9(4) VALUE 0.0875.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    COMPUTE TAX ROUNDED = 100 * RATE.
+    DISPLAY TAX.
+    MOVE SPACES TO WS-VYBE-L
+    STRING TAX DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "008.75"
+        DISPLAY "FAIL: want [008.75] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

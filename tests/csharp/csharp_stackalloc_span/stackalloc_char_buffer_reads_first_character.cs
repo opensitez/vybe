@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_stackalloc_span/stackalloc_char_buffer_reads_first_character
 // origin: languages/csharp/tests/csharp/test_csharp_stackalloc_span.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-System.Span<char> buf=stackalloc char[3]{'a','b','c'}; __Check((buf[0]).ToString(), "a");
+System.Span<char> buf=stackalloc char[3]{'a','b','c'}; __P((buf[0]).ToString());
+__Check("a");

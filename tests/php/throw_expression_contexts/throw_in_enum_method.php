@@ -27,8 +27,7 @@ enum Status: string {
     public function label(): string {
         return match ($this) {
             self::On => 'enabled',
-            self::Off => throw new LogicException('hidden'),
-        };
+            self::Off => throw new LogicException('hidden') };
     }
 }
 try { echo Status::Off->label(); } catch (LogicException $e) { echo $e->getMessage(); }

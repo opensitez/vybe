@@ -1,0 +1,8 @@
+! vybe-test: fortran/modulo_dim_sign_extended/dim_real_zero_scaled
+! origin: languages/fortran/tests/fortran/test_modulo_dim_sign_extended.rs
+program t
+if ((nint(dim(3.2, 10.5)*10)) /= 0) then
+    print *, "FAIL: want [0] got [", nint(dim(3.2, 10.5)*10), "]"
+    stop 1
+end if
+end program t

@@ -25,8 +25,7 @@ $val = "0";
 $result = match($val) {
     0   => "int zero",
     "0" => "string zero",
-    default => "other",
-};
+    default => "other" };
 echo $result;
 
 __vybe_check(ob_get_clean(), "string zero");

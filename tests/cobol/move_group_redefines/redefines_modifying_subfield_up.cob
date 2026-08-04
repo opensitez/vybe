@@ -1,0 +1,23 @@
+*> vybe-test: cobol/move_group_redefines/redefines_modifying_subfield_updates_parent
+*> origin: languages/cobol/tests/cobol/test_move_group_redefines.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 FULL-DATE PIC X(8) VALUE "20000101".
+01 DATE-REDEF REDEFINES FULL-DATE.
+   05 D-YEAR PIC 9(4).
+   05 D-REST PIC X(4).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE 2024 TO D-YEAR.
+    DISPLAY FULL-DATE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING FULL-DATE DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "20240101"
+        DISPLAY "FAIL: want [20240101] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

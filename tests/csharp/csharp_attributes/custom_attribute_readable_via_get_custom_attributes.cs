@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_attributes/custom_attribute_readable_via_get_custom_attributes
 // origin: languages/csharp/tests/csharp/test_csharp_attributes.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -13,4 +25,5 @@ class TagAttribute:System.Attribute{public string Value;public TagAttribute(stri
 [Tag("hello")]
 class Target{}
 var attrs=(TagAttribute[])typeof(Target).GetCustomAttributes(typeof(TagAttribute),false);
-__Check((attrs[0].Value).ToString(), "hello");
+__P((attrs[0].Value).ToString());
+__Check("hello");

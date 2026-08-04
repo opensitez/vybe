@@ -1,0 +1,21 @@
+*> vybe-test: cobol/level_77/test_level_77_elementary_numeric
+*> origin: languages/cobol/tests/cobol/test_level_77.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+77 WS-NUM PIC 9(3) VALUE 10.
+PROCEDURE DIVISION.
+    ADD 5 TO WS-NUM.
+    DISPLAY WS-NUM.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-NUM DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "015"
+        DISPLAY "FAIL: want [015] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

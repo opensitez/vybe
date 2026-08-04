@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_explicit_interface_impl/explicit_interface_can_be_accessed_after_multiple_casts
 // origin: languages/csharp/tests/csharp/test_csharp_explicit_interface_impl.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -14,4 +26,5 @@ class Ticket : ICode {
 }
 var ticket = new Ticket();
 object boxed = ticket;
-__Check((((ICode)boxed).Value()).ToString(), "T-9");
+__P((((ICode)boxed).Value()).ToString());
+__Check("T-9");

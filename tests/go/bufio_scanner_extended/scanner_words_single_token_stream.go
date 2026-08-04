@@ -5,9 +5,19 @@ package main
 import "fmt"
 import "bufio"
 import "strings"
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
@@ -15,5 +25,7 @@ func __check(got string, want string) {
 func main() { sc := bufio.NewScanner(strings.NewReader("solo"))
 sc.Split(bufio.ScanWords)
 sc.Scan()
-__check(fmt.Sprint(sc.Text()), "solo")
-__check(fmt.Sprint(sc.Scan()), "false") }
+__p(fmt.Sprint(sc.Text()))
+__p(fmt.Sprint(sc.Scan())) 
+__check("solo\nfalse")
+}

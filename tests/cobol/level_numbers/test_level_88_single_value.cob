@@ -1,0 +1,26 @@
+*> vybe-test: cobol/level_numbers/test_level_88_single_value
+*> origin: languages/cobol/tests/cobol/test_level_numbers.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-STATUS PIC 9 VALUE 1.
+   88 IS-ACTIVE VALUE 1.
+   88 IS-INACTIVE VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    IF IS-ACTIVE
+        DISPLAY "ACTIVE"
+    ELSE
+        DISPLAY "INACTIVE"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ACTIVE" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ACTIVE"
+        DISPLAY "FAIL: want [ACTIVE] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

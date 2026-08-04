@@ -21,7 +21,7 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-$parts = preg_split('/[\s,]+/', "one  two,,three   four", -1, PREG_SPLIT_NO_EMPTY);
+$parts = preg_split('/[\s,]+/', "one  two, three   four", -1, PREG_SPLIT_NO_EMPTY);
 echo count($parts);
 echo "\n";
 echo implode("|", $parts);

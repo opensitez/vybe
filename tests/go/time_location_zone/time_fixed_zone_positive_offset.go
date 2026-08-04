@@ -4,14 +4,26 @@
 package main
 import "fmt"
 import "time"
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
 
 func main() { loc := time.FixedZone("EST", -5*3600)
 t := time.Date(2020, 1, 1, 12, 0, 0, 0, loc)
-__check(fmt.Sprint(t.Location().String()), "EST")
-__check(fmt.Sprint(t.Hour()), "12") }
+__p(fmt.Sprint(t.Location().String()))
+__p(fmt.Sprint(t.Hour())) 
+__check("EST\n12")
+}

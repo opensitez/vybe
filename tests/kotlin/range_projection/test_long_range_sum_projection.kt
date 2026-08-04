@@ -1,9 +1,26 @@
 // vybe-test: kotlin/range_projection/test_long_range_sum_projection
 // origin: languages/kotlin/tests/kotlin/test_range_projection.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
@@ -11,7 +28,9 @@ fun __check(got: String, want: String) {
 fun main() {
             val r = 2L..6L
             val sum = r.fold(0L) { acc, n -> acc + n }
-            __check((sum).toString(), "20")
-            __check((r.any { it == 4L }).toString(), "true")
-            __check((r.all { it >= 2 }).toString(), "true")
-        }
+            __p((sum).toString())
+            __p((r.any { it == 4L }).toString())
+            __p((r.all { it >= 2 }).toString())
+        
+__check("20\ntrue\ntrue")
+}

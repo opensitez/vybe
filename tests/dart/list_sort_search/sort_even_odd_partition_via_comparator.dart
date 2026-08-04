@@ -1,0 +1,37 @@
+// vybe-test: dart/list_sort_search/sort_even_odd_partition_via_comparator
+// origin: languages/dart/tests/dart/test_list_sort_search.rs
+
+final StringBuffer __vybeOut = StringBuffer();
+
+void __p(Object? o) {
+  __vybeOut.writeln(o);
+}
+
+void __check(String want) {
+  var got = __vybeOut.toString();
+  // `writeln` on the final print contributes a trailing newline that the
+  // expected line vector never carried.
+  if (got.endsWith('\n')) {
+    got = got.substring(0, got.length - 1);
+  }
+  if (got != want) {
+    print('FAIL: want [$want] got [$got]');
+    throw Exception('assertion failed');
+  }
+}
+
+void __vybeMain() {
+  var list = [1, 2, 3, 4, 5, 6];
+  list.sort((a, b) {
+    var ae = a.isEven ? 0 : 1;
+    var be = b.isEven ? 0 : 1;
+    if (ae != be) return ae.compareTo(be);
+    return a.compareTo(b);
+  });
+  __p(list.join(','));
+}
+
+void main() {
+  __vybeMain();
+  __check('2,4,6,1,3,5');
+}

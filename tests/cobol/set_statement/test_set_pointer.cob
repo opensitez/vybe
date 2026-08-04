@@ -1,0 +1,27 @@
+*> vybe-test: cobol/set_statement/test_set_pointer
+*> origin: languages/cobol/tests/cobol/test_set_statement.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-ITEM PIC X(10).
+01 WS-PTR POINTER.
+01 WS-FLAG PIC X VALUE 'N'.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    SET WS-PTR TO ADDRESS OF WS-ITEM.
+    MOVE 'Y' TO WS-FLAG.
+    SET WS-PTR TO NULL.
+    IF WS-PTR = NULL
+        DISPLAY WS-FLAG
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-FLAG DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "Y"
+        DISPLAY "FAIL: want [Y] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

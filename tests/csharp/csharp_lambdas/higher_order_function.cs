@@ -1,14 +1,27 @@
 // vybe-test: csharp/csharp_lambdas/higher_order_function
 // origin: languages/csharp/tests/csharp/test_csharp_lambdas.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 Func<int, int> square = x => x * x;
 Func<int, int> negate = x => -x;
-__Check((square(5)).ToString(), "25");
-__Check((negate(5)).ToString(), "-5");
+__P((square(5)).ToString());
+__P((negate(5)).ToString());
+__Check("25\n-5");

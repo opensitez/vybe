@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_stackalloc_span/stackalloc_span_reverse_in_place_changes_order
 // origin: languages/csharp/tests/csharp/test_csharp_stackalloc_span.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-System.Span<int> span=stackalloc int[3]{1,2,3}; span.Reverse(); __Check((span[0]).ToString(), "3"); __Check((span[2]).ToString(), "1");
+System.Span<int> span=stackalloc int[3]{1,2,3}; span.Reverse(); __P((span[0]).ToString()); __P((span[2]).ToString());
+__Check("3\n1");

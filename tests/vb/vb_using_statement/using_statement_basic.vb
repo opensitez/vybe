@@ -9,11 +9,33 @@
 ' A test's verdict is its EXIT CODE. __Check prints its diagnostic BEFORE
 ' throwing: an uncaught exception surfaces as `RuntimeError: [object]`, which
 ' says nothing at all.
+'
+' Output is COLLECTED, not paired. The emitter rewrites every
+' `Console.WriteLine(x)` into `__P(CStr(x))` and compares the whole output once
+' at the end of `Sub Main`. Pairing the i-th print with the i-th expected line
+' cannot assert anything about a loop, and loops alone were 402 of VB's 6,671
+' cases.
+'
+' Rendering happens at the CALL SITE via `CStr`, where the expression still has
+' its static type — the same reason the C# harness renders with `.ToString()`
+' rather than inside the helper.
 
 Module VybeCheck
-    Sub __Check(got As String, want As String)
-        If got <> want Then
-            Console.WriteLine("FAIL: want [" & want & "] got [" & got & "]")
+    Public __buf As String = ""
+
+    Sub __P(s As String)
+        __buf = __buf & s & vbLf
+    End Sub
+
+    Sub __Pr(s As String)
+        __buf = __buf & s
+    End Sub
+
+    ' The final WriteLine contributes a trailing newline that the expected line
+    ' vector never carried, so BOTH forms are accepted.
+    Sub __Check(want As String)
+        If __buf <> want AndAlso __buf <> want & vbLf Then
+            Console.WriteLine("FAIL: want [" & want & "] got [" & __buf & "]")
             Throw New Exception("assertion failed")
         End If
     End Sub
@@ -23,11 +45,11 @@ Class FakeFile
     Implements IDisposable
     
     Public Sub Write(text As String)
-        __Check(CStr("Writing: " & text), "Writing: Hello")
+        __P(CStr("Writing: " & text))
     End Sub
     
     Public Sub Dispose() Implements IDisposable.Dispose
-        __Check(CStr("FakeFile Disposed"), "FakeFile Disposed")
+        __P(CStr("FakeFile Disposed"))
     End Sub
 End Class
 
@@ -36,6 +58,9 @@ Module M
         Using f As New FakeFile()
             f.Write("Hello")
         End Using
-        __Check(CStr("Done"), "Done")
+        __P(CStr("Done"))
+        __Check("Writing: Hello
+FakeFile Disposed
+Done")
     End Sub
 End Module

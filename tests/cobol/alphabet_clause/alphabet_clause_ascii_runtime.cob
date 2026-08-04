@@ -1,0 +1,20 @@
+*> vybe-test: cobol/alphabet_clause/alphabet_clause_ascii_runtime
+*> origin: languages/cobol/tests/cobol/test_alphabet_clause.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALPHA14.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    ALPHABET ALPHA-ASCII IS ASCII.
+PROCEDURE DIVISION.
+    DISPLAY "ASCII".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ASCII" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ASCII"
+        DISPLAY "FAIL: want [ASCII] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

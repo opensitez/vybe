@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_delegate_variance/action_object_to_string_contravariant_param_invokes
 // origin: languages/csharp/tests/csharp/test_csharp_delegate_variance.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-System.Action<object> logObject=v=>__Check((v).ToString(), "typed"); System.Action<string> logString=logObject; logString("typed");
+System.Action<object> logObject=v=>__P((v).ToString()); System.Action<string> logString=logObject; logString("typed");
+__Check("typed");

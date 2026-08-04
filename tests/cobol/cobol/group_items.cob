@@ -1,0 +1,17 @@
+*> vybe-test: cobol/cobol/group_items
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. GROUPS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-PERSON.
+   05 WS-FIRST-NAME PIC X(15) VALUE "John".
+   05 WS-LAST-NAME  PIC X(15) VALUE "Doe".
+   05 WS-AGE        PIC 9(3)  VALUE 25.
+PROCEDURE DIVISION.
+    DISPLAY WS-FIRST-NAME.
+    DISPLAY WS-LAST-NAME.
+    DISPLAY WS-AGE.
+    STOP RUN.
+

@@ -31,8 +31,40 @@ def __line(*args):
     return out
 
 
+# Output is COLLECTED, not paired. The emitter rewrites every `print(a, b)`
+# into `__p(__line(a, b))`, appending here, and compares the whole buffer once
+# at the end of the file. Pairing the i-th print with the i-th expected line
+# cannot assert anything about a loop — 936 of Python's cases.
+#
+# `__p`/`__pr` take an ALREADY-JOINED string, not `*args` plus keyword-only
+# terminator parameters. Those are broken under Vybe (measured: with a
+# keyword-only sep/end after *args, the call appends nothing at all), while the
+# plain `__line(*args)` above works. So the newline decision is made by WHICH
+# helper the emitter calls.
+#
+# A comment in the FIRST position of an indented block used to be a parse error
+# under Vybe — `def f():` followed by a comment line. Fixed in
+# `languages/python/src/grammar.pest`: the preprocessor emits a comment-only
+# line without an INDENT marker but still emits its NEWLINE, so `block` has to
+# accept `":" NEWLINE NEWLINE* … INDENT`. Mid-block comments always worked,
+# which is why this hid for so long.
+__buf = ""
+
+
+def __p(s):
+    global __buf
+    __buf += s + "\n"
+
+
+def __pr(s):
+    global __buf
+    __buf += s
+
+
 def __check(got, want):
-    if got != want:
+    # The final print contributes a trailing newline that the expected line
+    # vector never carried, so both forms are accepted.
+    if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
@@ -40,9 +72,10 @@ from datetime import datetime, timezone, timedelta
 
 utc = timezone.utc
 dt_utc = datetime(2024, 6, 15, 12, 0, tzinfo=utc)
-__check(__line(dt_utc.isoformat()), "2024-06-15T12:00:00+00:00")
+__p(__line(dt_utc.isoformat()))
 
 ny_tz = timezone(timedelta(hours=-5))
 dt_ny = dt_utc.astimezone(ny_tz)
-__check(__line(dt_ny.hour), "7")
-__check(__line(dt_ny.utcoffset()), "-1 day, 19:00:00")
+__p(__line(dt_ny.hour))
+__p(__line(dt_ny.utcoffset()))
+__check(__buf, "2024-06-15T12:00:00+00:00\n7\n-1 day, 19:00:00")

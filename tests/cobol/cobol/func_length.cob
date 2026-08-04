@@ -1,0 +1,14 @@
+*> vybe-test: cobol/cobol/func_length
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FLEN.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TEXT PIC X(20) VALUE "Hello".
+01 WS-LEN  PIC 9(5)  VALUE 0.
+PROCEDURE DIVISION.
+    MOVE FUNCTION LENGTH(WS-TEXT) TO WS-LEN.
+    DISPLAY WS-LEN.
+    STOP RUN.
+

@@ -1,0 +1,15 @@
+! vybe-test: fortran/minmaxloc_val_extended/minval_dim1_4x2_matrix
+! origin: languages/fortran/tests/fortran/test_minmaxloc_val_extended.rs
+program t
+integer :: m(4,2) = reshape([10,20, 30,40, 50,60, 70,80], [4,2])
+integer :: col(2)
+col = minval(m, dim=1)
+if ((col(1)) /= 10) then
+    print *, "FAIL: want [10] got [", col(1), "]"
+    stop 1
+end if
+if ((col(2)) /= 20) then
+    print *, "FAIL: want [20] got [", col(2), "]"
+    stop 1
+end if
+end program t

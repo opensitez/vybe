@@ -1,0 +1,16 @@
+*> vybe-test: cobol/currency_sign/currency_sign_in_move_compiles
+*> origin: languages/cobol/tests/cobol/test_currency_sign.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CUR3.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CURRENCY SIGN IS "$".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC PIC 9(3)V99 VALUE 123.45.
+01 DST PIC $ZZ9.99.
+PROCEDURE DIVISION.
+    MOVE SRC TO DST.
+    STOP RUN.
+

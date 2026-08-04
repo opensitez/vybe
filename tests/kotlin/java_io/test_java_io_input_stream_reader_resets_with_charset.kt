@@ -1,9 +1,26 @@
 // vybe-test: kotlin/java_io/test_java_io_input_stream_reader_resets_with_charset
 // origin: languages/kotlin/tests/kotlin/test_java_io.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
@@ -11,8 +28,10 @@ fun __check(got: String, want: String) {
 fun main() {
             val bytes = java.io.ByteArrayInputStream("hi".toByteArray("UTF-8"))
             val reader = java.io.InputStreamReader(bytes, java.nio.charset.StandardCharsets.UTF_8)
-            __check((reader.ready()).toString(), "true")
-            __check((reader.read()).toString(), "104")
-            __check((reader.read()).toString(), "105")
-            __check((reader.read()).toString(), "-1")
-        }
+            __p((reader.ready()).toString())
+            __p((reader.read()).toString())
+            __p((reader.read()).toString())
+            __p((reader.read()).toString())
+        
+__check("true\n104\n105\n-1")
+}

@@ -1,0 +1,39 @@
+*> vybe-test: cobol/string_delimited_forms/unstring_basic_comma_delimiter
+*> origin: languages/cobol/tests/cobol/test_string_delimited_forms.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC PIC X(15) VALUE "A,B,C".
+01 F1 PIC X(5) VALUE SPACES.
+01 F2 PIC X(5) VALUE SPACES.
+01 F3 PIC X(5) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    UNSTRING SRC DELIMITED BY "," INTO F1 F2 F3.
+    DISPLAY F1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING F1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "A    "
+        DISPLAY "FAIL: want [A    ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY F2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING F2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "B    "
+        DISPLAY "FAIL: want [B    ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY F3.
+    MOVE SPACES TO WS-VYBE-L
+    STRING F3 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "C    "
+        DISPLAY "FAIL: want [C    ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

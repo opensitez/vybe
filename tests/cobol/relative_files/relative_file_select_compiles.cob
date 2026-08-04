@@ -1,0 +1,20 @@
+*> vybe-test: cobol/relative_files/relative_file_select_compiles
+*> origin: languages/cobol/tests/cobol/test_relative_files.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT RF ASSIGN TO "r.dat"
+        ORGANIZATION IS RELATIVE
+        ACCESS MODE IS RANDOM
+        RELATIVE KEY IS RK.
+DATA DIVISION.
+FILE SECTION.
+FD RF.
+01 RR PIC X(20).
+WORKING-STORAGE SECTION.
+01 RK PIC 9(5).
+PROCEDURE DIVISION.
+    STOP RUN.
+

@@ -5,12 +5,24 @@ package main
 import "fmt"
 type status int
 const ( Ok status = iota; Err; Unknown )
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
 
-func main() { __check(fmt.Sprint(int(Ok)), "0")
-__check(fmt.Sprint(int(Unknown)), "2") }
+func main() { __p(fmt.Sprint(int(Ok)))
+__p(fmt.Sprint(int(Unknown))) 
+__check("0\n2")
+}

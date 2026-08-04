@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_sorted_collections/sorted_dictionary_indexer_reads_by_key
 // origin: languages/csharp/tests/csharp/test_csharp_sorted_collections.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-using System.Collections.Generic; var sd = new SortedDictionary<int, string>(); sd[5] = "five"; __Check((sd[5]).ToString(), "five");
+using System.Collections.Generic; var sd = new SortedDictionary<int, string>(); sd[5] = "five"; __P((sd[5]).ToString());
+__Check("five");

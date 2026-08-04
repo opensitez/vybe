@@ -1,9 +1,26 @@
 // vybe-test: kotlin/kotlin_regex_advanced/test_regex_find_all_values
 // origin: languages/kotlin/tests/kotlin/test_kotlin_regex_advanced.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
@@ -11,6 +28,8 @@ fun __check(got: String, want: String) {
 fun main() {
             val regex = Regex("\\d+")
             val found = regex.findAll("a1 b22 c333")
-            __check((found.map { it.value }.joinToString(",")).toString(), "1,22,333")
-            __check((found.count()).toString(), "3")
-        }
+            __p((found.map { it.value }.joinToString(",")).toString())
+            __p((found.count()).toString())
+        
+__check("1,22,333\n3")
+}

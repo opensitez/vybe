@@ -1,0 +1,24 @@
+*> vybe-test: cobol/paragraph_section_flow/paragraph_sets_ws_and_returns_to_main
+*> origin: languages/cobol/tests/cobol/test_paragraph_section_flow.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 RESULT PIC 9(5) VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE 10 TO RESULT.
+    PERFORM SQUARE-IT.
+    DISPLAY RESULT.
+    MOVE SPACES TO WS-VYBE-L
+    STRING RESULT DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "00100"
+        DISPLAY "FAIL: want [00100] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+SQUARE-IT.
+    MULTIPLY RESULT BY RESULT.
+    STOP RUN.
+

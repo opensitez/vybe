@@ -1,0 +1,15 @@
+*> vybe-test: cobol/new_features/invoke_oo_program
+*> origin: languages/cobol/tests/cobol/test_new_features.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. OOPROG.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OBJ    PIC X(20).
+01 WS-RESULT PIC X(50).
+01 WS-ARG    PIC X(20) VALUE "Test Data".
+PROCEDURE DIVISION.
+    INVOKE WS-OBJ PROCESS USING WS-ARG RETURNING WS-RESULT.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+

@@ -1,0 +1,22 @@
+*> vybe-test: cobol/move_group_redefines/move_group_sets_filler_areas
+*> origin: languages/cobol/tests/cobol/test_move_group_redefines.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 PATTERN PIC X(6) VALUE "XYZABC".
+01 OVERLAY REDEFINES PATTERN.
+   05 FILLER PIC X(3).
+   05 SECOND  PIC X(3).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY SECOND.
+    MOVE SPACES TO WS-VYBE-L
+    STRING SECOND DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ABC"
+        DISPLAY "FAIL: want [ABC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

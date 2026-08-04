@@ -1,0 +1,41 @@
+*> vybe-test: cobol/category_screen_advanced/test_scr_multiple_field_line_plus
+*> origin: languages/cobol/tests/cobol/test_category_screen_advanced.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 WS-VYBE-I PIC 9(4) VALUE 0. 01 W1 PIC X VALUE 'A'. 01 W2 PIC X VALUE 'B'. SCREEN SECTION. 01 S1. 05 LINE 1 COL 1 PIC X TO W1. 05 LINE PLUS 1 COL 1 PIC X TO W2 REQUIRED. PROCEDURE DIVISION. DISPLAY S1.
+    ADD 1 TO WS-VYBE-I
+    MOVE SPACES TO WS-VYBE-L
+    STRING S1 DELIMITED SIZE INTO WS-VYBE-L
+    EVALUATE WS-VYBE-I
+        WHEN 1
+            IF WS-VYBE-L NOT = "OK"
+                DISPLAY "FAIL at 1 want [OK] got [" WS-VYBE-L "]"
+                MOVE 1 TO RETURN-CODE
+                RAISE EXCEPTION EC-PROGRAM
+            END-IF
+        WHEN OTHER
+            DISPLAY "FAIL: more than 1 line(s)"
+            MOVE 1 TO RETURN-CODE
+            RAISE EXCEPTION EC-PROGRAM
+    END-EVALUATE. DISPLAY 'OK'.
+    ADD 1 TO WS-VYBE-I
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'OK' DELIMITED SIZE INTO WS-VYBE-L
+    EVALUATE WS-VYBE-I
+        WHEN 1
+            IF WS-VYBE-L NOT = "OK"
+                DISPLAY "FAIL at 1 want [OK] got [" WS-VYBE-L "]"
+                MOVE 1 TO RETURN-CODE
+                RAISE EXCEPTION EC-PROGRAM
+            END-IF
+        WHEN OTHER
+            DISPLAY "FAIL: more than 1 line(s)"
+            MOVE 1 TO RETURN-CODE
+            RAISE EXCEPTION EC-PROGRAM
+    END-EVALUATE. STOP RUN.
+    IF WS-VYBE-I NOT = 1
+        DISPLAY "FAIL: " WS-VYBE-I " line(s), wanted 1"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

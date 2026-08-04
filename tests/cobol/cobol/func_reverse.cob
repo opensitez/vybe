@@ -1,0 +1,14 @@
+*> vybe-test: cobol/cobol/func_reverse
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FREV.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TEXT PIC X(10) VALUE "Hello".
+01 WS-OUT  PIC X(10).
+PROCEDURE DIVISION.
+    MOVE FUNCTION REVERSE(WS-TEXT) TO WS-OUT.
+    DISPLAY WS-OUT.
+    STOP RUN.
+

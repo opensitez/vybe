@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_hashset_set_algebra/intersect_with_identical_set_preserves_all
 // origin: languages/csharp/tests/csharp/test_csharp_hashset_set_algebra.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-using System.Collections.Generic; var a = new HashSet<int> { 4, 5 }; a.IntersectWith(new[] { 4, 5 }); __Check((a.Count).ToString(), "2");
+using System.Collections.Generic; var a = new HashSet<int> { 4, 5 }; a.IntersectWith(new[] { 4, 5 }); __P((a.Count).ToString());
+__Check("2");

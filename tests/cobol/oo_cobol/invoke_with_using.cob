@@ -1,0 +1,15 @@
+*> vybe-test: cobol/oo_cobol/invoke_with_using
+*> origin: languages/cobol/tests/cobol/test_oo_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TESTINVOKE2.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OBJ PIC X(20).
+01 WS-ARG PIC X(20) VALUE "World".
+01 WS-RESULT PIC X(50).
+PROCEDURE DIVISION.
+    INVOKE WS-OBJ SAY-HELLO USING WS-ARG RETURNING WS-RESULT.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+

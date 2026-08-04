@@ -1,0 +1,14 @@
+*> vybe-test: cobol/cobol2023_classes/invoke_method_with_returning
+*> origin: languages/cobol/tests/cobol/test_cobol2023_classes.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEST-INVOKE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OBJ USAGE POINTER.
+01 WS-RESULT PIC 9(5).
+PROCEDURE DIVISION.
+    INVOKE WS-OBJ GET-VALUE RETURNING WS-RESULT.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+

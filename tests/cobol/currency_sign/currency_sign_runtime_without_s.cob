@@ -1,0 +1,25 @@
+*> vybe-test: cobol/currency_sign/currency_sign_runtime_without_sign_output
+*> origin: languages/cobol/tests/cobol/test_currency_sign.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CUR17.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CURRENCY SIGN IS "#".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 AMT PIC #9.99 VALUE 0.
+PROCEDURE DIVISION.
+    IF AMT = 0
+        DISPLAY "ZERO"
+    END-IF
+    STOP RUN.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ZERO" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ZERO"
+        DISPLAY "FAIL: want [ZERO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

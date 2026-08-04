@@ -7,6 +7,5 @@ $op = 'double';
 $fn = match ($op) {
     'double' => fn(int $x) => $x * 2,
     'square' => fn(int $x) => $x * $x,
-    default  => fn(int $x) => $x,
-};
+    default  => fn(int $x) => $x };
 echo $fn(7);

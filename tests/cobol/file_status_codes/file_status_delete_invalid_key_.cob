@@ -1,0 +1,21 @@
+*> vybe-test: cobol/file_status_codes/file_status_delete_invalid_key_compiles
+*> origin: languages/cobol/tests/cobol/test_file_status_codes.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F ASSIGN TO "i.dat" ORGANIZATION IS INDEXED RECORD KEY IS K FILE STATUS IS FS.
+DATA DIVISION.
+FILE SECTION.
+FD F.
+01 REC.
+   05 K PIC 9(5).
+WORKING-STORAGE SECTION.
+01 FS PIC XX.
+PROCEDURE DIVISION.
+    OPEN I-O F.
+    DELETE F INVALID KEY DISPLAY FS END-DELETE.
+    CLOSE F.
+    STOP RUN.
+

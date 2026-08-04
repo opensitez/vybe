@@ -6,6 +6,13 @@
   (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
   (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
   (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (func $vybe_check_i32 (param i32) (param i32)
+    local.get 0
+    local.get 1
+    i32.ne
+    if
+      unreachable
+    end)
   (type $Base (struct (field (mut i32))))
 (type $Sub (struct_subtype (field (mut i32)) (field (mut i32)) $Base))
 (func (export "_start") (local $s (ref null $Base))
@@ -20,6 +27,6 @@
   
   local.get $s
   struct.get $Base 0
-  call $log
+  i32.const 42 call $vybe_check_i32
 )
 )

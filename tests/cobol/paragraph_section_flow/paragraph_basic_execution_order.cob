@@ -1,0 +1,31 @@
+*> vybe-test: cobol/paragraph_section_flow/paragraph_basic_execution_order
+*> origin: languages/cobol/tests/cobol/test_paragraph_section_flow.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    PERFORM P1.
+    PERFORM P2.
+    STOP RUN.
+P1.
+    DISPLAY "FIRST".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "FIRST" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "FIRST"
+        DISPLAY "FAIL: want [FIRST] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+P2.
+    DISPLAY "SECOND".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "SECOND" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "SECOND"
+        DISPLAY "FAIL: want [SECOND] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

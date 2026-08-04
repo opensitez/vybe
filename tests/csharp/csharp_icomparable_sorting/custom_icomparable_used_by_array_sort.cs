@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_icomparable_sorting/custom_icomparable_used_by_array_sort
 // origin: languages/csharp/tests/csharp/test_csharp_icomparable_sorting.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -16,5 +28,6 @@ var scores = new[]{
     new Score{Value=5}, new Score{Value=1}, new Score{Value=3}
 };
 System.Array.Sort(scores);
-__Check((scores[0].Value).ToString(), "1");
-__Check((scores[2].Value).ToString(), "5");
+__P((scores[0].Value).ToString());
+__P((scores[2].Value).ToString());
+__Check("1\n5");

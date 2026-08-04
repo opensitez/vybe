@@ -1,0 +1,19 @@
+*> vybe-test: cobol/new_features/file_operations
+*> origin: languages/cobol/tests/cobol/test_new_features.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FILEOPS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-RECORD PIC X(80).
+PROCEDURE DIVISION.
+    OPEN OUTPUT WS-FILE.
+    MOVE "Hello World" TO WS-RECORD.
+    WRITE WS-RECORD.
+    CLOSE WS-FILE.
+    OPEN INPUT WS-FILE.
+    READ WS-FILE INTO WS-RECORD.
+    DISPLAY WS-RECORD.
+    CLOSE WS-FILE.
+    STOP RUN.
+

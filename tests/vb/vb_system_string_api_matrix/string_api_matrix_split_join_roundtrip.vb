@@ -9,11 +9,33 @@
 ' A test's verdict is its EXIT CODE. __Check prints its diagnostic BEFORE
 ' throwing: an uncaught exception surfaces as `RuntimeError: [object]`, which
 ' says nothing at all.
+'
+' Output is COLLECTED, not paired. The emitter rewrites every
+' `Console.WriteLine(x)` into `__P(CStr(x))` and compares the whole output once
+' at the end of `Sub Main`. Pairing the i-th print with the i-th expected line
+' cannot assert anything about a loop, and loops alone were 402 of VB's 6,671
+' cases.
+'
+' Rendering happens at the CALL SITE via `CStr`, where the expression still has
+' its static type — the same reason the C# harness renders with `.ToString()`
+' rather than inside the helper.
 
 Module VybeCheck
-    Sub __Check(got As String, want As String)
-        If got <> want Then
-            Console.WriteLine("FAIL: want [" & want & "] got [" & got & "]")
+    Public __buf As String = ""
+
+    Sub __P(s As String)
+        __buf = __buf & s & vbLf
+    End Sub
+
+    Sub __Pr(s As String)
+        __buf = __buf & s
+    End Sub
+
+    ' The final WriteLine contributes a trailing newline that the expected line
+    ' vector never carried, so BOTH forms are accepted.
+    Sub __Check(want As String)
+        If __buf <> want AndAlso __buf <> want & vbLf Then
+            Console.WriteLine("FAIL: want [" & want & "] got [" & __buf & "]")
             Throw New Exception("assertion failed")
         End If
     End Sub
@@ -27,9 +49,13 @@ Module M
         Dim pieces As String() = text.Split(","c, ";"c)
 
         Dim joined As String = String.Join("|", pieces)
-        __Check(CStr(pieces.Length), "4")
-        __Check(CStr(joined), "a|b|c|d")
-        __Check(CStr(pieces(2)), "c")
-        __Check(CStr(pieces(3)), "d")
+        __P(CStr(pieces.Length))
+        __P(CStr(joined))
+        __P(CStr(pieces(2)))
+        __P(CStr(pieces(3)))
+        __Check("4
+a|b|c|d
+c
+d")
     End Sub
 End Module

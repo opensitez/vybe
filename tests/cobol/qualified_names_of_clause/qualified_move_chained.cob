@@ -1,0 +1,26 @@
+*> vybe-test: cobol/qualified_names_of_clause/qualified_move_chained
+*> origin: languages/cobol/tests/cobol/test_qualified_names_of_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 A.
+   05 VAL PIC 9(3) VALUE 100.
+01 B.
+   05 VAL PIC 9(3) VALUE 0.
+01 C.
+   05 VAL PIC 9(3) VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE VAL OF A TO VAL OF B.
+    MOVE VAL OF B TO VAL OF C.
+    DISPLAY VAL OF C.
+    MOVE SPACES TO WS-VYBE-L
+    STRING VAL DELIMITED SIZE OF DELIMITED SIZE C DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "100"
+        DISPLAY "FAIL: want [100] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

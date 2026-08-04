@@ -1,0 +1,24 @@
+*> vybe-test: cobol/move_semantics/test_move_group_to_elementary
+*> origin: languages/cobol/tests/cobol/test_move_semantics.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-GROUP.
+   05 WS-A PIC X(3) VALUE "ABC".
+   05 WS-B PIC X(3) VALUE "DEF".
+01 WS-DST PIC X(6) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    MOVE WS-GROUP TO WS-DST.
+    DISPLAY WS-DST.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-DST DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ABCDEF"
+        DISPLAY "FAIL: want [ABCDEF] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -8,6 +8,25 @@ b int }
 func work() (p pair) { defer func() { p.b = 3 }()
 p.a = 1
 return }
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
+		panic("assertion failed")
+	}
+}
+
 func main() { r := work()
-fmt.Println(r.a)
-fmt.Println(r.b) }
+__p(fmt.Sprint(r.a))
+__p(fmt.Sprint(r.b)) 
+__check("1\n3")
+}

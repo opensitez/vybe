@@ -1,12 +1,25 @@
 // vybe-test: csharp/csharp_using_declarations/using_var_expression_bodied_dispose_prints_name
 // origin: languages/csharp/tests/csharp/test_csharp_using_declarations.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-class R:System.IDisposable{string n;public R(string n){this.n=n;} public void Dispose()=>__Check((n).ToString(), "ok");}
-using var x=new R("expr"); __Check(("ok").ToString(), "expr");
+class R:System.IDisposable{string n;public R(string n){this.n=n;} public void Dispose()=>__P((n).ToString());}
+using var x=new R("expr"); __P(("ok").ToString());
+__Check("ok\nexpr");

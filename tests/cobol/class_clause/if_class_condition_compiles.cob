@@ -1,0 +1,15 @@
+*> vybe-test: cobol/class_clause/if_class_condition_compiles
+*> origin: languages/cobol/tests/cobol/test_class_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CLS2.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CLASS VOWEL-CLASS IS "A" "E" "I" "O" "U".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 CH PIC X VALUE "A".
+PROCEDURE DIVISION.
+    IF CH IS VOWEL-CLASS DISPLAY "V" END-IF.
+    STOP RUN.
+

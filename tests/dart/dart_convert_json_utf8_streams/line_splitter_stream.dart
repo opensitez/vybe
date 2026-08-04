@@ -1,0 +1,34 @@
+// vybe-test: dart/dart_convert_json_utf8_streams/line_splitter_stream
+// origin: languages/dart/tests/dart/test_dart_convert_json_utf8_streams.rs
+
+final StringBuffer __vybeOut = StringBuffer();
+
+void __p(Object? o) {
+  __vybeOut.writeln(o);
+}
+
+void __check(String want) {
+  var got = __vybeOut.toString();
+  // `writeln` on the final print contributes a trailing newline that the
+  // expected line vector never carried.
+  if (got.endsWith('\n')) {
+    got = got.substring(0, got.length - 1);
+  }
+  if (got != want) {
+    print('FAIL: want [$want] got [$got]');
+    throw Exception('assertion failed');
+  }
+}
+
+import 'dart:convert';
+void __vybeMain() async {
+  final stream = Stream.fromIterable(['line1\nli', 'ne2\r\nline3']);
+  final lines = await stream.transform(const LineSplitter()).toList();
+  __p(lines.length);
+  __p(lines[1]);
+}
+
+Future<void> main() async {
+  await __vybeMain();
+  __check('3\nline2');
+}

@@ -31,8 +31,40 @@ def __line(*args):
     return out
 
 
+# Output is COLLECTED, not paired. The emitter rewrites every `print(a, b)`
+# into `__p(__line(a, b))`, appending here, and compares the whole buffer once
+# at the end of the file. Pairing the i-th print with the i-th expected line
+# cannot assert anything about a loop — 936 of Python's cases.
+#
+# `__p`/`__pr` take an ALREADY-JOINED string, not `*args` plus keyword-only
+# terminator parameters. Those are broken under Vybe (measured: with a
+# keyword-only sep/end after *args, the call appends nothing at all), while the
+# plain `__line(*args)` above works. So the newline decision is made by WHICH
+# helper the emitter calls.
+#
+# A comment in the FIRST position of an indented block used to be a parse error
+# under Vybe — `def f():` followed by a comment line. Fixed in
+# `languages/python/src/grammar.pest`: the preprocessor emits a comment-only
+# line without an INDENT marker but still emits its NEWLINE, so `block` has to
+# accept `":" NEWLINE NEWLINE* … INDENT`. Mid-block comments always worked,
+# which is why this hid for so long.
+__buf = ""
+
+
+def __p(s):
+    global __buf
+    __buf += s + "\n"
+
+
+def __pr(s):
+    global __buf
+    __buf += s
+
+
 def __check(got, want):
-    if got != want:
+    # The final print contributes a trailing newline that the expected line
+    # vector never carried, so both forms are accepted.
+    if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
@@ -43,7 +75,7 @@ class DataDesc:
         return "from_data_descriptor"
 
     def __set__(self, obj, value):
-        __check(__line(f"set called with {value}"), "set called with test")
+        __p(__line(f"set called with {value}"))
         obj.__dict__['_hidden'] = value
 
 class MyClass:
@@ -52,4 +84,5 @@ class MyClass:
 m = MyClass()
 m.attr = "test"
 m.__dict__['attr'] = "direct_dict"  # try to shadow
-__check(__line(m.attr), "from_data_descriptor")  # data descriptor still wins!
+__p(__line(m.attr))  # data descriptor still wins!
+__check(__buf, "set called with test\nfrom_data_descriptor")

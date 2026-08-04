@@ -1,0 +1,26 @@
+*> vybe-test: cobol/special_names_configuration/special_names_decimal_comma_runtime
+*> origin: languages/cobol/tests/cobol/test_special_names_configuration.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    DECIMAL-POINT IS COMMA.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 A PIC 9(4)V99 VALUE 12,34.
+01 B PIC 9(4)V99 VALUE 2,66.
+01 C PIC 9(4)V99.
+PROCEDURE DIVISION.
+    ADD A B GIVING C.
+    IF C > 0 DISPLAY "COMMA" END-IF
+    STOP RUN.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "COMMA" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "COMMA"
+        DISPLAY "FAIL: want [COMMA] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

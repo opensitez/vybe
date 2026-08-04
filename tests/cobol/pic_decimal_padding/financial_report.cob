@@ -1,0 +1,25 @@
+*> vybe-test: cobol/pic_decimal_padding/financial_report
+*> origin: languages/cobol/tests/cobol/test_pic_decimal_padding.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FINRPT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-PRICE    PIC 9(5)V99 COMP-3 VALUE 0.
+01 WS-QTY      PIC 9(3)    VALUE 0.
+01 WS-SUBTOTAL PIC 9(7)V99 COMP-3 VALUE 0.
+01 WS-TAX      PIC 9(7)V99 COMP-3 VALUE 0.
+01 WS-TOTAL    PIC 9(8)V99 COMP-3 VALUE 0.
+01 WS-I        PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    MOVE 0 TO WS-TOTAL.
+    MOVE 29.99 TO WS-PRICE.
+    MOVE 3 TO WS-QTY.
+    COMPUTE WS-SUBTOTAL = WS-PRICE * WS-QTY.
+    COMPUTE WS-TAX = WS-SUBTOTAL * 0.08.
+    COMPUTE WS-TOTAL = WS-SUBTOTAL + WS-TAX.
+    DISPLAY "Subtotal: " WS-SUBTOTAL.
+    DISPLAY "Tax:      " WS-TAX.
+    DISPLAY "Total:    " WS-TOTAL.
+    STOP RUN.
+

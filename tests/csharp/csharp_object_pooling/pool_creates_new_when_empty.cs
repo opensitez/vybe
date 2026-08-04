@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_object_pooling/pool_creates_new_when_empty
 // origin: languages/csharp/tests/csharp/test_csharp_object_pooling.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -16,4 +28,5 @@ class Pool<T> where T:new(){
 class Counter{public int V=0;}
 var pool=new Pool<Counter>();
 var c=pool.Get();
-__Check((c.V).ToString(), "0");
+__P((c.V).ToString());
+__Check("0");

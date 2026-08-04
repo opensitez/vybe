@@ -1,0 +1,13 @@
+// vybe-test: c/stdlib_misc/rand_can_be_called_twice_and_stay_in_range
+// origin: languages/c/tests/c/test_stdlib_misc.rs
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+int main() {
+const char *__w[] = {"1\n"};
+int __n = 1, __i = 0;
+int a = rand(); int b = rand(); { char __t[512]; snprintf(__t, sizeof(__t), "%d\n", a >= 0 && a <= RAND_MAX && b >= 0 && b <= RAND_MAX);
+  if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }
+return 0;
+}
+

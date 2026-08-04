@@ -1,0 +1,20 @@
+*> vybe-test: cobol/display_advanced/test_display_inline_function
+*> origin: languages/cobol/tests/cobol/test_display_advanced.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-STR PIC X(5) VALUE "hello".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    DISPLAY FUNCTION UPPER-CASE(WS-STR).
+    MOVE SPACES TO WS-VYBE-L
+    STRING FUNCTION DELIMITED SIZE UPPER-CASE(WS-STR) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HELLO"
+        DISPLAY "FAIL: want [HELLO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

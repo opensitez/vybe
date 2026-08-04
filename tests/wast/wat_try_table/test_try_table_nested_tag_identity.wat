@@ -6,6 +6,13 @@
   (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
   (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
   (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (func $vybe_check_i32 (param i32) (param i32)
+    local.get 0
+    local.get 1
+    i32.ne
+    if
+      unreachable
+    end)
   (tag $e1 (param i32))
 (tag $e2 (param i32))
 (func (export "_start")
@@ -16,5 +23,5 @@
         throw $e2)
       unreachable)
     i32.const 0)
-  call $log)
+  i32.const 42 call $vybe_check_i32)
 )

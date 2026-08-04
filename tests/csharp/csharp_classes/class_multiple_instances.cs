@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_classes/class_multiple_instances
 // origin: languages/csharp/tests/csharp/test_csharp_classes.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -14,4 +26,5 @@ class Box {
 }
 var a = new Box(10);
 var b = new Box(20);
-__Check((a.Value + b.Value).ToString(), "30");
+__P((a.Value + b.Value).ToString());
+__Check("30");

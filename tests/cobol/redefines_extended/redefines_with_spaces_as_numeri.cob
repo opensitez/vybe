@@ -1,0 +1,26 @@
+*> vybe-test: cobol/redefines_extended/redefines_with_spaces_as_numeric
+*> origin: languages/cobol/tests/cobol/test_redefines_extended.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-BUFFER PIC X(6) VALUE "ABC123".
+01 WS-NUMBER REDEFINES WS-BUFFER PIC 9(6).
+01 WS-FLAG PIC X VALUE 'N'.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    MOVE SPACES TO WS-NUMBER.
+    IF WS-NUMBER = 0
+        MOVE 'Y' TO WS-FLAG
+    END-IF.
+    DISPLAY WS-FLAG.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-FLAG DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "Y"
+        DISPLAY "FAIL: want [Y] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

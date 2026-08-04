@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_index_range_slice/array_range_open_end_from_middle_index
 // origin: languages/csharp/tests/csharp/test_csharp_index_range_slice.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-int[] data={5,10,15,20,25}; var slice=data[2..]; __Check((slice.Length).ToString(), "3"); __Check((slice[0]).ToString(), "15");
+int[] data={5,10,15,20,25}; var slice=data[2..]; __P((slice.Length).ToString()); __P((slice[0]).ToString());
+__Check("3\n15");

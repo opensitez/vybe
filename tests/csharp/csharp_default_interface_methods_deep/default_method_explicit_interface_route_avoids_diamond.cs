@@ -1,4 +1,24 @@
 // vybe-test: csharp/csharp_default_interface_methods_deep/default_method_explicit_interface_route_avoids_diamond
 // origin: languages/csharp/tests/csharp/test_csharp_default_interface_methods_deep.rs
 
-interface IA{void Show()=>Console.WriteLine("A");} interface IB{void Show()=>Console.WriteLine("B");} class Split:IA,IB{void IA.Show()=>Console.WriteLine("IA"); void IB.Show()=>Console.WriteLine("IB");} ((IA)new Split()).Show();
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+interface IA{void Show()=>__P(("A").ToString());} interface IB{void Show()=>__P(("B").ToString());} class Split:IA,IB{void IA.Show()=>__P(("IA").ToString()); void IB.Show()=>__P(("IB").ToString());} ((IA)new Split()).Show();
+__Check("IA");

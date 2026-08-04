@@ -1,0 +1,11 @@
+*> vybe-test: cobol/category_environment_division/test_env_parse_13
+*> origin: languages/cobol/tests/cobol/test_category_environment_division.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. ENVIRONMENT DIVISION. CONFIGURATION SECTION. SOURCE-COMPUTER. IBM-37. OBJECT-COMPUTER. IBM-370 MEMORY SIZE 1024 WORDS. PROCEDURE DIVISION. DISPLAY 'ENV13'.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'ENV13' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ENV13"
+        DISPLAY "FAIL: want [ENV13] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

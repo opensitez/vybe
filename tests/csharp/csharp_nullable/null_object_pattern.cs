@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_nullable/null_object_pattern
 // origin: languages/csharp/tests/csharp/test_csharp_nullable.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -13,7 +25,8 @@ class Box {
     public Box(int v) { Value = v; }
 }
 Box b = null;
-__Check((b == null).ToString(), "True");
+__P((b == null).ToString());
 b = new Box(42);
-__Check((b == null).ToString(), "False");
-__Check((b.Value).ToString(), "42");
+__P((b == null).ToString());
+__P((b.Value).ToString());
+__Check("True\nFalse\n42");

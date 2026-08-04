@@ -1,0 +1,19 @@
+*> vybe-test: cobol/category_data_division_sign_clause/test_sign_parse_group_mix
+*> origin: languages/cobol/tests/cobol/test_category_data_division_sign_clause.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 G. 05 A PIC S9(2) SIGN TRAILING VALUE -12. 05 B PIC S9(2) SIGN LEADING VALUE 23. PROCEDURE DIVISION. IF A IS NEGATIVE DISPLAY 'A' END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'A' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "A"
+        DISPLAY "FAIL: want [A] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. IF B IS POSITIVE DISPLAY 'B' END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'B' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "B"
+        DISPLAY "FAIL: want [B] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

@@ -1,0 +1,24 @@
+*> vybe-test: cobol/declaratives_use_sections/declaratives_use_sections_runtime
+*> origin: languages/cobol/tests/cobol/test_declaratives_use_sections.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 WS-FILE PIC X(1) VALUE "A".
+PROCEDURE DIVISION.
+DECLARATIVES.
+ERR-SEC SECTION.
+    USE AFTER STANDARD ERROR PROCEDURE ON WS-FILE.
+END DECLARATIVES.
+MAIN-SEC SECTION.
+    DISPLAY "RUN".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "RUN" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "RUN"
+        DISPLAY "FAIL: want [RUN] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

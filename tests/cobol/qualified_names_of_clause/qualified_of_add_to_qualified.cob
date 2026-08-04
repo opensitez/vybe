@@ -1,0 +1,23 @@
+*> vybe-test: cobol/qualified_names_of_clause/qualified_of_add_to_qualified
+*> origin: languages/cobol/tests/cobol/test_qualified_names_of_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 ACC-A.
+   05 TOTAL PIC 9(5) VALUE 100.
+01 ACC-B.
+   05 TOTAL PIC 9(5) VALUE 200.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    ADD TOTAL OF ACC-A TO TOTAL OF ACC-B.
+    DISPLAY TOTAL OF ACC-B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING TOTAL DELIMITED SIZE OF DELIMITED SIZE ACC-B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "00300"
+        DISPLAY "FAIL: want [00300] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

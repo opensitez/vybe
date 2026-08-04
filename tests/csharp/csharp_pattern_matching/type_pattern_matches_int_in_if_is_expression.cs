@@ -1,4 +1,24 @@
 // vybe-test: csharp/csharp_pattern_matching/type_pattern_matches_int_in_if_is_expression
 // origin: languages/csharp/tests/csharp/test_csharp_pattern_matching.rs
 
-object o = 5; if(o is int n) Console.WriteLine(n); else Console.WriteLine(0);
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+object o = 5; if(o is int n) __P((n).ToString()); else __P((0).ToString());
+__Check("5");

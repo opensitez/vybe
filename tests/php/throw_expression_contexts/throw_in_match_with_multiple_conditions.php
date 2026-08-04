@@ -26,8 +26,7 @@ try {
     echo match (true) {
         $n < 10 => 'low',
         $n < 20 => throw new RangeException('mid'),
-        default => 'high',
-    };
+        default => 'high' };
 } catch (RangeException $e) { echo $e->getMessage(); }
 
 __vybe_check(ob_get_clean(), "mid");

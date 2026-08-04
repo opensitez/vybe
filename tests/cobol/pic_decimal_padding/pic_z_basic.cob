@@ -1,0 +1,11 @@
+*> vybe-test: cobol/pic_decimal_padding/pic_z_basic
+*> origin: languages/cobol/tests/cobol/test_pic_decimal_padding.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-X PIC Z(5)9 VALUE 42.
+PROCEDURE DIVISION.
+    DISPLAY WS-X.
+    STOP RUN.
+

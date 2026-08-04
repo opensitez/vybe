@@ -24,8 +24,7 @@ ob_start();
 try {
     $outer = match ('go') {
         'go' => match (0) { 1 => 'hit', default => throw new RuntimeException('inner') },
-        default => 'skip',
-    };
+        default => 'skip' };
     echo $outer;
 } catch (RuntimeException $e) { echo $e->getMessage(); }
 

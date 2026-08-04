@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_sorted_collections/sorted_set_union_with_combines_sorted_uniques
 // origin: languages/csharp/tests/csharp/test_csharp_sorted_collections.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-using System.Collections.Generic; var a = new SortedSet<int> { 1, 3 }; a.UnionWith(new[] { 2, 3, 4 }); __Check((a.Count).ToString(), "4"); __Check((a.Min).ToString(), "1"); __Check((a.Max).ToString(), "4");
+using System.Collections.Generic; var a = new SortedSet<int> { 1, 3 }; a.UnionWith(new[] { 2, 3, 4 }); __P((a.Count).ToString()); __P((a.Min).ToString()); __P((a.Max).ToString());
+__Check("4\n1\n4");

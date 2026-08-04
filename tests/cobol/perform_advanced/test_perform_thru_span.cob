@@ -1,0 +1,40 @@
+*> vybe-test: cobol/perform_advanced/test_perform_thru_span
+*> origin: languages/cobol/tests/cobol/test_perform_advanced.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    PERFORM PARA1 THRU PARA3.
+    STOP RUN.
+PARA1.
+    DISPLAY "P1".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "P1" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "P1"
+        DISPLAY "FAIL: want [P1] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+PARA2.
+    DISPLAY "P2".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "P2" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "P2"
+        DISPLAY "FAIL: want [P2] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+PARA3.
+    DISPLAY "P3".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "P3" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "P3"
+        DISPLAY "FAIL: want [P3] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

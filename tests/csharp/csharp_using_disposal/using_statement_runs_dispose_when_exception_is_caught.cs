@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_using_disposal/using_statement_runs_dispose_when_exception_is_caught
 // origin: languages/csharp/tests/csharp/test_csharp_using_disposal.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-using System; class Resource : IDisposable { public void Dispose() { __Check(("disposed").ToString(), "body"); } } try { using (var resource = new Resource()) { __Check(("body").ToString(), "disposed"); throw new Exception("boom"); } } catch (Exception) { __Check(("caught").ToString(), "caught"); }
+using System; class Resource : IDisposable { public void Dispose() { __P(("disposed").ToString()); } } try { using (var resource = new Resource()) { __P(("body").ToString()); throw new Exception("boom"); } } catch (Exception) { __P(("caught").ToString()); }
+__Check("body\ndisposed\ncaught");

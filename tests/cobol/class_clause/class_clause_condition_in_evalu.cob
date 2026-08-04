@@ -1,0 +1,15 @@
+*> vybe-test: cobol/class_clause/class_clause_condition_in_evaluate_compiles
+*> origin: languages/cobol/tests/cobol/test_class_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CLS10.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CLASS FLAG-CLASS IS "Y" "N".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 CH PIC X VALUE "Y".
+PROCEDURE DIVISION.
+    EVALUATE TRUE WHEN CH IS FLAG-CLASS DISPLAY "F" WHEN OTHER DISPLAY "O" END-EVALUATE.
+    STOP RUN.
+

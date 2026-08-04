@@ -1,0 +1,32 @@
+! vybe-test: fortran/character_intrinsics_extended/if_scan_found_branch_alpha_only
+! origin: languages/fortran/tests/fortran/test_character_intrinsics_extended.rs
+program t
+integer :: vybe_check_i = 0
+character(len=5) :: vybe_check_w(1) = [ "alpha" ]
+character(len=10) :: s = 'no-digits'
+if (scan(s, '0123456789') == 0) then
+    vybe_check_i = vybe_check_i + 1
+  if (vybe_check_i > 1) then
+      print *, "FAIL: more than 1 line(s)"
+      stop 1
+  end if
+  if (trim('alpha') /= trim(vybe_check_w(vybe_check_i))) then
+      print *, "FAIL at ", vybe_check_i, " got [", 'alpha', "]"
+      stop 1
+  end if
+else
+    vybe_check_i = vybe_check_i + 1
+  if (vybe_check_i > 1) then
+      print *, "FAIL: more than 1 line(s)"
+      stop 1
+  end if
+  if (trim('mixed') /= trim(vybe_check_w(vybe_check_i))) then
+      print *, "FAIL at ", vybe_check_i, " got [", 'mixed', "]"
+      stop 1
+  end if
+end if
+if (vybe_check_i /= 1) then
+    print *, "FAIL: ", vybe_check_i, " line(s), wanted 1"
+    stop 1
+end if
+end program t

@@ -1,0 +1,22 @@
+*> vybe-test: cobol/binary_comp_types/binary_comp3_with_decimal
+*> origin: languages/cobol/tests/cobol/test_binary_comp_types.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 A PIC 9(5)V99 COMP-3 VALUE 123.45.
+01 B PIC 9(5)V99 COMP-3 VALUE 67.89.
+01 R PIC 9(6)V99 COMP-3 VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    ADD A B GIVING R.
+    DISPLAY R.
+    MOVE SPACES TO WS-VYBE-L
+    STRING R DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "191.34"
+        DISPLAY "FAIL: want [191.34] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

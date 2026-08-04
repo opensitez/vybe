@@ -1,0 +1,20 @@
+*> vybe-test: cobol/invalid_key_handling/relative_write_invalid_key_compiles
+*> origin: languages/cobol/tests/cobol/test_invalid_key_handling.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT RF ASSIGN TO "r.dat" ORGANIZATION IS RELATIVE RELATIVE KEY IS RK.
+DATA DIVISION.
+FILE SECTION.
+FD RF.
+01 RR PIC X(20).
+WORKING-STORAGE SECTION.
+01 RK PIC 9(5).
+PROCEDURE DIVISION.
+    OPEN OUTPUT RF.
+    WRITE RR INVALID KEY DISPLAY "MISS" END-WRITE.
+    CLOSE RF.
+    STOP RUN.
+

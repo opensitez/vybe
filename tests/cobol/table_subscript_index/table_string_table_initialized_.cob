@@ -1,0 +1,39 @@
+*> vybe-test: cobol/table_subscript_index/table_string_table_initialized_and_displayed
+*> origin: languages/cobol/tests/cobol/test_table_subscript_index.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WORDS.
+   05 WORD PIC X(5) OCCURS 3 TIMES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE "ONE  " TO WORD(1).
+    MOVE "TWO  " TO WORD(2).
+    MOVE "THREE" TO WORD(3).
+    DISPLAY WORD(1).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WORD(1) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ONE  "
+        DISPLAY "FAIL: want [ONE  ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WORD(2).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WORD(2) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "TWO  "
+        DISPLAY "FAIL: want [TWO  ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WORD(3).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WORD(3) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "THREE"
+        DISPLAY "FAIL: want [THREE] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

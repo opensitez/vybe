@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_delegate_variance/action_contravariant_stored_in_base_reference
 // origin: languages/csharp/tests/csharp/test_csharp_delegate_variance.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-System.Action<object> baseAct=v=>__Check((v).ToString(), "hold"); System.Action<string> derivedAct=baseAct; object holder=derivedAct; ((System.Action<string>)holder)("hold");
+System.Action<object> baseAct=v=>__P((v).ToString()); System.Action<string> derivedAct=baseAct; object holder=derivedAct; ((System.Action<string>)holder)("hold");
+__Check("hold");

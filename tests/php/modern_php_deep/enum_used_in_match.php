@@ -30,8 +30,7 @@ enum Suit: string {
 function color(Suit $s): string {
     return match($s) {
         Suit::Hearts, Suit::Diamonds => "red",
-        Suit::Clubs, Suit::Spades   => "black",
-    };
+        Suit::Clubs, Suit::Spades   => "black" };
 }
 echo color(Suit::Hearts);
 echo color(Suit::Spades);

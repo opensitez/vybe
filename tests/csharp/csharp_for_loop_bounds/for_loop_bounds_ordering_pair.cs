@@ -1,12 +1,25 @@
 // vybe-test: csharp/csharp_for_loop_bounds/for_loop_bounds_ordering_pair
 // origin: languages/csharp/tests/csharp/test_csharp_for_loop_bounds.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 // for_loop_bounds
-int seed = 45; int right = seed + 1; __Check((seed < right).ToString(), "True");
+int seed = 45; int right = seed + 1; __P((seed < right).ToString());
+__Check("True");

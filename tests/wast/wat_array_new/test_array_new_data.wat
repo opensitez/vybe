@@ -6,6 +6,13 @@
   (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
   (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
   (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (func $vybe_check_i32 (param i32) (param i32)
+    local.get 0
+    local.get 1
+    i32.ne
+    if
+      unreachable
+    end)
   (type $Arr (array (mut i8)))
 (data $d "data")
 (func (export "_start") (local $a (ref null $Arr))
@@ -17,6 +24,6 @@
   local.get $a
   i32.const 0
   array.get_u $Arr
-  call $log
+  i32.const 100 call $vybe_check_i32
 )
 )

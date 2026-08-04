@@ -1,0 +1,25 @@
+*> vybe-test: cobol/level88_transition/level88_numeric_values
+*> origin: languages/cobol/tests/cobol/test_level88_transition.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 CODE PIC 9 VALUE 3.
+    88 SUCCESS VALUE 0.
+    88 FAILURE VALUE 1 THRU 9.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    IF FAILURE
+        DISPLAY "ERROR"
+    ELSE
+        DISPLAY "OK"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ERROR" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ERROR"
+        DISPLAY "FAIL: want [ERROR] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

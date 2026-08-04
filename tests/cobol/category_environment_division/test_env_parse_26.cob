@@ -1,0 +1,11 @@
+*> vybe-test: cobol/category_environment_division/test_env_parse_26
+*> origin: languages/cobol/tests/cobol/test_category_environment_division.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. ENVIRONMENT DIVISION. CONFIGURATION SECTION. SOURCE-COMPUTER. IBM-370. OBJECT-COMPUTER. IBM-370 SEGMENT-LIMIT IS 12. PROCEDURE DIVISION. DISPLAY 'ENV26'.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'ENV26' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ENV26"
+        DISPLAY "FAIL: want [ENV26] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

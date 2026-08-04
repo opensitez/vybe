@@ -1,0 +1,19 @@
+*> vybe-test: cobol/category_data_division_external_clause/test_external_parse_9
+*> origin: languages/cobol/tests/cobol/test_category_data_division_external_clause.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 EX-REC. 05 A PIC X VALUE 'R'. 05 B PIC X VALUE 'S'. 01 EX-REDEF REDEFINES EX-REC PIC X(2) IS EXTERNAL. PROCEDURE DIVISION. DISPLAY EX-REC.
+    MOVE SPACES TO WS-VYBE-L
+    STRING EX-REC DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "RS"
+        DISPLAY "FAIL: want [RS] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. DISPLAY EX-REDEF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING EX-REDEF DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "RS"
+        DISPLAY "FAIL: want [RS] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

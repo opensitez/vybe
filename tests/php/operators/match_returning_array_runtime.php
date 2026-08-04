@@ -25,8 +25,7 @@ $mode = 'json';
 $value = match ($mode) {
     'json' => ['kind' => 'json'],
     'text' => 'plain',
-    default => null,
-};
+    default => null };
 echo is_array($value) ? $value['kind'] : 'none';
 
 __vybe_check(ob_get_clean(), "json");

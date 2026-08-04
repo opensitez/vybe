@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_with_expression_records/with_positional_plus_init
 // origin: languages/csharp/tests/csharp/test_csharp_with_expression_records.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-record User(string Name){public int Age{get;init;}} var v=(new User("Ada"){Age=20}) with{Age=21}; __Check((v.Age).ToString(), "21");
+record User(string Name){public int Age{get;init;}} var v=(new User("Ada"){Age=20}) with{Age=21}; __P((v.Age).ToString());
+__Check("21");

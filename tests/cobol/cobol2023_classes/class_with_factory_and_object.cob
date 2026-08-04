@@ -1,0 +1,19 @@
+*> vybe-test: cobol/cobol2023_classes/class_with_factory_and_object
+*> origin: languages/cobol/tests/cobol/test_cobol2023_classes.rs
+
+IDENTIFICATION DIVISION.
+CLASS-ID. SINGLETON.
+FACTORY.
+METHOD-ID. GET-INSTANCE.
+PROCEDURE DIVISION RETURNING WS-INSTANCE.
+    DISPLAY "Getting instance".
+END METHOD GET-INSTANCE.
+END FACTORY.
+OBJECT.
+METHOD-ID. DO-WORK.
+PROCEDURE DIVISION.
+    DISPLAY "Working".
+END METHOD DO-WORK.
+END OBJECT.
+END CLASS SINGLETON.
+

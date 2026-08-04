@@ -1,13 +1,53 @@
 ' vybe-test: vb/vb_async_configure_await_false/test_vb_async_configure_await_bypasses_sync_context
 ' origin: languages/vb/tests/vb/test_vb_async_configure_await_false.rs
 
+' Vybe test harness — Visual Basic.
+'
+' Real VB source alongside harness/go/check.go and harness/js/check.js, the way
+' test262's assert.js is JavaScript.
+'
+' A test's verdict is its EXIT CODE. __Check prints its diagnostic BEFORE
+' throwing: an uncaught exception surfaces as `RuntimeError: [object]`, which
+' says nothing at all.
+'
+' Output is COLLECTED, not paired. The emitter rewrites every
+' `Console.WriteLine(x)` into `__P(CStr(x))` and compares the whole output once
+' at the end of `Sub Main`. Pairing the i-th print with the i-th expected line
+' cannot assert anything about a loop, and loops alone were 402 of VB's 6,671
+' cases.
+'
+' Rendering happens at the CALL SITE via `CStr`, where the expression still has
+' its static type — the same reason the C# harness renders with `.ToString()`
+' rather than inside the helper.
+
+Module VybeCheck
+    Public __buf As String = ""
+
+    Sub __P(s As String)
+        __buf = __buf & s & vbLf
+    End Sub
+
+    Sub __Pr(s As String)
+        __buf = __buf & s
+    End Sub
+
+    ' The final WriteLine contributes a trailing newline that the expected line
+    ' vector never carried, so BOTH forms are accepted.
+    Sub __Check(want As String)
+        If __buf <> want AndAlso __buf <> want & vbLf Then
+            Console.WriteLine("FAIL: want [" & want & "] got [" & __buf & "]")
+            Throw New Exception("assertion failed")
+        End If
+    End Sub
+End Module
+
 Imports System.Threading
 Imports System.Threading.Tasks
 
 Class CustomSyncContext
     Inherits SynchronizationContext
     Public Overrides Sub Post(d As SendOrPostCallback, state As Object)
-        Console.WriteLine("SyncContext Post Triggered")
+        __P(CStr("SyncContext Post Triggered"))
         d(state)
     End Sub
 End Class
@@ -24,9 +64,10 @@ Module Program
             SynchronizationContext.SetSynchronizationContext(New CustomSyncContext())
             Dim t = BypassContextAsync()
             t.Wait()
-            Console.WriteLine("Bypass Async Finished")
+            __P(CStr("Bypass Async Finished"))
         Finally
             SynchronizationContext.SetSynchronizationContext(originalCtx)
         End Try
+        __Check("Bypass Async Finished")
     End Sub
 End Module

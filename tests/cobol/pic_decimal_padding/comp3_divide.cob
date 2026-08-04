@@ -1,0 +1,14 @@
+*> vybe-test: cobol/pic_decimal_padding/comp3_divide
+*> origin: languages/cobol/tests/cobol/test_pic_decimal_padding.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-AMT PIC 9(7)V99 COMP-3 VALUE 100.00.
+01 WS-PARTS PIC 9(3) COMP-3 VALUE 3.
+01 WS-EACH PIC 9(7)V99 COMP-3 VALUE 0.
+PROCEDURE DIVISION.
+    DIVIDE WS-AMT BY WS-PARTS GIVING WS-EACH.
+    DISPLAY WS-EACH.
+    STOP RUN.
+

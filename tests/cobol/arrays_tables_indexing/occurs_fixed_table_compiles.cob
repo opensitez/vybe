@@ -1,0 +1,29 @@
+*> vybe-test: cobol/arrays_tables_indexing/occurs_fixed_table_compiles
+*> origin: languages/cobol/tests/cobol/test_arrays_tables_indexing.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 TBL PIC 9(2) OCCURS 5 TIMES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE 10 TO TBL(1).
+    MOVE 20 TO TBL(2).
+    DISPLAY TBL(1).
+    MOVE SPACES TO WS-VYBE-L
+    STRING TBL(1) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "10"
+        DISPLAY "FAIL: want [10] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY TBL(2).
+    MOVE SPACES TO WS-VYBE-L
+    STRING TBL(2) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "20"
+        DISPLAY "FAIL: want [20] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

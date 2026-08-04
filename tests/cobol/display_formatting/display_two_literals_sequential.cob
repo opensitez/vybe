@@ -1,0 +1,26 @@
+*> vybe-test: cobol/display_formatting/display_two_literals_sequential
+*> origin: languages/cobol/tests/cobol/test_display_formatting.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY "LINE1".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "LINE1" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "LINE1"
+        DISPLAY "FAIL: want [LINE1] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY "LINE2".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "LINE2" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "LINE2"
+        DISPLAY "FAIL: want [LINE2] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

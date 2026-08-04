@@ -1,5 +1,25 @@
 // vybe-test: csharp/csharp_linq_skip_take_distinct/distinct_by_length_first_of_each_group
 // origin: languages/csharp/tests/csharp/test_csharp_linq_skip_take_distinct.rs
 
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
 var r=new[]{"a","bb","c","dd","eee"}.DistinctBy(s=>s.Length);
-foreach(var s in r) Console.WriteLine(s);
+foreach(var s in r) __P((s).ToString());
+__Check("a\nbb\neee");

@@ -31,8 +31,40 @@ def __line(*args):
     return out
 
 
+# Output is COLLECTED, not paired. The emitter rewrites every `print(a, b)`
+# into `__p(__line(a, b))`, appending here, and compares the whole buffer once
+# at the end of the file. Pairing the i-th print with the i-th expected line
+# cannot assert anything about a loop — 936 of Python's cases.
+#
+# `__p`/`__pr` take an ALREADY-JOINED string, not `*args` plus keyword-only
+# terminator parameters. Those are broken under Vybe (measured: with a
+# keyword-only sep/end after *args, the call appends nothing at all), while the
+# plain `__line(*args)` above works. So the newline decision is made by WHICH
+# helper the emitter calls.
+#
+# A comment in the FIRST position of an indented block used to be a parse error
+# under Vybe — `def f():` followed by a comment line. Fixed in
+# `languages/python/src/grammar.pest`: the preprocessor emits a comment-only
+# line without an INDENT marker but still emits its NEWLINE, so `block` has to
+# accept `":" NEWLINE NEWLINE* … INDENT`. Mid-block comments always worked,
+# which is why this hid for so long.
+__buf = ""
+
+
+def __p(s):
+    global __buf
+    __buf += s + "\n"
+
+
+def __pr(s):
+    global __buf
+    __buf += s
+
+
 def __check(got, want):
-    if got != want:
+    # The final print contributes a trailing newline that the expected line
+    # vector never carried, so both forms are accepted.
+    if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
@@ -41,6 +73,7 @@ import json
 data = {"c": 3, "a": 1, "b": 2}
 output = json.dumps(data, sort_keys=True, indent=2)
 lines = output.splitlines()
-__check(__line(lines[1].strip()), "\"a\": 1,")
-__check(__line(lines[2].strip()), "\"b\": 2,")
-__check(__line(lines[3].strip()), "\"c\": 3")
+__p(__line(lines[1].strip()))
+__p(__line(lines[2].strip()))
+__p(__line(lines[3].strip()))
+__check(__buf, "\"a\": 1,\n\"b\": 2,\n\"c\": 3")

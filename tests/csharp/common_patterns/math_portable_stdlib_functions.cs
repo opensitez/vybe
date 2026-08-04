@@ -1,22 +1,35 @@
 // vybe-test: csharp/common_patterns/math_portable_stdlib_functions
 // origin: languages/csharp/tests/csharp/test_common_patterns.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check((Math.Sin(0)).ToString(), "0");
-__Check((Math.Cos(0)).ToString(), "1");
-__Check((Math.Tan(0)).ToString(), "0");
-__Check((Math.Asin(0)).ToString(), "0");
-__Check((Math.Acos(1)).ToString(), "0");
-__Check((Math.Atan(0)).ToString(), "0");
-__Check((Math.Atan2(0, 1)).ToString(), "0");
-__Check((Math.Log(1)).ToString(), "0");
-__Check((Math.Log10(100)).ToString(), "2");
-__Check((Math.Exp(0)).ToString(), "1");
-__Check((Math.Sign(-5)).ToString(), "-1");
-__Check((Math.Clamp(15, 0, 10)).ToString(), "10");
+__P((Math.Sin(0)).ToString());
+__P((Math.Cos(0)).ToString());
+__P((Math.Tan(0)).ToString());
+__P((Math.Asin(0)).ToString());
+__P((Math.Acos(1)).ToString());
+__P((Math.Atan(0)).ToString());
+__P((Math.Atan2(0, 1)).ToString());
+__P((Math.Log(1)).ToString());
+__P((Math.Log10(100)).ToString());
+__P((Math.Exp(0)).ToString());
+__P((Math.Sign(-5)).ToString());
+__P((Math.Clamp(15, 0, 10)).ToString());
+__Check("0\n1\n0\n0\n0\n0\n0\n0\n2\n1\n-1\n10");

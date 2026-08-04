@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_attribute_usage_patterns/attribute_obsolete_on_class_instance_still_usable
 // origin: languages/csharp/tests/csharp/test_csharp_attribute_usage_patterns.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-using System; [Obsolete("old")] class S{public int N=1;} __Check((new S().N).ToString(), "1");
+using System; [Obsolete("old")] class S{public int N=1;} __P((new S().N).ToString());
+__Check("1");

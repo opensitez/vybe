@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_switch_expression_core/switch_expr_relational_and_arm_band
 // origin: languages/csharp/tests/csharp/test_csharp_switch_expression_core.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-var n=85; __Check((n switch{>=80 and <90=>"B",_=>"other"}).ToString(), "B");
+var n=85; __P((n switch{>=80 and <90=>"B",_=>"other"}).ToString());
+__Check("B");

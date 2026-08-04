@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_enum_metaprogramming/enum_is_defined_for_numeric_value
 // origin: languages/csharp/tests/csharp/test_csharp_enum_metaprogramming.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-enum Num{A=5,B=6} __Check((System.Enum.IsDefined(typeof(Num),5)).ToString(), "True");
+enum Num{A=5,B=6} __P((System.Enum.IsDefined(typeof(Num),5)).ToString());
+__Check("True");

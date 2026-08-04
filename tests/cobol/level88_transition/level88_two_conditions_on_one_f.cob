@@ -1,0 +1,25 @@
+*> vybe-test: cobol/level88_transition/level88_two_conditions_on_one_field
+*> origin: languages/cobol/tests/cobol/test_level88_transition.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 COLOR PIC X VALUE "R".
+    88 RED VALUE "R".
+    88 BLUE VALUE "B".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    EVALUATE TRUE
+        WHEN RED DISPLAY "RED"
+        WHEN BLUE DISPLAY "BLUE"
+        WHEN OTHER DISPLAY "OTHER"
+    END-EVALUATE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "RED" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "RED"
+        DISPLAY "FAIL: want [RED] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

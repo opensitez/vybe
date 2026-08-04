@@ -1,0 +1,19 @@
+*> vybe-test: cobol/category_data_division_external_clause/test_external_parse_4
+*> origin: languages/cobol/tests/cobol/test_category_data_division_external_clause.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 N PIC S9(4) VALUE 1234 IS EXTERNAL. 01 M PIC S9(4) VALUE -1234 IS EXTERNAL. PROCEDURE DIVISION. DISPLAY N.
+    MOVE SPACES TO WS-VYBE-L
+    STRING N DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "1234"
+        DISPLAY "FAIL: want [1234] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. DISPLAY M.
+    MOVE SPACES TO WS-VYBE-L
+    STRING M DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "-1234"
+        DISPLAY "FAIL: want [-1234] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

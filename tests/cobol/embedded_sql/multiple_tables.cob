@@ -1,0 +1,28 @@
+*> vybe-test: cobol/embedded_sql/multiple_tables
+*> origin: languages/cobol/tests/cobol/test_embedded_sql.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MULTITBL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DSN      PIC X(100) VALUE "sqlite:shop.db".
+01 WS-CUST-ID  PIC 9(10).
+01 WS-CUST-NAME PIC X(50).
+01 WS-ORD-ID   PIC 9(10).
+01 WS-ORD-AMT  PIC 9(10)V99.
+01 SQLCODE     PIC S9(9) VALUE 0.
+PROCEDURE DIVISION.
+    EXEC SQL CONNECT :WS-DSN END-EXEC.
+    EXEC SQL
+        SELECT C.NAME, O.ORDER_ID, O.AMOUNT
+        INTO :WS-CUST-NAME, :WS-ORD-ID, :WS-ORD-AMT
+        FROM CUSTOMERS C
+        JOIN ORDERS O ON C.ID = O.CUSTOMER_ID
+        WHERE C.ID = :WS-CUST-ID
+    END-EXEC.
+    IF SQLCODE = 0
+        DISPLAY "Customer: " WS-CUST-NAME
+        DISPLAY "Order: " WS-ORD-ID " Amount: " WS-ORD-AMT
+    END-IF.
+    STOP RUN.
+

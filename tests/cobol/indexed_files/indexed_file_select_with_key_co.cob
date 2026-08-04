@@ -1,0 +1,20 @@
+*> vybe-test: cobol/indexed_files/indexed_file_select_with_key_compiles
+*> origin: languages/cobol/tests/cobol/test_indexed_files.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IFILE ASSIGN TO "i.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS K.
+DATA DIVISION.
+FILE SECTION.
+FD IFILE.
+01 IREC.
+   05 K PIC 9(5).
+   05 N PIC X(10).
+PROCEDURE DIVISION.
+    STOP RUN.
+

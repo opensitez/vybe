@@ -1,0 +1,15 @@
+*> vybe-test: cobol/cobol/temperature_converter
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TEMPCONV.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-CELSIUS    PIC S9(5)V99 VALUE 100.
+01 WS-FAHRENHEIT PIC S9(5)V99 VALUE 0.
+PROCEDURE DIVISION.
+    COMPUTE WS-FAHRENHEIT = (WS-CELSIUS * 9 / 5) + 32.
+    DISPLAY "Celsius: " WS-CELSIUS.
+    DISPLAY "Fahrenheit: " WS-FAHRENHEIT.
+    STOP RUN.
+

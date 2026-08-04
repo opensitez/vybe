@@ -1,0 +1,19 @@
+*> vybe-test: cobol/format_picture_output/pic_zero_insert_in_date_format
+*> origin: languages/cobol/tests/cobol/test_format_picture_output.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 YYYYMMDD PIC 9(4)09(2)09(2) VALUE 20230615.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY YYYYMMDD.
+    MOVE SPACES TO WS-VYBE-L
+    STRING YYYYMMDD DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "2023006015"
+        DISPLAY "FAIL: want [2023006015] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,0 +1,25 @@
+*> vybe-test: cobol/level88_transition/level88_or_with_other_condition
+*> origin: languages/cobol/tests/cobol/test_level88_transition.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 STATUS PIC X VALUE "B".
+    88 SPECIAL VALUE "A".
+01 N PIC 9 VALUE 5.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    IF SPECIAL OR N > 3
+        DISPLAY "EITHER"
+    ELSE
+        DISPLAY "NEITHER"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "EITHER" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "EITHER"
+        DISPLAY "FAIL: want [EITHER] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

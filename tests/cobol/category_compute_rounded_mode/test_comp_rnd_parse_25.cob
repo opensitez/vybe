@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_compute_rounded_mode/test_comp_rnd_parse_25
+*> origin: languages/cobol/tests/cobol/test_category_compute_rounded_mode.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 A PIC 99 VALUE 0. 01 B PIC 99 VALUE 0. PROCEDURE DIVISION. COMPUTE A = 1.4. COMPUTE B ROUNDED MODE IS NEAREST-AWAY-FROM-ZERO = A + 1.6. DISPLAY B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "03"
+        DISPLAY "FAIL: want [03] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

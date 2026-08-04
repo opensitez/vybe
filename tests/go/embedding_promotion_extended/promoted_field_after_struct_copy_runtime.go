@@ -5,9 +5,19 @@ package main
 import "fmt"
 type inner struct { n int }
 type outer struct { inner }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
@@ -15,5 +25,7 @@ func __check(got string, want string) {
 func main() { a := outer{inner: inner{n: 2}}
 b := a
 b.n = 5
-__check(fmt.Sprint(a.n), "2")
-__check(fmt.Sprint(b.n), "5") }
+__p(fmt.Sprint(a.n))
+__p(fmt.Sprint(b.n)) 
+__check("2\n5")
+}

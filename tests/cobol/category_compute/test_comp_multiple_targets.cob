@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_compute/test_comp_multiple_targets
+*> origin: languages/cobol/tests/cobol/test_category_compute.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 R1 PIC 99. 01 R2 PIC 99. PROCEDURE DIVISION. COMPUTE R1 R2 = 10 + 5. DISPLAY R1 R2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING R1 DELIMITED SIZE R2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "1515"
+        DISPLAY "FAIL: want [1515] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

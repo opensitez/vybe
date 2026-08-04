@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_local_function_static/local_function_return_string_from_capture
 // origin: languages/csharp/tests/csharp/test_csharp_local_function_static.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-string suffix="!"; string Exclaim(string text){string E(string t)=>t+suffix; return E(text);} __Check((Exclaim("hi")).ToString(), "hi!");
+string suffix="!"; string Exclaim(string text){string E(string t)=>t+suffix; return E(text);} __P((Exclaim("hi")).ToString());
+__Check("hi!");

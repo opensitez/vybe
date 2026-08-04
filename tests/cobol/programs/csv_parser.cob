@@ -1,0 +1,21 @@
+*> vybe-test: cobol/programs/csv_parser
+*> origin: languages/cobol/tests/cobol/test_programs.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CSVPARSE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-LINE   PIC X(80) VALUE "John,Doe,30,NYC".
+01 WS-FIRST  PIC X(20).
+01 WS-LAST   PIC X(20).
+01 WS-AGE    PIC X(5).
+01 WS-CITY   PIC X(20).
+PROCEDURE DIVISION.
+    UNSTRING WS-LINE DELIMITED BY ","
+        INTO WS-FIRST WS-LAST WS-AGE WS-CITY.
+    DISPLAY "First: " WS-FIRST.
+    DISPLAY "Last:  " WS-LAST.
+    DISPLAY "Age:   " WS-AGE.
+    DISPLAY "City:  " WS-CITY.
+    STOP RUN.
+

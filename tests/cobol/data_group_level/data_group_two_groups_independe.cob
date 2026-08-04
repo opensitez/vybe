@@ -1,0 +1,32 @@
+*> vybe-test: cobol/data_group_level/data_group_two_groups_independent
+*> origin: languages/cobol/tests/cobol/test_data_group_level.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 GRP-A.
+   05 A1 PIC X(3) VALUE "AAA".
+   05 A2 PIC X(3) VALUE "BBB".
+01 GRP-B.
+   05 B1 PIC X(3) VALUE "CCC".
+   05 B2 PIC X(3) VALUE "DDD".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY GRP-A.
+    MOVE SPACES TO WS-VYBE-L
+    STRING GRP-A DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AAABBB"
+        DISPLAY "FAIL: want [AAABBB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY GRP-B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING GRP-B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "CCCDDD"
+        DISPLAY "FAIL: want [CCCDDD] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

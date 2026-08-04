@@ -1,14 +1,27 @@
 // vybe-test: csharp/strings_advanced/string_indexof_lastindexof
 // origin: languages/csharp/tests/csharp/test_strings_advanced.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 string s = "abcabc";
-__Check((s.IndexOf("bc")).ToString(), "1");
-__Check((s.LastIndexOf("bc")).ToString(), "4");
-__Check((s.IndexOf("xyz")).ToString(), "-1");
+__P((s.IndexOf("bc")).ToString());
+__P((s.LastIndexOf("bc")).ToString());
+__P((s.IndexOf("xyz")).ToString());
+__Check("1\n4\n-1");

@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_report_advanced/test_rep_sum_up
+*> origin: languages/cobol/tests/cobol/test_category_report_advanced.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 X PIC 9. REPORT SECTION. RD R. 01 TYPE IS CONTROL FOOTING FINAL. 05 COL 1 PIC 9 SUM X UP. PROCEDURE DIVISION. DISPLAY 'OK'.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'OK' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "OK"
+        DISPLAY "FAIL: want [OK] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

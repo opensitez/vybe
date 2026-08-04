@@ -1,0 +1,22 @@
+*> vybe-test: cobol/line_sequential_files/line_sequential_record_delimiter_compiles
+*> origin: languages/cobol/tests/cobol/test_line_sequential_files.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT LF ASSIGN TO "l.txt"
+       ORGANIZATION IS LINE SEQUENTIAL
+       FILE STATUS IS FS
+       RECORD DELIMITER IS NEWLINE.
+DATA DIVISION.
+FILE SECTION.
+FD LF.
+01 LR PIC X(80).
+WORKING-STORAGE SECTION.
+01 FS PIC XX.
+PROCEDURE DIVISION.
+    OPEN INPUT LF
+    CLOSE LF
+    STOP RUN.
+

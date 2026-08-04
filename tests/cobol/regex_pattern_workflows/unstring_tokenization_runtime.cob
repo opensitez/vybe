@@ -1,0 +1,39 @@
+*> vybe-test: cobol/regex_pattern_workflows/unstring_tokenization_runtime
+*> origin: languages/cobol/tests/cobol/test_regex_pattern_workflows.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC PIC X(20) VALUE "AA-BB-CC".
+01 A PIC X(4).
+01 B PIC X(4).
+01 C PIC X(4).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    UNSTRING SRC DELIMITED BY "-" INTO A B C.
+    DISPLAY A.
+    MOVE SPACES TO WS-VYBE-L
+    STRING A DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AA"
+        DISPLAY "FAIL: want [AA] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "BB"
+        DISPLAY "FAIL: want [BB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY C.
+    MOVE SPACES TO WS-VYBE-L
+    STRING C DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "CC"
+        DISPLAY "FAIL: want [CC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

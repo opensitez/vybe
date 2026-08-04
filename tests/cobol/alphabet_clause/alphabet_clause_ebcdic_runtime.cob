@@ -1,0 +1,20 @@
+*> vybe-test: cobol/alphabet_clause/alphabet_clause_ebcdic_runtime
+*> origin: languages/cobol/tests/cobol/test_alphabet_clause.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALPHA15.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    ALPHABET ALPHA-EBCDIC IS EBCDIC.
+PROCEDURE DIVISION.
+    DISPLAY "EBCDIC".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "EBCDIC" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "EBCDIC"
+        DISPLAY "FAIL: want [EBCDIC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

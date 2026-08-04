@@ -1,0 +1,11 @@
+-- vybe-test: lua/os_misc/os_clock_returns_number
+-- origin: languages/lua/tests/lua/test_os_misc.rs
+
+local __w1 = "number"
+local __i = 0
+
+local c = os.clock()
+do local __t = tostring(type(c)); __i = __i + 1
+  if __i == 1 and __t ~= __w1 then error("FAIL: want [" .. __w1 .. "] got [" .. __t .. "]") end end
+
+if __i == 0 then error("FAIL: no output, wanted [" .. __w1 .. "]") end

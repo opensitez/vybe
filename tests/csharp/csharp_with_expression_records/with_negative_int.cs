@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_with_expression_records/with_negative_int
 // origin: languages/csharp/tests/csharp/test_csharp_with_expression_records.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-record V(int N); var n=(new V(5)) with{N=-1}; __Check((n.N).ToString(), "-1");
+record V(int N); var n=(new V(5)) with{N=-1}; __P((n.N).ToString());
+__Check("-1");

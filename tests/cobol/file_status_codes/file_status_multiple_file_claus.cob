@@ -1,0 +1,28 @@
+*> vybe-test: cobol/file_status_codes/file_status_multiple_file_clause_compiles
+*> origin: languages/cobol/tests/cobol/test_file_status_codes.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F ASSIGN TO "f1.dat" FILE STATUS IS FS1.
+    SELECT G ASSIGN TO "g1.dat" FILE STATUS IS FS2.
+DATA DIVISION.
+FILE SECTION.
+FD F.
+01 R1 PIC X(20).
+FD G.
+01 R2 PIC X(20).
+WORKING-STORAGE SECTION.
+01 FS1 PIC XX.
+01 FS2 PIC XX.
+PROCEDURE DIVISION.
+    OPEN INPUT F OUTPUT G.
+    WRITE R2.
+    READ F INTO R1
+        AT END DISPLAY FS1
+    END-READ
+    CLOSE F G
+    DISPLAY FS2.
+    STOP RUN.
+

@@ -1,0 +1,17 @@
+*> vybe-test: cobol/basic_classes_oop/class_method_with_using_and_returning_compiles
+*> origin: languages/cobol/tests/cobol/test_basic_classes_oop.rs
+
+IDENTIFICATION DIVISION.
+CLASS-ID. WRAPPER.
+OBJECT.
+METHOD-ID. SCALE.
+PROCEDURE DIVISION USING WS-VALUE RETURNING WS-RESULT.
+    COMPUTE WS-RESULT = WS-VALUE * 2.
+END METHOD SCALE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VALUE PIC S9(4)V99.
+01 WS-RESULT PIC S9(4)V99.
+END OBJECT.
+END CLASS WRAPPER.
+

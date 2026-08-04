@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_index_range_slice/string_index_from_end_reads_last_char_code
 // origin: languages/csharp/tests/csharp/test_csharp_index_range_slice.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-string text="xy"; __Check((text[^1]).ToString(), "121");
+string text="xy"; __P((text[^1]).ToString());
+__Check("121");

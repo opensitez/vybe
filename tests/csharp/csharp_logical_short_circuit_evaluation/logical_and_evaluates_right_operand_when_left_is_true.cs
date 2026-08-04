@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_logical_short_circuit_evaluation/logical_and_evaluates_right_operand_when_left_is_true
 // origin: languages/csharp/tests/csharp/test_csharp_logical_short_circuit_evaluation.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,5 +23,6 @@ void __Check(string got, string want) {
 int calls = 0;
 bool Right() { calls++; return false; }
 bool result = true && Right();
-__Check((result ? "T" : "F").ToString(), "F");
-__Check((calls).ToString(), "1");
+__P((result ? "T" : "F").ToString());
+__P((calls).ToString());
+__Check("F\n1");

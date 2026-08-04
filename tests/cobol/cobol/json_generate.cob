@@ -1,0 +1,16 @@
+*> vybe-test: cobol/cobol/json_generate
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. JSONGEN.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-PERSON.
+   05 WS-NAME PIC X(10) VALUE "Alice".
+   05 WS-AGE  PIC 9(3)  VALUE 30.
+01 WS-JSON PIC X(100).
+PROCEDURE DIVISION.
+    JSON GENERATE WS-JSON FROM WS-PERSON.
+    DISPLAY WS-JSON.
+    STOP RUN.
+

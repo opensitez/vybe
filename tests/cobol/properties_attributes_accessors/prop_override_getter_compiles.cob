@@ -1,0 +1,21 @@
+*> vybe-test: cobol/properties_attributes_accessors/prop_override_getter_compiles
+*> origin: languages/cobol/tests/cobol/test_properties_attributes_accessors.rs
+IDENTIFICATION DIVISION.
+CLASS-ID. PB.
+OBJECT.
+METHOD-ID. GET-X PROPERTY GET.
+PROCEDURE DIVISION RETURNING R.
+    MOVE 1 TO R.
+END METHOD GET-X.
+END OBJECT.
+END CLASS PB.
+IDENTIFICATION DIVISION.
+CLASS-ID. PC INHERITS FROM PB.
+OBJECT.
+METHOD-ID. GET-X PROPERTY GET OVERRIDE.
+PROCEDURE DIVISION RETURNING R.
+    MOVE 2 TO R.
+END METHOD GET-X.
+END OBJECT.
+END CLASS PC.
+

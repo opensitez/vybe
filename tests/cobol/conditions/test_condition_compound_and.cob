@@ -1,0 +1,26 @@
+*> vybe-test: cobol/conditions/test_condition_compound_and
+*> origin: languages/cobol/tests/cobol/test_conditions.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9 VALUE 5.
+01 WS-B PIC 9 VALUE 10.
+01 WS-C PIC 9 VALUE 15.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    IF WS-A > 0 AND WS-B > 5 AND WS-C > 10
+        DISPLAY "ALL-TRUE"
+    ELSE
+        DISPLAY "SOME-FALSE"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ALL-TRUE" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ALL-TRUE"
+        DISPLAY "FAIL: want [ALL-TRUE] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

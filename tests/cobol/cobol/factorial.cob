@@ -1,0 +1,17 @@
+*> vybe-test: cobol/cobol/factorial
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FACTORIAL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-N      PIC 9(3)  VALUE 10.
+01 WS-RESULT PIC 9(15) VALUE 1.
+01 WS-I      PIC 9(3)  VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-N
+        MULTIPLY WS-I BY WS-RESULT
+    END-PERFORM.
+    DISPLAY "Factorial of " WS-N " = " WS-RESULT.
+    STOP RUN.
+

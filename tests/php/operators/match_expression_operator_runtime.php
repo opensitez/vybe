@@ -26,14 +26,12 @@ echo match ($score) {
     100 => 'A',
     90 => 'B',
     80, 70 => 'C',
-    default => 'F',
-};
+    default => 'F' };
 echo '|';
 $code = 'x';
 echo match ($code) {
     'x' => 'ex',
     'y' => 'why',
-    default => 'other',
-};
+    default => 'other' };
 
 __vybe_check(ob_get_clean(), "F|ex");

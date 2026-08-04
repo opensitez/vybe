@@ -1,0 +1,32 @@
+*> vybe-test: cobol/data_division_expanded/nested_group_item_compiles
+*> origin: languages/cobol/tests/cobol/test_data_division_expanded.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-REC.
+   05 WS-INFO.
+      10 WS-NAME PIC X(5).
+      10 WS-AGE PIC 9(2).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE "BOB" TO WS-NAME.
+    MOVE 42 TO WS-AGE.
+    DISPLAY WS-NAME.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-NAME DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "BOB"
+        DISPLAY "FAIL: want [BOB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-AGE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-AGE DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "42"
+        DISPLAY "FAIL: want [42] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

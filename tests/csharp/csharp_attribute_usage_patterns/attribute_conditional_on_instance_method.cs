@@ -1,4 +1,24 @@
 // vybe-test: csharp/csharp_attribute_usage_patterns/attribute_conditional_on_instance_method
 // origin: languages/csharp/tests/csharp/test_csharp_attribute_usage_patterns.rs
 
-using System; using System.Diagnostics; class Log{[Conditional("DEBUG")] public void Trace(){Console.WriteLine("t");} public void Run(){Trace(); Console.WriteLine("r");}} new Log().Run();
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+using System; using System.Diagnostics; class Log{[Conditional("DEBUG")] public void Trace(){__P(("t").ToString());} public void Run(){Trace(); __P(("r").ToString());}} new Log().Run();
+__Check("r");

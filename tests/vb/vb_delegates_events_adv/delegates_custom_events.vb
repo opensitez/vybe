@@ -9,11 +9,33 @@
 ' A test's verdict is its EXIT CODE. __Check prints its diagnostic BEFORE
 ' throwing: an uncaught exception surfaces as `RuntimeError: [object]`, which
 ' says nothing at all.
+'
+' Output is COLLECTED, not paired. The emitter rewrites every
+' `Console.WriteLine(x)` into `__P(CStr(x))` and compares the whole output once
+' at the end of `Sub Main`. Pairing the i-th print with the i-th expected line
+' cannot assert anything about a loop, and loops alone were 402 of VB's 6,671
+' cases.
+'
+' Rendering happens at the CALL SITE via `CStr`, where the expression still has
+' its static type — the same reason the C# harness renders with `.ToString()`
+' rather than inside the helper.
 
 Module VybeCheck
-    Sub __Check(got As String, want As String)
-        If got <> want Then
-            Console.WriteLine("FAIL: want [" & want & "] got [" & got & "]")
+    Public __buf As String = ""
+
+    Sub __P(s As String)
+        __buf = __buf & s & vbLf
+    End Sub
+
+    Sub __Pr(s As String)
+        __buf = __buf & s
+    End Sub
+
+    ' The final WriteLine contributes a trailing newline that the expected line
+    ' vector never carried, so BOTH forms are accepted.
+    Sub __Check(want As String)
+        If __buf <> want AndAlso __buf <> want & vbLf Then
+            Console.WriteLine("FAIL: want [" & want & "] got [" & __buf & "]")
             Throw New Exception("assertion failed")
         End If
     End Sub
@@ -26,11 +48,11 @@ Class Timer
     Public Custom Event Tick As System.EventHandler
         AddHandler(value As System.EventHandler)
             _tickHandlers = CType([Delegate].Combine(_tickHandlers, value), System.EventHandler)
-            __Check(CStr("Handler added"), "Handler added")
+            __P(CStr("Handler added"))
         End AddHandler
         RemoveHandler(value As System.EventHandler)
             _tickHandlers = CType([Delegate].Remove(_tickHandlers, value), System.EventHandler)
-            __Check(CStr("Handler removed"), "Tick occurred")
+            __P(CStr("Handler removed"))
         End RemoveHandler
         RaiseEvent(sender As Object, e As System.EventArgs)
             If _tickHandlers IsNot Nothing Then
@@ -46,7 +68,7 @@ End Class
 
 Module M
     Sub OnTick(sender As Object, e As System.EventArgs)
-        __Check(CStr("Tick occurred"), "Handler removed")
+        __P(CStr("Tick occurred"))
     End Sub
 
     Sub Main()
@@ -54,5 +76,8 @@ Module M
         AddHandler t.Tick, AddressOf OnTick
         t.DoTick()
         RemoveHandler t.Tick, AddressOf OnTick
+        __Check("Handler added
+Tick occurred
+Handler removed")
     End Sub
 End Module

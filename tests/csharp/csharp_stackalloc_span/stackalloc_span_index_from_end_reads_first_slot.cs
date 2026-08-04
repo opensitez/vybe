@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_stackalloc_span/stackalloc_span_index_from_end_reads_first_slot
 // origin: languages/csharp/tests/csharp/test_csharp_stackalloc_span.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-System.Span<int> span=stackalloc int[3]{8,9,10}; __Check((span[^3]).ToString(), "8");
+System.Span<int> span=stackalloc int[3]{8,9,10}; __P((span[^3]).ToString());
+__Check("8");

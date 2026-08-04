@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_task_combinators/when_any_with_task_run_winner_count
 // origin: languages/csharp/tests/csharp/test_csharp_task_combinators.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -13,6 +25,7 @@ async System.Threading.Tasks.Task Run() {
         System.Threading.Tasks.Task.Run(() => 6),
         System.Threading.Tasks.Task.Run(() => 7)
     );
-    __Check((winner.Result).ToString(), "6");
+    __P((winner.Result).ToString());
 }
 Run().Wait();
+__Check("6");

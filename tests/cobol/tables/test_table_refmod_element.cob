@@ -1,0 +1,22 @@
+*> vybe-test: cobol/tables/test_table_refmod_element
+*> origin: languages/cobol/tests/cobol/test_tables.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TABLE.
+   05 WS-ITEM PIC X(5) OCCURS 3 TIMES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    MOVE "HELLO" TO WS-ITEM(2).
+    DISPLAY WS-ITEM(2)(1:3).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-ITEM(2)(1:3) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HEL"
+        DISPLAY "FAIL: want [HEL] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,0 +1,15 @@
+*> vybe-test: cobol/cobol/subtract_statement
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SUB.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9(5) VALUE 50.
+01 WS-B PIC 9(5) VALUE 20.
+01 WS-C PIC 9(5) VALUE 0.
+PROCEDURE DIVISION.
+    SUBTRACT WS-B FROM WS-A.
+    SUBTRACT WS-B FROM WS-A GIVING WS-C.
+    STOP RUN.
+

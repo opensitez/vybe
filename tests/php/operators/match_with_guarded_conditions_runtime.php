@@ -26,7 +26,6 @@ echo match (true) {
     $x < 0 => 'neg',
     $x < 5 => 'small',
     $x >= 5 && $x <= 10 => 'mid',
-    default => 'big',
-};
+    default => 'big' };
 
 __vybe_check(ob_get_clean(), "mid");

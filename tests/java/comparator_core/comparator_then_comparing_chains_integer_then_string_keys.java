@@ -1,0 +1,41 @@
+// vybe-test: java/comparator_core/comparator_then_comparing_chains_integer_then_string_keys
+// origin: languages/java/tests/java/test_comparator_core.rs
+
+public class Main {
+
+    // A static String, NOT a StringBuilder. Calling a method on a bare static
+    // FIELD receiver fails under Vybe with "undefined is not callable"
+    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
+    // l.append(x)` works, so the method is resolved from the receiver's
+    // declared type at the call site and a static field carries none. String
+    // concatenation onto a static field has no such problem.
+    static String __buf = "";
+
+    static void __p(Object o) {
+        __buf = __buf + String.valueOf(o) + "\n";
+    }
+
+    static void __pr(Object o) {
+        __buf = __buf + String.valueOf(o);
+    }
+
+    static void __check(String want) {
+        String got = __buf;
+        // The final `println` contributes a trailing newline that the expected
+        // line vector never carried, so it is not part of the comparison.
+        if (got.endsWith("\n")) {
+            got = got.substring(0, got.length() - 1);
+        }
+        if (!got.equals(want)) {
+            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
+            throw new RuntimeException("assertion failed");
+        }
+    }
+
+static class Pair { int num; String label; Pair(int num, String label) { this.num = num; this.label = label; } }
+    public static void main(String[] args) {
+java.util.ArrayList<Pair> list = new java.util.ArrayList<Pair>(); list.add(new Pair(2, "b")); list.add(new Pair(1, "z")); list.add(new Pair(1, "a")); list.sort(java.util.Comparator.comparing((Pair p) -> p.num).thenComparing((Pair p) -> p.label)); __p(list.get(0).label); __p(list.get(2).label);
+__check("a\nb");
+    }
+}
+

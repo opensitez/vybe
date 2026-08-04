@@ -1,7 +1,27 @@
 // vybe-test: csharp/csharp_using_declarations/using_var_nested_block_inner_then_outer_disposal
 // origin: languages/csharp/tests/csharp/test_csharp_using_declarations.rs
 
-class R:System.IDisposable{string n;public R(string n){this.n=n;}public void Dispose(){Console.WriteLine(n);}}
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+class R:System.IDisposable{string n;public R(string n){this.n=n;}public void Dispose(){__P((n).ToString());}}
 using var outer=new R("outer");
-{using var inner=new R("inner"); Console.WriteLine("nest");}
-Console.WriteLine("flat");
+{using var inner=new R("inner"); __P(("nest").ToString());}
+__P(("flat").ToString());
+__Check("nest\ninner\nflat\nouter");

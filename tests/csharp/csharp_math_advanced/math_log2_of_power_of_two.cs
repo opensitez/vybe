@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_math_advanced/math_log2_of_power_of_two
 // origin: languages/csharp/tests/csharp/test_csharp_math_advanced.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check(((int)System.Math.Log2(8)).ToString(), "3");
+__P(((int)System.Math.Log2(8)).ToString());
+__Check("3");

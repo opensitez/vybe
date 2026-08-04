@@ -1,0 +1,23 @@
+*> vybe-test: cobol/subtract_advanced/test_subtract_decimals
+*> origin: languages/cobol/tests/cobol/test_subtract_advanced.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9V99 VALUE 5.50.
+01 WS-B PIC 9V99 VALUE 1.25.
+01 WS-C PIC 9V99 VALUE 0.00.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    SUBTRACT WS-B FROM WS-A GIVING WS-C.
+    DISPLAY WS-C.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-C DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "425"
+        DISPLAY "FAIL: want [425] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

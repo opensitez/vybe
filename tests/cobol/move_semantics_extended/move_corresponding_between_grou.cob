@@ -1,0 +1,34 @@
+*> vybe-test: cobol/move_semantics_extended/move_corresponding_between_groups_preserves_fields
+*> origin: languages/cobol/tests/cobol/test_move_semantics_extended.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SRC.
+   05 WS-A PIC X(3) VALUE "ABC".
+   05 WS-B PIC X(3) VALUE "DEF".
+01 WS-DST.
+   05 WS-A PIC X(3) VALUE SPACES.
+   05 WS-B PIC X(3) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    MOVE CORRESPONDING WS-SRC TO WS-DST.
+    DISPLAY WS-A.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-A DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ABC"
+        DISPLAY "FAIL: want [ABC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "DEF"
+        DISPLAY "FAIL: want [DEF] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

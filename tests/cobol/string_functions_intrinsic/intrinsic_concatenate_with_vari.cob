@@ -1,0 +1,22 @@
+*> vybe-test: cobol/string_functions_intrinsic/intrinsic_concatenate_with_variable
+*> origin: languages/cobol/tests/cobol/test_string_functions_intrinsic.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 FIRST PIC X(4) VALUE "JOHN".
+01 LAST PIC X(5) VALUE "SMITH".
+01 FULL PIC X(10) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE FUNCTION CONCATENATE(FIRST " " LAST) TO FULL.
+    DISPLAY FULL.
+    MOVE SPACES TO WS-VYBE-L
+    STRING FULL DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "JOHN SMITH"
+        DISPLAY "FAIL: want [JOHN SMITH] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

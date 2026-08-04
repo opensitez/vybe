@@ -1,14 +1,27 @@
 // vybe-test: csharp/strings_advanced/bool_parse
 // origin: languages/csharp/tests/csharp/test_strings_advanced.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 bool t = bool.Parse("True");
 bool f = bool.Parse("False");
-__Check((t).ToString(), "True");
-__Check((f).ToString(), "False");
+__P((t).ToString());
+__P((f).ToString());
+__Check("True\nFalse");

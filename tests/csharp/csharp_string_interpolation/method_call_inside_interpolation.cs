@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_string_interpolation/method_call_inside_interpolation
 // origin: languages/csharp/tests/csharp/test_csharp_string_interpolation.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-string s="hello"; __Check(($"{s.ToUpper()}").ToString(), "HELLO");
+string s="hello"; __P(($"{s.ToUpper()}").ToString());
+__Check("HELLO");

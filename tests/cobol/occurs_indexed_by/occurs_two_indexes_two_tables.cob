@@ -1,0 +1,33 @@
+*> vybe-test: cobol/occurs_indexed_by/occurs_two_indexes_two_tables
+*> origin: languages/cobol/tests/cobol/test_occurs_indexed_by.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 T1.
+   05 A PIC 9 OCCURS 3 TIMES INDEXED BY IX1.
+01 T2.
+   05 B PIC 9 OCCURS 3 TIMES INDEXED BY IX2.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    SET IX1 TO 1. SET IX2 TO 2.
+    MOVE 7 TO A(IX1).
+    MOVE 8 TO B(IX2).
+    DISPLAY A(IX1).
+    MOVE SPACES TO WS-VYBE-L
+    STRING A(IX1) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "7"
+        DISPLAY "FAIL: want [7] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY B(IX2).
+    MOVE SPACES TO WS-VYBE-L
+    STRING B(IX2) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "8"
+        DISPLAY "FAIL: want [8] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

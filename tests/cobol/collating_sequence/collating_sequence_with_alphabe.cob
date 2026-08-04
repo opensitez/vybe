@@ -1,0 +1,22 @@
+*> vybe-test: cobol/collating_sequence/collating_sequence_with_alphabet_runtime
+*> origin: languages/cobol/tests/cobol/test_collating_sequence.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COLL12.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    ALPHABET STD-COLL IS STANDARD-1.
+    COLLATING SEQUENCE IS STD-COLL.
+PROCEDURE DIVISION.
+    IF "A" < "Z"
+        DISPLAY "ALPHA_ORDER"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ALPHA_ORDER" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ALPHA_ORDER"
+        DISPLAY "FAIL: want [ALPHA_ORDER] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

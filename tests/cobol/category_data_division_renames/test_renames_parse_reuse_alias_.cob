@@ -1,0 +1,19 @@
+*> vybe-test: cobol/category_data_division_renames/test_renames_parse_reuse_alias_twice
+*> origin: languages/cobol/tests/cobol/test_category_data_division_renames.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 R. 05 A PIC X VALUE '1'. 05 B PIC X VALUE '2'. 05 C PIC X VALUE '3'. 66 ALIAS RENAMES A THRU C. PROCEDURE DIVISION. DISPLAY ALIAS.
+    MOVE SPACES TO WS-VYBE-L
+    STRING ALIAS DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "123"
+        DISPLAY "FAIL: want [123] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. MOVE '4 6' TO ALIAS DISPLAY ALIAS.
+    MOVE SPACES TO WS-VYBE-L
+    STRING ALIAS DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "4 6"
+        DISPLAY "FAIL: want [4 6] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

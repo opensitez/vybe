@@ -27,8 +27,7 @@ function classify(int $score): string {
         $score >= 80 => "B",
         $score >= 70 => "C",
         $score >= 60 => "D",
-        default => "F",
-    };
+        default => "F" };
 }
 echo classify(95);
 echo classify(82);

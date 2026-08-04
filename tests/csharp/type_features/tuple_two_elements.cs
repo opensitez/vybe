@@ -1,13 +1,26 @@
 // vybe-test: csharp/type_features/tuple_two_elements
 // origin: languages/csharp/tests/csharp/test_type_features.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 var pair = (10, 20);
         var sum = pair[0] + pair[1];
-        __Check((sum).ToString(), "30");
+        __P((sum).ToString());
+__Check("30");

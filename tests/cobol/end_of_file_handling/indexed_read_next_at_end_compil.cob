@@ -1,0 +1,19 @@
+*> vybe-test: cobol/end_of_file_handling/indexed_read_next_at_end_compiles
+*> origin: languages/cobol/tests/cobol/test_end_of_file_handling.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT IFILE ASSIGN TO "i.dat" ORGANIZATION IS INDEXED RECORD KEY IS K.
+DATA DIVISION.
+FILE SECTION.
+FD IFILE.
+01 REC.
+   05 K PIC 9(5).
+PROCEDURE DIVISION.
+    OPEN INPUT IFILE.
+    READ IFILE NEXT RECORD AT END DISPLAY "EOF" END-READ.
+    CLOSE IFILE.
+    STOP RUN.
+

@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_nested_type_access/nested_access_nested_visibility_public_from_external
 // origin: languages/csharp/tests/csharp/test_csharp_nested_type_access.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-class Api{public class Endpoint{public string Path="/v1";}} __Check((new Api.Endpoint().Path).ToString(), "/v1");
+class Api{public class Endpoint{public string Path="/v1";}} __P((new Api.Endpoint().Path).ToString());
+__Check("/v1");

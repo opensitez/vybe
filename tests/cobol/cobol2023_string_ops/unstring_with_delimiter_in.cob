@@ -1,0 +1,21 @@
+*> vybe-test: cobol/cobol2023_string_ops/unstring_with_delimiter_in
+*> origin: languages/cobol/tests/cobol/test_cobol2023_string_ops.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(20) VALUE "A,B;C".
+01 WS-PART1 PIC X(5).
+01 WS-PART2 PIC X(5).
+01 WS-DELIM1 PIC X(1).
+01 WS-DELIM2 PIC X(1).
+PROCEDURE DIVISION.
+    UNSTRING WS-DATA
+        DELIMITED BY "," OR ";"
+        INTO WS-PART1 DELIMITER IN WS-DELIM1
+             WS-PART2 DELIMITER IN WS-DELIM2.
+    DISPLAY WS-DELIM1.
+    DISPLAY WS-DELIM2.
+    STOP RUN.
+

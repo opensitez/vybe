@@ -1,0 +1,19 @@
+*> vybe-test: cobol/table_search_binary/search_all_two_key_fields_compiles
+*> origin: languages/cobol/tests/cobol/test_table_search_binary.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 GRADES.
+   05 GRADE OCCURS 30 TIMES ASCENDING KEY STUDENT-ID ASCENDING KEY SUBJECT-ID INDEXED BY GI.
+      10 STUDENT-ID PIC 9(5).
+      10 SUBJECT-ID PIC 9(3).
+      10 SCORE PIC 9(3).
+PROCEDURE DIVISION.
+    SEARCH ALL GRADE
+        AT END DISPLAY "NOT FOUND"
+        WHEN STUDENT-ID(GI) = 10001 AND SUBJECT-ID(GI) = 101
+            DISPLAY SCORE(GI)
+    END-SEARCH.
+    STOP RUN.
+

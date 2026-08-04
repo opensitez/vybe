@@ -1,0 +1,19 @@
+*> vybe-test: cobol/oo_cobol/parse_factory_and_object
+*> origin: languages/cobol/tests/cobol/test_oo_cobol.rs
+
+IDENTIFICATION DIVISION.
+CLASS-ID. MY-FACTORY.
+FACTORY.
+METHOD-ID. CREATE.
+PROCEDURE DIVISION RETURNING WS-OBJ.
+    DISPLAY "Creating".
+END METHOD CREATE.
+END FACTORY.
+OBJECT.
+METHOD-ID. PROCESS.
+PROCEDURE DIVISION.
+    DISPLAY "Processing".
+END METHOD PROCESS.
+END OBJECT.
+END CLASS MY-FACTORY.
+

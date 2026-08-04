@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_lock_monitor/lock_on_this_reference_increments_field
 // origin: languages/csharp/tests/csharp/test_csharp_lock_monitor.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -14,4 +26,5 @@ class Box {
 }
 var box = new Box();
 box.Inc();
-__Check((box.counter).ToString(), "1");
+__P((box.counter).ToString());
+__Check("1");

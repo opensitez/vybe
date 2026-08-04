@@ -1,0 +1,16 @@
+*> vybe-test: cobol/cobol2023_data/data_item_redefines
+*> origin: languages/cobol/tests/cobol/test_cobol2023_data.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATE PIC 9(8) VALUE 20240101.
+01 WS-DATE-PARTS REDEFINES WS-DATE.
+   05 WS-YEAR PIC 9(4).
+   05 WS-MONTH PIC 9(2).
+   05 WS-DAY PIC 9(2).
+PROCEDURE DIVISION.
+    DISPLAY WS-YEAR.
+    STOP RUN.
+

@@ -1,0 +1,20 @@
+*> vybe-test: cobol/goto/test_goto_depending_on
+*> origin: languages/cobol/tests/cobol/test_goto.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-IDX PIC 9 VALUE 2.
+PROCEDURE DIVISION.
+
+    GO TO PARA1 PARA2 PARA3 DEPENDING ON WS-IDX.
+    DISPLAY "OTHER".
+    STOP RUN.
+PARA1.
+    DISPLAY "P1".
+PARA2.
+    DISPLAY "P2".
+PARA3.
+    DISPLAY "P3".
+    STOP RUN.
+

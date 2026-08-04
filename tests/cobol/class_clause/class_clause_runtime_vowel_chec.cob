@@ -1,0 +1,25 @@
+*> vybe-test: cobol/class_clause/class_clause_runtime_vowel_check
+*> origin: languages/cobol/tests/cobol/test_class_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CLS11.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CLASS VOWEL-CLASS IS "A" "E" "I" "O" "U".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 CH PIC X VALUE "E".
+PROCEDURE DIVISION.
+    IF CH IS VOWEL-CLASS
+        DISPLAY "V"
+    END-IF
+    STOP RUN.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "V" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "V"
+        DISPLAY "FAIL: want [V] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

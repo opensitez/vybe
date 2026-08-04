@@ -25,8 +25,7 @@ function getConfig(string $env): array {
     return match($env) {
         "dev"  => ["debug" => true,  "log" => "verbose"],
         "prod" => ["debug" => false, "log" => "error"],
-        default => ["debug" => false, "log" => "warning"],
-    };
+        default => ["debug" => false, "log" => "warning"] };
 }
 $cfg = getConfig("dev");
 echo $cfg["log"];

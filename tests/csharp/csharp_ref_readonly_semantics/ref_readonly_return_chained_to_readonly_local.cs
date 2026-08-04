@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_ref_readonly_semantics/ref_readonly_return_chained_to_readonly_local
 // origin: languages/csharp/tests/csharp/test_csharp_ref_readonly_semantics.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-int[] values={100,200}; ref readonly int Head()=>ref values[0]; ref readonly int h=ref Head(); __Check((h).ToString(), "100");
+int[] values={100,200}; ref readonly int Head()=>ref values[0]; ref readonly int h=ref Head(); __P((h).ToString());
+__Check("100");

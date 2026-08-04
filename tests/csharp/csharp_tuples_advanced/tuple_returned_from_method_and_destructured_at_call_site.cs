@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_tuples_advanced/tuple_returned_from_method_and_destructured_at_call_site
 // origin: languages/csharp/tests/csharp/test_csharp_tuples_advanced.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,4 +23,5 @@ void __Check(string got, string want) {
 (int Min, int Max) Bounds(int[] arr) =>
     (arr.Min(), arr.Max());
 var (lo, hi) = Bounds(new[]{5,1,9,3});
-__Check((lo).ToString(), "1"); __Check((hi).ToString(), "9");
+__P((lo).ToString()); __P((hi).ToString());
+__Check("1\n9");

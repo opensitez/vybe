@@ -1,9 +1,21 @@
 // vybe-test: csharp/common_patterns/factorial_recursive
 // origin: languages/csharp/tests/csharp/test_common_patterns.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -14,7 +26,8 @@ class Math2 {
         return n * Factorial(n - 1);
     }
 }
-__Check((Math2.Factorial(0)).ToString(), "1");
-__Check((Math2.Factorial(1)).ToString(), "1");
-__Check((Math2.Factorial(5)).ToString(), "120");
-__Check((Math2.Factorial(10)).ToString(), "3628800");
+__P((Math2.Factorial(0)).ToString());
+__P((Math2.Factorial(1)).ToString());
+__P((Math2.Factorial(5)).ToString());
+__P((Math2.Factorial(10)).ToString());
+__Check("1\n1\n120\n3628800");

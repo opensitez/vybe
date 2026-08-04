@@ -1,12 +1,25 @@
 // vybe-test: csharp/csharp_expression_bodied/expression_bodied_operator
 // origin: languages/csharp/tests/csharp/test_csharp_expression_bodied.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 struct Num{public int V;public static Num operator+(Num a,Num b)=>new Num{V=a.V+b.V};}
-__Check(((new Num{V=3}+new Num{V=4}).V).ToString(), "7");
+__P(((new Num{V=3}+new Num{V=4}).V).ToString());
+__Check("7");

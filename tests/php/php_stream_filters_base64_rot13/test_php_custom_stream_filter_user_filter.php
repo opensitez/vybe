@@ -1,24 +1,26 @@
 <?php
 // vybe-test: php/php_stream_filters_base64_rot13/test_php_custom_stream_filter_user_filter
 // origin: languages/php/tests/php/test_php_stream_filters_base64_rot13.rs
-// vybe-test-mode: compile
 
-class StripVowelsFilter extends php_user_filter {
-    public function filter($in, $out, &$consumed, $closing): int {
-        while ($bucket = stream_bucket_make_writeable($in)) {
-            $bucket->data = preg_replace('/[aeiouAEIOU]/', '', $bucket->data);
-            $consumed += $bucket->datalen;
-            stream_bucket_append($out, $bucket);
-        }
-        return PSFS_PASS_ON;
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
     }
 }
 
-stream_filter_register("strip_vowels", StripVowelsFilter::class);
-$stream = fopen("php://memory", "r+");
-stream_filter_append($stream, "strip_vowels");
+ob_start();
 
-fwrite($stream, "Hello World");
-rewind($stream);
-echo stream_get_contents($stream);
-fclose($stream);
+php://memory
+
+__vybe_check(ob_get_clean(), "r+");

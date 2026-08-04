@@ -1,4 +1,24 @@
 // vybe-test: csharp/csharp_attribute_usage_patterns/attribute_conditional_with_returning_method_structural
 // origin: languages/csharp/tests/csharp/test_csharp_attribute_usage_patterns.rs
 
-using System; using System.Diagnostics; class Calc{[Conditional("DEBUG")] static void Log(int x){Console.WriteLine(x);} public static int Add(int a,int b){Log(a+b); return a+b;}} Console.WriteLine(Calc.Add(2,3));
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+using System; using System.Diagnostics; class Calc{[Conditional("DEBUG")] static void Log(int x){__P((x).ToString());} public static int Add(int a,int b){Log(a+b); return a+b;}} __P((Calc.Add(2,3)).ToString());
+__Check("5");

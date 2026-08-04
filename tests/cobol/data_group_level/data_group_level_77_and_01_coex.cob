@@ -1,0 +1,22 @@
+*> vybe-test: cobol/data_group_level/data_group_level_77_and_01_coexist
+*> origin: languages/cobol/tests/cobol/test_data_group_level.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 STANDALONE PIC 9(3) VALUE 42.
+01 GRP.
+   05 FIELD PIC 9(3) VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    ADD STANDALONE TO FIELD.
+    DISPLAY FIELD.
+    MOVE SPACES TO WS-VYBE-L
+    STRING FIELD DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "042"
+        DISPLAY "FAIL: want [042] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,0 +1,30 @@
+*> vybe-test: cobol/value_clauses/test_value_clause_group_propagation
+*> origin: languages/cobol/tests/cobol/test_value_clauses.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-GROUP VALUE "ABCDEF".
+   05 WS-A PIC X(3).
+   05 WS-B PIC X(3).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    DISPLAY WS-A.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-A DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ABC"
+        DISPLAY "FAIL: want [ABC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "DEF"
+        DISPLAY "FAIL: want [DEF] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

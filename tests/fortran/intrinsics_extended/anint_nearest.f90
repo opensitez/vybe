@@ -1,0 +1,10 @@
+! vybe-test: fortran/intrinsics_extended/anint_nearest
+! origin: languages/fortran/tests/fortran/test_intrinsics_extended.rs
+program t
+real :: x
+x = anint(3.5)
+if ((x) /= 4) then
+    print *, "FAIL: want [4] got [", x, "]"
+    stop 1
+end if
+end program t

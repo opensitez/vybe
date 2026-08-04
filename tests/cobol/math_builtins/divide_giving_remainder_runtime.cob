@@ -1,0 +1,31 @@
+*> vybe-test: cobol/math_builtins/divide_giving_remainder_runtime_reports_expected_values
+*> origin: languages/cobol/tests/cobol/test_math_builtins.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 A PIC 99 VALUE 7.
+01 B PIC 99 VALUE 3.
+01 Q PIC 99 VALUE 0.
+01 R PIC 99 VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DIVIDE A BY B GIVING Q REMAINDER R.
+    DISPLAY Q.
+    MOVE SPACES TO WS-VYBE-L
+    STRING Q DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "2"
+        DISPLAY "FAIL: want [2] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY R.
+    MOVE SPACES TO WS-VYBE-L
+    STRING R DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "1"
+        DISPLAY "FAIL: want [1] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

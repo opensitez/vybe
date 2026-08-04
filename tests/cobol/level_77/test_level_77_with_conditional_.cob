@@ -1,0 +1,25 @@
+*> vybe-test: cobol/level_77/test_level_77_with_conditional_name
+*> origin: languages/cobol/tests/cobol/test_level_77.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+77 WS-STATE PIC X VALUE "Y".
+88 STATE-OK VALUE "Y".
+77 WS-COUNT PIC 9(2) VALUE 0.
+PROCEDURE DIVISION.
+    IF STATE-OK
+        ADD 1 TO WS-COUNT
+    END-IF
+    DISPLAY WS-COUNT.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-COUNT DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "01"
+        DISPLAY "FAIL: want [01] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

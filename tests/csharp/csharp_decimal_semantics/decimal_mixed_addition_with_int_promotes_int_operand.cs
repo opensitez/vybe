@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_decimal_semantics/decimal_mixed_addition_with_int_promotes_int_operand
 // origin: languages/csharp/tests/csharp/test_csharp_decimal_semantics.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-decimal baseAmount = 2.5m; __Check((baseAmount + 2).ToString(), "4.5");
+decimal baseAmount = 2.5m; __P((baseAmount + 2).ToString());
+__Check("4.5");

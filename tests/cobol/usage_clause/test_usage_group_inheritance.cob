@@ -1,0 +1,34 @@
+*> vybe-test: cobol/usage_clause/test_usage_group_inheritance
+*> origin: languages/cobol/tests/cobol/test_usage_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-GROUP USAGE IS BINARY.
+   05 WS-A PIC 9(4).
+   05 WS-B PIC 9(4).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    MOVE 10 TO WS-A.
+    MOVE 20 TO WS-B.
+    ADD 10 TO WS-A.
+    ADD 5 TO WS-B.
+    DISPLAY WS-A.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-A DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "20"
+        DISPLAY "FAIL: want [20] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "25"
+        DISPLAY "FAIL: want [25] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,0 +1,28 @@
+*> vybe-test: cobol/currency_sign/currency_sign_runtime_addition
+*> origin: languages/cobol/tests/cobol/test_currency_sign.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. CUR13.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CURRENCY SIGN IS "$".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 A PIC $99.99 VALUE $10.00.
+01 B PIC $99.99 VALUE $5.00.
+01 C PIC $99.99.
+PROCEDURE DIVISION.
+    ADD A B GIVING C
+    IF C > 0
+        DISPLAY "ADD"
+    END-IF
+    STOP RUN.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ADD" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ADD"
+        DISPLAY "FAIL: want [ADD] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

@@ -1,0 +1,21 @@
+*> vybe-test: cobol/cobol2023_file_io/indexed_file_organization
+*> origin: languages/cobol/tests/cobol/test_cobol2023_file_io.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT MASTER-FILE ASSIGN TO "master.dat"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS WS-KEY
+        FILE STATUS IS WS-STATUS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-KEY PIC X(10).
+01 WS-STATUS PIC X(2).
+PROCEDURE DIVISION.
+    DISPLAY "Indexed file defined".
+    STOP RUN.
+

@@ -1,15 +1,28 @@
 // vybe-test: csharp/csharp_caller_info_attributes/caller_member_name_multiple_optional_params_only_first_is_caller
 // origin: languages/csharp/tests/csharp/test_csharp_caller_info_attributes.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 class Trace {
-    public static void Show(string prefix = "p", [System.Runtime.CompilerServices.CallerMemberName] string member = "") => __Check((prefix + member).ToString(), "pRun");
+    public static void Show(string prefix = "p", [System.Runtime.CompilerServices.CallerMemberName] string member = "") => __P((prefix + member).ToString());
 }
 class App { public void Run() { Trace.Show(); } }
 new App().Run();
+__Check("pRun");

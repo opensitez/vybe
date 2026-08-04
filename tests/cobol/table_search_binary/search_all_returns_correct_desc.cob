@@ -1,0 +1,23 @@
+*> vybe-test: cobol/table_search_binary/search_all_returns_correct_descriptor
+*> origin: languages/cobol/tests/cobol/test_table_search_binary.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 CATALOG.
+   05 ITEM OCCURS 100 TIMES ASCENDING KEY ITEM-ID INDEXED BY CAT-IDX.
+      10 ITEM-ID PIC 9(6).
+      10 ITEM-NAME PIC X(30).
+      10 ITEM-COST PIC 9(7)V99.
+01 RESULT-NAME PIC X(30) VALUE SPACES.
+01 RESULT-COST PIC 9(7)V99 VALUE 0.
+PROCEDURE DIVISION.
+    SEARCH ALL ITEM
+        AT END
+            DISPLAY "ITEM NOT FOUND"
+        WHEN ITEM-ID(CAT-IDX) = 200050
+            MOVE ITEM-NAME(CAT-IDX) TO RESULT-NAME
+            MOVE ITEM-COST(CAT-IDX) TO RESULT-COST
+    END-SEARCH.
+    STOP RUN.
+

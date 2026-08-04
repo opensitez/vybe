@@ -1,13 +1,26 @@
 // vybe-test: csharp/csharp_collection_expressions/collection_expression_target_typed_list_add_after
 // origin: languages/csharp/tests/csharp/test_csharp_collection_expressions.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 System.Collections.Generic.List<int> list = [1, 2];
 list.Add(3);
-__Check((list[2]).ToString(), "3");
+__P((list[2]).ToString());
+__Check("3");

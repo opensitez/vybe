@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_delegate_events_matrix/action_handlers_can_be_added_removed_from_events
 // origin: languages/csharp/tests/csharp/test_csharp_delegate_events_matrix.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -24,4 +36,5 @@ notifier.Raised += add;
 notifier.Raise(3);
 notifier.Raised -= sub;
 notifier.Raise(2);
-__Check((total).ToString(), "7");
+__P((total).ToString());
+__Check("7");

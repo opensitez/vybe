@@ -1,0 +1,6 @@
+// vybe-test: dart/generics/generic_box
+// origin: languages/dart/tests/dart/test_generics.rs
+
+class Box<T> { T value; Box(this.value); }
+
+void main() {}

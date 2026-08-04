@@ -1,0 +1,35 @@
+*> vybe-test: cobol/advanced_control_flow/perform_through_paragraphs_compiles
+*> origin: languages/cobol/tests/cobol/test_advanced_control_flow.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+PROCEDURE DIVISION.
+    PERFORM PARA-ONE THRU PARA-THREE.
+    STOP RUN.
+PARA-ONE.
+    DISPLAY "ONE".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ONE" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ONE"
+        DISPLAY "FAIL: want [ONE] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+PARA-TWO.
+    DISPLAY "TWO".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "TWO" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "TWO"
+        DISPLAY "FAIL: want [TWO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+PARA-THREE.
+    DISPLAY "THREE".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "THREE" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "THREE"
+        DISPLAY "FAIL: want [THREE] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

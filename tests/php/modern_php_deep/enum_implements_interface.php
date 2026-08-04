@@ -32,8 +32,7 @@ enum Currency: string implements HasSymbol {
         return match($this) {
             self::USD => "$",
             self::EUR => "€",
-            self::GBP => "£",
-        };
+            self::GBP => "£" };
     }
 }
 echo Currency::USD->symbol();

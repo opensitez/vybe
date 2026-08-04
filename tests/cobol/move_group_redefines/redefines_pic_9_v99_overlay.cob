@@ -1,0 +1,20 @@
+*> vybe-test: cobol/move_group_redefines/redefines_pic_9_v99_overlay
+*> origin: languages/cobol/tests/cobol/test_move_group_redefines.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 AMOUNT PIC X(7) VALUE "0012345".
+01 AMT-NUM REDEFINES AMOUNT PIC 9(5)V99.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY AMT-NUM.
+    MOVE SPACES TO WS-VYBE-L
+    STRING AMT-NUM DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "001234500"
+        DISPLAY "FAIL: want [001234500] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

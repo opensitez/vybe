@@ -1,0 +1,31 @@
+*> vybe-test: cobol/data_division_expanded/group_item_compiles
+*> origin: languages/cobol/tests/cobol/test_data_division_expanded.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-REC.
+   05 WS-A PIC X(3).
+   05 WS-B PIC 9(2).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE "XYZ" TO WS-A.
+    MOVE 99 TO WS-B.
+    DISPLAY WS-A.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-A DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "XYZ"
+        DISPLAY "FAIL: want [XYZ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "99"
+        DISPLAY "FAIL: want [99] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

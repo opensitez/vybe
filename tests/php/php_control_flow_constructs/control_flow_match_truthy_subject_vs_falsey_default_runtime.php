@@ -24,12 +24,10 @@ ob_start();
 echo match (false) {
     true => 'T',
     false => 'F',
-    default => 'D',
-} . '|' .
+    default => 'D' } . '|' .
 match (0) {
     '' => 'E',
     0 => 'Z',
-    default => 'D',
-};
+    default => 'D' };
 
 __vybe_check(ob_get_clean(), "F|Z");

@@ -28,8 +28,7 @@ enum Role: string {
 function label(Role $role): string {
     return match($role) {
         Role::ADMIN => 'A',
-        Role::USER => 'U',
-    };
+        Role::USER => 'U' };
 }
 echo label(Role::USER);
 

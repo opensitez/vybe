@@ -1,11 +1,26 @@
 <?php
 // vybe-test: php/php_openssl_cipher_iv_length_lookup/test_php_openssl_encrypt_invalid_cipher_returns_false
 // origin: languages/php/tests/php/test_php_openssl_cipher_iv_length_lookup.rs
-// vybe-test-mode: compile
 
-if (function_exists('openssl_encrypt')) {
-    $res = @openssl_encrypt("test", "invalid-cipher-name-999", "key", 0, "iv");
-    echo $res === false ? "INVALID_CIPHER_FALSE_OK" : "FAIL";
-} else {
-    echo "INVALID_CIPHER_FALSE_OK";
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
+
+ob_start();
+
+test
+
+__vybe_check(ob_get_clean(), "invalid-cipher-name-999");

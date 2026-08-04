@@ -1,0 +1,30 @@
+*> vybe-test: cobol/alphabet_clause/alphabet_clause_literal_range_orders_letters
+*> origin: languages/cobol/tests/cobol/test_alphabet_clause.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALPHA12.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    ALPHABET ALPHA-LOW IS "A" THRU "Z".
+    COLLATING SEQUENCE IS ALPHA-LOW.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 A PIC X VALUE "C".
+01 B PIC X VALUE "F".
+PROCEDURE DIVISION.
+    IF A < B
+        DISPLAY "LESS"
+    ELSE
+        DISPLAY "NOT-LESS"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "LESS" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "LESS"
+        DISPLAY "FAIL: want [LESS] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

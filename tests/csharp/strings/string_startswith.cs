@@ -1,12 +1,25 @@
 // vybe-test: csharp/strings/string_startswith
 // origin: languages/csharp/tests/csharp/test_strings.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check(("hello".StartsWith("hel")).ToString(), "True");
-        __Check(("hello".StartsWith("xyz")).ToString(), "False");
+__P(("hello".StartsWith("hel")).ToString());
+        __P(("hello".StartsWith("xyz")).ToString());
+__Check("True\nFalse");

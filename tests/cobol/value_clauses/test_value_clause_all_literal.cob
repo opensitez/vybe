@@ -1,0 +1,29 @@
+*> vybe-test: cobol/value_clauses/test_value_clause_all_literal
+*> origin: languages/cobol/tests/cobol/test_value_clauses.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-STR1 PIC X(5) VALUE ALL "*".
+01 WS-STR2 PIC X(6) VALUE ALL "AB".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    DISPLAY WS-STR1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-STR1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "*****"
+        DISPLAY "FAIL: want [*****] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-STR2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-STR2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ABABAB"
+        DISPLAY "FAIL: want [ABABAB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

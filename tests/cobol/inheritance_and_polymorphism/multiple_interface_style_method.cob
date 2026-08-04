@@ -1,0 +1,13 @@
+*> vybe-test: cobol/inheritance_and_polymorphism/multiple_interface_style_methods_compile
+*> origin: languages/cobol/tests/cobol/test_inheritance_and_polymorphism.rs
+
+IDENTIFICATION DIVISION.
+INTERFACE-ID. COMPARABLE.
+METHOD-ID. EQUALS.
+PROCEDURE DIVISION USING WS-OTHER RETURNING WS-RESULT.
+END METHOD EQUALS.
+METHOD-ID. COMPARE-TO.
+PROCEDURE DIVISION USING WS-OTHER RETURNING WS-RESULT.
+END METHOD COMPARE-TO.
+END INTERFACE COMPARABLE.
+

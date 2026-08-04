@@ -1,8 +1,28 @@
 // vybe-test: csharp/csharp_error_handling/try_catch_no_error
 // origin: languages/csharp/tests/csharp/test_csharp_error_handling.rs
 
-try {
-    Console.WriteLine("ok");
-} catch (Exception e) {
-    Console.WriteLine("error");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
 }
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+try {
+    __P(("ok").ToString());
+} catch (Exception e) {
+    __P(("error").ToString());
+}
+__Check("ok");

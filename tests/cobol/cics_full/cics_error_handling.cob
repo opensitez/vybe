@@ -1,0 +1,27 @@
+*> vybe-test: cobol/cics_full/cics_error_handling
+*> origin: languages/cobol/tests/cobol/test_cics_full.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ERRHNDL.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(100).
+01 WS-KEY  PIC X(20) VALUE "CUST001".
+PROCEDURE DIVISION.
+    EXEC CICS HANDLE CONDITION
+        NOTFND(NOT-FOUND)
+        DUPREC(DUPLICATE)
+        ERROR(GENERAL-ERROR)
+    END-EXEC.
+    EXEC CICS READ FILE(CUSTFILE) INTO(WS-DATA) RIDFLD(WS-KEY) END-EXEC.
+    DISPLAY "Found: " WS-DATA.
+    EXEC CICS RETURN END-EXEC.
+    STOP RUN.
+NOT-FOUND.
+    DISPLAY "Record not found".
+DUPLICATE.
+    DISPLAY "Duplicate record".
+GENERAL-ERROR.
+    DISPLAY "An error occurred".
+    EXEC CICS ABEND ABCODE(UERR) END-EXEC.
+

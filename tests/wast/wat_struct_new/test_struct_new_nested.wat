@@ -6,6 +6,13 @@
   (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
   (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
   (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (func $vybe_check_i32 (param i32) (param i32)
+    local.get 0
+    local.get 1
+    i32.ne
+    if
+      unreachable
+    end)
   (type $Point (struct (field i32) (field i32)))
 (type $Rect (struct (field (ref $Point)) (field (ref $Point))))
 (func (export "_start") (local $r (ref null $Rect))
@@ -23,6 +30,6 @@
   local.get $r
   struct.get $Rect 1
   struct.get $Point 0
-  call $log
+  i32.const 30 call $vybe_check_i32
 )
 )

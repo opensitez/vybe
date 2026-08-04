@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_map_set_collections/linked_list_find_returns_matching_node_value
 // origin: languages/csharp/tests/csharp/test_csharp_map_set_collections.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-using System.Collections.Generic; var items = new LinkedList<string>(); items.AddLast("a"); items.AddLast("b"); var node = items.Find("b"); __Check((node.Value).ToString(), "b");
+using System.Collections.Generic; var items = new LinkedList<string>(); items.AddLast("a"); items.AddLast("b"); var node = items.Find("b"); __P((node.Value).ToString());
+__Check("b");

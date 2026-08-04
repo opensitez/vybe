@@ -1,12 +1,25 @@
 // vybe-test: csharp/strings_advanced/string_equals_ignore_case
 // origin: languages/csharp/tests/csharp/test_strings_advanced.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check((string.Equals("Hello", "hello", StringComparison.OrdinalIgnoreCase)).ToString(), "True");
-__Check((string.Equals("Hello", "hello")).ToString(), "False");
+__P((string.Equals("Hello", "hello", StringComparison.OrdinalIgnoreCase)).ToString());
+__P((string.Equals("Hello", "hello")).ToString());
+__Check("True\nFalse");

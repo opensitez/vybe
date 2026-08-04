@@ -1,0 +1,22 @@
+*> vybe-test: cobol/enterprise/refmod_with_variables
+*> origin: languages/cobol/tests/cobol/test_enterprise.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. REFMODVAR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-RECORD PIC X(80) VALUE "JOHN DOE       NYC       00100000".
+01 WS-NAME   PIC X(15).
+01 WS-CITY   PIC X(10).
+01 WS-AMT    PIC X(8).
+01 WS-POS    PIC 9(3) VALUE 1.
+01 WS-LEN    PIC 9(3) VALUE 15.
+PROCEDURE DIVISION.
+    MOVE WS-RECORD(WS-POS:WS-LEN) TO WS-NAME.
+    MOVE WS-RECORD(16:10) TO WS-CITY.
+    MOVE WS-RECORD(26:8) TO WS-AMT.
+    DISPLAY "Name: " WS-NAME.
+    DISPLAY "City: " WS-CITY.
+    DISPLAY "Amount: " WS-AMT.
+    STOP RUN.
+

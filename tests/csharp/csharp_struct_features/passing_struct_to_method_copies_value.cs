@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_struct_features/passing_struct_to_method_copies_value
 // origin: languages/csharp/tests/csharp/test_csharp_struct_features.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -12,4 +24,5 @@ struct Counter { public int N; }
 void Increment(Counter c) { c.N++; }
 var c = new Counter { N=5 };
 Increment(c);
-__Check((c.N).ToString(), "5");
+__P((c.N).ToString());
+__Check("5");

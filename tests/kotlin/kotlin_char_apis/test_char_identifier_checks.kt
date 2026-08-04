@@ -1,18 +1,37 @@
 // vybe-test: kotlin/kotlin_char_apis/test_char_identifier_checks
 // origin: languages/kotlin/tests/kotlin/test_kotlin_char_apis.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
 
 fun main() {
-            __check(('a'.isLetter()).toString(), "true")
-            __check((''.isLetter()).toString(), "false")
-            __check(('7'.isDigit()).toString(), "true")
-            __check(('_'.isIdentifierStart()).toString(), "true")
-            __check(('x'.isIdentifierPart()).toString(), "true")
-            __check((' '.isIdentifierPart()).toString(), "false")
-        }
+            __p(('a'.isLetter()).toString())
+            __p((''.isLetter()).toString())
+            __p(('7'.isDigit()).toString())
+            __p(('_'.isIdentifierStart()).toString())
+            __p(('x'.isIdentifierPart()).toString())
+            __p((' '.isIdentifierPart()).toString())
+        
+__check("true\nfalse\ntrue\ntrue\ntrue\nfalse")
+}

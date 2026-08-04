@@ -1,4 +1,24 @@
 // vybe-test: csharp/csharp_events_advanced/multicast_delegate_preserves_handler_order_after_removal
 // origin: languages/csharp/tests/csharp/test_csharp_events_advanced.rs
 
-using System; void A() { Console.WriteLine("A"); } void B() { Console.WriteLine("B"); } void C() { Console.WriteLine("C"); } Action action = A; action += B; action += C; action -= B; action();
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+using System; void A() { __P(("A").ToString()); } void B() { __P(("B").ToString()); } void C() { __P(("C").ToString()); } Action action = A; action += B; action += C; action -= B; action();
+__Check("A\nC");

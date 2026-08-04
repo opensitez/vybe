@@ -1,5 +1,25 @@
 // vybe-test: csharp/csharp_yield_iterators_core/yield_return_in_do_while_emits_once
 // origin: languages/csharp/tests/csharp/test_csharp_yield_iterators_core.rs
 
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
 System.Collections.Generic.IEnumerable<int> Once(){int n=0;do{yield return n;n++;}while(n<1);}
-Console.WriteLine(string.Join(",",Once()));
+__P((string.Join(",",Once())).ToString());
+__Check("0");

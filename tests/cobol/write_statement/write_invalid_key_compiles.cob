@@ -1,0 +1,19 @@
+*> vybe-test: cobol/write_statement/write_invalid_key_compiles
+*> origin: languages/cobol/tests/cobol/test_write_statement.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F ASSIGN TO "i.dat" ORGANIZATION IS INDEXED RECORD KEY IS K.
+DATA DIVISION.
+FILE SECTION.
+FD F.
+01 REC.
+   05 K PIC 9(5).
+PROCEDURE DIVISION.
+    OPEN OUTPUT F.
+    WRITE REC INVALID KEY DISPLAY "DUP" END-WRITE.
+    CLOSE F.
+    STOP RUN.
+

@@ -1,0 +1,12 @@
+*> vybe-test: cobol/report_group_descriptions/report_column_number_compiles
+*> origin: languages/cobol/tests/cobol/test_report_group_descriptions.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RGD4.
+DATA DIVISION.
+REPORT SECTION.
+RD SALES-RPT.
+01 DETAIL-LINE TYPE DETAIL.
+   03 COLUMN NUMBER 5 PIC X(5) VALUE "ITEM".
+PROCEDURE DIVISION.
+    STOP RUN.
+

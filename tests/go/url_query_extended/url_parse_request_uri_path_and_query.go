@@ -4,13 +4,25 @@
 package main
 import "fmt"
 import "net/url"
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
 
 func main() { u, _ := url.ParseRequestURI("/api/v2/items?page=3")
-__check(fmt.Sprint(u.Path), "/api/v2/items")
-__check(fmt.Sprint(u.Query().Get("page")), "3") }
+__p(fmt.Sprint(u.Path))
+__p(fmt.Sprint(u.Query().Get("page"))) 
+__check("/api/v2/items\n3")
+}

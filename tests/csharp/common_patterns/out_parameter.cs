@@ -1,9 +1,21 @@
 // vybe-test: csharp/common_patterns/out_parameter
 // origin: languages/csharp/tests/csharp/test_common_patterns.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -16,7 +28,8 @@ class Parser {
     }
 }
 int val;
-__Check((Parser.TryParse("42", out val)).ToString(), "True");
-__Check((val).ToString(), "42");
-__Check((Parser.TryParse("bad", out val)).ToString(), "False");
-__Check((val).ToString(), "0");
+__P((Parser.TryParse("42", out val)).ToString());
+__P((val).ToString());
+__P((Parser.TryParse("bad", out val)).ToString());
+__P((val).ToString());
+__Check("True\n42\nFalse\n0");

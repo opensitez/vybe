@@ -31,8 +31,40 @@ def __line(*args):
     return out
 
 
+# Output is COLLECTED, not paired. The emitter rewrites every `print(a, b)`
+# into `__p(__line(a, b))`, appending here, and compares the whole buffer once
+# at the end of the file. Pairing the i-th print with the i-th expected line
+# cannot assert anything about a loop — 936 of Python's cases.
+#
+# `__p`/`__pr` take an ALREADY-JOINED string, not `*args` plus keyword-only
+# terminator parameters. Those are broken under Vybe (measured: with a
+# keyword-only sep/end after *args, the call appends nothing at all), while the
+# plain `__line(*args)` above works. So the newline decision is made by WHICH
+# helper the emitter calls.
+#
+# A comment in the FIRST position of an indented block used to be a parse error
+# under Vybe — `def f():` followed by a comment line. Fixed in
+# `languages/python/src/grammar.pest`: the preprocessor emits a comment-only
+# line without an INDENT marker but still emits its NEWLINE, so `block` has to
+# accept `":" NEWLINE NEWLINE* … INDENT`. Mid-block comments always worked,
+# which is why this hid for so long.
+__buf = ""
+
+
+def __p(s):
+    global __buf
+    __buf += s + "\n"
+
+
+def __pr(s):
+    global __buf
+    __buf += s
+
+
 def __check(got, want):
-    if got != want:
+    # The final print contributes a trailing newline that the expected line
+    # vector never carried, so both forms are accepted.
+    if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
@@ -45,9 +77,10 @@ cursor.executemany("INSERT INTO scores VALUES (?)", [(10,), (20,), (30,)])
 
 cursor.execute("SELECT COUNT(*), SUM(val), AVG(val), MIN(val), MAX(val) FROM scores")
 row = cursor.fetchone()
-__check(__line(row[0]), "3")
-__check(__line(row[1]), "60")
-__check(__line(row[2]), "20.0")
-__check(__line(row[3]), "10")
-__check(__line(row[4]), "30")
+__p(__line(row[0]))
+__p(__line(row[1]))
+__p(__line(row[2]))
+__p(__line(row[3]))
+__p(__line(row[4]))
 conn.close()
+__check(__buf, "3\n60\n20.0\n10\n30")

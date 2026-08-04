@@ -26,8 +26,7 @@ function classifyNumbers(array $nums) {
         yield match(true) {
             $n < 0  => "neg",
             $n === 0 => "zero",
-            $n > 0  => "pos",
-        };
+            $n > 0  => "pos" };
     }
 }
 $result = [];

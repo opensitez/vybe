@@ -1,12 +1,32 @@
 // vybe-test: csharp/csharp_iasync_enumerable/generic_async_enumerable_method_count
 // origin: languages/csharp/tests/csharp/test_csharp_iasync_enumerable.rs
 
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
 async System.Collections.Generic.IAsyncEnumerable<T> Repeat<T>(T value, int times) {
     for (int i = 0; i < times; i++) yield return value;
 }
 async System.Threading.Tasks.Task Run() {
     int count = 0;
     await foreach (var x in Repeat(7, 4)) count++;
-    Console.WriteLine(count);
+    __P((count).ToString());
 }
 Run().Wait();
+__Check("4");

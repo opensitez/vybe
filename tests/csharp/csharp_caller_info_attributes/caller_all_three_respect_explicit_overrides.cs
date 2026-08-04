@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_caller_info_attributes/caller_all_three_respect_explicit_overrides
 // origin: languages/csharp/tests/csharp/test_csharp_caller_info_attributes.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -13,9 +25,10 @@ class Trace {
         [System.Runtime.CompilerServices.CallerMemberName] string member = "",
         [System.Runtime.CompilerServices.CallerLineNumber] int line = 0,
         [System.Runtime.CompilerServices.CallerFilePath] string path = "") {
-        __Check((member).ToString(), "m");
-        __Check((line).ToString(), "42");
-        __Check((path).ToString(), "/a/b.cs");
+        __P((member).ToString());
+        __P((line).ToString());
+        __P((path).ToString());
     }
 }
 Trace.Show("m", 42, "/a/b.cs");
+__Check("m\n42\n/a/b.cs");

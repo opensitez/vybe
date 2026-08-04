@@ -1,0 +1,20 @@
+*> vybe-test: cobol/inheritance_and_polymorphism/polymorphic_interface_implementation_pair_compiles
+*> origin: languages/cobol/tests/cobol/test_inheritance_and_polymorphism.rs
+
+IDENTIFICATION DIVISION.
+INTERFACE-ID. WRITER.
+METHOD-ID. WRITE-LN.
+PROCEDURE DIVISION.
+END METHOD WRITE-LN.
+END INTERFACE WRITER.
+
+IDENTIFICATION DIVISION.
+CLASS-ID. CONSOLE-WRITER IMPLEMENTS WRITER.
+OBJECT.
+METHOD-ID. WRITE-LN.
+PROCEDURE DIVISION.
+    DISPLAY "LINE".
+END METHOD WRITE-LN.
+END OBJECT.
+END CLASS CONSOLE-WRITER.
+

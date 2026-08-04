@@ -1,0 +1,11 @@
+*> vybe-test: cobol/category_data_division_external_clause/test_external_record
+*> origin: languages/cobol/tests/cobol/test_category_data_division_external_clause.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. ENVIRONMENT DIVISION. INPUT-OUTPUT SECTION. FILE-CONTROL. SELECT F ASSIGN TO 'a'. DATA DIVISION. FILE SECTION. FD F IS EXTERNAL. 01 R PIC X. PROCEDURE DIVISION. DISPLAY 'OK'.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'OK' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "OK"
+        DISPLAY "FAIL: want [OK] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

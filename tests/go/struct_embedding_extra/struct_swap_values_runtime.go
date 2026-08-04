@@ -4,9 +4,19 @@
 package main
 import "fmt"
 type point struct { x int }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
@@ -14,6 +24,7 @@ func __check(got string, want string) {
 func main() { left := point{x: 1}
 right := point{x: 9}
 left, right = right, left
-__check(fmt.Sprint(left.x), "9")
-__check(fmt.Sprint(right.x), "1")
+__p(fmt.Sprint(left.x))
+__p(fmt.Sprint(right.x))
+__check("9\n1")
 }

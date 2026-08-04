@@ -3,6 +3,25 @@
 
 package main
 import "fmt"
-func tag(v interface{}) { switch v.(type) { case []byte: fmt.Println(len(v.([]byte)))
-default: fmt.Println(0) } }
-func main() { tag([]byte{10, 20}) }
+func tag(v interface{}) { switch v.(type) { case []byte: __p(fmt.Sprint(len(v.([]byte))))
+default: __p(fmt.Sprint(0)) } }
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { tag([]byte{10, 20}) 
+__check("2")
+}

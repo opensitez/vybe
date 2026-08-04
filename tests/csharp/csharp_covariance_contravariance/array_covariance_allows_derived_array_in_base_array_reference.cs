@@ -1,13 +1,26 @@
 // vybe-test: csharp/csharp_covariance_contravariance/array_covariance_allows_derived_array_in_base_array_reference
 // origin: languages/csharp/tests/csharp/test_csharp_covariance_contravariance.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 string[] strings = { "a", "b" };
 object[] objects = strings;
-__Check((objects[0]).ToString(), "a");
+__P((objects[0]).ToString());
+__Check("a");

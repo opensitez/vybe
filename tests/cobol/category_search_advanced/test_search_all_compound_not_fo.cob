@@ -1,0 +1,4 @@
+*> vybe-test: cobol/category_search_advanced/test_search_all_compound_not_found
+*> origin: languages/cobol/tests/cobol/test_category_search_advanced.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION. 01 TBL. 05 EL OCCURS 3 TIMES ASCENDING K1 K2 INDEXED BY I. 10 K1 PIC 9. 10 K2 PIC X. PROCEDURE DIVISION. MOVE 1 TO K1(1). MOVE 'A' TO K2(1). MOVE 2 TO K1(2). MOVE 'B' TO K2(2). SEARCH ALL EL AT END DISPLAY 'N' WHEN K1(I) = 2 AND K2(I) = 'C' DISPLAY 'Y' END-SEARCH. STOP RUN.
+

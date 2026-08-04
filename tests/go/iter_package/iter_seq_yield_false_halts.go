@@ -3,9 +3,28 @@
 
 package main
 import "fmt"
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
+		panic("assertion failed")
+	}
+}
+
 func main() { stopped := 0
 seq := func(yield func(int) bool) { if !yield(1) { stopped = 1
 return }
 yield(2) }
 for v := range seq { if v == 1 { break } }
-fmt.Println(stopped) }
+__p(fmt.Sprint(stopped)) 
+__check("1")
+}

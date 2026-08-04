@@ -8,7 +8,7 @@ class Margin {
             val left: Int
 
             constructor(all: Int) : this(all, all, all, all) {
-                __check(("all").toString(), "all")
+                __p(("all").toString())
             }
 
             constructor(top: Int, right: Int, bottom: Int, left: Int) {
@@ -19,17 +19,36 @@ class Margin {
             }
         }
 
-        fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+        var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
 
 fun main() {
             val m = Margin(7)
-            __check((m.top).toString(), "7")
-            __check((m.right).toString(), "7")
-            __check((m.bottom).toString(), "7")
-            __check((m.left).toString(), "7")
-        }
+            __p((m.top).toString())
+            __p((m.right).toString())
+            __p((m.bottom).toString())
+            __p((m.left).toString())
+        
+__check("all\n7\n7\n7\n7")
+}

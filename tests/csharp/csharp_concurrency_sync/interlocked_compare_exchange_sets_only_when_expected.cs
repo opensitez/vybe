@@ -1,13 +1,26 @@
 // vybe-test: csharp/csharp_concurrency_sync/interlocked_compare_exchange_sets_only_when_expected
 // origin: languages/csharp/tests/csharp/test_csharp_concurrency_sync.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 int val=0;
 int original=System.Threading.Interlocked.CompareExchange(ref val,99,0);
-__Check((original).ToString(), "0"); __Check((val).ToString(), "99");
+__P((original).ToString()); __P((val).ToString());
+__Check("0\n99");

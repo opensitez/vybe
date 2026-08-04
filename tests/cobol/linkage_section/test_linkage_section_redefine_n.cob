@@ -1,0 +1,18 @@
+*> vybe-test: cobol/linkage_section/test_linkage_section_redefine_numeric_and_group
+*> origin: languages/cobol/tests/cobol/test_linkage_section.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. SUBPROG.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-COUNT PIC 9(2).
+LINKAGE SECTION.
+01 LNK-ROOT PIC X(4).
+01 LNK-GROUP REDEFINES LNK-ROOT.
+   05 LNK-BYTE-1 PIC X.
+   05 LNK-BYTE-2 PIC X.
+01 LNK-NUM  PIC 9(4) REDEFINES LNK-ROOT.
+PROCEDURE DIVISION USING LNK-ROOT.
+    DISPLAY LNK-ROOT.
+    GOBACK.
+

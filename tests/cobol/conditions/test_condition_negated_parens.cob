@@ -1,0 +1,25 @@
+*> vybe-test: cobol/conditions/test_condition_negated_parens
+*> origin: languages/cobol/tests/cobol/test_conditions.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9 VALUE 5.
+01 WS-B PIC 9 VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    IF NOT (WS-A > 0 AND WS-B > 0)
+        DISPLAY "NEGATED"
+    ELSE
+        DISPLAY "NORMAL"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "NEGATED" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "NEGATED"
+        DISPLAY "FAIL: want [NEGATED] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

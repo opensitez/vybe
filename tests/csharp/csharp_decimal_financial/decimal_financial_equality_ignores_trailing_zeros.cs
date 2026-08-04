@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_decimal_financial/decimal_financial_equality_ignores_trailing_zeros
 // origin: languages/csharp/tests/csharp/test_csharp_decimal_financial.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check((2.50m==2.5m).ToString(), "True");
+__P((2.50m==2.5m).ToString());
+__Check("True");

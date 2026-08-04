@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_deconstruction_patterns/record_positional_deconstruct_extracts_all_fields
 // origin: languages/csharp/tests/csharp/test_csharp_deconstruction_patterns.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,4 +23,5 @@ void __Check(string got, string want) {
 record Point(int X, int Y, int Z);
 var p = new Point(1,2,3);
 var (x,y,z) = p;
-__Check((x+y+z).ToString(), "6");
+__P((x+y+z).ToString());
+__Check("6");

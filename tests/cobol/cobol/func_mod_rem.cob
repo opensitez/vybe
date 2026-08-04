@@ -1,0 +1,13 @@
+*> vybe-test: cobol/cobol/func_mod_rem
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FMOD.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-RESULT PIC 9(5) VALUE 0.
+PROCEDURE DIVISION.
+    MOVE FUNCTION MOD(17 5) TO WS-RESULT.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+

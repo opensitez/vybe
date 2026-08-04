@@ -1,0 +1,25 @@
+*> vybe-test: cobol/special_names_configuration/special_names_currency_runtime
+*> origin: languages/cobol/tests/cobol/test_special_names_configuration.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    CURRENCY SIGN IS "$".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 AMT PIC $99.99 VALUE $12.34.
+01 TOTAL PIC $99.99 VALUE $0.00.
+PROCEDURE DIVISION.
+    MOVE AMT TO TOTAL
+    IF TOTAL > 0 DISPLAY "CURR" END-IF
+    STOP RUN.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "CURR" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "CURR"
+        DISPLAY "FAIL: want [CURR] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_abstract_class/abstract_class_holding_state_shared_with_subclass
 // origin: languages/csharp/tests/csharp/test_csharp_abstract_class.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -15,4 +27,5 @@ abstract class Counter{
 }
 class By2:Counter{public override void Increment(){Count+=2;}}
 var c=new By2(); c.Increment(); c.Increment();
-__Check((c.Value).ToString(), "4");
+__P((c.Value).ToString());
+__Check("4");

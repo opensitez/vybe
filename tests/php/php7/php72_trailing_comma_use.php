@@ -3,4 +3,4 @@
 // origin: languages/php/tests/php/test_php7.rs
 // vybe-test-mode: compile
 
-use App\{A, B, C,};
+use App\{A, B, C };

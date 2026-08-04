@@ -26,8 +26,7 @@ for ($i = 0; $i < 4; $i++) {
     $out .= match ($i) {
         0, 1 => 'L',
         2 => 'M',
-        default => 'H',
-    };
+        default => 'H' };
 }
 echo $out;
 

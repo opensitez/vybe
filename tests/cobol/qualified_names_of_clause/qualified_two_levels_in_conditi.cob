@@ -1,0 +1,26 @@
+*> vybe-test: cobol/qualified_names_of_clause/qualified_two_levels_in_condition
+*> origin: languages/cobol/tests/cobol/test_qualified_names_of_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 ORDER-HDR.
+   05 ORDER-NO PIC 9(5) VALUE 10001.
+01 LINE-ITEM.
+   05 ORDER-NO PIC 9(5) VALUE 10001.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    IF ORDER-NO OF ORDER-HDR = ORDER-NO OF LINE-ITEM
+        DISPLAY "MATCH"
+    ELSE
+        DISPLAY "MISMATCH"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "MATCH" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "MATCH"
+        DISPLAY "FAIL: want [MATCH] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

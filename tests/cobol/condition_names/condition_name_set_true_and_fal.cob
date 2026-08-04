@@ -1,0 +1,31 @@
+*> vybe-test: cobol/condition_names/condition_name_set_true_and_false_updates_value
+*> origin: languages/cobol/tests/cobol/test_condition_names.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-FLAG PIC X VALUE "N".
+   88 IS-ON VALUE "Y".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    SET IS-ON TO TRUE.
+    DISPLAY WS-FLAG.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-FLAG DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "Y"
+        DISPLAY "FAIL: want [Y] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    SET IS-ON TO FALSE.
+    DISPLAY WS-FLAG.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-FLAG DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "N"
+        DISPLAY "FAIL: want [N] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

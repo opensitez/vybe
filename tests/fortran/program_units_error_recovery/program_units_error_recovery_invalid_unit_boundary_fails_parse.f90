@@ -1,0 +1,5 @@
+! vybe-test: fortran/program_units_error_recovery/program_units_error_recovery_invalid_unit_boundary_fails_parse
+! origin: languages/fortran/tests/fortran/test_program_units_error_recovery.rs
+program program_units_error_recovery_invalid_unit_boundary_fails_parse
+integer :: x
+end

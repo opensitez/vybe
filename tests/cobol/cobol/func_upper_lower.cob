@@ -1,0 +1,17 @@
+*> vybe-test: cobol/cobol/func_upper_lower
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FCASE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TEXT PIC X(20) VALUE "Hello World".
+01 WS-UP   PIC X(20).
+01 WS-LOW  PIC X(20).
+PROCEDURE DIVISION.
+    MOVE FUNCTION UPPER-CASE(WS-TEXT) TO WS-UP.
+    MOVE FUNCTION LOWER-CASE(WS-TEXT) TO WS-LOW.
+    DISPLAY WS-UP.
+    DISPLAY WS-LOW.
+    STOP RUN.
+

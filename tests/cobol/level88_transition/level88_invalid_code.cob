@@ -1,0 +1,24 @@
+*> vybe-test: cobol/level88_transition/level88_invalid_code
+*> origin: languages/cobol/tests/cobol/test_level88_transition.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 CODE PIC X(2) VALUE "ZZ".
+    88 VALID-CODE VALUE "AB" "CD" "EF".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    IF VALID-CODE
+        DISPLAY "VALID"
+    ELSE
+        DISPLAY "INVALID"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "VALID" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "INVALID"
+        DISPLAY "FAIL: want [INVALID] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

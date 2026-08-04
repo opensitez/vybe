@@ -1,0 +1,17 @@
+*> vybe-test: cobol/cobol/move_corresponding
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MOVCORR.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SRC.
+   05 WS-NAME PIC X(10) VALUE "Alice".
+   05 WS-AGE  PIC 9(3)  VALUE 30.
+01 WS-DST.
+   05 WS-NAME PIC X(10).
+   05 WS-AGE  PIC 9(3).
+PROCEDURE DIVISION.
+    MOVE CORRESPONDING WS-SRC TO WS-DST.
+    STOP RUN.
+

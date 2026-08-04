@@ -1,0 +1,25 @@
+*> vybe-test: cobol/occurs_indexed_by/occurs_table_filled_displayed_first
+*> origin: languages/cobol/tests/cobol/test_occurs_indexed_by.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 T.
+   05 SCORE PIC 9(3) OCCURS 5 TIMES INDEXED BY IDX.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE 100 TO SCORE(1).
+    MOVE 200 TO SCORE(2).
+    MOVE 300 TO SCORE(3).
+    MOVE 400 TO SCORE(4).
+    MOVE 500 TO SCORE(5).
+    DISPLAY SCORE(1).
+    MOVE SPACES TO WS-VYBE-L
+    STRING SCORE(1) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "100"
+        DISPLAY "FAIL: want [100] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,0 +1,20 @@
+*> vybe-test: cobol/alphabet_clause/alphabet_clause_native_runtime
+*> origin: languages/cobol/tests/cobol/test_alphabet_clause.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALPHA16.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    ALPHABET ALPHA-NATIVE IS NATIVE.
+PROCEDURE DIVISION.
+    DISPLAY "NATIVE".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "NATIVE" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "NATIVE"
+        DISPLAY "FAIL: want [NATIVE] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

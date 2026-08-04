@@ -1,12 +1,25 @@
 // vybe-test: csharp/csharp_jagged_array_patterns/jagged_array_patterns_nullable_roundtrip
 // origin: languages/csharp/tests/csharp/test_csharp_jagged_array_patterns.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 // jagged_array_patterns
-int? maybe = 28; __Check((maybe.HasValue && maybe.Value == 28).ToString(), "True");
+int? maybe = 28; __P((maybe.HasValue && maybe.Value == 28).ToString());
+__Check("True");

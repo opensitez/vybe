@@ -1,4 +1,24 @@
 // vybe-test: csharp/csharp_custom_event_accessors/custom_event_list_backing
 // origin: languages/csharp/tests/csharp/test_csharp_custom_event_accessors.rs
 
-class Btn{var _list=new System.Collections.Generic.List<System.Action>(); public event System.Action Click{add{_list.Add(value);} remove{_list.Remove(value);}} public void Raise(){foreach(var h in _list) h();}} int n=0; var b=new Btn(); b.Click+=()=>n++; b.Click+=()=>n+=2; b.Raise(); Console.WriteLine(n);
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
+class Btn{var _list=new System.Collections.Generic.List<System.Action>(); public event System.Action Click{add{_list.Add(value);} remove{_list.Remove(value);}} public void Raise(){foreach(var h in _list) h();}} int n=0; var b=new Btn(); b.Click+=()=>n++; b.Click+=()=>n+=2; b.Raise(); __P((n).ToString());
+__Check("3");

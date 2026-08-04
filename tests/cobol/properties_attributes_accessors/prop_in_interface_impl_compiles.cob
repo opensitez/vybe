@@ -1,0 +1,18 @@
+*> vybe-test: cobol/properties_attributes_accessors/prop_in_interface_impl_compiles
+*> origin: languages/cobol/tests/cobol/test_properties_attributes_accessors.rs
+IDENTIFICATION DIVISION.
+INTERFACE-ID. IPR.
+METHOD-ID. GET-P PROPERTY GET.
+PROCEDURE DIVISION RETURNING R.
+END METHOD GET-P.
+END INTERFACE IPR.
+IDENTIFICATION DIVISION.
+CLASS-ID. P8 IMPLEMENTS IPR.
+OBJECT.
+METHOD-ID. GET-P PROPERTY GET.
+PROCEDURE DIVISION RETURNING R.
+    MOVE 9 TO R.
+END METHOD GET-P.
+END OBJECT.
+END CLASS P8.
+

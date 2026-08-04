@@ -7,14 +7,26 @@ import "encoding/json"
 type Addr struct { City string }
 type Person struct { Name string
 Addr }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
 
 func main() { var p Person
 json.Unmarshal([]byte(`{"Name":"Ann","City":"Paris"}`), &p)
-__check(fmt.Sprint(p.Name), "Ann")
-__check(fmt.Sprint(p.Addr.City), "Paris") }
+__p(fmt.Sprint(p.Name))
+__p(fmt.Sprint(p.Addr.City)) 
+__check("Ann\nParis")
+}

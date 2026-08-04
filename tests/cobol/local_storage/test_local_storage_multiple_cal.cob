@@ -1,0 +1,29 @@
+*> vybe-test: cobol/local_storage/test_local_storage_multiple_calls
+*> origin: languages/cobol/tests/cobol/test_local_storage.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. LS-MAIN.
+DATA DIVISION.
+LOCAL-STORAGE SECTION.
+01 LS-NUM PIC 9(3) VALUE 005.
+01 LS-MSG PIC X(5) VALUE "HELLO".
+PROCEDURE DIVISION.
+    ADD 1 TO LS-NUM.
+    DISPLAY LS-NUM.
+    MOVE SPACES TO WS-VYBE-L
+    STRING LS-NUM DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "006"
+        DISPLAY "FAIL: want [006] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY LS-MSG.
+    MOVE SPACES TO WS-VYBE-L
+    STRING LS-MSG DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HELLO"
+        DISPLAY "FAIL: want [HELLO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,0 +1,18 @@
+*> vybe-test: cobol/nested_programs/test_nested_program_common
+*> origin: languages/cobol/tests/cobol/test_nested_programs.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. OUTERPROG.
+PROCEDURE DIVISION.
+    CALL "INNER1".
+    STOP RUN.
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. INNER1 COMMON.
+PROCEDURE DIVISION.
+    DISPLAY "COMMON INNER1".
+    GOBACK.
+END PROGRAM INNER1.
+
+END PROGRAM OUTERPROG.
+

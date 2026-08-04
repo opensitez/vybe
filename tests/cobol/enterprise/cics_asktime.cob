@@ -1,0 +1,15 @@
+*> vybe-test: cobol/enterprise/cics_asktime
+*> origin: languages/cobol/tests/cobol/test_enterprise.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9(10) VALUE 0.
+01 WS-B PIC 9(10) VALUE 0.
+01 WS-C PIC 9(10) VALUE 0.
+01 WS-NAME PIC X(50).
+01 SQLCODE PIC S9(9) VALUE 0.
+PROCEDURE DIVISION.
+    EXEC CICS ASKTIME ABSTIME(WS-A) END-EXEC.
+    STOP RUN.
+

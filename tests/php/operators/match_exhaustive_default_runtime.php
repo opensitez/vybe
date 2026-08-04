@@ -25,18 +25,15 @@ $value = 3;
 echo match ($value) {
     1 => 'one',
     2, 3 => 'two-or-three',
-    default => 'other',
-};
+    default => 'other' };
 echo '|';
 echo match ($value > 1) {
     false => 'small',
-    true => 'big',
-};
+    true => 'big' };
 echo '|';
 $list = [1, 2, 3];
 echo match (true) {
     in_array($value, $list) => 'present',
-    default => 'absent',
-};
+    default => 'absent' };
 
 __vybe_check(ob_get_clean(), "two-or-three|big|present");

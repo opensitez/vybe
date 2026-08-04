@@ -1,9 +1,26 @@
 // vybe-test: kotlin/literals/test_long_integer_literals
 // origin: languages/kotlin/tests/kotlin/test_literals.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
@@ -12,8 +29,10 @@ fun main() {
             val short = 10L
             val big = 1_000_000_000L
             val neg = -12L
-            __check((short).toString(), "10")
-            __check((big).toString(), "1000000000")
-            __check((neg).toString(), "-12")
-            __check((short + neg).toString(), "-2")
-        }
+            __p((short).toString())
+            __p((big).toString())
+            __p((neg).toString())
+            __p((short + neg).toString())
+        
+__check("10\n1000000000\n-12\n-2")
+}

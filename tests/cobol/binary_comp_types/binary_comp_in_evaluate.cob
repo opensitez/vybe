@@ -1,0 +1,23 @@
+*> vybe-test: cobol/binary_comp_types/binary_comp_in_evaluate
+*> origin: languages/cobol/tests/cobol/test_binary_comp_types.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 CODE PIC 9(2) COMP VALUE 2.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    EVALUATE CODE
+        WHEN 1 DISPLAY "ONE"
+        WHEN 2 DISPLAY "TWO"
+        WHEN OTHER DISPLAY "OTHER"
+    END-EVALUATE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "ONE" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "TWO"
+        DISPLAY "FAIL: want [TWO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,0 +1,11 @@
+// vybe-test: c/c_pointer_arithmetic_subtraction/pointer_subtraction_struct
+// origin: languages/c/tests/c/test_c_pointer_arithmetic_subtraction.rs
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+struct S { int a; double b; }; int main() {const char *__w[] = {"4"};
+int __n = 1, __i = 0;
+ struct S arr[5]; struct S *p1 = &arr[0]; struct S *p2 = &arr[4]; { char __t[512]; snprintf(__t, sizeof(__t), "%d", (int)(p2 - p1));
+  if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }
+return 0; }
+

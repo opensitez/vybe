@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_class_indexers/indexer_get_executes_side_effect_before_returning_value
 // origin: languages/csharp/tests/csharp/test_csharp_class_indexers.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -15,5 +27,6 @@ class Logger {
     }
 }
 var logger = new Logger();
-__Check((logger[5]).ToString(), "5");
-__Check((logger.hits).ToString(), "1");
+__P((logger[5]).ToString());
+__P((logger.hits).ToString());
+__Check("5\n1");

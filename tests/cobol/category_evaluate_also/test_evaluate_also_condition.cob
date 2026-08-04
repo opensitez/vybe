@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_evaluate_also/test_evaluate_also_condition
+*> origin: languages/cobol/tests/cobol/test_category_evaluate_also.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 A PIC 9 VALUE 1. 01 B PIC 9 VALUE 2. PROCEDURE DIVISION. EVALUATE TRUE ALSO TRUE WHEN A = 1 ALSO B = 2 DISPLAY 'Y' WHEN OTHER DISPLAY 'N' END-EVALUATE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'Y' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "Y"
+        DISPLAY "FAIL: want [Y] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

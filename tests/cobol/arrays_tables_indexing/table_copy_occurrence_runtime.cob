@@ -1,0 +1,44 @@
+*> vybe-test: cobol/arrays_tables_indexing/table_copy_occurrence_runtime
+*> origin: languages/cobol/tests/cobol/test_arrays_tables_indexing.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC.
+   05 V PIC X(2) OCCURS 3 TIMES.
+01 DST.
+   05 W PIC X(2) OCCURS 3 TIMES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE "AA" TO V(1).
+    MOVE "BB" TO V(2).
+    MOVE "CC" TO V(3).
+    MOVE V(1) TO W(3).
+    MOVE V(2) TO W(1).
+    MOVE V(3) TO W(2).
+    DISPLAY W(1).
+    MOVE SPACES TO WS-VYBE-L
+    STRING W(1) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "BB"
+        DISPLAY "FAIL: want [BB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY W(2).
+    MOVE SPACES TO WS-VYBE-L
+    STRING W(2) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "CC"
+        DISPLAY "FAIL: want [CC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY W(3).
+    MOVE SPACES TO WS-VYBE-L
+    STRING W(3) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AA"
+        DISPLAY "FAIL: want [AA] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

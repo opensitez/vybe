@@ -1,0 +1,17 @@
+*> vybe-test: cobol/cobol2023_intrinsics/concatenate_multi
+*> origin: languages/cobol/tests/cobol/test_cobol2023_intrinsics.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-FIRST PIC X(10) VALUE "Hello".
+01 WS-SEP PIC X(1) VALUE " ".
+01 WS-LAST PIC X(10) VALUE "World".
+01 WS-RESULT PIC X(30).
+PROCEDURE DIVISION.
+    MOVE FUNCTION CONCATENATE(WS-FIRST WS-SEP WS-LAST)
+        TO WS-RESULT.
+    DISPLAY WS-RESULT.
+    STOP RUN.
+

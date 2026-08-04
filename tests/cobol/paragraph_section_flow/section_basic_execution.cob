@@ -1,0 +1,29 @@
+*> vybe-test: cobol/paragraph_section_flow/section_basic_execution
+*> origin: languages/cobol/tests/cobol/test_paragraph_section_flow.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    PERFORM MY-SECT.
+    DISPLAY "BACK".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "BACK" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "IN SECTION"
+        DISPLAY "FAIL: want [IN SECTION] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+MY-SECT SECTION.
+    DISPLAY "IN SECTION".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "IN SECTION" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "BACK"
+        DISPLAY "FAIL: want [BACK] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

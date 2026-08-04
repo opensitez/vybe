@@ -1,0 +1,30 @@
+*> vybe-test: cobol/data_division_expanded/occurs_depending_clause_compiles
+*> origin: languages/cobol/tests/cobol/test_data_division_expanded.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TABLE PIC X(3) OCCURS 3 TIMES DEPENDING ON WS-COUNT.
+01 WS-COUNT PIC 9(1) VALUE 2.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE "A" TO WS-TABLE(1).
+    MOVE "B" TO WS-TABLE(2).
+    DISPLAY WS-TABLE(1).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-TABLE(1) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "A"
+        DISPLAY "FAIL: want [A] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-TABLE(2).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-TABLE(2) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "B"
+        DISPLAY "FAIL: want [B] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

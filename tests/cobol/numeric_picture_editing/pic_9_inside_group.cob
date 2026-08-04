@@ -1,0 +1,29 @@
+*> vybe-test: cobol/numeric_picture_editing/pic_9_inside_group
+*> origin: languages/cobol/tests/cobol/test_numeric_picture_editing.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 GRP.
+   05 PART1 PIC 9(3) VALUE 100.
+   05 PART2 PIC 9(3) VALUE 200.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY PART1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING PART1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "100"
+        DISPLAY "FAIL: want [100] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY PART2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING PART2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "200"
+        DISPLAY "FAIL: want [200] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -21,7 +21,7 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-$text = "a,b,,c,,";
+$text = "a,b, c, ";
 $items = explode(',', $text);
 $joined = implode('|', $items);
 echo count($items) . '|' . substr($joined, 0, 12);

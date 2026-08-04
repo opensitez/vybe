@@ -4,6 +4,23 @@
 package main
 import "fmt"
 import "container/list"
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
+		panic("assertion failed")
+	}
+}
+
 func main() { l := list.New()
 a := l.PushBack(1)
 b := l.PushBack(2)
@@ -11,5 +28,7 @@ c := l.PushBack(3)
 l.MoveBefore(b, c)
 var vals []int
 for e := l.Front(); e != nil; e = e.Next() { vals = append(vals, e.Value.(int)) }
-fmt.Println(vals[0])
-fmt.Println(vals[2]) }
+__p(fmt.Sprint(vals[0]))
+__p(fmt.Sprint(vals[2])) 
+__check("1\n3")
+}

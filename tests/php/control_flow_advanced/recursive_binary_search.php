@@ -28,8 +28,7 @@ function bsearch(array $a, int $target, int $lo = 0, ?int $hi = null): int {
     return match(true) {
         $a[$mid] === $target => $mid,
         $a[$mid] < $target  => bsearch($a, $target, $mid + 1, $hi),
-        default              => bsearch($a, $target, $lo, $mid - 1),
-    };
+        default              => bsearch($a, $target, $lo, $mid - 1) };
 }
 $sorted = range(0, 20, 2);
 echo bsearch($sorted, 14);

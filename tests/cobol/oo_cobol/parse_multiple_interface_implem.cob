@@ -1,0 +1,13 @@
+*> vybe-test: cobol/oo_cobol/parse_multiple_interface_implements
+*> origin: languages/cobol/tests/cobol/test_oo_cobol.rs
+
+IDENTIFICATION DIVISION.
+CLASS-ID. REPORTABLE IMPLEMENTS PRINTABLE, SERIALIZABLE.
+OBJECT.
+METHOD-ID. TO-STRING.
+PROCEDURE DIVISION RETURNING WS-RESULT.
+    DISPLAY WS-RESULT.
+END METHOD TO-STRING.
+END OBJECT.
+END CLASS REPORTABLE.
+

@@ -1,0 +1,16 @@
+*> vybe-test: cobol/move_group_redefines/redefines_three_alternatives
+*> origin: languages/cobol/tests/cobol/test_move_group_redefines.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 UNION-AREA PIC X(8) VALUE SPACES.
+01 INT-UNION REDEFINES UNION-AREA PIC 9(8).
+01 DATE-UNION REDEFINES UNION-AREA.
+   05 D-YEAR PIC 9(4).
+   05 D-MMDD PIC 9(4).
+PROCEDURE DIVISION.
+    MOVE 20230115 TO INT-UNION.
+    DISPLAY D-YEAR.
+    STOP RUN.
+

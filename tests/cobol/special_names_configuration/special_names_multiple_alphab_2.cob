@@ -1,0 +1,28 @@
+*> vybe-test: cobol/special_names_configuration/special_names_multiple_alphabets_runtime
+*> origin: languages/cobol/tests/cobol/test_special_names_configuration.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    ALPHABET A1 IS ASCII
+    ALPHABET A2 IS STANDARD-1.
+    COLLATING SEQUENCE IS A2.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 CH1 PIC X VALUE "A".
+01 CH2 PIC X VALUE "B".
+PROCEDURE DIVISION.
+    IF CH1 < CH2
+        DISPLAY "MULTI"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "MULTI" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "MULTI"
+        DISPLAY "FAIL: want [MULTI] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

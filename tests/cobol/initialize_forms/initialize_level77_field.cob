@@ -1,0 +1,20 @@
+*> vybe-test: cobol/initialize_forms/initialize_level77_field
+*> origin: languages/cobol/tests/cobol/test_initialize_forms.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 WS-VAL PIC 9(4) VALUE 5000.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    INITIALIZE WS-VAL.
+    DISPLAY WS-VAL.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-VAL DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "0000"
+        DISPLAY "FAIL: want [0000] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

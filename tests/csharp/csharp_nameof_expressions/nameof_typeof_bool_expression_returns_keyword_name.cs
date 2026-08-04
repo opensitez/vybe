@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_nameof_expressions/nameof_typeof_bool_expression_returns_keyword_name
 // origin: languages/csharp/tests/csharp/test_csharp_nameof_expressions.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check((nameof(bool)).ToString(), "bool");
+__P((nameof(bool)).ToString());
+__Check("bool");

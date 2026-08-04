@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_stackalloc_span/stackalloc_int_zero_length_span_has_zero_length
 // origin: languages/csharp/tests/csharp/test_csharp_stackalloc_span.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-System.Span<int> buf=stackalloc int[0]; __Check((buf.Length).ToString(), "0");
+System.Span<int> buf=stackalloc int[0]; __P((buf.Length).ToString());
+__Check("0");

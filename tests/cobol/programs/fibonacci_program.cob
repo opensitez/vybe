@@ -1,0 +1,21 @@
+*> vybe-test: cobol/programs/fibonacci_program
+*> origin: languages/cobol/tests/cobol/test_programs.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FIBONACCI.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-N    PIC 9(3) VALUE 20.
+01 WS-A    PIC 9(10) VALUE 0.
+01 WS-B    PIC 9(10) VALUE 1.
+01 WS-TEMP PIC 9(10) VALUE 0.
+01 WS-I    PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-N
+        DISPLAY WS-A
+        COMPUTE WS-TEMP = WS-A + WS-B
+        MOVE WS-B TO WS-A
+        MOVE WS-TEMP TO WS-B
+    END-PERFORM.
+    STOP RUN.
+

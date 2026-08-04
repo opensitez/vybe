@@ -33,8 +33,7 @@ function rpn(string $expr): float {
                 '+' => $stack[] = $a + $b,
                 '-' => $stack[] = $a - $b,
                 '*' => $stack[] = $a * $b,
-                '/' => $stack[] = $a / $b,
-            };
+                '/' => $stack[] = $a / $b };
         }
     }
     return array_pop($stack);

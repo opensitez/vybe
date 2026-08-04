@@ -1,9 +1,21 @@
 // vybe-test: csharp/common_patterns/property_with_backing_field
 // origin: languages/csharp/tests/csharp/test_common_patterns.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -23,6 +35,7 @@ class Temperature {
 }
 var t = new Temperature();
 t.Celsius = 100;
-__Check((t.Fahrenheit).ToString(), "212");
+__P((t.Fahrenheit).ToString());
 t.Celsius = -500;
-__Check((t.Celsius).ToString(), "-273.15");
+__P((t.Celsius).ToString());
+__Check("212\n-273.15");

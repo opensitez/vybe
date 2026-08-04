@@ -1,0 +1,43 @@
+*> vybe-test: cobol/arrays_tables_indexing/table_index_set_up_down_runtime
+*> origin: languages/cobol/tests/cobol/test_arrays_tables_indexing.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 T PIC X(1) OCCURS 5 TIMES INDEXED BY IDX.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE "A" TO T(1).
+    MOVE "B" TO T(2).
+    MOVE "C" TO T(3).
+    MOVE "D" TO T(4).
+    MOVE "E" TO T(5).
+    SET IDX TO 4.
+    DISPLAY T(IDX).
+    MOVE SPACES TO WS-VYBE-L
+    STRING T(IDX) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "D"
+        DISPLAY "FAIL: want [D] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    SET IDX DOWN BY 2.
+    DISPLAY T(IDX).
+    MOVE SPACES TO WS-VYBE-L
+    STRING T(IDX) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "B"
+        DISPLAY "FAIL: want [B] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    SET IDX UP BY 1.
+    DISPLAY T(IDX).
+    MOVE SPACES TO WS-VYBE-L
+    STRING T(IDX) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "C"
+        DISPLAY "FAIL: want [C] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

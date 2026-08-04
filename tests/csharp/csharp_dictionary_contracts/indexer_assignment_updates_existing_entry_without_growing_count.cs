@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_dictionary_contracts/indexer_assignment_updates_existing_entry_without_growing_count
 // origin: languages/csharp/tests/csharp/test_csharp_dictionary_contracts.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,5 +23,6 @@ void __Check(string got, string want) {
 using System.Collections.Generic;
 var map = new Dictionary<string, int> { ["x"] = 1 };
 map["x"] = 9;
-__Check((map["x"]).ToString(), "9");
-__Check((map.Count).ToString(), "1");
+__P((map["x"]).ToString());
+__P((map.Count).ToString());
+__Check("9\n1");

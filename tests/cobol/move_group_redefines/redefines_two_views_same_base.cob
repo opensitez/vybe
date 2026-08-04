@@ -1,0 +1,29 @@
+*> vybe-test: cobol/move_group_redefines/redefines_two_views_same_base
+*> origin: languages/cobol/tests/cobol/test_move_group_redefines.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 BASE PIC X(2) VALUE "AB".
+01 VIEW-1 REDEFINES BASE PIC X(2).
+01 VIEW-2 REDEFINES BASE PIC X(2).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY VIEW-1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING VIEW-1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AB"
+        DISPLAY "FAIL: want [AB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY VIEW-2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING VIEW-2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AB"
+        DISPLAY "FAIL: want [AB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

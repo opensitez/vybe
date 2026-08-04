@@ -1,0 +1,14 @@
+*> vybe-test: cobol/final_features/string_with_pointer
+*> origin: languages/cobol/tests/cobol/test_final_features.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC X(10) VALUE "Hello".
+01 WS-B PIC X(10) VALUE "World".
+01 WS-R PIC X(25).
+01 WS-PTR PIC 9(3) VALUE 1.
+PROCEDURE DIVISION.
+    STRING WS-A DELIMITED BY SIZE WS-B DELIMITED BY SIZE INTO WS-R WITH POINTER WS-PTR.
+    STOP RUN.
+

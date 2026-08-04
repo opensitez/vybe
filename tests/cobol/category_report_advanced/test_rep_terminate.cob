@@ -1,0 +1,11 @@
+*> vybe-test: cobol/category_report_advanced/test_rep_terminate
+*> origin: languages/cobol/tests/cobol/test_category_report_advanced.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. REPORT SECTION. RD R. 01 TYPE IS PAGE FOOTING. 05 LINE 1 COL 1 PIC X VALUE 'A'. PROCEDURE DIVISION. TERMINATE R. DISPLAY 'OK'.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'OK' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "OK"
+        DISPLAY "FAIL: want [OK] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

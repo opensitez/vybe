@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_condition_names/test_cond_or_with_names
+*> origin: languages/cobol/tests/cobol/test_category_condition_names.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 X PIC 99 VALUE 07. 88 EVEN VALUE 2 4 6 8. 88 PRIME VALUE 2 THRU 3 5 7. PROCEDURE DIVISION. IF EVEN OR PRIME DISPLAY 'Y' ELSE DISPLAY 'N' END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'Y' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "Y"
+        DISPLAY "FAIL: want [Y] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

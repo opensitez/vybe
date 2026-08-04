@@ -1,0 +1,25 @@
+*> vybe-test: cobol/special_registers_detail/return_code_in_evaluate
+*> origin: languages/cobol/tests/cobol/test_special_registers_detail.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 RETURN-CODE PIC 9(4) VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE 4 TO RETURN-CODE.
+    EVALUATE RETURN-CODE
+        WHEN 0 DISPLAY "OK"
+        WHEN 4 DISPLAY "WARN"
+        WHEN 8 DISPLAY "ERR"
+        WHEN OTHER DISPLAY "UNKNOWN"
+    END-EVALUATE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "OK" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "WARN"
+        DISPLAY "FAIL: want [WARN] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

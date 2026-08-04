@@ -3,8 +3,15 @@
 
 (module
         (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (func $vybe_check_i32 (param i32) (param i32)
+    local.get 0
+    local.get 1
+    i32.ne
+    if
+      unreachable
+    end)
         (func $divmod (param i32 i32) (result i32 i32)
           local.get 0 local.get 1 i32.div_u
           local.get 0 local.get 1 i32.rem_u)
         (func (export "_start")
-          i32.const 17 i32.const 5 call $divmod i32.add call $log))
+          i32.const 17 i32.const 5 call $divmod i32.add i32.const 5 call $vybe_check_i32))

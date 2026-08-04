@@ -1,6 +1,26 @@
 // vybe-test: csharp/collections_advanced/array_sort
 // origin: languages/csharp/tests/csharp/test_collections_advanced.rs
 
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
 int[] arr = { 5, 3, 8, 1, 2 };
 Array.Sort(arr);
-foreach (var x in arr) Console.WriteLine(x);
+foreach (var x in arr) __P((x).ToString());
+__Check("1\n2\n3\n5\n8");

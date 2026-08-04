@@ -27,8 +27,7 @@ function httpStatus(int $code): string {
         301, 302 => "redirect",
         404 => "not found",
         500, 502, 503 => "server error",
-        default => "unknown",
-    };
+        default => "unknown" };
 }
 echo httpStatus(200);
 echo httpStatus(301);

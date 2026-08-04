@@ -1,9 +1,21 @@
 // vybe-test: csharp/multi_value/three_value_deconstruct
 // origin: languages/csharp/tests/csharp/test_multi_value.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -14,9 +26,10 @@ class Program {
     }
     public static void Run() {
         var (r, g, b) = Rgb();
-        __Check((r).ToString(), "10");
-        __Check((g).ToString(), "20");
-        __Check((b).ToString(), "30");
+        __P((r).ToString());
+        __P((g).ToString());
+        __P((b).ToString());
     }
 }
 Program.Run();
+__Check("10\n20\n30");

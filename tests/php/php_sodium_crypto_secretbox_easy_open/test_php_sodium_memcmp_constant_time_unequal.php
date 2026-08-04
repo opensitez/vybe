@@ -1,11 +1,26 @@
 <?php
 // vybe-test: php/php_sodium_crypto_secretbox_easy_open/test_php_sodium_memcmp_constant_time_unequal
 // origin: languages/php/tests/php/test_php_sodium_crypto_secretbox_easy_open.rs
-// vybe-test-mode: compile
 
-if (function_exists('sodium_memcmp')) {
-    $res = sodium_memcmp("secret123", "different");
-    echo $res !== 0 ? "MEMCMP_UNEQUAL_OK" : "FAIL";
-} else {
-    echo "MEMCMP_UNEQUAL_OK";
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
+
+ob_start();
+
+secret123
+
+__vybe_check(ob_get_clean(), "different");

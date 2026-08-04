@@ -1,0 +1,30 @@
+*> vybe-test: cobol/move_group_redefines/redefines_group_over_elementary
+*> origin: languages/cobol/tests/cobol/test_move_group_redefines.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 COMBO PIC X(6) VALUE "ABCDEF".
+01 SPLIT REDEFINES COMBO.
+   05 PART1 PIC X(3).
+   05 PART2 PIC X(3).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY PART1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING PART1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ABC"
+        DISPLAY "FAIL: want [ABC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY PART2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING PART2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "DEF"
+        DISPLAY "FAIL: want [DEF] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_primary_constructors/primary_constructor_class_with_static_factory
 // origin: languages/csharp/tests/csharp/test_csharp_primary_constructors.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -12,4 +24,5 @@ class Token(int id) {
     public int Id => id;
     public static Token Default() => new Token(0);
 }
-__Check((Token.Default().Id).ToString(), "0");
+__P((Token.Default().Id).ToString());
+__Check("0");

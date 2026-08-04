@@ -6,6 +6,13 @@
   (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
   (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
   (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (func $vybe_check_nan_f64 (param f64)
+    local.get 0
+    local.get 0
+    f64.eq
+    if
+      unreachable
+    end)
   (func (export "_start")
-        f64.const 1.0 f64.const nan f64.max call $log_f64)
+        f64.const 1.0 f64.const nan f64.max call $vybe_check_nan_f64)
 )

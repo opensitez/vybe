@@ -1,0 +1,14 @@
+*> vybe-test: cobol/pic_decimal_padding/comp3_multiply
+*> origin: languages/cobol/tests/cobol/test_pic_decimal_padding.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-PRICE PIC 9(5)V99 COMP-3 VALUE 19.99.
+01 WS-QTY PIC 9(3) COMP-3 VALUE 5.
+01 WS-TOTAL PIC 9(7)V99 COMP-3 VALUE 0.
+PROCEDURE DIVISION.
+    MULTIPLY WS-PRICE BY WS-QTY GIVING WS-TOTAL.
+    DISPLAY WS-TOTAL.
+    STOP RUN.
+

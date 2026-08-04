@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_collections/queue_operations
 // origin: languages/csharp/tests/csharp/test_csharp_collections.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -13,6 +25,7 @@ var q = new Queue<string>();
 q.Enqueue("first");
 q.Enqueue("second");
 q.Enqueue("third");
-__Check((q.Count).ToString(), "3");
-__Check((q.Dequeue()).ToString(), "first");
-__Check((q.Peek()).ToString(), "second");
+__P((q.Count).ToString());
+__P((q.Dequeue()).ToString());
+__P((q.Peek()).ToString());
+__Check("3\nfirst\nsecond");

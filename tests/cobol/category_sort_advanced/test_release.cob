@@ -1,0 +1,4 @@
+*> vybe-test: cobol/category_sort_advanced/test_release
+*> origin: languages/cobol/tests/cobol/test_category_sort_advanced.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. ENVIRONMENT DIVISION. INPUT-OUTPUT SECTION. FILE-CONTROL. SELECT SW ASSIGN TO 'w'. DATA DIVISION. FILE SECTION. SD SW. 01 SR. 05 K1 PIC 9. PROCEDURE DIVISION. INP-PROC SECTION. MOVE 1 TO K1. RELEASE SR. STOP RUN.
+

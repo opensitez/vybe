@@ -1,0 +1,14 @@
+// vybe-test: c/c_pthread_rwlock_rd_wr/rwlock_timedwrlock_timeout
+// origin: languages/c/tests/c/test_c_pthread_rwlock_rd_wr.rs
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+#define _POSIX_C_SOURCE 200809L
+#include <pthread.h>
+#include <time.h>
+int main() {const char *__w[] = {"1"};
+int __n = 1, __i = 0;
+ pthread_rwlock_t rw = PTHREAD_RWLOCK_INITIALIZER; pthread_rwlock_rdlock(&rw); struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 50000000; if(ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; } int r = pthread_rwlock_timedwrlock(&rw, &ts); { char __t[512]; snprintf(__t, sizeof(__t), "%d", r != 0);
+  if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; } pthread_rwlock_unlock(&rw); if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }
+return 0; }
+

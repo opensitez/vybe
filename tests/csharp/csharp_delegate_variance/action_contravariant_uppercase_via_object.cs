@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_delegate_variance/action_contravariant_uppercase_via_object
 // origin: languages/csharp/tests/csharp/test_csharp_delegate_variance.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-System.Action<object> w=v=>__Check((((string)v).ToUpper()).ToString(), "HI"); System.Action<string> n=w; n("hi");
+System.Action<object> w=v=>__P((((string)v).ToUpper()).ToString()); System.Action<string> n=w; n("hi");
+__Check("HI");

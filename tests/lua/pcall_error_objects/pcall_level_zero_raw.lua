@@ -1,0 +1,11 @@
+-- vybe-test: lua/pcall_error_objects/pcall_level_zero_raw
+-- origin: languages/lua/tests/lua/test_pcall_error_objects.rs
+
+local __w1 = "false raw"
+local __i = 0
+
+local ok, msg = pcall(function() error("raw", 0) end)
+do local __t = tostring(ok) .. "\t" .. tostring(msg); __i = __i + 1
+  if __i == 1 and __t ~= __w1 then error("FAIL: want [" .. __w1 .. "] got [" .. __t .. "]") end end
+
+if __i == 0 then error("FAIL: no output, wanted [" .. __w1 .. "]") end

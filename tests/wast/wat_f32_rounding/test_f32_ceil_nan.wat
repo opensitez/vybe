@@ -6,5 +6,12 @@
   (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
   (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
   (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
-  (func (export "_start") f32.const nan f32.ceil call $log_f32)
+  (func $vybe_check_nan_f32 (param f32)
+    local.get 0
+    local.get 0
+    f32.eq
+    if
+      unreachable
+    end)
+  (func (export "_start") f32.const nan f32.ceil call $vybe_check_nan_f32)
 )

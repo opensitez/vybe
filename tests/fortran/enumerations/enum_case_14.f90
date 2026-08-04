@@ -1,0 +1,11 @@
+! vybe-test: fortran/enumerations/enum_case_14
+! origin: languages/fortran/tests/fortran/test_enumerations.rs
+enum, bind(c)
+enumerator :: a=1
+end enum
+program p
+select case(a)
+case (1)
+ print *,1
+end select
+end program p

@@ -1,9 +1,29 @@
 // vybe-test: csharp/csharp_nested_control_flow/foreach_break_exits_after_first_matching_element
 // origin: languages/csharp/tests/csharp/test_csharp_nested_control_flow.rs
 
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
+        throw new Exception("assertion failed");
+    }
+}
+
 int hits = 0;
 foreach (var value in new[] { 2, 4, 6, 8 }) {
     if (value == 6) break;
     hits++;
 }
-Console.WriteLine(hits);
+__P((hits).ToString());
+__Check("2");

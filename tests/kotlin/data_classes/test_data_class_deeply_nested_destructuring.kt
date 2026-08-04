@@ -4,9 +4,26 @@
 data class Line(val start: Int, val end: Int)
         data class Segment(val a: Line, val b: Line)
 
-        fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+        var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
@@ -14,8 +31,10 @@ data class Line(val start: Int, val end: Int)
 fun main() {
             val seg = Segment(Line(1, 2), Line(3, 4))
             val (left, right) = seg
-            __check((left.start + right.end).toString(), "5")
+            __p((left.start + right.end).toString())
             val (s, e) = left
-            __check((s).toString(), "1")
-            __check((e).toString(), "2")
-        }
+            __p((s).toString())
+            __p((e).toString())
+        
+__check("5\n1\n2")
+}

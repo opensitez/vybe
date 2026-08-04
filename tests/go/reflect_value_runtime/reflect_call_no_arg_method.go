@@ -7,9 +7,19 @@ import "reflect"
 type Counter struct { n int }
 func (c *Counter) Inc() { c.n++ }
 func (c Counter) Get() int { return c.n }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
@@ -17,4 +27,6 @@ func __check(got string, want string) {
 func main() { c := Counter{}
 mv := reflect.ValueOf(&c).MethodByName("Get")
 out := mv.Call(nil)
-__check(fmt.Sprint(out[0].Int()), "0") }
+__p(fmt.Sprint(out[0].Int())) 
+__check("0")
+}

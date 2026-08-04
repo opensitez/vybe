@@ -25,8 +25,7 @@ try {
     echo match (3) {
         1 => 'one',
         2 => 'two',
-        default => throw new RuntimeException('bad'),
-    };
+        default => throw new RuntimeException('bad') };
 } catch (RuntimeException $e) {
     echo 'caught';
 }

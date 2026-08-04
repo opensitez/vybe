@@ -1,0 +1,31 @@
+*> vybe-test: cobol/perform_out_of_line/perform_twice_different_paragraphs
+*> origin: languages/cobol/tests/cobol/test_perform_out_of_line.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    PERFORM PA.
+    PERFORM PB.
+    STOP RUN.
+PA.
+    DISPLAY "FIRST".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "FIRST" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "FIRST"
+        DISPLAY "FAIL: want [FIRST] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+PB.
+    DISPLAY "SECOND".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "SECOND" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "SECOND"
+        DISPLAY "FAIL: want [SECOND] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

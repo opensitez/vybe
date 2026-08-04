@@ -1,0 +1,19 @@
+*> vybe-test: cobol/value_all_forms/value_clause_on_level77
+*> origin: languages/cobol/tests/cobol/test_value_all_forms.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+77 STANDALONE PIC X(5) VALUE "FIVE5".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY STANDALONE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING STANDALONE DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "FIVE5"
+        DISPLAY "FAIL: want [FIVE5] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

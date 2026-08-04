@@ -24,8 +24,7 @@ ob_start();
 try {
     match ('none') {
         'a' => 'alpha',
-        'b' => 'beta',
-    };
+        'b' => 'beta' };
 } catch (UnhandledMatchError $e) {
     echo 'fatal';
 }

@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_raw_string_literals/raw_string_leading_spaces_are_preserved
 // origin: languages/csharp/tests/csharp/test_csharp_raw_string_literals.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-string text="""  spaced"""; __Check((text.StartsWith("  ")).ToString(), "True");
+string text="""  spaced"""; __P((text.StartsWith("  ")).ToString());
+__Check("True");

@@ -1,0 +1,21 @@
+*> vybe-test: cobol/file_locking/start_then_close_with_lock_compiles
+*> origin: languages/cobol/tests/cobol/test_file_locking.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F ASSIGN TO "i.dat" ORGANIZATION IS INDEXED RECORD KEY IS K.
+DATA DIVISION.
+FILE SECTION.
+FD F.
+01 REC.
+   05 K PIC 9(5).
+WORKING-STORAGE SECTION.
+01 WK PIC 9(5).
+PROCEDURE DIVISION.
+    OPEN I-O F.
+    START F KEY IS EQUAL TO WK END-START.
+    CLOSE F WITH LOCK.
+    STOP RUN.
+

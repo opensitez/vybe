@@ -5,12 +5,24 @@ package main
 import "fmt"
 import "errors"
 var ErrOld = errors.New("old")
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
 
 func main() { ErrOld = errors.New("new")
-__check(fmt.Sprint(ErrOld.Error()), "new") }
+__p(fmt.Sprint(ErrOld.Error())) 
+__check("new")
+}

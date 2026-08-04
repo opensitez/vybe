@@ -1,0 +1,25 @@
+*> vybe-test: cobol/conditions/test_condition_compound_or
+*> origin: languages/cobol/tests/cobol/test_conditions.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9 VALUE 0.
+01 WS-B PIC 9 VALUE 10.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    IF WS-A > 5 OR WS-B > 5
+        DISPLAY "AT-LEAST-ONE"
+    ELSE
+        DISPLAY "NONE"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "AT-LEAST-ONE" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AT-LEAST-ONE"
+        DISPLAY "FAIL: want [AT-LEAST-ONE] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

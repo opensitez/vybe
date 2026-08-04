@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_list_dictionary/list_nested_outer_list_holds_two_inner_lists
 // origin: languages/csharp/tests/csharp/test_csharp_list_dictionary.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-using System.Collections.Generic; var outer = new List<List<int>>(); outer.Add(new List<int> { 1 }); outer.Add(new List<int> { 2, 3 }); __Check((outer.Count).ToString(), "2");
+using System.Collections.Generic; var outer = new List<List<int>>(); outer.Add(new List<int> { 1 }); outer.Add(new List<int> { 2, 3 }); __P((outer.Count).ToString());
+__Check("2");

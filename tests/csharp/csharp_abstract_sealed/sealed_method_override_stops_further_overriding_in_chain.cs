@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_abstract_sealed/sealed_method_override_stops_further_overriding_in_chain
 // origin: languages/csharp/tests/csharp/test_csharp_abstract_sealed.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -12,4 +24,5 @@ class A { public virtual string Name() => "A"; }
 class B : A { public sealed override string Name() => "B"; }
 class C : B { }
 A obj = new C();
-__Check((obj.Name()).ToString(), "B");
+__P((obj.Name()).ToString());
+__Check("B");

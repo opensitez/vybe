@@ -1,0 +1,26 @@
+*> vybe-test: cobol/string_advanced/test_string_delimited_by_size
+*> origin: languages/cobol/tests/cobol/test_string_advanced.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC X(5) VALUE "HELLO".
+01 WS-B PIC X(5) VALUE "WORLD".
+01 WS-DST PIC X(11) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    STRING WS-A DELIMITED BY SIZE
+           " " DELIMITED BY SIZE
+           WS-B DELIMITED BY SIZE
+           INTO WS-DST.
+    DISPLAY WS-DST.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-DST DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HELLO WORLD"
+        DISPLAY "FAIL: want [HELLO WORLD] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

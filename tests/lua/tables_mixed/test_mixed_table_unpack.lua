@@ -1,0 +1,10 @@
+-- vybe-test: lua/tables_mixed/test_mixed_table_unpack
+-- origin: languages/lua/tests/lua/test_tables_mixed.rs
+
+local __w1 = "10 20"
+local __i = 0
+
+local t={10, 20, a=1}; local a, b = table.unpack(t); do local __t = tostring(a..' '..b); __i = __i + 1
+  if __i == 1 and __t ~= __w1 then error("FAIL: want [" .. __w1 .. "] got [" .. __t .. "]") end end
+
+if __i == 0 then error("FAIL: no output, wanted [" .. __w1 .. "]") end

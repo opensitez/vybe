@@ -1,0 +1,33 @@
+// vybe-test: dart/dart_convert_latin1_encode_decode/ascii_decode_allow_invalid
+// origin: languages/dart/tests/dart/test_dart_convert_latin1_encode_decode.rs
+
+final StringBuffer __vybeOut = StringBuffer();
+
+void __p(Object? o) {
+  __vybeOut.writeln(o);
+}
+
+void __check(String want) {
+  var got = __vybeOut.toString();
+  // `writeln` on the final print contributes a trailing newline that the
+  // expected line vector never carried.
+  if (got.endsWith('\n')) {
+    got = got.substring(0, got.length - 1);
+  }
+  if (got != want) {
+    print('FAIL: want [$want] got [$got]');
+    throw Exception('assertion failed');
+  }
+}
+
+import 'dart:convert';
+void __vybeMain() {
+  final str = ascii.decode([228], allowInvalid: true);
+  // Replaced with U+FFFD
+  __p(str.codeUnitAt(0) == 0xFFFD);
+}
+
+void main() {
+  __vybeMain();
+  __check('true');
+}

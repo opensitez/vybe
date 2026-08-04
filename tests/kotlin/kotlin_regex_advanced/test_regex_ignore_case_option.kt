@@ -1,16 +1,35 @@
 // vybe-test: kotlin/kotlin_regex_advanced/test_regex_ignore_case_option
 // origin: languages/kotlin/tests/kotlin/test_kotlin_regex_advanced.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
 
 fun main() {
             val re = "ab+c".toRegex(RegexOption.IGNORE_CASE)
-            __check((re.matches("ABBC")).toString(), "true")
-            __check((re.matches("abc")).toString(), "true")
-            __check((re.matches("ABC")).toString(), "true")
-        }
+            __p((re.matches("ABBC")).toString())
+            __p((re.matches("abc")).toString())
+            __p((re.matches("ABC")).toString())
+        
+__check("true\ntrue\ntrue")
+}

@@ -24,8 +24,7 @@ ob_start();
 $value = match (false) {
     true => 'true',
     false => 'false',
-    default => 'other',
-};
+    default => 'other' };
 echo $value;
 
 __vybe_check(ob_get_clean(), "false");

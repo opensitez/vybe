@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_nullable_value_deep/nullable_bool_has_value_false_for_null
 // origin: languages/csharp/tests/csharp/test_csharp_nullable_value_deep.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-bool? flag=null; __Check((flag.HasValue).ToString(), "False");
+bool? flag=null; __P((flag.HasValue).ToString());
+__Check("False");

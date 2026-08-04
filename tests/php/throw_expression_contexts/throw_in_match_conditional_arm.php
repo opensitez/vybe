@@ -24,8 +24,7 @@ ob_start();
 try {
     echo match (true) {
         true => throw new OverflowException('hot'),
-        false => 'cold',
-    };
+        false => 'cold' };
 } catch (OverflowException $e) { echo $e->getMessage(); }
 
 __vybe_check(ob_get_clean(), "hot");

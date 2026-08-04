@@ -1,0 +1,10 @@
+-- vybe-test: lua/control_if_local_binding/test_control_if_local_binding_false_branch_has_its_own_local
+-- origin: languages/lua/tests/lua/test_control_if_local_binding.rs
+
+local __w1 = "ok"
+local __i = 0
+
+if false then local message = "x" else local message = "ok" do local __t = tostring(message); __i = __i + 1
+  if __i == 1 and __t ~= __w1 then error("FAIL: want [" .. __w1 .. "] got [" .. __t .. "]") end end end
+
+if __i == 0 then error("FAIL: no output, wanted [" .. __w1 .. "]") end

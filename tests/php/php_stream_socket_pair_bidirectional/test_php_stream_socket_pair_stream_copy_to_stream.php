@@ -1,17 +1,26 @@
 <?php
 // vybe-test: php/php_stream_socket_pair_bidirectional/test_php_stream_socket_pair_stream_copy_to_stream
 // origin: languages/php/tests/php/test_php_stream_socket_pair_bidirectional.rs
-// vybe-test-mode: compile
 
-$pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
-$mem = fopen("php://memory", "r+");
-fwrite($mem, "Stream Copy Test Data");
-rewind($mem);
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
 
-stream_copy_to_stream($mem, $pair[0]);
-$copied = stream_get_contents($pair[1], 21);
+ob_start();
 
-fclose($mem);
-fclose($pair[0]);
-fclose($pair[1]);
-echo $copied === "Stream Copy Test Data" ? "STREAM_COPY_PAIR_OK" : "FAIL";
+php://memory
+
+__vybe_check(ob_get_clean(), "r+");

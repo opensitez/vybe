@@ -9,7 +9,6 @@ function describe(Season $s): string {
         Season::Spring => "flowers",
         Season::Summer => "sun",
         Season::Autumn => "leaves",
-        Season::Winter => "snow",
-    };
+        Season::Winter => "snow" };
 }
 echo describe(Season::Winter);

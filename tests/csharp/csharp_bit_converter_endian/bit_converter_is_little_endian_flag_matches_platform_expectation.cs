@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_bit_converter_endian/bit_converter_is_little_endian_flag_matches_platform_expectation
 // origin: languages/csharp/tests/csharp/test_csharp_bit_converter_endian.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check((System.BitConverter.IsLittleEndian).ToString(), "True");
+__P((System.BitConverter.IsLittleEndian).ToString());
+__Check("True");

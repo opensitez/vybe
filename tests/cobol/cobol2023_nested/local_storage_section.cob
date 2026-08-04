@@ -1,0 +1,15 @@
+*> vybe-test: cobol/cobol2023_nested/local_storage_section
+*> origin: languages/cobol/tests/cobol/test_cobol2023_nested.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-PERSIST PIC 9(5) VALUE 100.
+LOCAL-STORAGE SECTION.
+01 WS-LOCAL PIC 9(5) VALUE 0.
+PROCEDURE DIVISION.
+    ADD WS-PERSIST TO WS-LOCAL.
+    DISPLAY WS-LOCAL.
+    STOP RUN.
+

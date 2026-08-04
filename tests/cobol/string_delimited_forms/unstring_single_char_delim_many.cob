@@ -1,0 +1,41 @@
+*> vybe-test: cobol/string_delimited_forms/unstring_single_char_delim_many_fields
+*> origin: languages/cobol/tests/cobol/test_string_delimited_forms.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC PIC X(9) VALUE "1|2|3|4|5".
+01 F1 PIC X.
+01 F2 PIC X.
+01 F3 PIC X.
+01 F4 PIC X.
+01 F5 PIC X.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    UNSTRING SRC DELIMITED BY "|" INTO F1 F2 F3 F4 F5.
+    DISPLAY F1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING F1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "1"
+        DISPLAY "FAIL: want [1] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY F2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING F2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "2"
+        DISPLAY "FAIL: want [2] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY F5.
+    MOVE SPACES TO WS-VYBE-L
+    STRING F5 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "5"
+        DISPLAY "FAIL: want [5] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

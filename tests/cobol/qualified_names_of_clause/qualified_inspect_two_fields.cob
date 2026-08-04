@@ -1,0 +1,17 @@
+*> vybe-test: cobol/qualified_names_of_clause/qualified_inspect_two_fields
+*> origin: languages/cobol/tests/cobol/test_qualified_names_of_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 TEXT-A.
+   05 CONTENT PIC X(10) VALUE "HELLO".
+01 TEXT-B.
+   05 CONTENT PIC X(10) VALUE "WORLD".
+01 CNT-A PIC 9(2) VALUE 0.
+01 CNT-B PIC 9(2) VALUE 0.
+PROCEDURE DIVISION.
+    INSPECT CONTENT OF TEXT-A TALLYING CNT-A FOR ALL "L".
+    INSPECT CONTENT OF TEXT-B TALLYING CNT-B FOR ALL "O".
+    STOP RUN.
+

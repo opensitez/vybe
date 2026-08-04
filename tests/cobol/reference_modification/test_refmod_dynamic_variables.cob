@@ -1,0 +1,24 @@
+*> vybe-test: cobol/reference_modification/test_refmod_dynamic_variables
+*> origin: languages/cobol/tests/cobol/test_reference_modification.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TXT PIC X(10) VALUE "ABCDEFGHIJ".
+01 WS-START PIC 99 VALUE 3.
+01 WS-LEN PIC 99 VALUE 4.
+01 WS-SUB PIC X(4) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    MOVE WS-TXT(WS-START:WS-LEN) TO WS-SUB.
+    DISPLAY WS-SUB.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-SUB DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "CDEF"
+        DISPLAY "FAIL: want [CDEF] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

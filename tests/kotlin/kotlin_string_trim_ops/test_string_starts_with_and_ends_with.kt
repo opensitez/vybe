@@ -1,15 +1,34 @@
 // vybe-test: kotlin/kotlin_string_trim_ops/test_string_starts_with_and_ends_with
 // origin: languages/kotlin/tests/kotlin/test_kotlin_string_trim_ops.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
 
 fun main() {
             val s = "prefix:value"
-            __check((s.startsWith("pre")).toString(), "true")
-            __check((s.endsWith("value")).toString(), "true")
-        }
+            __p((s.startsWith("pre")).toString())
+            __p((s.endsWith("value")).toString())
+        
+__check("true\ntrue")
+}

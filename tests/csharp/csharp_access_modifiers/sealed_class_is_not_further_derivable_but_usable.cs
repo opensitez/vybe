@@ -1,12 +1,25 @@
 // vybe-test: csharp/csharp_access_modifiers/sealed_class_is_not_further_derivable_but_usable
 // origin: languages/csharp/tests/csharp/test_csharp_access_modifiers.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 sealed class Final{public int Value=99;}
-__Check((new Final().Value).ToString(), "99");
+__P((new Final().Value).ToString());
+__Check("99");

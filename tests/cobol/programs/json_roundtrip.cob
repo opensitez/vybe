@@ -1,0 +1,21 @@
+*> vybe-test: cobol/programs/json_roundtrip
+*> origin: languages/cobol/tests/cobol/test_programs.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. JSONRT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-PERSON.
+   05 WS-NAME PIC X(20) VALUE "Alice".
+   05 WS-AGE  PIC 9(3)  VALUE 30.
+01 WS-JSON   PIC X(200).
+01 WS-PARSED.
+   05 WS-P-NAME PIC X(20).
+   05 WS-P-AGE  PIC 9(3).
+PROCEDURE DIVISION.
+    JSON GENERATE WS-JSON FROM WS-PERSON.
+    DISPLAY "JSON: " WS-JSON.
+    JSON PARSE WS-JSON INTO WS-PARSED.
+    DISPLAY "Name: " WS-P-NAME.
+    STOP RUN.
+

@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_record_struct_deep/record_struct_enum_with
 // origin: languages/csharp/tests/csharp/test_csharp_record_struct_deep.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-enum Level{Low,High} record struct Job(Level Tier); var j=new Job(Level.Low); var k=j with{Tier=Level.High}; __Check((k.Tier).ToString(), "High");
+enum Level{Low,High} record struct Job(Level Tier); var j=new Job(Level.Low); var k=j with{Tier=Level.High}; __P((k.Tier).ToString());
+__Check("High");

@@ -6,6 +6,13 @@
   (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
   (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
   (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (func $vybe_check_i64 (param i64) (param i64)
+    local.get 0
+    local.get 1
+    i64.ne
+    if
+      unreachable
+    end)
   (type $Mixed (struct (field i32) (field f32) (field i64) (field f64)))
 (func (export "_start") (local $m (ref null $Mixed))
   i32.const 42
@@ -17,6 +24,6 @@
   
   local.get $m
   struct.get $Mixed 2
-  call $log_i64
+  i64.const 99 call $vybe_check_i64
 )
 )

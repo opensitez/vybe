@@ -3,6 +3,13 @@
 
 (module
   (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (func $vybe_check_i32 (param i32) (param i32)
+    local.get 0
+    local.get 1
+    i32.ne
+    if
+      unreachable
+    end)
   (func $fib (param $n i32) (result i32)
     local.get $n
     i32.const 2
@@ -17,4 +24,4 @@
   (func (export "_start")
     i32.const 10
     call $fib
-    call $log))
+    i32.const 55 call $vybe_check_i32))

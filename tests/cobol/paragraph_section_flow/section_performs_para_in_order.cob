@@ -1,0 +1,28 @@
+*> vybe-test: cobol/paragraph_section_flow/section_performs_para_in_order
+*> origin: languages/cobol/tests/cobol/test_paragraph_section_flow.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 OUT PIC X(10) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    PERFORM BUILD-SECT.
+    DISPLAY OUT.
+    MOVE SPACES TO WS-VYBE-L
+    STRING OUT DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HELLO WOR "
+        DISPLAY "FAIL: want [HELLO WOR ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+BUILD-SECT SECTION.
+SET-A.
+    MOVE "HELLO" TO OUT.
+ADD-SPACE.
+    MOVE "HELLO " TO OUT.
+ADD-WORLD.
+    MOVE "HELLO WOR" TO OUT.
+    STOP RUN.
+

@@ -1,0 +1,32 @@
+*> vybe-test: cobol/level_numbers/test_level_deep_nesting
+*> origin: languages/cobol/tests/cobol/test_level_numbers.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-L01.
+   05 WS-L05.
+      10 WS-L10.
+         15 WS-L15.
+            20 WS-L20 PIC X(5) VALUE "HELLO".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    DISPLAY WS-L01.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-L01 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HELLO"
+        DISPLAY "FAIL: want [HELLO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-L20.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-L20 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HELLO"
+        DISPLAY "FAIL: want [HELLO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

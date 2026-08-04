@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_delegates/delegate_declaration
 // origin: languages/csharp/tests/csharp/test_csharp_delegates.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -14,6 +26,7 @@ class Program {
     public static int Mul(int a, int b) { return a * b; }
 }
 MathOp op = (a, b) => a + b;
-__Check((op(3, 4)).ToString(), "7");
+__P((op(3, 4)).ToString());
 op = (a, b) => a * b;
-__Check((op(3, 4)).ToString(), "12");
+__P((op(3, 4)).ToString());
+__Check("7\n12");

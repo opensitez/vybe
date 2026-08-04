@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_deconstruction/tuple_deconstruction_swaps_values_via_assignment
 // origin: languages/csharp/tests/csharp/test_csharp_deconstruction.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,5 +23,6 @@ void __Check(string got, string want) {
 int left = 1;
 int right = 2;
 (left, right) = (right, left);
-__Check((left).ToString(), "2");
-__Check((right).ToString(), "1");
+__P((left).ToString());
+__P((right).ToString());
+__Check("2\n1");

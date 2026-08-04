@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_classes/multi_level_inheritance
 // origin: languages/csharp/tests/csharp/test_csharp_classes.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -18,4 +30,5 @@ class C : B {
     public override string Who() { return "C->" + base.Who(); }
 }
 var c = new C();
-__Check((c.Who()).ToString(), "C->B->A");
+__P((c.Who()).ToString());
+__Check("C->B->A");

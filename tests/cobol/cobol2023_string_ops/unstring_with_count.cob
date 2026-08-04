@@ -1,0 +1,21 @@
+*> vybe-test: cobol/cobol2023_string_ops/unstring_with_count
+*> origin: languages/cobol/tests/cobol/test_cobol2023_string_ops.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DATA PIC X(20) VALUE "ABC,DEFGH,IJ".
+01 WS-PART1 PIC X(10).
+01 WS-PART2 PIC X(10).
+01 WS-CNT1 PIC 9(3).
+01 WS-CNT2 PIC 9(3).
+PROCEDURE DIVISION.
+    UNSTRING WS-DATA
+        DELIMITED BY ","
+        INTO WS-PART1 COUNT IN WS-CNT1
+             WS-PART2 COUNT IN WS-CNT2.
+    DISPLAY WS-CNT1.
+    DISPLAY WS-CNT2.
+    STOP RUN.
+

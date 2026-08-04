@@ -1,12 +1,25 @@
 // vybe-test: csharp/csharp_string_builder_usage/string_builder_usage_double_identity
 // origin: languages/csharp/tests/csharp/test_csharp_string_builder_usage.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 // string_builder_usage
-double seed = 20; __Check(((seed + 0.5 - 0.5) == seed).ToString(), "True");
+double seed = 20; __P(((seed + 0.5 - 0.5) == seed).ToString());
+__Check("True");

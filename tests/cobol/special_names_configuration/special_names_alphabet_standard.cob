@@ -1,0 +1,25 @@
+*> vybe-test: cobol/special_names_configuration/special_names_alphabet_standard_runtime
+*> origin: languages/cobol/tests/cobol/test_special_names_configuration.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    ALPHABET A-ALPHA IS STANDARD-1.
+    COLLATING SEQUENCE IS A-ALPHA.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 CH1 PIC X VALUE "A".
+01 CH2 PIC X VALUE "Z".
+PROCEDURE DIVISION.
+    IF CH1 < CH2 DISPLAY "STD1" END-IF
+    STOP RUN.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "STD1" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "STD1"
+        DISPLAY "FAIL: want [STD1] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

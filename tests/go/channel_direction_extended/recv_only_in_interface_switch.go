@@ -3,8 +3,27 @@
 
 package main
 import "fmt"
-func tag(v interface{}) { switch v.(type) { case <-chan int: fmt.Println("recv")
-case chan<- int: fmt.Println("send")
-default: fmt.Println("other") } }
+func tag(v interface{}) { switch v.(type) { case <-chan int: __p(fmt.Sprint("recv"))
+case chan<- int: __p(fmt.Sprint("send"))
+default: __p(fmt.Sprint("other")) } }
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
+		panic("assertion failed")
+	}
+}
+
 func main() { ch := make(chan int)
-tag((<-chan int)(ch)) }
+tag((<-chan int)(ch)) 
+__check("recv")
+}

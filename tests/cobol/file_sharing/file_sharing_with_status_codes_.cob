@@ -1,0 +1,23 @@
+*> vybe-test: cobol/file_sharing/file_sharing_with_status_codes_compiles
+*> origin: languages/cobol/tests/cobol/test_file_sharing.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F1 ASSIGN TO "a.dat" FILE STATUS IS FS1.
+    SELECT F2 ASSIGN TO "b.dat" FILE STATUS IS FS2.
+DATA DIVISION.
+FILE SECTION.
+FD F1.
+01 R1 PIC X(10).
+FD F2.
+01 R2 PIC X(10).
+WORKING-STORAGE SECTION.
+01 FS1 PIC XX.
+01 FS2 PIC XX.
+PROCEDURE DIVISION.
+    OPEN INPUT F1 F2.
+    CLOSE F1 F2.
+    STOP RUN.
+

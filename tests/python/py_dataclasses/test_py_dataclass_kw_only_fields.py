@@ -31,8 +31,40 @@ def __line(*args):
     return out
 
 
+# Output is COLLECTED, not paired. The emitter rewrites every `print(a, b)`
+# into `__p(__line(a, b))`, appending here, and compares the whole buffer once
+# at the end of the file. Pairing the i-th print with the i-th expected line
+# cannot assert anything about a loop — 936 of Python's cases.
+#
+# `__p`/`__pr` take an ALREADY-JOINED string, not `*args` plus keyword-only
+# terminator parameters. Those are broken under Vybe (measured: with a
+# keyword-only sep/end after *args, the call appends nothing at all), while the
+# plain `__line(*args)` above works. So the newline decision is made by WHICH
+# helper the emitter calls.
+#
+# A comment in the FIRST position of an indented block used to be a parse error
+# under Vybe — `def f():` followed by a comment line. Fixed in
+# `languages/python/src/grammar.pest`: the preprocessor emits a comment-only
+# line without an INDENT marker but still emits its NEWLINE, so `block` has to
+# accept `":" NEWLINE NEWLINE* … INDENT`. Mid-block comments always worked,
+# which is why this hid for so long.
+__buf = ""
+
+
+def __p(s):
+    global __buf
+    __buf += s + "\n"
+
+
+def __pr(s):
+    global __buf
+    __buf += s
+
+
 def __check(got, want):
-    if got != want:
+    # The final print contributes a trailing newline that the expected line
+    # vector never carried, so both forms are accepted.
+    if got != want and got != want + "\n":
         print("FAIL: want [" + want + "] got [" + got + "]")
         raise Exception("assertion failed")
 
@@ -44,8 +76,9 @@ class Settings:
     timeout: int = 30
 
 s = Settings(debug=True, timeout=60)
-__check(__line(s.debug, s.timeout), "True 60")
+__p(__line(s.debug, s.timeout))
 try:
     Settings(True, 60)  # positional not allowed!
 except TypeError:
-    __check(__line("TypeError: no positional args allowed"), "TypeError: no positional args allowed")
+    __p(__line("TypeError: no positional args allowed"))
+__check(__buf, "True 60\nTypeError: no positional args allowed")

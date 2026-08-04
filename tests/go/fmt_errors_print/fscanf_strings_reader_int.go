@@ -4,13 +4,25 @@
 package main
 import "fmt"
 import "strings"
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
 
 func main() { var n int
 c, _ := fmt.Fscanf(strings.NewReader("55"), "%d", &n)
-__check(fmt.Sprint(c) + " " + fmt.Sprint(n), "1 55") }
+__p(fmt.Sprint(c) + " " + fmt.Sprint(n)) 
+__check("1 55")
+}

@@ -1,0 +1,25 @@
+*> vybe-test: cobol/data_division_expanded/occurs_with_index_compiles
+*> origin: languages/cobol/tests/cobol/test_data_division_expanded.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TABLE PIC 9(2) OCCURS 4 TIMES.
+01 WS-IDX PIC 9(1) VALUE 1.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE 11 TO WS-TABLE(1).
+    MOVE 22 TO WS-TABLE(2).
+    MOVE 33 TO WS-TABLE(3).
+    MOVE 44 TO WS-TABLE(4).
+    MOVE 2 TO WS-IDX.
+    DISPLAY WS-TABLE(WS-IDX).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-TABLE(WS-IDX) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "22"
+        DISPLAY "FAIL: want [22] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

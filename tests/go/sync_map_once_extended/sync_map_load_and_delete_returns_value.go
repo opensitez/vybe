@@ -4,9 +4,19 @@
 package main
 import "fmt"
 import "sync"
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
@@ -15,6 +25,8 @@ func main() { var m sync.Map
 m.Store("x", 5)
 v, ok := m.LoadAndDelete("x")
 _, still := m.Load("x")
-__check(fmt.Sprint(v.(int)), "5")
-__check(fmt.Sprint(ok), "true")
-__check(fmt.Sprint(still), "false") }
+__p(fmt.Sprint(v.(int)))
+__p(fmt.Sprint(ok))
+__p(fmt.Sprint(still)) 
+__check("5\ntrue\nfalse")
+}

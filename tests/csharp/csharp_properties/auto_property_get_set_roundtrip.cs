@@ -1,13 +1,26 @@
 // vybe-test: csharp/csharp_properties/auto_property_get_set_roundtrip
 // origin: languages/csharp/tests/csharp/test_csharp_properties.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 class Person { public string Name { get; set; } }
 var p = new Person(); p.Name = "Alice";
-__Check((p.Name).ToString(), "Alice");
+__P((p.Name).ToString());
+__Check("Alice");

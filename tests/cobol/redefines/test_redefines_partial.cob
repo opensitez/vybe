@@ -1,0 +1,21 @@
+*> vybe-test: cobol/redefines/test_redefines_partial
+*> origin: languages/cobol/tests/cobol/test_redefines.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-BASE PIC X(4) VALUE "ABCD".
+01 WS-ALIAS REDEFINES WS-BASE PIC X(2).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    DISPLAY WS-ALIAS.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-ALIAS DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AB"
+        DISPLAY "FAIL: want [AB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

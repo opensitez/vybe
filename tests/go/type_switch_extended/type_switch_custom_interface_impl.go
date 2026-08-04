@@ -6,6 +6,25 @@ import "fmt"
 type speaker interface { Say() string }
 type cat struct{}
 func (c cat) Say() string { return "meow" }
-func tag(v interface{}) { switch v.(type) { case speaker: fmt.Println(v.(speaker).Say())
-default: fmt.Println("mute") } }
-func main() { tag(cat{}) }
+func tag(v interface{}) { switch v.(type) { case speaker: __p(fmt.Sprint(v.(speaker).Say()))
+default: __p(fmt.Sprint("mute")) } }
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
+		panic("assertion failed")
+	}
+}
+
+func main() { tag(cat{}) 
+__check("meow")
+}

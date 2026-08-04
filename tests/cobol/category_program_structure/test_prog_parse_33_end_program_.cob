@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_program_structure/test_prog_parse_33_end_program_scope
+*> origin: languages/cobol/tests/cobol/test_category_program_structure.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. TOP. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 WS-V PIC X VALUE 'X'. PROCEDURE DIVISION. CALL 'SCOPE'. STOP RUN. IDENTIFICATION DIVISION. PROGRAM-ID. SCOPE. PROCEDURE DIVISION. DISPLAY WS-V.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-V DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "X"
+        DISPLAY "FAIL: want [X] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. END PROGRAM SCOPE.
+

@@ -1,0 +1,20 @@
+*> vybe-test: cobol/alphabet_clause/alphabet_clause_standard_2_runtime
+*> origin: languages/cobol/tests/cobol/test_alphabet_clause.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. ALPHA17.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    ALPHABET ALPHA-ST2 IS STANDARD-2.
+PROCEDURE DIVISION.
+    DISPLAY "STD2".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "STD2" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "STD2"
+        DISPLAY "FAIL: want [STD2] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

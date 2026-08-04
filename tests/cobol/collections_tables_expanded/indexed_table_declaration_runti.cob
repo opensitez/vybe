@@ -1,0 +1,32 @@
+*> vybe-test: cobol/collections_tables_expanded/indexed_table_declaration_runtime
+*> origin: languages/cobol/tests/cobol/test_collections_tables_expanded.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TABLE.
+   05 WS-ITEM PIC X(4) OCCURS 5 TIMES INDEXED BY WS-IDX.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE "A" TO WS-ITEM(1).
+    MOVE "B" TO WS-ITEM(2).
+    SET WS-IDX TO 1.
+    DISPLAY WS-ITEM(WS-IDX).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-ITEM(WS-IDX) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "A"
+        DISPLAY "FAIL: want [A] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    SET WS-IDX TO 2.
+    DISPLAY WS-ITEM(WS-IDX).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-ITEM(WS-IDX) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "B"
+        DISPLAY "FAIL: want [B] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

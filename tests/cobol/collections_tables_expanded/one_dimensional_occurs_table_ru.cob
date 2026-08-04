@@ -1,0 +1,39 @@
+*> vybe-test: cobol/collections_tables_expanded/one_dimensional_occurs_table_runtime
+*> origin: languages/cobol/tests/cobol/test_collections_tables_expanded.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TABLE.
+   05 WS-ITEM PIC 9(3) OCCURS 5 TIMES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE 101 TO WS-ITEM(1).
+    MOVE 102 TO WS-ITEM(2).
+    MOVE 103 TO WS-ITEM(3).
+    DISPLAY WS-ITEM(1).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-ITEM(1) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "101"
+        DISPLAY "FAIL: want [101] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-ITEM(2).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-ITEM(2) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "102"
+        DISPLAY "FAIL: want [102] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY WS-ITEM(3).
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-ITEM(3) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "103"
+        DISPLAY "FAIL: want [103] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

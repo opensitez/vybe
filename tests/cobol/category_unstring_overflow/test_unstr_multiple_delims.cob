@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_unstring_overflow/test_unstr_multiple_delims
+*> origin: languages/cobol/tests/cobol/test_category_unstring_overflow.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 S PIC X(5) VALUE 'A*B-C'. 01 R1 PIC X. 01 R2 PIC X. 01 R3 PIC X. PROCEDURE DIVISION. UNSTRING S DELIMITED BY '*' OR '-' INTO R1 R2 R3. DISPLAY R1 R2 R3.
+    MOVE SPACES TO WS-VYBE-L
+    STRING R1 DELIMITED SIZE R2 DELIMITED SIZE R3 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ABC"
+        DISPLAY "FAIL: want [ABC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

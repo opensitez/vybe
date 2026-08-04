@@ -1,0 +1,22 @@
+*> vybe-test: cobol/nested_programs/test_nested_program_nested_scope
+*> origin: languages/cobol/tests/cobol/test_nested_programs.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. LEVEL1.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-FLAG PIC X VALUE "A".
+PROCEDURE DIVISION.
+    DISPLAY WS-FLAG.
+    CALL "LEVEL2".
+    STOP RUN.
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. LEVEL2.
+PROCEDURE DIVISION.
+    DISPLAY "NESTED".
+    STOP RUN.
+END PROGRAM LEVEL2.
+
+END PROGRAM LEVEL1.
+

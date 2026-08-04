@@ -1,9 +1,26 @@
 // vybe-test: kotlin/bitwise_operations/test_long_shift_right_arithmetic
 // origin: languages/kotlin/tests/kotlin/test_bitwise_operations.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
@@ -11,8 +28,10 @@ fun __check(got: String, want: String) {
 fun main() {
             val value: Long = 64L
             val negative: Long = -64L
-            __check((value shr 2).toString(), "16")
-            __check((negative shr 3).toString(), "-8")
-            __check((negative shr 2).toString(), "-16")
-            __check((negative shr 1).toString(), "-32")
-        }
+            __p((value shr 2).toString())
+            __p((negative shr 3).toString())
+            __p((negative shr 2).toString())
+            __p((negative shr 1).toString())
+        
+__check("16\n-8\n-16\n-32")
+}

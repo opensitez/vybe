@@ -1,0 +1,24 @@
+*> vybe-test: cobol/special_names_configuration/special_names_symbolic_char_runtime
+*> origin: languages/cobol/tests/cobol/test_special_names_configuration.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SPECIAL-NAMES.
+    SYMBOLIC CHARACTERS CR IS 13.
+    SYMBOLIC CHARACTERS LF IS 10.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+01 WS-VAR PIC S9 VALUE 2.
+PROCEDURE DIVISION.
+    IF WS-VAR > 0 DISPLAY "SYM" END-IF
+    STOP RUN.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "SYM" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "SYM"
+        DISPLAY "FAIL: want [SYM] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+

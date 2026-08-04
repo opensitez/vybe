@@ -1,9 +1,26 @@
 // vybe-test: kotlin/kotlin_time/test_kotlin_time_duration_abs_via_zero_minus
 // origin: languages/kotlin/tests/kotlin/test_kotlin_time.rs
 
-fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
@@ -11,6 +28,8 @@ fun __check(got: String, want: String) {
 fun main() {
             val value = -(4.toDuration(DurationUnit.SECONDS))
             val inverted = -value
-            __check((inverted.inWholeMilliseconds).toString(), "4000")
-            __check((inverted == 4.toDuration(DurationUnit.SECONDS)).toString(), "true")
-        }
+            __p((inverted.inWholeMilliseconds).toString())
+            __p((inverted == 4.toDuration(DurationUnit.SECONDS)).toString())
+        
+__check("4000\ntrue")
+}

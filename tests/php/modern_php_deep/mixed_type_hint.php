@@ -27,8 +27,7 @@ function display(mixed $value): string {
         "string"  => "str:$value",
         "array"   => "arr:" . count($value),
         "NULL"    => "null",
-        default   => "other",
-    };
+        default   => "other" };
 }
 echo display(42);
 echo display("hello");

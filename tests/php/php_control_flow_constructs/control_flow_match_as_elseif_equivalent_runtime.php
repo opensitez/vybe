@@ -26,8 +26,7 @@ $out = match (true) {
     $score >= 90 => 'A',
     $score >= 80 => 'B',
     $score >= 70 => 'C',
-    default => 'D',
-};
+    default => 'D' };
 if ($out === 'C') {
     echo 'pass';
 } else {

@@ -1,0 +1,36 @@
+*> vybe-test: cobol/nested_if_else/if_else_nested_set_two_vars
+*> origin: languages/cobol/tests/cobol/test_nested_if_else.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 A PIC 9 VALUE 1.
+01 B PIC 9 VALUE 0.
+01 OUT1 PIC X(3) VALUE "---".
+01 OUT2 PIC X(3) VALUE "---".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    IF A = 1
+        MOVE "YES" TO OUT1
+        IF B = 0
+            MOVE "NO" TO OUT2
+        END-IF
+    END-IF.
+    DISPLAY OUT1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING OUT1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "YES"
+        DISPLAY "FAIL: want [YES] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY OUT2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING OUT2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "NO"
+        DISPLAY "FAIL: want [NO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

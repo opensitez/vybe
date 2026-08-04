@@ -1,0 +1,29 @@
+*> vybe-test: cobol/initialize_forms/initialize_multiple_fields
+*> origin: languages/cobol/tests/cobol/test_initialize_forms.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 A PIC X(4) VALUE "XXXX".
+01 B PIC 9(4) VALUE 1111.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    INITIALIZE A B.
+    DISPLAY A.
+    MOVE SPACES TO WS-VYBE-L
+    STRING A DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "    "
+        DISPLAY "FAIL: want [    ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "0000"
+        DISPLAY "FAIL: want [0000] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

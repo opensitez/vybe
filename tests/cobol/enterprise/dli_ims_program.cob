@@ -1,0 +1,18 @@
+*> vybe-test: cobol/enterprise/dli_ims_program
+*> origin: languages/cobol/tests/cobol/test_enterprise.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. IMSREAD.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-SEGMENT PIC X(200).
+01 WS-STATUS  PIC XX.
+PROCEDURE DIVISION.
+    EXEC DLI GU INTO(WS-SEGMENT) END-EXEC.
+    DISPLAY "Segment: " WS-SEGMENT.
+    EXEC DLI GN INTO(WS-SEGMENT) END-EXEC.
+    DISPLAY "Next: " WS-SEGMENT.
+    EXEC DLI ISRT FROM(WS-SEGMENT) END-EXEC.
+    DISPLAY "Inserted".
+    STOP RUN.
+

@@ -1,0 +1,26 @@
+*> vybe-test: cobol/add_advanced/test_add_corresponding
+*> origin: languages/cobol/tests/cobol/test_add_advanced.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-G1.
+   05 WS-X PIC 9(3) VALUE 10.
+   05 WS-Y PIC 9(3) VALUE 20.
+01 WS-G2.
+   05 WS-X PIC 9(3) VALUE 5.
+   05 WS-Y PIC 9(3) VALUE 15.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    ADD CORRESPONDING WS-G1 TO WS-G2.
+    DISPLAY WS-G2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-G2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "1535"
+        DISPLAY "FAIL: want [1535] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

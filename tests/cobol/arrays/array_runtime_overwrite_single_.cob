@@ -1,0 +1,40 @@
+*> vybe-test: cobol/arrays/array_runtime_overwrite_single_cell_only
+*> origin: languages/cobol/tests/cobol/test_arrays.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 T PIC 9 OCCURS 3 TIMES.
+01 I PIC 9 VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE 1 TO T(1).
+    MOVE 2 TO T(2).
+    MOVE 3 TO T(3).
+    MOVE 9 TO T(2).
+    DISPLAY T(1).
+    MOVE SPACES TO WS-VYBE-L
+    STRING T(1) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "1"
+        DISPLAY "FAIL: want [1] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY T(2).
+    MOVE SPACES TO WS-VYBE-L
+    STRING T(2) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "9"
+        DISPLAY "FAIL: want [9] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY T(3).
+    MOVE SPACES TO WS-VYBE-L
+    STRING T(3) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "3"
+        DISPLAY "FAIL: want [3] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_compute/test_compute_modulo_with_size_guard
+*> origin: languages/cobol/tests/cobol/test_category_compute.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 A PIC 99 VALUE 0. 01 B PIC 99 VALUE 0. PROCEDURE DIVISION. COMPUTE A = FUNCTION MOD(13, 5). COMPUTE B = 10 / 5. DISPLAY A B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING A DELIMITED SIZE B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "03 02"
+        DISPLAY "FAIL: want [03 02] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

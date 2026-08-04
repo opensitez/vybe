@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_functional_patterns/memoize_caches_expensive_computation
 // origin: languages/csharp/tests/csharp/test_csharp_functional_patterns.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -17,4 +29,5 @@ fib=n=>{
     cache[n]=r;
     return r;
 };
-__Check((fib(10)).ToString(), "55");
+__P((fib(10)).ToString());
+__Check("55");

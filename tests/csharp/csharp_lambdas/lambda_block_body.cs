@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_lambdas/lambda_block_body
 // origin: languages/csharp/tests/csharp/test_csharp_lambdas.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,4 +23,5 @@ void __Check(string got, string want) {
 var add = (int a, int b) => {
     return a + b;
 };
-__Check((add(3, 4)).ToString(), "7");
+__P((add(3, 4)).ToString());
+__Check("7");

@@ -1,0 +1,14 @@
+*> vybe-test: cobol/strings/string_three
+*> origin: languages/cobol/tests/cobol/test_strings.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 A PIC X(5) VALUE "A".
+01 B PIC X(5) VALUE "B".
+01 C PIC X(5) VALUE "C".
+01 R PIC X(20).
+PROCEDURE DIVISION.
+    STRING A DELIMITED BY SIZE B DELIMITED BY SIZE C DELIMITED BY SIZE INTO R.
+    STOP RUN.
+

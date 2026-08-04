@@ -1,0 +1,20 @@
+*> vybe-test: cobol/write_statement/write_sequential_from_hold_compiles
+*> origin: languages/cobol/tests/cobol/test_write_statement.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SF ASSIGN TO "s.dat" ORGANIZATION IS SEQUENTIAL.
+DATA DIVISION.
+FILE SECTION.
+FD SF.
+01 SR PIC X(30).
+WORKING-STORAGE SECTION.
+01 HOLD PIC X(30).
+PROCEDURE DIVISION.
+    OPEN OUTPUT SF.
+    WRITE SR FROM HOLD.
+    CLOSE SF.
+    STOP RUN.
+

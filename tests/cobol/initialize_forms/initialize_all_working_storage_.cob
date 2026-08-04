@@ -1,0 +1,39 @@
+*> vybe-test: cobol/initialize_forms/initialize_all_working_storage_group
+*> origin: languages/cobol/tests/cobol/test_initialize_forms.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 REC.
+   05 NAME PIC X(5) VALUE "HELLO".
+   05 AGE PIC 9(3) VALUE 42.
+   05 CODE PIC X(2) VALUE "AB".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    INITIALIZE REC.
+    DISPLAY NAME.
+    MOVE SPACES TO WS-VYBE-L
+    STRING NAME DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "     "
+        DISPLAY "FAIL: want [     ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY AGE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING AGE DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "000"
+        DISPLAY "FAIL: want [000] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY CODE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING CODE DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "  "
+        DISPLAY "FAIL: want [  ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

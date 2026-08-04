@@ -1,0 +1,5 @@
+# vybe-test: ruby/enumerable/count_with_block
+# origin: languages/ruby/tests/ruby/test_enumerable.rs
+# vybe-test-mode: compile
+
+x = [1, 2, 3, 4, 5].count { |n| n.odd? }

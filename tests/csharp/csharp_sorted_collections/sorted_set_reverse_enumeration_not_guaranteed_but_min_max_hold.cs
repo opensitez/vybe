@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_sorted_collections/sorted_set_reverse_enumeration_not_guaranteed_but_min_max_hold
 // origin: languages/csharp/tests/csharp/test_csharp_sorted_collections.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-using System.Collections.Generic; var ss = new SortedSet<int> { 4, 1, 7 }; __Check((ss.Min).ToString(), "1"); __Check((ss.Max).ToString(), "7");
+using System.Collections.Generic; var ss = new SortedSet<int> { 4, 1, 7 }; __P((ss.Min).ToString()); __P((ss.Max).ToString());
+__Check("1\n7");

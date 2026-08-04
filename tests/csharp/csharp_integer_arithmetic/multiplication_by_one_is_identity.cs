@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_integer_arithmetic/multiplication_by_one_is_identity
 // origin: languages/csharp/tests/csharp/test_csharp_integer_arithmetic.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check((99 * 1).ToString(), "99");
+__P((99 * 1).ToString());
+__Check("99");

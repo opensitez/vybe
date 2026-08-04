@@ -1,0 +1,22 @@
+*> vybe-test: cobol/data_group_level/data_group_multiple_filler_segments
+*> origin: languages/cobol/tests/cobol/test_data_group_level.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 MSG.
+   05 FILLER PIC X(5) VALUE "HELLO".
+   05 FILLER PIC X VALUE " ".
+   05 FILLER PIC X(5) VALUE "WORLD".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY MSG.
+    MOVE SPACES TO WS-VYBE-L
+    STRING MSG DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HELLO WORLD"
+        DISPLAY "FAIL: want [HELLO WORLD] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_delegate_variance/action_contravariant_multiline_lambda
 // origin: languages/csharp/tests/csharp/test_csharp_delegate_variance.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-System.Action<object> wide=v=>{__Check((v).ToString(), "99");}; System.Action<int> narrow=wide; narrow(99);
+System.Action<object> wide=v=>{__P((v).ToString());}; System.Action<int> narrow=wide; narrow(99);
+__Check("99");

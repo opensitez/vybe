@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_enum_metaprogramming/enum_cast_to_sbyte_underlying
 // origin: languages/csharp/tests/csharp/test_csharp_enum_metaprogramming.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-enum SByteEnum:sbyte{Min=-128} __Check(((sbyte)SByteEnum.Min).ToString(), "-128");
+enum SByteEnum:sbyte{Min=-128} __P(((sbyte)SByteEnum.Min).ToString());
+__Check("-128");

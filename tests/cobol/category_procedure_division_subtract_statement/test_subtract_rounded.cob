@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_procedure_division_subtract_statement/test_subtract_rounded
+*> origin: languages/cobol/tests/cobol/test_category_procedure_division_subtract_statement.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 V1 PIC 9V9 VALUE 5.5. 01 V2 PIC 9V9 VALUE 2.1. 01 R PIC 9. PROCEDURE DIVISION. SUBTRACT V2 FROM V1 GIVING R ROUNDED. DISPLAY R.
+    MOVE SPACES TO WS-VYBE-L
+    STRING R DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "3"
+        DISPLAY "FAIL: want [3] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

@@ -1,13 +1,26 @@
 // vybe-test: csharp/strings_advanced/string_isnullorempty
 // origin: languages/csharp/tests/csharp/test_strings_advanced.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check((string.IsNullOrEmpty("")).ToString(), "True");
-__Check((string.IsNullOrEmpty(null)).ToString(), "True");
-__Check((string.IsNullOrEmpty("hello")).ToString(), "False");
+__P((string.IsNullOrEmpty("")).ToString());
+__P((string.IsNullOrEmpty(null)).ToString());
+__P((string.IsNullOrEmpty("hello")).ToString());
+__Check("True\nTrue\nFalse");

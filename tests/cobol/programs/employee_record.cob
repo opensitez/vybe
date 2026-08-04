@@ -1,0 +1,25 @@
+*> vybe-test: cobol/programs/employee_record
+*> origin: languages/cobol/tests/cobol/test_programs.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. EMPLOYEE.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-EMPLOYEE.
+   05 WS-EMP-ID    PIC 9(5)  VALUE 12345.
+   05 WS-EMP-NAME  PIC X(30) VALUE "John Smith".
+   05 WS-EMP-DEPT  PIC X(20) VALUE "Engineering".
+   05 WS-EMP-SAL   PIC 9(7)V99 VALUE 75000.00.
+01 WS-BONUS PIC 9(7)V99 VALUE 0.
+01 WS-TOTAL PIC 9(8)V99 VALUE 0.
+PROCEDURE DIVISION.
+    COMPUTE WS-BONUS = WS-EMP-SAL * 0.10.
+    COMPUTE WS-TOTAL = WS-EMP-SAL + WS-BONUS.
+    DISPLAY "Employee: " WS-EMP-NAME.
+    DISPLAY "ID:       " WS-EMP-ID.
+    DISPLAY "Dept:     " WS-EMP-DEPT.
+    DISPLAY "Salary:   " WS-EMP-SAL.
+    DISPLAY "Bonus:    " WS-BONUS.
+    DISPLAY "Total:    " WS-TOTAL.
+    STOP RUN.
+

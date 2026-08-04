@@ -2,9 +2,26 @@
 // origin: languages/kotlin/tests/kotlin/test_data_class_copying.rs
 
 data class PairValue(val a: Int, val b: String)
-        fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+        var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
@@ -13,8 +30,10 @@ fun main() {
             val p = PairValue(1, "x")
             val (a, b) = p
             val copy = p.copy(a = a + 1, b = b.uppercase())
-            __check((a).toString(), "1")
-            __check((b).toString(), "x")
-            __check((copy.a).toString(), "2")
-            __check((copy.b).toString(), "X")
-        }
+            __p((a).toString())
+            __p((b).toString())
+            __p((copy.a).toString())
+            __p((copy.b).toString())
+        
+__check("1\nx\n2\nX")
+}

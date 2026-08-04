@@ -1,0 +1,24 @@
+*> vybe-test: cobol/programs/paragraph_program
+*> origin: languages/cobol/tests/cobol/test_programs.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. PARAPROG.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-RESULT PIC 9(10) VALUE 0.
+PROCEDURE DIVISION.
+    PERFORM INIT-PARA.
+    PERFORM CALC-PARA.
+    PERFORM OUTPUT-PARA.
+    STOP RUN.
+INIT-PARA.
+    MOVE 0 TO WS-RESULT.
+    DISPLAY "Initialized".
+CALC-PARA.
+    ADD 100 TO WS-RESULT.
+    ADD 200 TO WS-RESULT.
+    ADD 300 TO WS-RESULT.
+    DISPLAY "Calculated".
+OUTPUT-PARA.
+    DISPLAY "Result: " WS-RESULT.
+

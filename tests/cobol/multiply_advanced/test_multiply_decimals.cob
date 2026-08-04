@@ -1,0 +1,23 @@
+*> vybe-test: cobol/multiply_advanced/test_multiply_decimals
+*> origin: languages/cobol/tests/cobol/test_multiply_advanced.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9V9 VALUE 2.5.
+01 WS-B PIC 9V9 VALUE 1.5.
+01 WS-C PIC 9V99 VALUE 0.0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    MULTIPLY WS-A BY WS-B GIVING WS-C.
+    DISPLAY WS-C.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-C DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "375"
+        DISPLAY "FAIL: want [375] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

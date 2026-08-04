@@ -1,9 +1,21 @@
 // vybe-test: csharp/oop_advanced/abstract_with_constructor
 // origin: languages/csharp/tests/csharp/test_oop_advanced.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -19,4 +31,5 @@ class Dog : Animal {
     public override string Sound() { return "Woof"; }
 }
 var d = new Dog("Rex");
-__Check((d.Greet()).ToString(), "Rex says Woof");
+__P((d.Greet()).ToString());
+__Check("Rex says Woof");

@@ -1,0 +1,27 @@
+*> vybe-test: cobol/evaluate_when_forms/evaluate_compute_before_evaluate
+*> origin: languages/cobol/tests/cobol/test_evaluate_when_forms.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 X PIC 9(2) VALUE 0.
+01 CATEGORY PIC X(6) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    COMPUTE X = 3 * 7.
+    EVALUATE X
+        WHEN 21
+            MOVE "TWENTY" TO CATEGORY
+        WHEN OTHER
+            MOVE "OTHER" TO CATEGORY
+    END-EVALUATE.
+    DISPLAY CATEGORY.
+    MOVE SPACES TO WS-VYBE-L
+    STRING CATEGORY DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "TWENTY"
+        DISPLAY "FAIL: want [TWENTY] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

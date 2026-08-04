@@ -1,0 +1,16 @@
+*> vybe-test: cobol/cobol2023_intrinsics/test_numval
+*> origin: languages/cobol/tests/cobol/test_cobol2023_intrinsics.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-STR PIC X(10) VALUE "12345".
+01 WS-NUM PIC 9(10).
+01 WS-VALID PIC 9(1).
+PROCEDURE DIVISION.
+    COMPUTE WS-VALID = FUNCTION TEST-NUMVAL(WS-STR).
+    COMPUTE WS-NUM = FUNCTION NUMVAL(WS-STR).
+    DISPLAY WS-NUM.
+    STOP RUN.
+

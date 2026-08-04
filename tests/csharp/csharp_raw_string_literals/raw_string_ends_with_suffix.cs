@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_raw_string_literals/raw_string_ends_with_suffix
 // origin: languages/csharp/tests/csharp/test_csharp_raw_string_literals.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-string text="""value-suffix"""; __Check((text.EndsWith("suffix")).ToString(), "True");
+string text="""value-suffix"""; __P((text.EndsWith("suffix")).ToString());
+__Check("True");

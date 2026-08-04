@@ -1,0 +1,30 @@
+*> vybe-test: cobol/new_features/string_manipulation_advanced
+*> origin: languages/cobol/tests/cobol/test_new_features.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. STRMANIP.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-NAME     PIC X(30) VALUE "Smith, John A.".
+01 WS-LAST     PIC X(15).
+01 WS-FIRST    PIC X(15).
+01 WS-MIDDLE   PIC X(5).
+01 WS-REVERSED PIC X(30).
+01 WS-UPPER    PIC X(30).
+01 WS-LEN      PIC 9(3).
+01 WS-COUNT    PIC 9(3) VALUE 0.
+PROCEDURE DIVISION.
+    UNSTRING WS-NAME DELIMITED BY ", "
+        INTO WS-LAST WS-FIRST.
+    MOVE FUNCTION REVERSE(WS-NAME) TO WS-REVERSED.
+    MOVE FUNCTION UPPER-CASE(WS-NAME) TO WS-UPPER.
+    MOVE FUNCTION LENGTH(WS-NAME) TO WS-LEN.
+    INSPECT WS-NAME TALLYING WS-COUNT FOR ALL ".".
+    DISPLAY "Last:     " WS-LAST.
+    DISPLAY "First:    " WS-FIRST.
+    DISPLAY "Reversed: " WS-REVERSED.
+    DISPLAY "Upper:    " WS-UPPER.
+    DISPLAY "Length:   " WS-LEN.
+    DISPLAY "Periods:  " WS-COUNT.
+    STOP RUN.
+

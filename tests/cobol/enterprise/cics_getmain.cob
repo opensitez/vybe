@@ -1,0 +1,15 @@
+*> vybe-test: cobol/enterprise/cics_getmain
+*> origin: languages/cobol/tests/cobol/test_enterprise.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9(10) VALUE 0.
+01 WS-B PIC 9(10) VALUE 0.
+01 WS-C PIC 9(10) VALUE 0.
+01 WS-NAME PIC X(50).
+01 SQLCODE PIC S9(9) VALUE 0.
+PROCEDURE DIVISION.
+    EXEC CICS GETMAIN SET(WS-PTR) LENGTH(100) END-EXEC.
+    STOP RUN.
+

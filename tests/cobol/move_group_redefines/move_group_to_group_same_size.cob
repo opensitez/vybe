@@ -1,0 +1,33 @@
+*> vybe-test: cobol/move_group_redefines/move_group_to_group_same_size
+*> origin: languages/cobol/tests/cobol/test_move_group_redefines.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC.
+   05 S1 PIC X(3) VALUE "AAA".
+   05 S2 PIC X(3) VALUE "BBB".
+01 DST.
+   05 D1 PIC X(3) VALUE "XXX".
+   05 D2 PIC X(3) VALUE "YYY".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE SRC TO DST.
+    DISPLAY D1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING D1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AAA"
+        DISPLAY "FAIL: want [AAA] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY D2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING D2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "BBB"
+        DISPLAY "FAIL: want [BBB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

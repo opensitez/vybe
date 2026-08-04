@@ -1,0 +1,19 @@
+*> vybe-test: cobol/cobol2023_json_xml/json_generate_nested
+*> origin: languages/cobol/tests/cobol/test_cobol2023_json_xml.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-ORDER.
+   05 WS-ORDER-ID PIC 9(5) VALUE 12345.
+   05 WS-CUSTOMER.
+      10 WS-CUST-NAME PIC X(20) VALUE "Bob".
+      10 WS-CUST-EMAIL PIC X(30) VALUE "bob@test.com".
+   05 WS-TOTAL PIC 9(7)V99 VALUE 99.99.
+01 WS-JSON PIC X(500).
+PROCEDURE DIVISION.
+    JSON GENERATE WS-JSON FROM WS-ORDER.
+    DISPLAY WS-JSON.
+    STOP RUN.
+

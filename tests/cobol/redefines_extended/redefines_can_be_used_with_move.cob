@@ -1,0 +1,22 @@
+*> vybe-test: cobol/redefines_extended/redefines_can_be_used_with_move_to_same_storage
+*> origin: languages/cobol/tests/cobol/test_redefines_extended.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-BUFFER PIC X(6) VALUE SPACES.
+01 WS-NUMBER REDEFINES WS-BUFFER PIC 9(6).
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    MOVE 42 TO WS-NUMBER.
+    DISPLAY WS-BUFFER.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-BUFFER DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "000042"
+        DISPLAY "FAIL: want [000042] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

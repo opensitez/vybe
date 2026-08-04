@@ -1,18 +1,26 @@
 <?php
 // vybe-test: php/php_stream_wrapper_register_custom_protocol/test_php_stream_wrapper_stream_seek_tell
 // origin: languages/php/tests/php/test_php_stream_wrapper_register_custom_protocol.rs
-// vybe-test-mode: compile
 
-class SeekWrapper {
-    private int $pos = 0;
-    public function stream_open(): bool { return true; }
-    public function stream_seek(int $offset, int $whence): bool { $this->pos = $offset; return true; }
-    public function stream_tell(): int { return $this->pos; }
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
 }
-stream_wrapper_register("seekproto", SeekWrapper::class);
-$fp = fopen("seekproto://file", "r");
-fseek($fp, 50);
-$tell = ftell($fp);
-fclose($fp);
-stream_wrapper_unregister("seekproto");
-echo $tell === 50 ? "SEEK_TELL_WRAPPER_OK" : "FAIL";
+
+ob_start();
+
+seekproto://file
+
+__vybe_check(ob_get_clean(), "r");

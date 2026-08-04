@@ -1,0 +1,13 @@
+*> vybe-test: cobol/strings/string_two
+*> origin: languages/cobol/tests/cobol/test_strings.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 A PIC X(10) VALUE "Hello".
+01 B PIC X(10) VALUE "World".
+01 R PIC X(25).
+PROCEDURE DIVISION.
+    STRING A DELIMITED BY SPACE " " DELIMITED BY SIZE B DELIMITED BY SPACE INTO R.
+    STOP RUN.
+

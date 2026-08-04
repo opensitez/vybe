@@ -1,0 +1,11 @@
+*> vybe-test: cobol/category_intrinsic_date/test_date_integer_max
+*> origin: languages/cobol/tests/cobol/test_category_intrinsic_date.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. PROCEDURE DIVISION. DISPLAY FUNCTION INTEGER-OF-DATE(99991231).
+    MOVE SPACES TO WS-VYBE-L
+    STRING FUNCTION DELIMITED SIZE INTEGER-OF-DATE(99991231) DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "3067671"
+        DISPLAY "FAIL: want [3067671] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

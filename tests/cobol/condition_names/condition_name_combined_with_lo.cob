@@ -1,0 +1,27 @@
+*> vybe-test: cobol/condition_names/condition_name_combined_with_logical_and
+*> origin: languages/cobol/tests/cobol/test_condition_names.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-STATE PIC X VALUE "Y".
+01 WS-TYPE PIC X VALUE "R".
+   88 IS-OPEN VALUE "Y".
+   88 IS-READY VALUE "R".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    IF IS-OPEN AND IS-READY
+        DISPLAY "OPEN-READY"
+    ELSE
+        DISPLAY "BLOCKED"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "OPEN-READY" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "OPEN-READY"
+        DISPLAY "FAIL: want [OPEN-READY] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

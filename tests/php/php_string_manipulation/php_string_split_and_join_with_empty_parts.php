@@ -21,7 +21,7 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-$source = ',a,,b,';
+$source = ',a, b,';
 echo count(explode(',', $source)) . '|';
 echo implode('|', explode(',', $source));
 

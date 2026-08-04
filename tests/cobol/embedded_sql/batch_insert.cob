@@ -1,0 +1,29 @@
+*> vybe-test: cobol/embedded_sql/batch_insert
+*> origin: languages/cobol/tests/cobol/test_embedded_sql.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. BATCHINS.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-DSN   PIC X(100) VALUE "sqlite:test.db".
+01 WS-I     PIC 9(5) VALUE 0.
+01 WS-NAME  PIC X(20).
+01 WS-VALUE PIC 9(8)V99 VALUE 0.
+01 SQLCODE  PIC S9(9) VALUE 0.
+PROCEDURE DIVISION.
+    EXEC SQL CONNECT :WS-DSN END-EXEC.
+    EXEC SQL
+        DELETE FROM TEST_TABLE WHERE 1=1
+    END-EXEC.
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > 100
+        MOVE "Record" TO WS-NAME
+        COMPUTE WS-VALUE = WS-I * 10.50
+        EXEC SQL
+            INSERT INTO TEST_TABLE (ID, NAME, VALUE)
+            VALUES (:WS-I, :WS-NAME, :WS-VALUE)
+        END-EXEC
+    END-PERFORM.
+    EXEC SQL COMMIT END-EXEC.
+    DISPLAY "Inserted 100 records".
+    STOP RUN.
+

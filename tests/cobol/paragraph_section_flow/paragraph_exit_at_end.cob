@@ -1,0 +1,30 @@
+*> vybe-test: cobol/paragraph_section_flow/paragraph_exit_at_end
+*> origin: languages/cobol/tests/cobol/test_paragraph_section_flow.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    PERFORM MY-PARA.
+    DISPLAY "RETURNED".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "RETURNED" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "IN PARA"
+        DISPLAY "FAIL: want [IN PARA] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+MY-PARA.
+    DISPLAY "IN PARA".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "IN PARA" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "RETURNED"
+        DISPLAY "FAIL: want [RETURNED] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    EXIT.
+    STOP RUN.
+

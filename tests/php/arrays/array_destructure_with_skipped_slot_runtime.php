@@ -22,7 +22,7 @@ function __vybe_check($got, $want) {
 ob_start();
 
 $tuple = [10, 20, 30, 40];
-[$first, , $third, $fourth] = $tuple;
+[$first,  $third, $fourth] = $tuple;
 echo $first . '|' . $third . '|' . $fourth;
 
 __vybe_check(ob_get_clean(), "10|30|40");

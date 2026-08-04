@@ -1,12 +1,25 @@
 // vybe-test: csharp/csharp_expression_bodied/expression_bodied_indexer
 // origin: languages/csharp/tests/csharp/test_csharp_expression_bodied.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
 class Bag{int[]data={1,2,3};public int this[int i]=>data[i];}
-__Check((new Bag()[2]).ToString(), "3");
+__P((new Bag()[2]).ToString());
+__Check("3");

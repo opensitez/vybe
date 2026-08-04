@@ -1,0 +1,20 @@
+*> vybe-test: cobol/rewrite_statement/rewrite_after_read_compiles
+*> origin: languages/cobol/tests/cobol/test_rewrite_statement.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F ASSIGN TO "f.dat" ORGANIZATION IS INDEXED ACCESS MODE IS DYNAMIC RECORD KEY IS K.
+DATA DIVISION.
+FILE SECTION.
+FD F.
+01 REC.
+   05 K PIC 9(5).
+PROCEDURE DIVISION.
+    OPEN I-O F.
+    READ F INVALID KEY DISPLAY "MISS" END-READ.
+    REWRITE REC.
+    CLOSE F.
+    STOP RUN.
+

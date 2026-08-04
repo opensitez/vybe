@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_index_range_slice/range_closed_start_open_end_excludes_last_element
 // origin: languages/csharp/tests/csharp/test_csharp_index_range_slice.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-int[] data={5,6,7,8,9}; var slice=data[1..^1]; __Check((slice.Length).ToString(), "3"); __Check((slice[0]).ToString(), "6"); __Check((slice[1]).ToString(), "7");
+int[] data={5,6,7,8,9}; var slice=data[1..^1]; __P((slice.Length).ToString()); __P((slice[0]).ToString()); __P((slice[1]).ToString());
+__Check("3\n6\n7");

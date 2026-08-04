@@ -1,0 +1,14 @@
+*> vybe-test: cobol/cobol2023_data/data_item_national_usage
+*> origin: languages/cobol/tests/cobol/test_cobol2023_data.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-UTF8 PIC X(50) USAGE NATIONAL.
+01 WS-GLOBAL PIC X(20) GLOBAL.
+01 WS-EXTERNAL PIC X(20) EXTERNAL.
+PROCEDURE DIVISION.
+    DISPLAY WS-UTF8.
+    STOP RUN.
+

@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_namespace_aliases/namespace_scoped_delegate_can_be_invoked_through_qualified_name
 // origin: languages/csharp/tests/csharp/test_csharp_namespace_aliases.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-namespace Demo { public delegate string Reader(); } Demo.Reader reader = () => "text"; __Check((reader()).ToString(), "text");
+namespace Demo { public delegate string Reader(); } Demo.Reader reader = () => "text"; __P((reader()).ToString());
+__Check("text");

@@ -1,0 +1,21 @@
+*> vybe-test: cobol/collating_sequence/source_computer_collating_sequence_runtime
+*> origin: languages/cobol/tests/cobol/test_collating_sequence.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. COLL14.
+ENVIRONMENT DIVISION.
+CONFIGURATION SECTION.
+SOURCE-COMPUTER. IBM-Z.
+SPECIAL-NAMES.
+    ALPHABET SRC-COLLATE IS STANDARD-1.
+    COLLATING SEQUENCE IS SRC-COLLATE.
+PROCEDURE DIVISION.
+    DISPLAY "SRC_OK".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "SRC_OK" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "SRC_OK"
+        DISPLAY "FAIL: want [SRC_OK] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

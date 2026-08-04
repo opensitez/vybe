@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_generic_constraints/interface_constraint_enforces_method_availability_at_compile_time
 // origin: languages/csharp/tests/csharp/test_csharp_generic_constraints.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,4 +23,5 @@ void __Check(string got, string want) {
 interface ILabel { string Label(); }
 class Tag : ILabel { public string Label() => "tag"; }
 string Get<T>(T t) where T : ILabel => t.Label();
-__Check((Get(new Tag())).ToString(), "tag");
+__P((Get(new Tag())).ToString());
+__Check("tag");

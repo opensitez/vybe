@@ -27,8 +27,7 @@ function classify(int $n): string {
         $n === 0 => 'zero',
         $n < 10 => 'small',
         $n < 100 => 'medium',
-        default => 'large',
-    };
+        default => 'large' };
 }
 echo classify(-5) . ',' . classify(0) . ',' . classify(7) . ',' . classify(50) . ',' . classify(200);
 

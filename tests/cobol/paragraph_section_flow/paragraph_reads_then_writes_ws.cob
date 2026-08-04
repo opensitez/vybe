@@ -1,0 +1,24 @@
+*> vybe-test: cobol/paragraph_section_flow/paragraph_reads_then_writes_ws
+*> origin: languages/cobol/tests/cobol/test_paragraph_section_flow.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 INPUT-VAL PIC 9(3) VALUE 25.
+01 DOUBLED PIC 9(4) VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    PERFORM CALC.
+    DISPLAY DOUBLED.
+    MOVE SPACES TO WS-VYBE-L
+    STRING DOUBLED DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "50"
+        DISPLAY "FAIL: want [50] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+CALC.
+    MULTIPLY INPUT-VAL BY 2 GIVING DOUBLED.
+    STOP RUN.
+

@@ -1,0 +1,10 @@
+*> vybe-test: cobol/oo_cobol/parse_interface_inherits
+*> origin: languages/cobol/tests/cobol/test_oo_cobol.rs
+
+IDENTIFICATION DIVISION.
+INTERFACE-ID. SORTABLE INHERITS FROM COMPARABLE.
+METHOD-ID. SORT-KEY.
+PROCEDURE DIVISION RETURNING WS-KEY.
+END METHOD SORT-KEY.
+END INTERFACE SORTABLE.
+

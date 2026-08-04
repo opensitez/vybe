@@ -1,0 +1,31 @@
+*> vybe-test: cobol/sections_paragraphs/test_sections_perform_thru
+*> origin: languages/cobol/tests/cobol/test_sections_paragraphs.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    PERFORM SEC1 THRU SEC2.
+    STOP RUN.
+SEC1 SECTION.
+    DISPLAY "S1".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "S1" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "S1"
+        DISPLAY "FAIL: want [S1] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+SEC2 SECTION.
+    DISPLAY "S2".
+    MOVE SPACES TO WS-VYBE-L
+    STRING "S2" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "S2"
+        DISPLAY "FAIL: want [S2] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

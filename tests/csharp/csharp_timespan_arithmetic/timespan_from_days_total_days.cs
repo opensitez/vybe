@@ -1,11 +1,24 @@
 // vybe-test: csharp/csharp_timespan_arithmetic/timespan_from_days_total_days
 // origin: languages/csharp/tests/csharp/test_csharp_timespan_arithmetic.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-var span=System.TimeSpan.FromDays(2.5); __Check((span.TotalDays).ToString(), "2.5");
+var span=System.TimeSpan.FromDays(2.5); __P((span.TotalDays).ToString());
+__Check("2.5");

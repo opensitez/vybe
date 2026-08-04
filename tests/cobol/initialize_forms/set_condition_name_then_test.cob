@@ -1,0 +1,26 @@
+*> vybe-test: cobol/initialize_forms/set_condition_name_then_test
+*> origin: languages/cobol/tests/cobol/test_initialize_forms.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 MODE PIC X(4) VALUE "IDLE".
+    88 RUNNING VALUE "WORK".
+    88 IDLE VALUE "IDLE".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    SET RUNNING TO TRUE.
+    IF RUNNING
+        DISPLAY "RUNNING"
+    ELSE
+        DISPLAY "IDLE"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "RUNNING" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "RUNNING"
+        DISPLAY "FAIL: want [RUNNING] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -10,16 +10,35 @@ fun convert(value: Any): String {
             }
         }
 
-        fun __check(got: String, want: String) {
-    if (got != want) {
-        println("FAIL: want [" + want + "] got [" + got + "]")
+        var __buf: String = ""
+
+fun __p(s: String) {
+    __buf = __buf + s + "\n"
+}
+
+fun __pr(s: String) {
+    __buf = __buf + s
+}
+
+// The final `println` contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted. Written as two equality
+// tests rather than trimming: `String.endsWith` is not implemented in Vybe's
+// Kotlin (measured — `"ab\n".endsWith("\n")` throws "undefined is not
+// callable"), and a harness that cannot run asserts nothing at all. The cargo
+// helper split on "\n" and popped trailing empties, so the two forms were
+// equivalent there too.
+fun __check(want: String) {
+    if (__buf != want && __buf != want + "\n") {
+        println("FAIL: want [" + want + "] got [" + __buf + "]")
         throw Exception("assertion failed")
     }
 }
 
 fun main() {
-            __check((convert(3)).toString(), "i=3")
-            __check((convert(4L)).toString(), "l=4")
-            __check((convert(1.5)).toString(), "d=1.5")
-            __check((convert("x")).toString(), "x")
-        }
+            __p((convert(3)).toString())
+            __p((convert(4L)).toString())
+            __p((convert(1.5)).toString())
+            __p((convert("x")).toString())
+        
+__check("i=3\nl=4\nd=1.5\nx")
+}

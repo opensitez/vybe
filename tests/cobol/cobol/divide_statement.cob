@@ -1,0 +1,15 @@
+*> vybe-test: cobol/cobol/divide_statement
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. DIV.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC 9(5) VALUE 100.
+01 WS-B PIC 9(5) VALUE 3.
+01 WS-C PIC 9(5) VALUE 0.
+01 WS-R PIC 9(5) VALUE 0.
+PROCEDURE DIVISION.
+    DIVIDE WS-A BY WS-B GIVING WS-C REMAINDER WS-R.
+    STOP RUN.
+

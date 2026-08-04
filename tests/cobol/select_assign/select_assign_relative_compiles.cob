@@ -1,0 +1,17 @@
+*> vybe-test: cobol/select_assign/select_assign_relative_compiles
+*> origin: languages/cobol/tests/cobol/test_select_assign.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT REL ASSIGN TO "r.dat" ORGANIZATION IS RELATIVE RELATIVE KEY IS RK.
+DATA DIVISION.
+FILE SECTION.
+FD REL.
+01 RR PIC X(20).
+WORKING-STORAGE SECTION.
+01 RK PIC 9(5).
+PROCEDURE DIVISION.
+    STOP RUN.
+

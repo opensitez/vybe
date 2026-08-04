@@ -1,0 +1,37 @@
+*> vybe-test: cobol/display_formatting/display_three_numeric_fields
+*> origin: languages/cobol/tests/cobol/test_display_formatting.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 X PIC 9 VALUE 1.
+01 Y PIC 9 VALUE 2.
+01 Z PIC 9 VALUE 3.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY X.
+    MOVE SPACES TO WS-VYBE-L
+    STRING X DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "1"
+        DISPLAY "FAIL: want [1] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY Y.
+    MOVE SPACES TO WS-VYBE-L
+    STRING Y DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "2"
+        DISPLAY "FAIL: want [2] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY Z.
+    MOVE SPACES TO WS-VYBE-L
+    STRING Z DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "3"
+        DISPLAY "FAIL: want [3] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

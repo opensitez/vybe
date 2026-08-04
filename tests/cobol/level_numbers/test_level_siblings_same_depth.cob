@@ -1,0 +1,23 @@
+*> vybe-test: cobol/level_numbers/test_level_siblings_same_depth
+*> origin: languages/cobol/tests/cobol/test_level_numbers.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-RECORD.
+   05 WS-A PIC X(3) VALUE "AAA".
+   05 WS-B PIC X(3) VALUE "BBB".
+   05 WS-C PIC X(3) VALUE "CCC".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+
+    DISPLAY WS-RECORD.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-RECORD DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AAABBBCCC"
+        DISPLAY "FAIL: want [AAABBBCCC] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

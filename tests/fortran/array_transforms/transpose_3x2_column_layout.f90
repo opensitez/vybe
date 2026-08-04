@@ -1,0 +1,25 @@
+! vybe-test: fortran/array_transforms/transpose_3x2_column_layout
+! origin: languages/fortran/tests/fortran/test_array_transforms.rs
+program t
+integer :: a(2,3)
+integer :: b(3,2)
+a(1,1)=1
+a(1,2)=2
+a(1,3)=3
+a(2,1)=4
+a(2,2)=5
+a(2,3)=6
+b=transpose(a)
+if ((b(1,1)) /= 1) then
+    print *, "FAIL: want [1] got [", b(1,1), "]"
+    stop 1
+end if
+if ((b(3,2)) /= 6) then
+    print *, "FAIL: want [6] got [", b(3,2), "]"
+    stop 1
+end if
+if ((sum(b)) /= 21) then
+    print *, "FAIL: want [21] got [", sum(b), "]"
+    stop 1
+end if
+end program t

@@ -1,0 +1,49 @@
+// vybe-test: java/polymorphism/polymorphic_equals_uses_override
+// origin: languages/java/tests/java/test_polymorphism.rs
+
+public class Main {
+
+    // A static String, NOT a StringBuilder. Calling a method on a bare static
+    // FIELD receiver fails under Vybe with "undefined is not callable"
+    // (measured): `SB.append(x)` throws while `StringBuilder l = SB;
+    // l.append(x)` works, so the method is resolved from the receiver's
+    // declared type at the call site and a static field carries none. String
+    // concatenation onto a static field has no such problem.
+    static String __buf = "";
+
+    static void __p(Object o) {
+        __buf = __buf + String.valueOf(o) + "\n";
+    }
+
+    static void __pr(Object o) {
+        __buf = __buf + String.valueOf(o);
+    }
+
+    static void __check(String want) {
+        String got = __buf;
+        // The final `println` contributes a trailing newline that the expected
+        // line vector never carried, so it is not part of the comparison.
+        if (got.endsWith("\n")) {
+            got = got.substring(0, got.length() - 1);
+        }
+        if (!got.equals(want)) {
+            System.out.println("FAIL: want [" + want + "] got [" + got + "]");
+            throw new RuntimeException("assertion failed");
+        }
+    }
+
+static class Base {
+            int id;
+            Base(int id) { this.id = id; }
+            boolean equals(Object o) {
+                if (o instanceof Base) { return ((Base) o).id == id; }
+                return false;
+            }
+        }
+        static class Child extends Base { Child(int id) { super(id); } }
+    public static void main(String[] args) {
+Base a = new Child(1); Base b = new Child(1); __p(a.equals(b));
+__check("true");
+    }
+}
+

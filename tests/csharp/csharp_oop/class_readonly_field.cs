@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_oop/class_readonly_field
 // origin: languages/csharp/tests/csharp/test_csharp_oop.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -15,4 +27,5 @@ class Circle {
     public double Area() { return PI * Radius * Radius; }
 }
 var c = new Circle(10);
-__Check((c.Area()).ToString(), "314.159");
+__P((c.Area()).ToString());
+__Check("314.159");

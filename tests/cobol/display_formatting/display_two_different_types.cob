@@ -1,0 +1,20 @@
+*> vybe-test: cobol/display_formatting/display_two_different_types
+*> origin: languages/cobol/tests/cobol/test_display_formatting.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 NAME PIC X(4) VALUE "JOHN".
+01 AGE PIC 9(3) VALUE 30.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY NAME " " AGE.
+    MOVE SPACES TO WS-VYBE-L
+    STRING NAME DELIMITED SIZE " " DELIMITED SIZE AGE DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "JOHN 030"
+        DISPLAY "FAIL: want [JOHN 030] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

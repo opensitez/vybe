@@ -1,0 +1,22 @@
+*> vybe-test: cobol/strings_and_text/string_concat_via_string_statement_produces_joined_text
+*> origin: languages/cobol/tests/cobol/test_strings_and_text.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-A PIC X(5) VALUE "HEL".
+01 WS-B PIC X(5) VALUE "LO".
+01 WS-C PIC X(10) VALUE SPACES.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    STRING WS-A DELIMITED BY SIZE WS-B DELIMITED BY SIZE INTO WS-C.
+    DISPLAY WS-C.
+    MOVE SPACES TO WS-VYBE-L
+    STRING WS-C DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "HELLO"
+        DISPLAY "FAIL: want [HELLO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

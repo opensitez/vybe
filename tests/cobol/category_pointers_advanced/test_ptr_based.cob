@@ -1,0 +1,12 @@
+*> vybe-test: cobol/category_pointers_advanced/test_ptr_based
+*> origin: languages/cobol/tests/cobol/test_category_pointers_advanced.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. DATA DIVISION. WORKING-STORAGE SECTION.
+01 WS-VYBE-L PIC X(256). 01 B PIC X BASED. 01 P USAGE POINTER. PROCEDURE DIVISION. ALLOCATE B RETURNING P. SET ADDRESS OF B TO P. MOVE 'A' TO B. DISPLAY B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "A"
+        DISPLAY "FAIL: want [A] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

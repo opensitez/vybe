@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_properties_accessors/expression_bodied_setter_updates_hidden_field
 // origin: languages/csharp/tests/csharp/test_csharp_properties_accessors.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -17,4 +29,5 @@ class ScoreBoard {
 }
 var board = new ScoreBoard();
 board.Score = 7;
-__Check((board.Score).ToString(), "70");
+__P((board.Score).ToString());
+__Check("70");

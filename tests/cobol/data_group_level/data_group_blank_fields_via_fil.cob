@@ -1,0 +1,22 @@
+*> vybe-test: cobol/data_group_level/data_group_blank_fields_via_filler
+*> origin: languages/cobol/tests/cobol/test_data_group_level.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 FORMATTED.
+   05 FILLER PIC X(5) VALUE "ITEM:".
+   05 FILLER PIC X VALUE " ".
+   05 ITEM-VALUE PIC 9(3) VALUE 42.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    DISPLAY FORMATTED.
+    MOVE SPACES TO WS-VYBE-L
+    STRING FORMATTED DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "ITEM:  042"
+        DISPLAY "FAIL: want [ITEM:  042] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

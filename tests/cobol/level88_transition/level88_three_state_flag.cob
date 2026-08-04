@@ -1,0 +1,28 @@
+*> vybe-test: cobol/level88_transition/level88_three_state_flag
+*> origin: languages/cobol/tests/cobol/test_level88_transition.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 TRAFFIC PIC X VALUE "G".
+    88 GREEN-LIGHT VALUE "G".
+    88 YELLOW-LIGHT VALUE "Y".
+    88 RED-LIGHT VALUE "R".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    IF GREEN-LIGHT
+        DISPLAY "GO"
+    ELSE IF YELLOW-LIGHT
+        DISPLAY "SLOW"
+    ELSE
+        DISPLAY "STOP"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "GO" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "GO"
+        DISPLAY "FAIL: want [GO] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

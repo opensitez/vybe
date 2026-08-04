@@ -1,0 +1,12 @@
+*> vybe-test: cobol/report_writer/report_writer_page_heading_compiles
+*> origin: languages/cobol/tests/cobol/test_report_writer.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. RW3.
+DATA DIVISION.
+REPORT SECTION.
+RD R1.
+01 P1 TYPE PAGE HEADING.
+   03 COL 1 VALUE "HEAD".
+PROCEDURE DIVISION.
+    STOP RUN.
+

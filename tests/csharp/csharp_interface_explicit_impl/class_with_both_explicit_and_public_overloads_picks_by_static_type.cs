@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_interface_explicit_impl/class_with_both_explicit_and_public_overloads_picks_by_static_type
 // origin: languages/csharp/tests/csharp/test_csharp_interface_explicit_impl.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -15,5 +27,6 @@ class Widget : IDescribe {
 }
 var w = new Widget();
 IDescribe i = w;
-__Check((w.Describe()).ToString(), "widget");
-__Check((i.Describe()).ToString(), "interface:widget");
+__P((w.Describe()).ToString());
+__P((i.Describe()).ToString());
+__Check("widget\ninterface:widget");

@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_with_expression/with_expression_creates_new_record_preserving_unchanged_fields
 // origin: languages/csharp/tests/csharp/test_csharp_with_expression.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,5 +23,6 @@ void __Check(string got, string want) {
 record Point(int X, int Y);
 var origin = new Point(1, 2);
 var moved = origin with { X = 10 };
-__Check((moved.X).ToString(), "10");
-__Check((moved.Y).ToString(), "2");
+__P((moved.X).ToString());
+__P((moved.Y).ToString());
+__Check("10\n2");

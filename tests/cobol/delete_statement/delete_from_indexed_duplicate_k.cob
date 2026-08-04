@@ -1,0 +1,20 @@
+*> vybe-test: cobol/delete_statement/delete_from_indexed_duplicate_key_layout_compiles
+*> origin: languages/cobol/tests/cobol/test_delete_statement.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F ASSIGN TO "f.dat" ORGANIZATION IS INDEXED ACCESS MODE IS DYNAMIC RECORD KEY IS K ALTERNATE RECORD KEY IS K2 WITH DUPLICATES.
+DATA DIVISION.
+FILE SECTION.
+FD F.
+01 REC.
+   05 K PIC 9(5).
+   05 K2 PIC X(10).
+PROCEDURE DIVISION.
+    OPEN I-O F.
+    DELETE F.
+    CLOSE F.
+    STOP RUN.
+

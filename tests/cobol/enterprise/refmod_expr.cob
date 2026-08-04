@@ -1,0 +1,15 @@
+*> vybe-test: cobol/enterprise/refmod_expr
+*> origin: languages/cobol/tests/cobol/test_enterprise.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-TEXT PIC X(30) VALUE "Hello World".
+01 WS-START PIC 9(3) VALUE 7.
+01 WS-LEN PIC 9(3) VALUE 5.
+01 WS-SUB PIC X(10).
+PROCEDURE DIVISION.
+    MOVE WS-TEXT(WS-START:WS-LEN) TO WS-SUB.
+    DISPLAY WS-SUB.
+    STOP RUN.
+

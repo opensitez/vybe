@@ -1,0 +1,24 @@
+*> vybe-test: cobol/qualified_names_of_clause/qualified_field_in_compute
+*> origin: languages/cobol/tests/cobol/test_qualified_names_of_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 BASE-DATA.
+   05 PRICE PIC 9(5)V99 VALUE 10.50.
+01 DERIVED.
+   05 PRICE PIC 9(5)V99 VALUE 0.
+01 R PIC 9(6)V99 VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    COMPUTE R = PRICE OF BASE-DATA * 2.
+    DISPLAY R.
+    MOVE SPACES TO WS-VYBE-L
+    STRING R DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "21.00"
+        DISPLAY "FAIL: want [21.00] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_delegates_advanced/predicate_combined_with_and
 // origin: languages/csharp/tests/csharp/test_csharp_delegates_advanced.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -11,4 +23,5 @@ void __Check(string got, string want) {
 System.Predicate<int> positive=x=>x>0;
 System.Predicate<int> even=x=>x%2==0;
 System.Predicate<int> both=x=>positive(x)&&even(x);
-__Check((both(4)).ToString(), "True"); __Check((both(-2)).ToString(), "False"); __Check((both(3)).ToString(), "False");
+__P((both(4)).ToString()); __P((both(-2)).ToString()); __P((both(3)).ToString());
+__Check("True\nFalse\nFalse");

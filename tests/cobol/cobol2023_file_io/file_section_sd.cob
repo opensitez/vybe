@@ -1,0 +1,21 @@
+*> vybe-test: cobol/cobol2023_file_io/file_section_sd
+*> origin: languages/cobol/tests/cobol/test_cobol2023_file_io.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT SORT-FILE ASSIGN TO "sort.tmp".
+DATA DIVISION.
+FILE SECTION.
+SD SORT-FILE.
+01 SORT-REC.
+   05 SORT-KEY PIC X(10).
+   05 SORT-DATA PIC X(70).
+WORKING-STORAGE SECTION.
+01 WS-DUMMY PIC X(1).
+PROCEDURE DIVISION.
+    DISPLAY "Sort file defined".
+    STOP RUN.
+

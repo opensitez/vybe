@@ -1,0 +1,20 @@
+*> vybe-test: cobol/inspect_converting/inspect_converting_digit_sequence
+*> origin: languages/cobol/tests/cobol/test_inspect_converting.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 S PIC X(10) VALUE "1234567890".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    INSPECT S CONVERTING "0123456789" TO "9876543210".
+    DISPLAY S.
+    MOVE SPACES TO WS-VYBE-L
+    STRING S DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "8765432109"
+        DISPLAY "FAIL: want [8765432109] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

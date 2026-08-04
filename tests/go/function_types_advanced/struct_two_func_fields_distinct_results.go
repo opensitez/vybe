@@ -5,13 +5,25 @@ package main
 import "fmt"
 type pair struct { left func() int
 right func() int }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
 
 func main() { value := pair{left: func() int { return 1 }, right: func() int { return 2 }}
-__check(fmt.Sprint(value.left()), "1")
-__check(fmt.Sprint(value.right()), "2") }
+__p(fmt.Sprint(value.left()))
+__p(fmt.Sprint(value.right())) 
+__check("1\n2")
+}

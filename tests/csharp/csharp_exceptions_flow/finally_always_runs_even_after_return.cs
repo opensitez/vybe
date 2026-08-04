@@ -1,9 +1,21 @@
 // vybe-test: csharp/csharp_exceptions_flow/finally_always_runs_even_after_return
 // origin: languages/csharp/tests/csharp/test_csharp_exceptions_flow.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
@@ -14,4 +26,5 @@ int Compute(){
     finally{ran=true;}
 }
 int v=Compute();
-__Check((v).ToString(), "42"); __Check((ran).ToString(), "True");
+__P((v).ToString()); __P((ran).ToString());
+__Check("42\nTrue");

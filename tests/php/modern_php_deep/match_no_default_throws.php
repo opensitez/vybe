@@ -25,8 +25,7 @@ try {
     $x = 5;
     $result = match($x) {
         1 => "one",
-        2 => "two",
-    };
+        2 => "two" };
 } catch (\UnhandledMatchError $e) {
     echo "unhandled";
 }

@@ -1,0 +1,19 @@
+*> vybe-test: cobol/cobol/unstring_split
+*> origin: languages/cobol/tests/cobol/test_cobol.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. UNSPLIT.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-INPUT  PIC X(30) VALUE "John,Doe,30".
+01 WS-FIRST  PIC X(10).
+01 WS-LAST   PIC X(10).
+01 WS-AGE    PIC X(5).
+PROCEDURE DIVISION.
+    UNSTRING WS-INPUT DELIMITED BY ","
+        INTO WS-FIRST WS-LAST WS-AGE.
+    DISPLAY WS-FIRST.
+    DISPLAY WS-LAST.
+    DISPLAY WS-AGE.
+    STOP RUN.
+

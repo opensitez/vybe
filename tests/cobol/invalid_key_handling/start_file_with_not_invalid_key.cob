@@ -1,0 +1,24 @@
+*> vybe-test: cobol/invalid_key_handling/start_file_with_not_invalid_key_compiles
+*> origin: languages/cobol/tests/cobol/test_invalid_key_handling.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F ASSIGN TO "f.dat" ORGANIZATION IS INDEXED ACCESS MODE IS DYNAMIC RECORD KEY IS K.
+DATA DIVISION.
+FILE SECTION.
+FD F.
+01 REC.
+   05 K PIC 9(5).
+WORKING-STORAGE SECTION.
+01 WK PIC 9(5) VALUE 1.
+PROCEDURE DIVISION.
+    OPEN I-O F.
+    START F KEY IS GREATER THAN WK
+        INVALID KEY DISPLAY "MISS"
+        NOT INVALID KEY DISPLAY "OK"
+    END-START
+    CLOSE F
+    STOP RUN.
+

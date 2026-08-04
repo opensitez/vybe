@@ -1,0 +1,31 @@
+*> vybe-test: cobol/data_group_level/data_group_move_into_from_string
+*> origin: languages/cobol/tests/cobol/test_data_group_level.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 REC.
+   05 A PIC X(3) VALUE "AAA".
+   05 B PIC X(3) VALUE "BBB".
+01 SRC PIC X(6) VALUE "XXYYZZ".
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    MOVE SRC TO REC.
+    DISPLAY A.
+    MOVE SPACES TO WS-VYBE-L
+    STRING A DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "XXY"
+        DISPLAY "FAIL: want [XXY] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY B.
+    MOVE SPACES TO WS-VYBE-L
+    STRING B DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "YZZ"
+        DISPLAY "FAIL: want [YZZ] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

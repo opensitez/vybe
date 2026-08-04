@@ -1,0 +1,24 @@
+*> vybe-test: cobol/level88_transition/level88_space_value_condition
+*> origin: languages/cobol/tests/cobol/test_level88_transition.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 S PIC X VALUE SPACE.
+    88 IS-BLANK VALUE SPACE.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    IF IS-BLANK
+        DISPLAY "BLANK"
+    ELSE
+        DISPLAY "NOT BLANK"
+    END-IF.
+    MOVE SPACES TO WS-VYBE-L
+    STRING "BLANK" DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "BLANK"
+        DISPLAY "FAIL: want [BLANK] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

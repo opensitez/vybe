@@ -1,12 +1,25 @@
 // vybe-test: csharp/csharp_operators/string_concat_operator
 // origin: languages/csharp/tests/csharp/test_csharp_operators.rs
 
-void __Check(string got, string want) {
-    if (got != want) {
-        Console.WriteLine("FAIL: want [" + want + "] got [" + got + "]");
+string __buf = "";
+
+void __P(string s) {
+    __buf = __buf + s + "\n";
+}
+
+void __Pr(string s) {
+    __buf = __buf + s;
+}
+
+// The final WriteLine contributes a trailing newline that the expected line
+// vector never carried, so BOTH forms are accepted.
+void __Check(string want) {
+    if (__buf != want && __buf != want + "\n") {
+        Console.WriteLine("FAIL: want [" + want + "] got [" + __buf + "]");
         throw new Exception("assertion failed");
     }
 }
 
-__Check(("Hello" + " " + "World").ToString(), "Hello World");
-__Check(("num: " + 42).ToString(), "num: 42");
+__P(("Hello" + " " + "World").ToString());
+__P(("num: " + 42).ToString());
+__Check("Hello World\nnum: 42");

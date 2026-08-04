@@ -1,9 +1,26 @@
 <?php
 // vybe-test: php/php_var_dump_export_debug_info/test_php_var_export_resource_behavior
 // origin: languages/php/tests/php/test_php_var_dump_export_debug_info.rs
-// vybe-test-mode: compile
 
-$fp = fopen("php://memory", "r");
-$exp = var_export($fp, return: true);
-fclose($fp);
-echo str_contains($exp, "NULL") ? "RESOURCE_EXPORT_NULL" : "EXPORT_OK";
+function __vybe_check($got, $want) {
+    // Match the Rust harness's normalisation: strip \r, then drop trailing
+    // newlines (it split on "\n" and popped empty trailing elements).
+    $got = str_replace("\r", "", $got);
+    $got = rtrim($got, "\n");
+    if ($got !== $want) {
+        echo "FAIL: want [" . $want . "] got [" . $got . "]\n";
+        throw new Exception("assertion failed");
+    }
+    // Replay the program's own output so running the file by hand still
+    // behaves like the program it was extracted from.
+    echo $got;
+    if ($got !== "") {
+        echo "\n";
+    }
+}
+
+ob_start();
+
+php://memory
+
+__vybe_check(ob_get_clean(), "r");

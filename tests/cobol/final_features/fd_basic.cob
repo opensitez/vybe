@@ -1,0 +1,18 @@
+*> vybe-test: cobol/final_features/fd_basic
+*> origin: languages/cobol/tests/cobol/test_final_features.rs
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. FDTEST.
+DATA DIVISION.
+FILE SECTION.
+FD CUSTOMER-FILE RECORD CONTAINS 80 CHARACTERS.
+01 CUSTOMER-RECORD.
+   05 CUST-ID   PIC 9(5).
+   05 CUST-NAME PIC X(30).
+   05 CUST-BAL  PIC 9(8)V99.
+WORKING-STORAGE SECTION.
+01 WS-REC PIC X(80).
+PROCEDURE DIVISION.
+    DISPLAY "FD Test".
+    STOP RUN.
+

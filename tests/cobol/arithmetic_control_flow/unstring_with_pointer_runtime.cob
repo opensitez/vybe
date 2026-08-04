@@ -1,0 +1,34 @@
+*> vybe-test: cobol/arithmetic_control_flow/unstring_with_pointer_runtime
+*> origin: languages/cobol/tests/cobol/test_arithmetic_control_flow.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 SRC PIC X(12) VALUE "AA,BBB,CC".
+01 F1 PIC X(5).
+01 F2 PIC X(5).
+01 P PIC 9(2) VALUE 1.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    UNSTRING SRC
+        DELIMITED BY ","
+        INTO F1 F2
+        WITH POINTER P.
+    DISPLAY F1.
+    MOVE SPACES TO WS-VYBE-L
+    STRING F1 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "AA"
+        DISPLAY "FAIL: want [AA] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    DISPLAY F2.
+    MOVE SPACES TO WS-VYBE-L
+    STRING F2 DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "BBB"
+        DISPLAY "FAIL: want [BBB] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

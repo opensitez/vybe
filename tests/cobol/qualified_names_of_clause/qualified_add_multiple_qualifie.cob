@@ -1,0 +1,24 @@
+*> vybe-test: cobol/qualified_names_of_clause/qualified_add_multiple_qualified_sources
+*> origin: languages/cobol/tests/cobol/test_qualified_names_of_clause.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 BUDGET-A.
+   05 AMOUNT PIC 9(6) VALUE 1000.
+01 BUDGET-B.
+   05 AMOUNT PIC 9(6) VALUE 2000.
+01 TOTAL PIC 9(7) VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    ADD AMOUNT OF BUDGET-A AMOUNT OF BUDGET-B GIVING TOTAL.
+    DISPLAY TOTAL.
+    MOVE SPACES TO WS-VYBE-L
+    STRING TOTAL DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "3000"
+        DISPLAY "FAIL: want [3000] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+

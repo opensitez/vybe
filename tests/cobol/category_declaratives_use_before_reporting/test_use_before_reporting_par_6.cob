@@ -1,0 +1,11 @@
+*> vybe-test: cobol/category_declaratives_use_before_reporting/test_use_before_reporting_parse_8
+*> origin: languages/cobol/tests/cobol/test_category_declaratives_use_before_reporting.rs
+IDENTIFICATION DIVISION. PROGRAM-ID. T. ENVIRONMENT DIVISION. DATA DIVISION. REPORT SECTION. RD R7. 01 G TYPE IS DETAIL. 05 COLUMN 1 PIC X VALUE 'G'. PROCEDURE DIVISION. DECLARATIVES. D7 SECTION. USE BEFORE REPORTING R7. D7-START. EXIT SECTION. END DECLARATIVES. MAIN SECTION. DISPLAY 'OK'.
+    MOVE SPACES TO WS-VYBE-L
+    STRING 'OK' DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "OK"
+        DISPLAY "FAIL: want [OK] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF. STOP RUN.
+

@@ -6,9 +6,19 @@ import "fmt"
 type List[T any] struct { items []T }
 func (l *List[T]) Append(v T) { l.items = append(l.items, v) }
 func (l List[T]) At(i int) T { return l.items[i] }
-func __check(got string, want string) {
-	if got != want {
-		fmt.Println("FAIL: want [" + want + "] got [" + got + "]")
+var __buf string
+
+// __p appends one line, __pr appends without a newline.
+func __p(s string) { __buf = __buf + s + "\n" }
+
+func __pr(s string) { __buf = __buf + s }
+
+// __check ends the program unless the collected output equals want. The final
+// Println contributes a trailing newline the expected line vector never
+// carried, so both forms are accepted.
+func __check(want string) {
+	if __buf != want && __buf != want+"\n" {
+		fmt.Println("FAIL: want [" + want + "] got [" + __buf + "]")
 		panic("assertion failed")
 	}
 }
@@ -16,4 +26,6 @@ func __check(got string, want string) {
 func main() { var l List[string]
 l.Append("a")
 l.Append("b")
-__check(fmt.Sprint(l.At(1)), "b") }
+__p(fmt.Sprint(l.At(1))) 
+__check("b")
+}

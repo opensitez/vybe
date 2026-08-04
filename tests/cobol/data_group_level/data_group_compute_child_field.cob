@@ -1,0 +1,23 @@
+*> vybe-test: cobol/data_group_level/data_group_compute_child_field
+*> origin: languages/cobol/tests/cobol/test_data_group_level.rs
+IDENTIFICATION DIVISION.
+PROGRAM-ID. T.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 CALC.
+   05 OPERAND-A PIC 9(4) VALUE 12.
+   05 OPERAND-B PIC 9(4) VALUE 8.
+   05 RESULT PIC 9(6) VALUE 0.
+01 WS-VYBE-L PIC X(256).
+PROCEDURE DIVISION.
+    COMPUTE RESULT = OPERAND-A * OPERAND-B.
+    DISPLAY RESULT.
+    MOVE SPACES TO WS-VYBE-L
+    STRING RESULT DELIMITED SIZE INTO WS-VYBE-L
+    IF WS-VYBE-L NOT = "96"
+        DISPLAY "FAIL: want [96] got [" WS-VYBE-L "]"
+        MOVE 1 TO RETURN-CODE
+        RAISE EXCEPTION EC-PROGRAM
+    END-IF.
+    STOP RUN.
+
