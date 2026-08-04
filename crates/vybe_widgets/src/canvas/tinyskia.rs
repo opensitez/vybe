@@ -98,7 +98,8 @@ struct PaintState {
     font: Font,
     transform: Transform,
     dash_intervals: Vec<f32>,
-    dash_offset: f32 }
+    dash_offset: f32,
+    image_smoothing: bool }
 
 impl Default for PaintState {
     fn default() -> Self {
@@ -113,7 +114,9 @@ impl Default for PaintState {
             font: Font::default(),
             transform: Transform::identity(),
             dash_intervals: Vec::new(),
-            dash_offset: 0.0 }
+            dash_offset: 0.0,
+            // HTML5 canvas defaults `imageSmoothingEnabled` to true.
+            image_smoothing: true }
     }
 }
 
@@ -237,6 +240,10 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
     }
     fn set_global_alpha(&mut self, alpha: f32) {
         self.state.global_alpha = alpha.clamp(0.0, 1.0);
+    }
+
+    fn set_image_smoothing(&mut self, enabled: bool) {
+        self.state.image_smoothing = enabled;
     }
     fn set_font(&mut self, font: &Font) {
         self.state.font = font.clone();
@@ -493,7 +500,14 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
             let pp = PixmapPaint {
                 opacity: self.state.global_alpha,
                 blend_mode: tiny_skia::BlendMode::SourceOver,
-                quality: FilterQuality::Bilinear };
+                // Smoothing OFF means nearest-neighbour, which is what a
+                // software renderer upscaled to the window needs: bilinear
+                // turns Doom's 320x200 frame into a blur.
+                quality: if self.state.image_smoothing {
+                    FilterQuality::Bilinear
+                } else {
+                    FilterQuality::Nearest
+                } };
             self.pixmap.draw_pixmap(0, 0, src, &pp, xform, None);
         }
     }

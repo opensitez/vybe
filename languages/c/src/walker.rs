@@ -15,10 +15,12 @@ use std::collections::{HashMap, HashSet};
 use super::{CParser, Rule};
 use vybe_ast::*;
 use vybe_compiler::primitives::codepoints;
+use vybe_compiler::primitives::memory;
 use vybe_compiler::primitives::complex;
 use vybe_compiler::primitives::pointers::{
     self, CARRAY_BASE_KEY, CARRAY_IDX_KEY, CARRAY_KIND };
-use vybe_platform_libc::emitter::{posix_adapter, regex_adapter, thread_adapter, time_adapter};
+use vybe_platform_libc::emitter::{
+    posix_adapter, regex_adapter, sdl as sdl_adapter, thread_adapter, time_adapter };
 use vybe_platform_libc::emitter::{
     math_adapter, stdio_adapter, string_adapter, uchar_adapter, wchar_adapter };
 
@@ -62,12 +64,24 @@ struct Walker {
     struct_bitfields: HashMap<String, HashMap<String, (i64, bool)>>,
     /// struct/union name → field name → field type (for nested struct handling)
     struct_field_types: HashMap<String, HashMap<String, String>>,
+    /// struct/union tag → strictest `alignas` requested by any MEMBER.
+    /// `alignas` on a member raises the whole aggregate's alignment (and so
+    /// its size); the member's type text has the specifier stripped by
+    /// `type_text`, so it has to be captured separately.
+    struct_alignments: HashMap<String, i64>,
+    /// Scratch: strictest member `alignas` seen while walking the struct
+    /// currently being defined.
+    current_struct_max_align: i64,
     /// typedef names whose declarator is pointer-shaped.
     typedef_pointer_aliases: HashSet<String>,
     /// typedef names whose declarator is array-shaped.
     typedef_array_aliases: HashSet<String>,
     /// typedef names whose declarator is `char *`-shaped.
     typedef_char_pointer_aliases: HashSet<String>,
+    /// typedef names whose declarator is `void *`-shaped — opaque handles such
+    /// as `typedef void *SDL_Surface`. These are NOT array-backed, so a
+    /// parameter of type `SDL_Surface *` must not be wrapped in a carray.
+    typedef_void_pointer_aliases: HashSet<String>,
     /// identifiers declared as `char*`; used for pointer-like string traversal.
     char_pointers: HashSet<String>,
     /// char arrays initialized from C string literals, not explicit char-code buffers.
@@ -2187,10 +2201,18 @@ impl Walker {
             }
         }
         if let Some(ref specs) = specs {
-            if self.type_text(specs.clone()).contains("char") {
+            let specs_text = self.type_text(specs.clone());
+            if specs_text.contains("char") {
                 for name in &names {
                     if self.typedef_pointer_aliases.contains(name) {
                         self.typedef_char_pointer_aliases.insert(name.clone());
+                    }
+                }
+            }
+            if specs_text.contains("void") {
+                for name in &names {
+                    if self.typedef_pointer_aliases.contains(name) {
+                        self.typedef_void_pointer_aliases.insert(name.clone());
                     }
                 }
             }
@@ -2526,7 +2548,26 @@ impl Walker {
             // NOT `is_carray_like_expr` — the latter also matches strstr/memchr
             // slice-or-null ternaries, which must stay string char-pointers.
             let init_is_carray_obj = init.as_ref().map(|i| is_carray_object(i)).unwrap_or(false);
+            // A `char *` initialised from a STRUCT FIELD points at that field's
+            // storage, never at a string — `byte *px = surface->pixels` is the
+            // canonical case, and Doom's `byte` is `unsigned char`. Treating it
+            // as a string buffer made `px[i] = v` emit string surgery, which
+            // died on `js-string.concat — first arg not a string` because the
+            // field holds an array. (`is_unsigned_char_pointer_type` does not
+            // catch this: `normalized_c_type_name` strips `unsigned `.)
+            let init_is_member = init
+                .as_ref()
+                .map(|i| matches!(i.kind, ExprKind::Member { .. }))
+                .unwrap_or(false);
+            // …and it IS array-backed, so claim it. Skipping the char branch
+            // alone left the name in limbo — neither a string buffer nor an
+            // array pointer — and the assignment path fell back to its
+            // type-text check and picked string surgery anyway.
+            if init_is_member && is_pointer_decl && type_text.contains("char") {
+                self.array_ptr_vars.insert(name.clone());
+            }
             if (type_text.contains("char") || type_is_char_pointer_alias)
+                && !init_is_member
                 && !is_unsigned_char_pointer_type
                 && !is_function_pointer_decl
                 && !is_multi_level_char_pointer
@@ -3360,11 +3401,17 @@ impl Walker {
             if p.as_rule() == Rule::type_specifier || p.as_rule() == Rule::type_specifier_strict {
                 for ts in p.into_inner() {
                     if ts.as_rule() == Rule::struct_or_union_spec {
+                        // `struct alignas(16) S { ... }` — the specifier sits on
+                        // the STRUCT, not on any member, so it has to be read
+                        // from the spec's own text too.
+                        let self_align = alignas_value_from_text(ts.as_str());
                         let mut tag = None;
                         let mut fields = Vec::new();
                         let mut field_types = HashMap::new();
                         let mut bitfields = HashMap::new();
                         let mut has_body = false;
+                        let outer_align =
+                            std::mem::replace(&mut self.current_struct_max_align, 0);
                         for sp in ts.into_inner() {
                             match sp.as_rule() {
                                 Rule::ident_name => tag = Some(sp.as_str().to_string()),
@@ -3381,7 +3428,14 @@ impl Walker {
                             }
                         }
                         if has_body {
+                            let member_align =
+                                std::mem::replace(&mut self.current_struct_max_align, outer_align)
+                                    .max(self_align.unwrap_or(0));
                             if let Some(ref tag_name) = tag {
+                                if member_align > 0 {
+                                    self.struct_alignments
+                                        .insert(tag_name.clone(), member_align);
+                                }
                                 self.struct_field_types
                                     .insert(tag_name.clone(), field_types.clone());
                                 if !bitfields.is_empty() {
@@ -3410,6 +3464,10 @@ impl Walker {
         let field_count_before = fields.len();
         for p in member.into_inner() {
             if p.as_rule() == Rule::declaration_specifiers {
+                // Read the alignment BEFORE `type_text` strips the specifier.
+                if let Some(a) = alignas_value_from_text(p.as_str()) {
+                    self.current_struct_max_align = self.current_struct_max_align.max(a);
+                }
                 if let Some((None, fields, field_types, bitfields)) =
                     self.struct_def_from_specifiers(&p)
                 {
@@ -3655,47 +3713,48 @@ impl Walker {
                 for di in inner.into_inner() {
                     match di.as_rule() {
                         Rule::designated_init => {
-                            let mut designators = Vec::new();
+                            // Collect the designator chain IN ORDER. Gathering
+                            // fields and indices into separate buckets lost the
+                            // ordering and dropped the index whenever both were
+                            // present, so `.arr[1] = 5` set `arr` to 5 outright
+                            // instead of `arr[1]`.
+                            let mut path: Vec<Result<String, i64>> = Vec::new();
                             let mut init_value = None;
-                            let mut index_key = None;
                             for p in di.into_inner() {
                                 match p.as_rule() {
-                                    Rule::ident_name => designators.push(p.as_str().to_string()),
+                                    Rule::ident_name => path.push(Ok(p.as_str().to_string())),
                                     Rule::initializer => {
                                         init_value = Some(self.walk_initializer(p))
                                     }
                                     Rule::assignment_expression => {
-                                        index_key = Some(self.walk_assignment(p));
+                                        let idx = self.walk_assignment(p);
+                                        path.push(Err(self.eval_int_expr(&idx).unwrap_or(0)));
                                     }
                                     _ => {}
                                 }
                             }
-                            if !designators.is_empty() {
-                                is_object = true;
-                                if let Some(val) = init_value {
-                                    let key = designators.remove(0);
-                                    props.push(ObjectProperty::KeyValue {
-                                        key: expr(ExprKind::Lit(Literal::Str(key))),
-                                        value: nested_designated_object(designators, val) });
-                                }
-                                continue;
-                            }
-                            if let Some(key) = index_key {
-                                if let Some(value) = init_value {
-                                    elems.push(ArrayElement {
-                                        key: Some(key),
-                                        value,
-                                        spread: false,
-                                        by_ref: false });
-                                }
-                                continue;
-                            }
-                            if let Some(value) = init_value {
+                            let Some(value) = init_value else { continue };
+                            if path.is_empty() {
                                 elems.push(ArrayElement {
                                     key: None,
                                     value,
                                     spread: false,
                                     by_ref: false });
+                                continue;
+                            }
+                            if matches!(path.first(), Some(Ok(_))) {
+                                is_object = true;
+                                let mut slot = expr(ExprKind::Object(std::mem::take(&mut props)));
+                                Self::place_designated(&mut slot, &path, value);
+                                if let ExprKind::Object(p) = slot.kind {
+                                    props = p;
+                                }
+                            } else {
+                                let mut slot = expr(ExprKind::Array(std::mem::take(&mut elems)));
+                                Self::place_designated(&mut slot, &path, value);
+                                if let ExprKind::Array(e) = slot.kind {
+                                    elems = e;
+                                }
                             }
                         }
                         Rule::initializer => {
@@ -3724,6 +3783,66 @@ impl Walker {
             _ => expr(ExprKind::Lit(Literal::Null)) }
     }
 
+    /// Assemble one designated-initializer entry into `slot`.
+    ///
+    /// `path` is the designator chain — `Ok(field)` or `Err(index)` — so
+    /// `.arr[1] = 5` arrives as `[Ok("arr"), Err(1)]`. Missing array elements
+    /// are zero-filled, which is what C guarantees for anything a designated
+    /// initializer does not mention.
+    fn place_designated(slot: &mut Expression, path: &[Result<String, i64>], value: Expression) {
+        let Some((head, rest)) = path.split_first() else {
+            *slot = value;
+            return;
+        };
+        match head {
+            Ok(field) => {
+                if !matches!(slot.kind, ExprKind::Object(_)) {
+                    slot.kind = ExprKind::Object(Vec::new());
+                }
+                let ExprKind::Object(props) = &mut slot.kind else {
+                    return;
+                };
+                let existing = props.iter_mut().find_map(|p| match p {
+                    ObjectProperty::KeyValue { key, value }
+                        if matches!(&key.kind, ExprKind::Lit(Literal::Str(k)) if k == field) =>
+                    {
+                        Some(value)
+                    }
+                    _ => None });
+                match existing {
+                    // A later designator for the same field OVERRIDES the
+                    // earlier one (`{.x = 1, .x = 2}` is 2), so recurse into
+                    // the slot already there rather than appending a duplicate.
+                    Some(v) => Self::place_designated(v, rest, value),
+                    None => {
+                        let mut fresh = expr(ExprKind::Lit(Literal::Int(0)));
+                        Self::place_designated(&mut fresh, rest, value);
+                        props.push(ObjectProperty::KeyValue {
+                            key: expr(ExprKind::Lit(Literal::Str(field.clone()))),
+                            value: fresh });
+                    }
+                }
+            }
+            Err(index) => {
+                if !matches!(slot.kind, ExprKind::Array(_)) {
+                    slot.kind = ExprKind::Array(Vec::new());
+                }
+                let ExprKind::Array(elems) = &mut slot.kind else {
+                    return;
+                };
+                let idx = (*index).max(0) as usize;
+                while elems.len() <= idx {
+                    elems.push(ArrayElement {
+                        key: None,
+                        value: expr(ExprKind::Lit(Literal::Int(0))),
+                        spread: false,
+                        by_ref: false });
+                }
+                Self::place_designated(&mut elems[idx].value, rest, value);
+            }
+        }
+    }
+
     fn walk_initializer_list(&mut self, list_pair: Pair<Rule>) -> Expression {
         let mut is_object = false;
         let mut elems = Vec::new();
@@ -3731,34 +3850,58 @@ impl Walker {
         for di in list_pair.into_inner() {
             match di.as_rule() {
                 Rule::designated_init => {
-                    let mut it = di.into_inner().peekable();
-                    let first = it.next();
-                    match first {
-                        Some(p) if p.as_rule() == Rule::ident_name => {
-                            is_object = true;
-                            let key = p.as_str().to_string();
-                            if let Some(v) = it.next() {
-                                let val = self.walk_initializer(v);
-                                props.push(ObjectProperty::KeyValue {
-                                    key: expr(ExprKind::Lit(Literal::Str(key))),
-                                    value: val });
+                    // Split the entry into its designator CHAIN and its value.
+                    // The chain is every leading `ident_name`/index expression;
+                    // the trailing `initializer` is the value. A bare
+                    // `initializer` with no designators is positional.
+                    let children: Vec<_> = di.into_inner().collect();
+                    let split = children
+                        .iter()
+                        .position(|p| p.as_rule() == Rule::initializer);
+                    let (desig, value_pair) = match split {
+                        Some(i) => (&children[..i], Some(children[i].clone())),
+                        None => (&children[..], None) };
+
+                    if desig.is_empty() {
+                        if let Some(v) = value_pair {
+                            elems.push(ArrayElement {
+                                key: None,
+                                value: self.walk_initializer(v),
+                                spread: false,
+                                by_ref: false });
+                        }
+                        continue;
+                    }
+
+                    let mut path: Vec<Result<String, i64>> = Vec::new();
+                    for p in desig {
+                        match p.as_rule() {
+                            Rule::ident_name => path.push(Ok(p.as_str().to_string())),
+                            Rule::assignment_expression => {
+                                let idx_expr = self.walk_assignment(p.clone());
+                                path.push(Err(self.eval_int_expr(&idx_expr).unwrap_or(0)));
                             }
+                            _ => {}
                         }
-                        Some(p) if p.as_rule() == Rule::initializer => {
-                            elems.push(ArrayElement {
-                                key: None,
-                                value: self.walk_initializer(p),
-                                spread: false,
-                                by_ref: false });
+                    }
+                    let Some(v) = value_pair else { continue };
+                    let value = self.walk_initializer(v);
+
+                    // A leading FIELD designator makes the whole literal an
+                    // object; a leading INDEX keeps it an array.
+                    if matches!(path.first(), Some(Ok(_))) {
+                        is_object = true;
+                        let mut slot = expr(ExprKind::Object(std::mem::take(&mut props)));
+                        Self::place_designated(&mut slot, &path, value);
+                        if let ExprKind::Object(p) = slot.kind {
+                            props = p;
                         }
-                        Some(p) if p.as_rule() == Rule::assignment_expression => {
-                            elems.push(ArrayElement {
-                                key: None,
-                                value: self.walk_assignment(p),
-                                spread: false,
-                                by_ref: false });
+                    } else {
+                        let mut slot = expr(ExprKind::Array(std::mem::take(&mut elems)));
+                        Self::place_designated(&mut slot, &path, value);
+                        if let ExprKind::Array(e) = slot.kind {
+                            elems = e;
                         }
-                        _ => {}
                     }
                 }
                 Rule::initializer => {
@@ -4851,6 +4994,52 @@ impl Walker {
             _ => self.walk_assignment(pair) }
     }
 
+    /// Register `p` as a carray pointer when a plain assignment gives it an
+    /// array, mirroring what the DECLARATION path already does for an
+    /// initializer.
+    ///
+    /// `int *q = arr;` was tracked; `int *p; … p = arr;` was not — so `p` stayed
+    /// an untyped scalar while `arr + 3` lowered to a carray OBJECT, and
+    /// `p < arr + 3` compared an object numerically (`toF64 — not a number`).
+    /// The relational lowering (`carray_ptr_relational`) was already present and
+    /// correct; it simply never fired because neither operand was recognised.
+    ///
+    /// The same guards as the declaration path apply: `&x` stays a scalar cell,
+    /// a null assignment stays null, and `char *` keeps its own model.
+    fn register_carray_pointer_assign(
+        &mut self,
+        target: &Expression,
+        value: Expression,
+    ) -> Expression {
+        let ExprKind::Ident(name) = &target.kind else {
+            return value;
+        };
+        if self.carray_ptr_vars.contains(name) || self.char_pointers.contains(name) {
+            return value;
+        }
+        let is_pointer_var = self
+            .var_types
+            .get(name)
+            .map(|ty| ty.contains('*'))
+            .unwrap_or(false);
+        if !is_pointer_var {
+            return value;
+        }
+        let wrapped = Some(value.clone());
+        if is_null_pointer_init(&wrapped) || pointer_address_target_from_init(&wrapped).is_some() {
+            return value;
+        }
+        if is_carray_object(&value) || init_is_carray_pointer_var(&wrapped, &self.carray_ptr_vars) {
+            self.carray_ptr_vars.insert(name.clone());
+            return value;
+        }
+        if should_wrap_pointer_init_as_carray(&wrapped, &self.array_ptr_vars) {
+            self.carray_ptr_vars.insert(name.clone());
+            return self.wrap_as_carray_init(value);
+        }
+        value
+    }
+
     fn walk_assignment(&mut self, pair: Pair<Rule>) -> Expression {
         if pair.as_rule() != Rule::assignment_expression {
             return self.walk_conditional(pair);
@@ -4902,6 +5091,7 @@ impl Walker {
             } else {
                 value
             };
+            let value = self.register_carray_pointer_assign(&target, value);
             expr(ExprKind::Assign {
                 target: Box::new(target),
                 value: Box::new(value) })
@@ -5275,6 +5465,13 @@ impl Walker {
                 optional: false }) }
     }
 
+    /// True when `value` names a variable tracked as a carray pointer — i.e. it
+    /// holds `{__ref_kind:"carray", __base, __idx}` at runtime rather than a
+    /// plain array.
+    fn src_is_carray_pointer(&self, value: &Expression) -> bool {
+        matches!(&value.kind, ExprKind::Ident(name) if self.carray_ptr_vars.contains(name))
+    }
+
     fn rewrite_memcpy_like(
         &mut self,
         dst: Expression,
@@ -5345,10 +5542,52 @@ impl Walker {
         }
         if let Some(name) = base_ident_name(&dst) {
             if self.is_fixed_array_var(&name) {
-                let src_value = carray_base_expr(&src).unwrap_or(src);
+                // `carray_base_expr` only unwraps a carray OBJECT LITERAL. A
+                // pointer VARIABLE — `int *p = malloc(...)`, the shape Doom uses
+                // everywhere — is an Ident holding that object, so it fell
+                // through and assigned the POINTER to the array: every element
+                // then read back `undefined`/0. Take its backing store, from the
+                // pointer's current index so `memcpy(d, p + n, …)` is right too.
+                let src_value = carray_base_expr(&src).unwrap_or_else(|| {
+                    if self.src_is_carray_pointer(&src) {
+                        call_expr(
+                            member(member(src.clone(), CARRAY_BASE_KEY), "slice"),
+                            vec![member(src.clone(), CARRAY_IDX_KEY)],
+                        )
+                    } else {
+                        src.clone()
+                    }
+                });
+                // `memcpy` copies COUNT bytes, not the whole buffer. Assigning
+                // the source outright made every partial copy overwrite the
+                // entire destination — `memcpy(b, a, 3)` on 8-byte buffers
+                // replaced all 8. Splice instead: the first `count` elements
+                // from the source, then whatever the destination had beyond
+                // that. Both halves are bulk host slices, so this stays O(n)
+                // native rather than a per-element loop.
+                let elem_size = self.dest_element_size(&dst).max(1);
+                let count = match self.byte_count_to_usize(&bytes) {
+                    Some(n) => Some(int_lit((n / elem_size) as i64)),
+                    None if elem_size > 1 => Some(ecma_math_call(
+                        "trunc",
+                        binary_expr(BinOp::Div, bytes.clone(), int_lit(elem_size as i64)),
+                    )),
+                    None => Some(bytes.clone()) };
+                let value = match count {
+                    Some(n) => call_expr(
+                        member(
+                            call_expr(
+                                member(src_value, "slice"),
+                                vec![int_lit(0), n.clone()],
+                            ),
+                            "concat",
+                        ),
+                        vec![call_expr(member(ident(&name), "slice"), vec![n])],
+                    ),
+                    None => src_value };
                 return expr(ExprKind::Assign {
                     target: Box::new(ident(&name)),
-                    value: Box::new(src_value) });
+                    value: Box::new(value) });
             }
         }
         expr(ExprKind::Assign {
@@ -5378,7 +5617,33 @@ impl Walker {
                 }
             };
             if is_zero_int_expr(&dst_offset) {
+                // `memset` fills the FIRST `count` bytes and leaves the rest of
+                // the buffer alone. Assigning `repeated` outright truncated it:
+                // `char s[5]="abcd"; memset(s,'x',3)` gave `"xxx"` instead of
+                // `"xxxd"`. Keep the tail, exactly as `rewrite_memcpy_like`
+                // does — and only when there IS a tail, since an uninitialized
+                // buffer has nothing to preserve.
+                let known = self.initialized_char_buffers.contains(&dst_name)
+                    || self.char_string_values.contains_key(&dst_name);
                 self.initialized_char_buffers.insert(dst_name.clone());
+                if known {
+                    let suffix = call_expr(
+                        member(ident(&dst_name), "substring"),
+                        vec![int_lit(count as i64)],
+                    );
+                    let updated = binary_expr(BinOp::Add, repeated.clone(), suffix);
+                    if let ExprKind::Lit(Literal::Str(fill_text)) = &repeated.kind {
+                        let current = self
+                            .char_string_values
+                            .get(&dst_name)
+                            .cloned()
+                            .unwrap_or_default();
+                        let tail: String = current.chars().skip(count).collect();
+                        self.char_string_values
+                            .insert(dst_name.clone(), format!("{fill_text}{tail}"));
+                    }
+                    return assign_expr(ident(&dst_name), updated);
+                }
                 if let ExprKind::Lit(Literal::Str(s)) = &repeated.kind {
                     self.char_string_values.insert(dst_name.clone(), s.clone());
                 }
@@ -5420,19 +5685,31 @@ impl Walker {
                 value: Box::new(updated) });
         }
         if let Some(name) = base_ident_name(&dst) {
-            if self.is_fixed_array_var(&name) && is_zero_int_expr(&fill) {
+            if self.is_fixed_array_var(&name) || self.array_ptr_vars.contains(&name) {
+                // BULK fill, and for ANY value.
+                //
+                // Two bugs here before: a non-zero fill fell through to
+                // `Lit(Null)` — `memset(buf, 0x22, n)` was a SILENT NO-OP — and
+                // the zero case materialised one AST literal PER ELEMENT, so a
+                // 64 KB buffer became 64,000 nodes.
+                //
+                // `Array.prototype.fill` is one host call over a native `Vec`,
+                // which is the bulk primitive we want and costs one AST node.
                 let elem_size = self.dest_element_size(&dst).max(1);
-                let count = self.byte_count_to_usize(&bytes).unwrap_or(0) / elem_size;
-                let zeros: Vec<ArrayElement> = (0..count)
-                    .map(|_| ArrayElement {
-                        value: expr(ExprKind::Lit(Literal::Int(0))),
-                        spread: false,
-                        key: None,
-                        by_ref: false })
-                    .collect();
-                return expr(ExprKind::Assign {
-                    target: Box::new(ident(&name)),
-                    value: Box::new(expr(ExprKind::Array(zeros))) });
+                let end = match self.byte_count_to_usize(&bytes) {
+                    Some(n) => int_lit((n / elem_size) as i64),
+                    // Runtime length: divide the byte count by the element
+                    // size, since `memset` counts BYTES and `fill` counts
+                    // elements.
+                    None if elem_size > 1 => ecma_math_call(
+                        "trunc",
+                        binary_expr(BinOp::Div, bytes.clone(), int_lit(elem_size as i64)),
+                    ),
+                    None => bytes.clone() };
+                return call_expr(
+                    member(ident(&name), "fill"),
+                    vec![fill, int_lit(0), end],
+                );
             }
         }
         expr(ExprKind::Lit(Literal::Null))
@@ -6676,6 +6953,34 @@ impl Walker {
             _ => false }
     }
 
+    /// `printf("%d", s[0])` prints the character's CODE, not the character.
+    ///
+    /// `rewrite_char_index_numeric` only descends `Binary` nodes, so a char read
+    /// passed straight as an argument stayed a one-character string and reached
+    /// `%d` as text — and `Number("\0")` is `NaN`, so `bzero_basic` reported
+    /// `[NaN NaN NaN d]`. Convert char reads to codes for the INTEGER
+    /// conversions only; `%c` and `%s` still want the character itself.
+    fn normalize_printf_integer_char_args(&self, mut args: Vec<Argument>) -> Vec<Argument> {
+        let Some(fmt) = args.first() else {
+            return args;
+        };
+        let ExprKind::Lit(Literal::Str(format_text)) = &fmt.value.kind else {
+            return args;
+        };
+        for (arg_index, spec) in printf_value_specs(format_text).into_iter().enumerate() {
+            if !matches!(spec, 'd' | 'i' | 'u' | 'x' | 'X' | 'o') {
+                continue;
+            }
+            let Some(arg) = args.get_mut(arg_index + 1) else {
+                break;
+            };
+            if self.is_char_index_read(&arg.value) {
+                arg.value = self.char_index_read_to_code(arg.value.clone());
+            }
+        }
+        args
+    }
+
     fn rewrite_char_index_numeric(&self, e: Expression) -> Expression {
         let ExprKind::Binary { op, left, right } = e.kind else {
             return e;
@@ -7233,6 +7538,14 @@ impl Walker {
                 .get(name)
                 .map(|ty| ty.contains("char") && ty.contains('*'))
                 .unwrap_or(false);
+            // A pointer already tracked as ARRAY-BACKED is not a string buffer,
+            // whatever its declared type says. `byte *px = surface->pixels`
+            // has type text `unsigned char*`, so `is_typed_char_pointer` alone
+            // dragged it into string surgery and `px[i] = v` died on
+            // `js-string.concat — first arg not a string`.
+            if self.carray_ptr_vars.contains(name) || self.array_ptr_vars.contains(name) {
+                return None;
+            }
             if !self.char_pointers.contains(name)
                 && !self.is_char_array_var(name)
                 && !self.initialized_char_buffers.contains(name)
@@ -9285,6 +9598,7 @@ impl Walker {
                         })
                         .collect();
                     let sanitized = normalize_snprintf_literal_args(sanitized);
+                    let sanitized = self.normalize_printf_integer_char_args(sanitized);
                     let sprintf_call = expr(ExprKind::Call {
                         callee: Box::new(ident("__c_sprintf")),
                         args: sanitized,
@@ -13407,7 +13721,28 @@ impl Walker {
                 // ── stdlib.h — heap allocation → arrays ──────────────────────
                 // malloc(n) → [] (GC-managed array)
                 "malloc" => {
-                    return expr(ExprKind::Array(Vec::new()));
+                    // Shared memory primitive — `primitives/memory.rs`, the same
+                    // surface pascal/vb/csharp allocate through. C predates it
+                    // and had this written inline; routing it here is what lets
+                    // the REPRESENTATION change in one place later, and is what
+                    // makes cross-language memory interop possible at all.
+                    return memory::heap_array(Vec::new());
+                }
+                // `SDL_CreateRGBSurface(flags, w, h, depth, r, g, b, a)`.
+                // Lowered HERE rather than through the profile's bytecode path
+                // because the result is an OBJECT — the software-renderer
+                // surface Doom writes into (`surface->pixels`,
+                // `surface->format->palette`). Building an object literal is an
+                // AST job; `posix_adapter` returns its results the same way.
+                "SDL_CreateRGBSurface" => {
+                    let mut it = args.into_iter().skip(1);
+                    let w = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let h = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let depth = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(8));
+                    // pitch = w * bytes-per-pixel; 8bpp is one byte, which is
+                    // the only depth a paletted surface has.
+                    let pitch = w.clone();
+                    return sdl_adapter::create_rgb_surface(w, h, depth, pitch);
                 }
                 "aligned_alloc" | "memalign" => {
                     let alignment = args
@@ -13421,7 +13756,7 @@ impl Walker {
                     return int_lit(4096);
                 }
                 "alloca" => {
-                    return expr(ExprKind::Array(Vec::new()));
+                    return memory::heap_array(Vec::new());
                 }
                 "posix_memalign" => {
                     let mut it = args.into_iter();
@@ -13488,18 +13823,12 @@ impl Walker {
                             }
                         })
                         .unwrap_or(0);
-                    let zeros: Vec<ArrayElement> = (0..count_val)
-                        .map(|_| ArrayElement {
-                            value: expr(ExprKind::Lit(Literal::Int(0))),
-                            spread: false,
-                            key: None,
-                            by_ref: false })
-                        .collect();
-                    return expr(ExprKind::Array(zeros));
+                    return memory::heap_zeroed_array(count_val);
                 }
                 "free" => {
-                    // noop — GC handles deallocation
-                    return expr(ExprKind::Lit(Literal::Null));
+                    // noop — GC handles deallocation. Routed through the shared
+                    // primitive so accounting has one place to grow from.
+                    return memory::free_value();
                 }
                 "memcpy" | "memmove" => {
                     let mut it = args.into_iter();
@@ -13522,6 +13851,24 @@ impl Walker {
                     if let (Some(dst), Some(fill), Some(bytes)) = (it.next(), it.next(), it.next())
                     {
                         return self.rewrite_memset(dst.value, fill.value, bytes.value);
+                    }
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
+                // BSD spellings, defined in terms of the two above.
+                // `bzero(s, n)` ≡ `memset(s, 0, n)`.
+                "bzero" | "explicit_bzero" => {
+                    let mut it = args.into_iter();
+                    if let (Some(dst), Some(bytes)) = (it.next(), it.next()) {
+                        return self.rewrite_memset(dst.value, int_lit(0), bytes.value);
+                    }
+                    return expr(ExprKind::Lit(Literal::Null));
+                }
+                // `bcopy(src, dst, n)` ≡ `memmove(dst, src, n)` — note the
+                // operands are the REVERSE of memcpy's.
+                "bcopy" => {
+                    let mut it = args.into_iter();
+                    if let (Some(src), Some(dst), Some(bytes)) = (it.next(), it.next(), it.next()) {
+                        return self.rewrite_memcpy_like(dst.value, src.value, bytes.value);
                     }
                     return expr(ExprKind::Lit(Literal::Null));
                 }
@@ -15312,7 +15659,10 @@ impl Walker {
             // Struct: lay out fields with C alignment/padding. A flexible array
             // member (`T data[]`) contributes its element alignment but no size.
             let mut offset = 0i64;
-            let mut max_align = 1i64;
+            // `alignas` on ANY member raises the whole aggregate's alignment,
+            // which in turn rounds up its size. Without this a struct whose
+            // member asked for 16 still reported align 4 / size 8.
+            let mut max_align = self.struct_alignments.get(tag).copied().unwrap_or(1).max(1);
             for f in fields {
                 let ty = field_types.get(f).map(|s| s.as_str()).unwrap_or("int");
                 let align = alignof_from_type_text(ty);
@@ -15360,6 +15710,9 @@ impl Walker {
             })
             .max()
             .unwrap_or(1)
+            // A member's `alignas` sets a FLOOR on the aggregate's alignment,
+            // above whatever its field types would require on their own.
+            .max(self.struct_alignments.get(tag).copied().unwrap_or(0))
     }
 
     fn sizeof_type_text(&self, text: &str) -> i64 {
@@ -15796,6 +16149,27 @@ impl Walker {
         if text.starts_with('&') {
             return Some(8);
         }
+        // `sizeof(*p)` is the size of the POINTEE, not of the pointer.
+        // `var_sizes` records 8 for any pointer variable, so without this the
+        // deref fell through to the pointer's own size and
+        // `sizeof(*p) == sizeof(struct S)` came out false. `var_types` stores
+        // the base type with the `*` already stripped, so it IS the pointee.
+        if let Some(inner) = text.strip_prefix('*') {
+            let inner = inner.trim();
+            if let Some(ty) = self.var_types.get(inner) {
+                // Drop one level of indirection — `struct S *` stores the star
+                // for some declaration forms, and `sizeof_struct_union` needs
+                // the bare tag or it misses and reports the POINTER size.
+                let pointee = ty.replacen('*', "", 1);
+                let pointee = pointee.trim();
+                let su = self.sizeof_struct_union(pointee);
+                return Some(if su > 0 {
+                    su
+                } else {
+                    sizeof_from_type_text(pointee)
+                });
+            }
+        }
         if let Some(&sz) = self.var_sizes.get(text) {
             return Some(sz);
         }
@@ -15958,6 +16332,12 @@ impl Walker {
             .to_string();
         type_hint.matches('*').count() == 1
             && pointee != "void"
+            // `typedef void *SDL_Surface` makes `SDL_Surface *` a void pointer
+            // too — the name hides the `void` from the check above. Wrapping an
+            // opaque handle in a carray turns the value the callee received
+            // into `{__ref_kind:"carray", __base:<handle>}`, so every consumer
+            // that expects the handle itself sees an object instead.
+            && !self.typedef_void_pointer_aliases.contains(&pointee)
             && !type_hint.contains("char")
             && !type_hint.contains("struct")
             && !type_hint.contains("union")
@@ -16035,6 +16415,39 @@ fn sizeof_array_element_type(text: &str) -> i64 {
     } else {
         sizeof_from_type_text(&t)
     }
+}
+
+/// The strictest alignment requested by any `alignas(...)` / `_Alignas(...)`
+/// in `text`.
+///
+/// Takes the MAX across all occurrences, since `alignas(8) alignas(16)` is
+/// legal and the strictest wins. A non-numeric argument names a TYPE
+/// (`alignas(double)`), whose alignment is that type's.
+fn alignas_value_from_text(text: &str) -> Option<i64> {
+    let mut best: Option<i64> = None;
+    // Both spellings occur — C11's `_Alignas` and `<stdalign.h>`'s `alignas`.
+    // Matching only the lowercase form silently missed every `_Alignas`.
+    // ASCII-lowercasing keeps byte offsets aligned with the original text.
+    let hay = text.to_ascii_lowercase();
+    let mut base = 0usize;
+    while let Some(at) = hay[base..].find("alignas") {
+        let start = base + at + "alignas".len();
+        let after = &text[start..];
+        base = start;
+        let Some(open) = after.find('(') else { continue };
+        if !after[..open].trim().is_empty() {
+            continue;
+        }
+        let Some(close) = after[open + 1..].find(')') else { continue };
+        let arg = after[open + 1..open + 1 + close].trim();
+        let value = match arg.parse::<i64>() {
+            Ok(n) => n,
+            Err(_) => alignof_from_type_text(arg) };
+        if value > 0 {
+            best = Some(best.map_or(value, |b: i64| b.max(value)));
+        }
+    }
+    best
 }
 
 fn alignof_from_type_text(text: &str) -> i64 {

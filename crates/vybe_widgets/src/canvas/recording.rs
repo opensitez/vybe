@@ -33,6 +33,7 @@ pub enum DrawCmd {
     SetLineJoin(LineJoin),
     SetMiterLimit(f32),
     SetGlobalAlpha(f32),
+    SetImageSmoothing(bool),
     SetFont(Font),
     SetLineDash(Vec<f32>),
     SetLineDashOffset(f32),
@@ -171,6 +172,7 @@ impl RecordingCanvas {
                 DrawCmd::SetLineJoin(j) => target.set_line_join(*j),
                 DrawCmd::SetMiterLimit(l) => target.set_miter_limit(*l),
                 DrawCmd::SetGlobalAlpha(a) => target.set_global_alpha(*a),
+                DrawCmd::SetImageSmoothing(on) => target.set_image_smoothing(*on),
                 DrawCmd::SetFont(f) => target.set_font(f),
                 DrawCmd::SetLineDash(intervals) => target.set_line_dash(intervals),
                 DrawCmd::SetLineDashOffset(o) => target.set_line_dash_offset(*o),
@@ -281,6 +283,10 @@ impl Canvas for RecordingCanvas {
     }
     fn set_global_alpha(&mut self, alpha: f32) {
         self.commands.push(DrawCmd::SetGlobalAlpha(alpha));
+    }
+
+    fn set_image_smoothing(&mut self, enabled: bool) {
+        self.commands.push(DrawCmd::SetImageSmoothing(enabled));
     }
     fn set_font(&mut self, font: &Font) {
         self.commands.push(DrawCmd::SetFont(font.clone()));

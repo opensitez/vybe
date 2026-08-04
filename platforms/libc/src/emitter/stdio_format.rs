@@ -195,7 +195,8 @@ const CUSTPAD: u16 = 19; // custom pad char from `%'X`, or "" if none
 const FPAD: u16 = 20; // 1 when a custom pad char was given
 const POS: u16 = 21; // positional arg number from `%N$` (scratch)
 const SAVEI: u16 = 22; // saved `I` for positional-arg rewind (scratch)
-const NLOCALS: u16 = 23;
+const NULPOS: u16 = 23; // index of the first NUL in a `%s` argument (scratch)
+const NLOCALS: u16 = 24;
 
 fn lg(c: &mut Chunk, s: u16) {
     c.emit_op_u16(Op::LOCAL_GET, s, 0);
@@ -235,6 +236,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     let str_slice = c.add_import("ecma:string", "slice");
     let str_tostr = c.add_import("ecma:string", "String");
     let str_test = c.add_import("wasm:js-string", "test");
+    let str_indexof = c.add_import("ecma:string", "indexOf");
     let str_fcc = c.add_import("ecma:string", "fromCharCode");
     let str_cat = c.add_import("ecma:string", "concat");
     let str_upper = c.add_import("ecma:string", "toUpperCase");
@@ -712,7 +714,7 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     ls(&mut c, N);
 
     // conversions
-    conv_s(&mut c, str_tostr, str_slice, str_test);
+    conv_s(&mut c, str_tostr, str_slice, str_test, str_indexof);
     conv_d(&mut c, math_trunc, math_abs, num_radix, str_cat);
     conv_u(&mut c, num_radix);
     conv_f(&mut c, num_fixed, str_cat, math_pow, math_round);
@@ -931,7 +933,7 @@ fn flag_arm(c: &mut Chunk, ch: u16, code: i32, flag: u16) {
     c.patch_block(b);
 }
 
-fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16, str_test: u16) {
+fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16, str_test: u16, str_indexof: u16) {
     let b = c.emit_block(0);
     lg(c, CONV);
     ci(c, 115);
@@ -956,6 +958,30 @@ fn conv_s(c: &mut Chunk, str_tostr: u16, str_slice: u16, str_test: u16) {
     hc(c, str_tostr, 1);
     ls(c, RAW);
     c.emit_end(0);
+    // `%s` stops at the NUL terminator. A fixed C buffer keeps its padding —
+    // `strncpy(e,"xy",5)` leaves `"xy\0\0\0"` — and substituting the whole
+    // thing pushed the NULs into the output, where the result was later clipped
+    // at the first one. That silently swallowed the REST OF THE FORMAT:
+    // `snprintf(t, n, "[%s]", e)` produced `"[xy"`. Clip the ARGUMENT here, not
+    // the finished string.
+    {
+        let nb = c.emit_block(0);
+        lg(c, RAW);
+        cs(c, "\0");
+        hc(c, str_indexof, 2);
+        ls(c, NULPOS);
+        lg(c, NULPOS);
+        cf(c, 0.0);
+        c.emit_op(Op::F64_LT, 0);
+        c.emit_br_if(0, 0); // no NUL → leave RAW alone
+        lg(c, RAW);
+        cf(c, 0.0);
+        lg(c, NULPOS);
+        hc(c, str_slice, 3);
+        ls(c, RAW);
+        c.emit_end(0);
+        c.patch_block(nb);
+    }
     {
         let pb = c.emit_block(0);
         lg(c, PREC);

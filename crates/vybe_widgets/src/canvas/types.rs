@@ -199,6 +199,42 @@ impl Image {
         }
     }
 
+    /// Expand an 8-bit palette-indexed image to RGBA.
+    ///
+    /// This is the shape a software renderer produces: `indices` holds one
+    /// byte per pixel, `palette` is up to 256 entries of `0xRRGGBB` (alpha is
+    /// forced opaque — an indexed frame has no alpha channel). Doom's
+    /// `I_FinishUpdate` is exactly this: an 8-bit screen buffer plus a 256
+    /// colour palette, expanded once per frame.
+    ///
+    /// Lives here rather than in the host bridge because it is an image-format
+    /// concern, and it runs NATIVELY — the guest writes indices, the host does
+    /// the per-pixel work, so no part of this crosses into WASM.
+    ///
+    /// Short `indices` are padded with index 0 and out-of-range indices read as
+    /// black, so a guest that miscounts gets a visibly wrong frame rather than
+    /// a panic.
+    pub fn from_paletted(width: u32, height: u32, indices: &[u8], palette: &[u32]) -> Self {
+        let count = (width as usize) * (height as usize);
+        let mut rgba = Vec::with_capacity(count * 4);
+        for i in 0..count {
+            let entry = indices
+                .get(i)
+                .and_then(|&idx| palette.get(idx as usize))
+                .copied()
+                .unwrap_or(0);
+            rgba.push((entry >> 16) as u8);
+            rgba.push((entry >> 8) as u8);
+            rgba.push(entry as u8);
+            rgba.push(0xFF);
+        }
+        Self {
+            width,
+            height,
+            pixels: Arc::new(rgba),
+        }
+    }
+
     /// Decode an image from a file path. Supports PNG, JPEG, GIF, and BMP.
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
         let img = image::open(path.as_ref())

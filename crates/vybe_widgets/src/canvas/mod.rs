@@ -130,6 +130,12 @@ pub trait Canvas {
     /// subsequent paint operations.
     fn set_global_alpha(&mut self, alpha: f32);
 
+    /// HTML5 canvas `imageSmoothingEnabled`. `true` (the default) filters
+    /// scaled images bilinearly; `false` selects nearest-neighbour, which is
+    /// what a software-rendered frame upscaled to the window needs — bilinear
+    /// blurs it. Defaulted so existing `Canvas` impls need no change.
+    fn set_image_smoothing(&mut self, _enabled: bool) {}
+
     /// Set the font used by `fill_text` / `stroke_text`.
     fn set_font(&mut self, font: &Font);
 

@@ -3,6 +3,54 @@ use vybe_runtime::Chunk;
 use std::sync::Arc;
 use vybe_runtime::value::Value;
 
+use vybe_ast::{ExprKind, Expression, Literal, ObjectProperty};
+
+use super::build::{expr, str_lit};
+
+/// `SDL_CreateRGBSurface(flags, w, h, depth, rmask, gmask, bmask, amask)`
+/// → an offscreen surface the GUEST owns.
+///
+/// Built at the AST level rather than as raw bytecode: constructing an object
+/// in chunk emission is the wrong tool and far more code. `posix_adapter`
+/// already returns `ExprKind::Object` results the same way.
+///
+/// Shape mirrors the fields a software renderer touches:
+///
+/// ```text
+/// { w, h, depth, pixels: [], pitch, format: { palette: [] } }
+/// ```
+///
+/// `pixels` starts EMPTY and grows as the renderer writes — Doom rewrites every
+/// pixel each frame, and a runtime-sized zero-fill would need a length the
+/// declaration cannot see. Reads of never-written pixels degrade to palette
+/// entry 0 at the host rather than faulting.
+pub fn create_rgb_surface(
+    w: Expression,
+    h: Expression,
+    depth: Expression,
+    pitch: Expression,
+) -> Expression {
+    let kv = |k: &str, v: Expression| ObjectProperty::KeyValue { key: str_lit(k), value: v };
+    let empty = || expr(ExprKind::Array(Vec::new()));
+    expr(ExprKind::Object(vec![
+        kv("w", w),
+        kv("h", h),
+        kv("depth", depth),
+        kv("pitch", pitch),
+        kv("pixels", empty()),
+        kv(
+            "format",
+            expr(ExprKind::Object(vec![
+                kv("palette", empty()),
+                kv(
+                    "BytesPerPixel",
+                    expr(ExprKind::Lit(Literal::Int(1))),
+                ),
+            ])),
+        ),
+    ]))
+}
+
 fn emit_gui_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import("vybe:gui", func);
     chunks[current].emit_call(idx, argc, line);
@@ -253,6 +301,27 @@ pub fn emit_sdl_get_window_surface(chunks: &mut [Chunk], current: usize, _argc: 
     emit_string_concat(chunks, current, window, suffix, line);
 }
 
+/// `SDL_BlitPaletted(surface, pixels, w, h, palette [, dstW, dstH])`
+///
+/// The whole graphics requirement of a software renderer. The GUEST owns the
+/// pixel buffer — Doom writes straight into `screenbuffer->pixels` — so this
+/// forwards it as-is and the host does the palette expansion natively.
+/// Trailing destination size is optional; the host defaults it to the source
+/// size, so the 5-argument form is a 1:1 blit.
+pub fn emit_sdl_blit_paletted(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let slots: Vec<u16> = (0..argc).map(|_| chunks[current].alloc_scratch(1)).collect();
+    // Arguments arrive on the stack in order, so pop them back to front.
+    for &slot in slots.iter().rev() {
+        emit_set_local(chunks, current, slot, line);
+    }
+    for &slot in slots.iter() {
+        emit_get_local(chunks, current, slot, line);
+    }
+    emit_gui_call(chunks, current, "sdlBlitPaletted", argc, line);
+    chunks[current].emit_op(Op::DROP, line);
+    emit_zero_i32(chunks, current, line);
+}
+
 pub fn emit_sdl_fill_rect(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let surface = chunks[current].alloc_scratch(1);
     let rect = chunks[current].alloc_scratch(1);
@@ -484,6 +553,10 @@ pub fn emit_sdl(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line
         }
         "sdl.SDL_GetWindowSurface" | "libc.sdl.SDL_GetWindowSurface" => {
             emit_sdl_get_window_surface(chunks, current, argc, line);
+            true
+        }
+        "sdl.SDL_BlitPaletted" | "libc.sdl.SDL_BlitPaletted" => {
+            emit_sdl_blit_paletted(chunks, current, argc, line);
             true
         }
         "sdl.SDL_FillRect" | "libc.sdl.SDL_FillRect" => {

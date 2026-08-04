@@ -10,6 +10,11 @@ name = "c"
 extensions = ["c", "h"]
 
 [compiler]
+# Declared types CONVERT the value they bind (assignment, declaration and
+# parameter entry alike). Stated explicitly rather than inherited: the platform
+# default is `true`, and inheriting it silently gave Python coercive semantics
+# it never chose.
+coerces_value_to_type_hint = true
 # `(double)x` / `(float)x` coerce without truncating.
 float_cast_types = ["double", "float"]
 # `int a[3] = {...}` / `char s[] = "hi"` are aggregates, not scalars to coerce.
@@ -218,6 +223,10 @@ uses_common_resolver = true
 "SDL_MapRGBA" = { emit = "common:libc.sdl.SDL_MapRGBA", min_args = 5, max_args = 5 }
 "SDL_ShowWindow" = { emit = "common:libc.sdl.SDL_ShowWindow", min_args = 1, max_args = 1 }
 "SDL_HideWindow" = { emit = "common:libc.sdl.SDL_HideWindow", min_args = 1, max_args = 1 }
+# Software-renderer frame path: expand an 8-bit palette-indexed buffer to RGBA
+# and present it. Doom's `I_FinishUpdate` in one call. Destination size is
+# optional and defaults to the source size.
+"SDL_BlitPaletted" = { emit = "common:libc.sdl.SDL_BlitPaletted", min_args = 5, max_args = 7 }
 "SDL_ShowSimpleMessageBox" = { emit = "common:libc.sdl.SDL_ShowSimpleMessageBox", min_args = 4, max_args = 4 }
 
 [[esm_default]]
@@ -242,6 +251,11 @@ path = "sdl"
 "charCodeAt"  = { emit = "host:wasm:js-string:charCodeAt", min_args = 1, max_args = 1 }
 "split"       = { emit = "host:ecma:string:split",       min_args = 1, max_args = 2 }
 "push"        = { emit = "common:collections.push",      min_args = 1, max_args = 1 }
+# Bulk fill — `memset` on an array lowers to this. One host call over a native
+# Vec, instead of one AST literal per element.
+"fill"        = { emit = "host:ecma:array:fill",         min_args = 1, max_args = 3 }
+# Bulk splice for partial `memcpy` — source head + destination tail.
+"concat"      = { emit = "host:ecma:array:concat",       min_args = 1, max_args = 1 }
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — common math.h / limits.h macros

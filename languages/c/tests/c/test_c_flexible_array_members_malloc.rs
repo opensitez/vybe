@@ -76,14 +76,19 @@ fn fam_offsetof() {
     );
 }
 #[test]
+// A pointer to a struct with a flexible array member is an ORDINARY object
+// pointer — that is the property worth asserting. Comparing `sizeof(p)` against
+// a literal 4 asserted the target's pointer width instead: true on wasm32,
+// false under `cc` on any 64-bit host, so the test could never agree with the
+// reference compiler.
 fn fam_sizeof_pointer() {
     assert_eq!(
         run_c(
-            "#include <stdlib.h>\nstruct S { int len; int data[]; }; int main() { struct S *p; printf(\"%d\", (int)sizeof(p)); return 0; }"
+            "#include <stdlib.h>\nstruct S { int len; int data[]; }; int main() { struct S *p; printf(\"%d\", (int)(sizeof(p) == sizeof(void*))); return 0; }"
         ),
-        vec!["4"]
+        vec!["1"]
     );
-} // wait, pointer size could be 4 or 8! Let's just check it compiles
+}
 #[test]
 fn fam_sizeof_deref() {
     assert_eq!(

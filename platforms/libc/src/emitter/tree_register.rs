@@ -44,6 +44,7 @@ pub fn register_namespace_tree() {
             ("SDL_DrawLine", "libc.sdl.SDL_DrawLine"),
             ("SDL_ShowWindow", "libc.sdl.SDL_ShowWindow"),
             ("SDL_HideWindow", "libc.sdl.SDL_HideWindow"),
+            ("SDL_BlitPaletted", "libc.sdl.SDL_BlitPaletted"),
             ("SDL_ShowSimpleMessageBox", "libc.sdl.SDL_ShowSimpleMessageBox"),
         ] {
             sdl.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));

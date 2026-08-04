@@ -184,9 +184,14 @@ initializer = {
     | assignment_expression
 }
 initializer_list = { "{" ~ (designated_init ~ ("," ~ designated_init)* ~ ","?)? ~ "}" }
+// C's designator-list is a SEQUENCE of designators in any combination —
+// `.field`, `[index]`, or a mix such as `.arr[1] = 5` and `[2].name = x`.
+// Splitting it into "all fields" or "one index" rejected every mixed form.
+// Kept flat (no wrapper rule) so children stay `ident_name` /
+// `assignment_expression` and existing walker arms still match; the trailing
+// `initializer` is the value.
 designated_init = {
-    ("." ~ ident_name)+ ~ "=" ~ initializer
-    | ("[" ~ assignment_expression ~ "]" ~ "=" ~ initializer)
+    (("." ~ ident_name) | ("[" ~ assignment_expression ~ "]"))+ ~ "=" ~ initializer
     | initializer
 }
 
