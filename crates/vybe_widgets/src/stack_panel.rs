@@ -122,6 +122,18 @@ impl StackPanel {
 
 impl PanelWidget for StackPanel {
     
+
+    /// The document tree's children — what `find_widget_mut` / `take_widget`
+    /// walk, and what makes a node reachable by name however deeply nested.
+    fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
+        self.children.iter_mut().collect()
+    }
+
+    /// `removeChild` against a direct child.
+    fn detach(&mut self, name: &str) -> Option<Box<dyn PanelWidget>> {
+        let i = self.children.iter().position(|c| c.name() == name)?;
+        Some(self.children.remove(i))
+    }
     fn find_rect(&self, name: &str) -> Option<LayoutRect> {
         if self.name() == name { return Some(self.rect()); }
         for child in &self.children {

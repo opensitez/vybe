@@ -480,6 +480,63 @@ mod gui_impl {
         }
     }
 
+/// The node a control object addresses, when it is a DOM element.
+fn element_node(obj: &std::sync::Arc<std::sync::Mutex<Object>>) -> Option<u64> {
+    obj.lock()
+        .unwrap()
+        .properties
+        .get("__node")
+        .map(|v| v.as_f64() as u64)
+}
+
+/// Apply a control property to its element. Property names arrive already
+/// normalised by the frontend, so this is the web vocabulary only — anything
+/// without an IDL counterpart becomes an attribute, which is where unknown
+/// properties belong on the web.
+fn set_dom_property(node: u64, prop: &str, value: &str) {
+    use vybe_platform_web::engine::{apply, DomOp};
+    let doc = vybe_platform_web::html::active_document();
+    match prop {
+        "text" | "caption" => {
+            apply(doc, DomOp::SetTextContent(node, value.to_string()));
+        }
+        "value" => {
+            apply(doc, DomOp::SetValue(node, value.to_string()));
+        }
+        "checked" | "ischecked" => {
+            apply(doc, DomOp::SetChecked(node, value == "true" || value == "1"));
+        }
+        "name" => {
+            apply(doc, DomOp::SetAttribute(node, "id".into(), value.to_string()));
+        }
+        "left" | "top" | "width" | "height" => {
+            apply(doc, DomOp::SetStyleProperty(node, prop.to_string(), format!("{}px", value)));
+        }
+        other => {
+            apply(doc, DomOp::SetAttribute(node, other.to_string(), value.to_string()));
+        }
+    }
+}
+
+/// Read a control property back off its element.
+fn get_dom_property(node: u64, prop: &str) -> Option<String> {
+    use vybe_platform_web::engine::{apply, DomOp, DomValue};
+    let doc = vybe_platform_web::html::active_document();
+    let v = match prop {
+        "text" | "caption" => apply(doc, DomOp::TextContent(node)),
+        "value" => apply(doc, DomOp::Value(node)),
+        "checked" | "ischecked" => apply(doc, DomOp::Checked(node)),
+        "name" => apply(doc, DomOp::GetAttribute(node, "id".into())),
+        "left" | "top" | "width" | "height" => {
+            apply(doc, DomOp::GetStyleProperty(node, prop.to_string()))
+        }
+        other => apply(doc, DomOp::GetAttribute(node, other.to_string())) };
+    match v {
+        DomValue::Text(s) => Some(s),
+        DomValue::Bool(b) => Some(if b { "true".into() } else { "false".into() }),
+        _ => None }
+}
+
     pub fn register(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
         let gui_collection_add = gui.clone();
         vm.register_host_fn(
@@ -754,6 +811,13 @@ mod gui_impl {
                 let val = args.get(2).cloned().unwrap_or(Value::Null);
                 let val_str = format!("{}", val);
                 let prop_lower = property.to_lowercase();
+                // The control IS a DOM element — a `TEdit` is a textbox is an
+                // `<input>`. When the object carries a node, the property is a
+                // DOM property; the VCL/WinForms spelling was only ever a name.
+                if let Some(node) = element_node(obj) {
+                    set_dom_property(node, &prop_lower, &val_str);
+                    return Value::Null;
+                }
                 let (control_name, fallback_text, control_type) = {
                     let o = obj.lock().unwrap();
                     let text = o.properties.get("text").map(|v| format!("{}", v));
@@ -814,6 +878,13 @@ mod gui_impl {
 
                 let property = str_arg(args, 1, "");
                 let prop_lower = property.to_lowercase();
+                // A DOM element answers from the document — the widget under
+                // it holds the state, so this is a read, never a mirror.
+                if let Some(node) = element_node(obj) {
+                    return match get_dom_property(node, &prop_lower) {
+                        Some(v) => Value::String(Arc::from(v.as_str())),
+                        None => Value::Null };
+                }
                 let (control_name, fallback) = {
                     let o = obj.lock().unwrap();
                     let fallback = o.properties.get(&prop_lower).cloned();

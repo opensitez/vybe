@@ -7,12 +7,10 @@
 use std::collections::HashMap;
 use vybe_runtime::Value;
 use vybe_widgets::canvas::RecordingCanvas;
+// The individual control types are no longer named here: construction moved
+// to `vybe_widgets::controls::make_widget`, shared with the `web:html` DOM.
 use vybe_widgets::{
-    BindingNavigator, Button, Canvas as CanvasWidget, Checkbox, CommandValue, ContextMenu,
-    DataGrid, DateTimePicker, FlowLayoutPanel, Form as WidgetForm, GroupBox, Label, ListBox,
-    ListView, MaskedTextBox, MenuStrip, MonthCalendar, NumericUpDown, Panel, PanelWidget,
-    PictureBox, ProgressBar, Radio, ScrollBar, Select, Slider, SplitContainer, StatusStrip,
-    TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView, WidgetCommand };
+    Canvas as CanvasWidget, CommandValue, Form as WidgetForm, WidgetCommand };
 
 /// Holds the live widget form + event callbacks.
 /// Created before VM runs, shared with host fns via `Arc<Mutex<>>`.
@@ -473,7 +471,7 @@ impl GuiState {
     ) {
         // Pass original-case name to the widget so ButtonClicked events carry the original spelling.
         // Lookup keys (event handlers, control_names membership check) already lowercase at call time.
-        let widget = make_widget(type_name, name, text, w as f32, h as f32);
+        let widget = vybe_widgets::controls::make_widget(type_name, name, text, w as f32, h as f32);
         self.form
             .add_boxed_control(widget, x as f32, y as f32, w as f32, h as f32);
         self.track_live_control_name(name, name);
@@ -494,7 +492,7 @@ impl GuiState {
         parent: &str,
         parent_is_form: bool,
     ) {
-        let widget = make_widget(type_name, name, text, w as f32, h as f32);
+        let widget = vybe_widgets::controls::make_widget(type_name, name, text, w as f32, h as f32);
         self.form.stage_control(name, widget, parent, parent_is_form);
         self.track_live_control_name(name, name);
     }
@@ -722,133 +720,9 @@ fn capitalize_first(s: &str) -> String {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str() }
 }
 
-/// Create a boxed PanelWidget from a type name string.
-fn make_widget(type_name: &str, name: &str, text: &str, w: f32, h: f32) -> Box<dyn PanelWidget> {
-    match type_name.to_lowercase().as_str() {
-        "canvas" | "paintbox" => {
-            // The Canvas widget is the bare drawable surface. PaintBox
-            // is the .NET BCL/FCL alias the dotnet wrapper uses.
-            use vybe_widgets::layout::LayoutRect;
-            let mut c = vybe_widgets::Canvas::new().with_name(name);
-            <vybe_widgets::Canvas as PanelWidget>::set_rect(
-                &mut c,
-                LayoutRect::new(0.0, 0.0, w, h),
-            );
-            Box::new(c)
-        }
-        "button" => {
-            let mut b = Button::new(text).with_name(name);
-            b.width = w;
-            b.height = h;
-            Box::new(b)
-        }
-        "label" | "linklabel" => {
-            let mut l = Label::new(text).with_name(name);
-            l.width = w;
-            l.height = h;
-            Box::new(l)
-        }
-        "textbox" | "richtextbox" => {
-            let mut t = TextInput::new().with_name(name);
-            t.value = text.to_string();
-            t.cursor = t.value.len();
-            t.width = w;
-            t.height = h;
-            Box::new(t)
-        }
-        "maskedtextbox" => {
-            let mut t = MaskedTextBox::new().with_name(name);
-            t.value = text.to_string();
-            Box::new(t)
-        }
-        "checkbox" => Box::new(Checkbox::new(text).with_name(name)),
-        "radiobutton" => Box::new(Radio::new(text).with_name(name)),
-        "combobox" => {
-            let mut s = Select::new(vec![]).with_name(name);
-            s.width = w;
-            s.height = h;
-            Box::new(s)
-        }
-        "listbox" | "checkedlistbox" => {
-            let mut l = ListBox::new().with_name(name);
-            l.width = w;
-            l.height = h;
-            Box::new(l)
-        }
-        "panel" | "usercontrol" => {
-            let mut p = Panel::new().with_name(name);
-            p.width = w;
-            p.height = h;
-            Box::new(p)
-        }
-        "groupbox" | "frame" => {
-            let mut g = GroupBox::new(text).with_name(name);
-            g.width = w;
-            g.height = h;
-            Box::new(g)
-        }
-        "picturebox" => {
-            let mut p = PictureBox::new().with_name(name);
-            p.width = w;
-            p.height = h;
-            Box::new(p)
-        }
-        "progressbar" => {
-            let mut p = ProgressBar::new().with_name(name);
-            p.width = w;
-            p.height = h;
-            Box::new(p)
-        }
-        "trackbar" => Box::new(Slider::new(0.0, 100.0, 50.0).with_name(name)),
-        "numericupdown" => Box::new(NumericUpDown::new().with_name(name)),
-        "datetimepicker" => Box::new(DateTimePicker::new().with_name(name)),
-        "treeview" => Box::new(TreeView::new("", 1.0).with_name(name)),
-        "datagridview" | "datagrid" => Box::new(DataGrid::new(&[]).with_name(name)),
-        "listview" => Box::new(ListView::new().with_name(name)),
-        "tabcontrol" => {
-            let mut t = Tabs::new(&["Tab1"]).with_name(name);
-            t.width = w;
-            t.height = h;
-            Box::new(t)
-        }
-        "monthcalendar" => Box::new(MonthCalendar::new().with_name(name)),
-        "hscrollbar" => {
-            let mut s = ScrollBar::new(false).with_name(name);
-            s.width = w;
-            s.height = h;
-            Box::new(s)
-        }
-        "vscrollbar" => {
-            let mut s = ScrollBar::new(true).with_name(name);
-            s.width = w;
-            s.height = h;
-            Box::new(s)
-        }
-        "menustrip" => Box::new(MenuStrip::new().with_name(name)),
-        "toolstrip" => Box::new(ToolStrip::new().with_name(name)),
-        "statusstrip" => Box::new(StatusStrip::new().with_name(name)),
-        "contextmenustrip" => Box::new(ContextMenu::new().with_name(name)),
-        "splitcontainer" => Box::new(SplitContainer::new(false).with_name(name)),
-        "flowlayoutpanel" => Box::new(FlowLayoutPanel::new().with_name(name)),
-        // Horizontal flow — Flutter `Row`. (Vertical `FlowLayoutPanel` default
-        // serves Column/Scaffold.)
-        "hflowlayoutpanel" => Box::new(
-            FlowLayoutPanel::new()
-                .with_name(name)
-                .with_direction(vybe_widgets::flow_layout::FlowDirection::LeftToRight),
-        ),
-        "tablelayoutpanel" => Box::new(TableLayoutPanel::new(2, 2).with_name(name)),
-        "bindingnavigator" => Box::new(BindingNavigator::new(name)),
-        _ => {
-            // Unknown control type — render as label placeholder
-            let mut l = Label::new(&format!("[{}]", name)).with_name(name);
-            l.transparent = true;
-            l.width = w;
-            l.height = h;
-            Box::new(l)
-        }
-    }
-}
+// The control factory moved to `vybe_widgets::controls::make_widget`: the
+// `web:html` DOM builds the same controls from tags, and one construction
+// site is the point.
 
 #[cfg(test)]
 mod adapter_tests {
@@ -858,6 +732,8 @@ mod adapter_tests {
     //! the mirror store — reflects it. State lives in the widget.
     use super::*;
     use vybe_widgets::layout::{LayoutRect, MouseButton, MouseEvent, MouseEventKind};
+    // Only the tests drive the form through the trait directly.
+    use vybe_widgets::PanelWidget;
     use vybe_widgets::{WidgetCommand, WidgetEvent};
 
     /// Checkbox, fully wired: `Checkbox(value: true/false)` reflects onto the

@@ -1,6 +1,17 @@
-//! Shared control definitions — data model for all UI controls.
-//! Each control defines its tag, properties, events, default size, and CSS.
-//! The renderer reads these definitions — no rendering logic here.
+//! The HTML description of every control kind — tag, attributes, CSS.
+//!
+//! This is the other half of [`controls::make_widget`](crate::controls): that
+//! one BUILDS a control for a kind name, this one says what that kind IS in
+//! HTML. Both are keyed by the same names ("button", "textbox",
+//! "radiobutton", …), so they are two views of one table rather than two
+//! tables that can drift.
+//!
+//! It lives here, in the toolkit, because this is what a real web engine
+//! consumes: a WebKit or Chromium backend needs the tag, the `type`, and the
+//! CSS — not the tiny-skia widget. Keeping the description next to the DOM is
+//! what makes swapping the engine a matter of implementing one trait.
+//!
+//! No rendering logic here — definitions only.
 
 pub mod button;
 pub mod checkbox;

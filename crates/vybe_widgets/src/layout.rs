@@ -662,6 +662,24 @@ pub trait PanelWidget: Send + Sync {
         }
     }
 
+    /// This widget's own children, mutably. Default empty — "I'm a leaf."
+    /// Containers override; that one override is what lets the free functions
+    /// [`find_widget_mut`] and [`take_widget`] walk the whole tree, so a node
+    /// stays reachable and mutable by name however deeply it is nested.
+    /// That reachability is what makes the tree a document rather than a
+    /// display list.
+    fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
+        Vec::new()
+    }
+
+    /// Remove a DIRECT child by name and hand it back. Default `None` — "not
+    /// a container." This is `removeChild`, and the "move" half of
+    /// `appendChild`: a node has one parent, so inserting it elsewhere takes
+    /// it out of where it was. Use [`take_widget`] to search a whole subtree.
+    fn detach(&mut self, _name: &str) -> Option<Box<dyn PanelWidget>> {
+        None
+    }
+
     /// Render the widget into the pixmap.
     fn render(&mut self, ctx: &mut RenderContext);
 
@@ -798,6 +816,41 @@ pub trait PanelWidget: Send + Sync {
 
     /// Set the anchor edges for this widget.
     fn set_anchor(&mut self, _anchor: Anchor) {}
+}
+
+/// Find a widget by name anywhere in a subtree, mutably — the mutable
+/// counterpart of [`PanelWidget::find_rect`].
+///
+/// Free-standing rather than a trait method so it can hand back a
+/// `&mut dyn PanelWidget` borrowed from the tree; a default method would
+/// need `Self: Sized` and stop working on the trait objects containers hold.
+pub fn find_widget_mut<'a>(
+    root: &'a mut dyn PanelWidget,
+    name: &str,
+) -> Option<&'a mut dyn PanelWidget> {
+    if root.name() == name {
+        return Some(root);
+    }
+    for child in root.children_mut() {
+        if let Some(found) = find_widget_mut(&mut **child, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Remove a widget by name from anywhere in a subtree and hand it back —
+/// `removeChild` against a whole document rather than one parent.
+pub fn take_widget(root: &mut dyn PanelWidget, name: &str) -> Option<Box<dyn PanelWidget>> {
+    if let Some(w) = root.detach(name) {
+        return Some(w);
+    }
+    for child in root.children_mut() {
+        if let Some(w) = take_widget(child.as_mut(), name) {
+            return Some(w);
+        }
+    }
+    None
 }
 
 // ── NullWidget ─────────────────────────────────────────────────────────

@@ -75,8 +75,7 @@ impl vybe_runtime::Plugin for Plugin {
                 if let Some(g) = GUI.lock().unwrap().as_ref() {
                     widgets_registered = true;
                     crate::gui::register(vm, g.clone());
-                    crate::canvas::register(vm, g.clone());
-                    crate::input::register(vm, g.clone());
+                    crate::canvas_backend_impl::install(g.clone());
                 }
             }
 

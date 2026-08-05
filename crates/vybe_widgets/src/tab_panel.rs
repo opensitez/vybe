@@ -195,6 +195,19 @@ impl TabPanel {
 
 impl PanelWidget for TabPanel {
     
+
+    /// The document tree's children — what `find_widget_mut` / `take_widget`
+    /// walk, so a node stays reachable by name however deeply it is nested.
+    fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
+        self.tabs.iter_mut().map(|t| &mut t.widget).collect()
+    }
+
+    /// `removeChild` against a direct child.
+    fn detach(&mut self, name: &str) -> Option<Box<dyn PanelWidget>> {
+        let i = self.tabs.iter().position(|t| t.widget.name() == name)?;
+        Some(self.tabs.remove(i).widget)
+    }
+
     fn find_rect(&self, name: &str) -> Option<LayoutRect> {
         if self.name() == name { return Some(self.rect()); }
         for tab in &self.tabs {

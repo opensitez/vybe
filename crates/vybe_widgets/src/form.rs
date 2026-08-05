@@ -272,6 +272,18 @@ impl Form {
 }
 
 impl PanelWidget for Form {
+
+    /// The document tree's children — what `find_widget_mut` / `take_widget`
+    /// walk, and what makes a node reachable by name however deeply nested.
+    fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
+        self.controls.iter_mut().collect()
+    }
+
+    /// `removeChild` against a direct child.
+    fn detach(&mut self, name: &str) -> Option<Box<dyn PanelWidget>> {
+        let i = self.controls.iter().position(|c| c.name() == name)?;
+        Some(self.controls.remove(i))
+    }
     fn set_rect(&mut self, rect: LayoutRect) {
         let dx = rect.x - self.rect.x;
         let dy = rect.y - self.rect.y;

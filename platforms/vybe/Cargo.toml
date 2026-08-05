@@ -14,6 +14,7 @@ gui = ["vybe_widgets"]
 
 [dependencies]
 vybe_platform_ecma = { workspace = true }
+vybe_platform_web = { workspace = true }
 inventory = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_widgets = { workspace = true, optional = true }

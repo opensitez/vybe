@@ -11,14 +11,21 @@
 //! `gui_state` (the live widget bridge) exists only under the feature.
 
 pub mod builtin_types; // TypeRegistry vtables for the vybe:gui control surface; run in Plugin::finalize
-pub mod canvas;
-pub mod controls;
+// Canvas is NOT here. `CanvasRenderingContext2D` is WHATWG HTML and lives in
+// `platforms/web` (`web:canvas`); this crate only installs the engine that
+// paints for it — see `canvas_backend_impl`.
+// The control descriptions moved to `vybe_widgets::html`: the tag/CSS of a
+// control is what a web engine consumes, so it belongs beside the DOM.
 pub mod drawing;
 pub mod gui;
 #[cfg(feature = "gui")]
 pub mod gui_state;
 #[cfg(feature = "gui")]
-pub mod input; // SDL input queue + poll surface (sdlplan.md Tier 1)
+pub mod canvas_backend_impl; // installs vybe_widgets as the `web:canvas` engine
+
+// Input is NOT here. UI events are a web-platform concept and live in
+// `platforms/web` (`web:ui-events`), where the queue is owned; SDL reaches
+// them through its emitter, so this crate carries no input surface at all.
 
 pub mod plugin;
 pub use plugin::Plugin;

@@ -56,6 +56,84 @@ fn emit_gui_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, lin
     chunks[current].emit_call(idx, argc, line);
 }
 
+/// Call a `web:canvas` op. SDL's drawing is an ADAPTER over WHATWG
+/// `CanvasRenderingContext2D`: `SDL_FillRect` IS `fillRect` plus a rect
+/// struct, `SDL_BlitPaletted` IS `drawImagePaletted`. No canvas surface of
+/// our own — a browser host serves these imports with a real canvas element.
+fn emit_canvas_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:canvas", func);
+    chunks[current].emit_call(idx, argc, line);
+}
+
+
+/// Call a `web:ui-events` host function. SDL's input is an ADAPTER over the
+/// W3C UI Events surface in `platforms/web` — there is no SDL host surface
+/// and no `vybe:gui` involvement: the queue is the web platform's, and every
+/// vocabulary difference (DOM `"keydown"` vs `SDL_KEYDOWN`, DOM's 0-based
+/// `button` vs SDL's 1-based, `key`/`code` strings vs `SDLK_*`) is resolved
+/// here, in emitted code. A browser host satisfies the same imports with the
+/// real DOM.
+fn emit_web_events_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
+    let idx = chunks[current].add_import("web:ui-events", func);
+    chunks[current].emit_call(idx, argc, line);
+}
+
+/// Read `obj.<field>` from the DOM event object in `slot`.
+fn emit_dom_field(chunks: &mut [Chunk], current: usize, slot: u16, field: &str, line: u32) {
+    emit_get_local(chunks, current, slot, line);
+    let key = chunks[current].add_constant(Value::String(Arc::from(field)));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+}
+
+/// `target.<field> = <value on stack>`.
+fn emit_store_field(
+    chunks: &mut [Chunk],
+    current: usize,
+    target: u16,
+    field: &str,
+    tmp: u16,
+    line: u32,
+) {
+    emit_set_local(chunks, current, tmp, line);
+    emit_get_local(chunks, current, target, line);
+    emit_get_local(chunks, current, tmp, line);
+    let key = chunks[current].add_constant(Value::String(Arc::from(field)));
+    // The NAME-KEYED `struct.set` (typeidx 0) pushes the value back — unlike
+    // the spec's indexed form, which yields nothing. Hence the DROP.
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+}
+
+/// `1` when the DOM event's `type` equals `kind`, else `0`.
+fn emit_dom_kind_is(chunks: &mut [Chunk], current: usize, ev: u16, kind: &str, line: u32) {
+    emit_dom_field(chunks, current, ev, "type", line);
+    chunks[current].emit_string_const(kind, line);
+    chunks[current].emit_op(Op::EQ, line);
+}
+
+
+/// Unwrap a C pointer argument to the object it addresses.
+///
+/// `&e` on a struct reaches a callee either as the struct itself or boxed in
+/// a scalar cell `{__ref_kind:"cell", __value}`. The host used to do this;
+/// now that SDL is adapter-only, the emitted code must — reading `.type`
+/// straight off a cell yields undefined, which is how every field arrived
+/// as zero.
+fn emit_deref_cell(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {
+    emit_get_local(chunks, current, slot, line);
+    let kind_key = chunks[current].add_constant(Value::String(Arc::from("__ref_kind")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, kind_key, line);
+    chunks[current].emit_string_const("cell", line);
+    chunks[current].emit_op(Op::EQ, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, slot, line);
+    let val_key = chunks[current].add_constant(Value::String(Arc::from("__value")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, val_key, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, slot, line);
+    chunks[current].emit_end(line);
+    emit_set_local(chunks, current, slot, line);
+}
+
 fn emit_zero_i32(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(0, line);
 }
@@ -296,6 +374,13 @@ pub fn emit_sdl_get_window_surface(chunks: &mut [Chunk], current: usize, _argc: 
     let window = chunks[current].alloc_scratch(1);
     let suffix = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, window, line);
+    // `SDL_Window *win` reaches us as a `{__ref_kind:"cell", __value}` box,
+    // not as the form name. Concatenating the BOX yields the box back, so
+    // `getContext` stored an object where a control name belongs and every
+    // draw landed on a canvas called "[object]" while the real surface got
+    // nothing. Unwrap first — the same step `SDL_PollEvent`/`SDL_PushEvent`
+    // already take for their event pointers.
+    emit_deref_cell(chunks, current, window, line);
     chunks[current].emit_string_const("_surface", line);
     emit_set_local(chunks, current, suffix, line);
     emit_string_concat(chunks, current, window, suffix, line);
@@ -317,7 +402,9 @@ pub fn emit_sdl_blit_paletted(chunks: &mut [Chunk], current: usize, argc: u8, li
     for &slot in slots.iter() {
         emit_get_local(chunks, current, slot, line);
     }
-    emit_gui_call(chunks, current, "sdlBlitPaletted", argc, line);
+    // `drawImagePaletted` — the canvas op for palette-era pixels. The
+    // guest keeps its 8-bit buffer; the engine expands through the palette.
+    emit_canvas_call(chunks, current, "drawImagePaletted", argc, line);
     chunks[current].emit_op(Op::DROP, line);
     emit_zero_i32(chunks, current, line);
 }
@@ -326,16 +413,45 @@ pub fn emit_sdl_fill_rect(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     let surface = chunks[current].alloc_scratch(1);
     let rect = chunks[current].alloc_scratch(1);
     let color = chunks[current].alloc_scratch(1);
+    let ctx = chunks[current].alloc_scratch(1);
 
     emit_set_local(chunks, current, color, line);
     emit_set_local(chunks, current, rect, line);
     emit_set_local(chunks, current, surface, line);
+    // `SDL_Surface *screen` arrives as a `{__ref_kind:"cell", __value}`
+    // box, not the surface's control name. Handed to `getContext` boxed,
+    // it became the target `"[object]"` — every draw landed on a canvas
+    // belonging to no widget while the real surface got nothing.
+    emit_deref_cell(chunks, current, surface, line);
 
-    // Call sdlFillRect(surface, rect, color)
+    // `SDL_FillRect` IS `fillRect` — plus SDL's own two shapes: a rect
+    // STRUCT (x/y/w/h, or NULL meaning "the whole surface") and a PACKED
+    // 0xAARRGGBB colour where the canvas takes channels. Both are unpacked
+    // here, on the adapter's side of the standard surface.
     emit_get_local(chunks, current, surface, line);
-    emit_get_local(chunks, current, rect, line);
-    emit_get_local(chunks, current, color, line);
-    emit_gui_call(chunks, current, "sdlFillRect", 3, line);
+    emit_canvas_call(chunks, current, "getContext", 1, line);
+    emit_set_local(chunks, current, ctx, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_u8_from_u32_slot_f64(chunks, current, color, 16, line);
+    emit_u8_from_u32_slot_f64(chunks, current, color, 8, line);
+    emit_u8_from_u32_slot_f64(chunks, current, color, 0, line);
+    emit_u8_from_u32_slot_f64(chunks, current, color, 24, line);
+    emit_canvas_call(chunks, current, "setFillStyle", 5, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // `&r` on a local `SDL_Rect` reaches us either as the struct itself or
+    // boxed in a scalar cell. Reading `.x` off the BOX yields undefined, which
+    // becomes 0 — so every rect was recorded at zero size and painted nothing
+    // while text, whose coordinates are plain ints, still showed.
+    emit_deref_cell(chunks, current, rect, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_load_f64_from_struct(chunks, current, rect, "x", line);
+    emit_load_f64_from_struct(chunks, current, rect, "y", line);
+    emit_load_f64_from_struct(chunks, current, rect, "w", line);
+    emit_load_f64_from_struct(chunks, current, rect, "h", line);
+    emit_canvas_call(chunks, current, "fillRect", 5, line);
     chunks[current].emit_op(Op::DROP, line);
 
     emit_zero_i32(chunks, current, line);
@@ -348,6 +464,7 @@ pub fn emit_sdl_draw_line(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     let x2 = chunks[current].alloc_scratch(1);
     let y2 = chunks[current].alloc_scratch(1);
     let color = chunks[current].alloc_scratch(1);
+    let ctx = chunks[current].alloc_scratch(1);
 
     emit_set_local(chunks, current, color, line);
     emit_set_local(chunks, current, y2, line);
@@ -355,14 +472,45 @@ pub fn emit_sdl_draw_line(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     emit_set_local(chunks, current, y1, line);
     emit_set_local(chunks, current, x1, line);
     emit_set_local(chunks, current, surface, line);
+    // `SDL_Surface *screen` arrives as a `{__ref_kind:"cell", __value}`
+    // box, not the surface's control name. Handed to `getContext` boxed,
+    // it became the target `"[object]"` — every draw landed on a canvas
+    // belonging to no widget while the real surface got nothing.
+    emit_deref_cell(chunks, current, surface, line);
 
+    // A line is a path in canvas terms: beginPath → moveTo → lineTo →
+    // stroke. SDL has no path model, which is exactly the kind of
+    // difference an adapter absorbs.
     emit_get_local(chunks, current, surface, line);
+    emit_canvas_call(chunks, current, "getContext", 1, line);
+    emit_set_local(chunks, current, ctx, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_u8_from_u32_slot_f64(chunks, current, color, 16, line);
+    emit_u8_from_u32_slot_f64(chunks, current, color, 8, line);
+    emit_u8_from_u32_slot_f64(chunks, current, color, 0, line);
+    emit_u8_from_u32_slot_f64(chunks, current, color, 24, line);
+    emit_canvas_call(chunks, current, "setStrokeStyle", 5, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_canvas_call(chunks, current, "beginPath", 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, ctx, line);
     emit_get_local(chunks, current, x1, line);
     emit_get_local(chunks, current, y1, line);
+    emit_canvas_call(chunks, current, "moveTo", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, ctx, line);
     emit_get_local(chunks, current, x2, line);
     emit_get_local(chunks, current, y2, line);
-    emit_get_local(chunks, current, color, line);
-    emit_gui_call(chunks, current, "sdlDrawLine", 6, line);
+    emit_canvas_call(chunks, current, "lineTo", 3, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    emit_get_local(chunks, current, ctx, line);
+    emit_canvas_call(chunks, current, "stroke", 1, line);
     chunks[current].emit_op(Op::DROP, line);
 
     emit_zero_i32(chunks, current, line);
@@ -385,9 +533,14 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     emit_set_local(chunks, current, x, line);
     emit_set_local(chunks, current, text, line);
     emit_set_local(chunks, current, surface, line);
+    // `SDL_Surface *screen` arrives as a `{__ref_kind:"cell", __value}`
+    // box, not the surface's control name. Handed to `getContext` boxed,
+    // it became the target `"[object]"` — every draw landed on a canvas
+    // belonging to no widget while the real surface got nothing.
+    emit_deref_cell(chunks, current, surface, line);
 
     emit_get_local(chunks, current, surface, line);
-    emit_gui_call(chunks, current, "getContext", 1, line);
+    emit_canvas_call(chunks, current, "getContext", 1, line);
     emit_set_local(chunks, current, context, line);
 
     // Text had NO colour of its own: it inherited whatever fill colour the
@@ -399,7 +552,7 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     emit_u8_from_u32_slot_f64(chunks, current, color, 8, line);
     emit_u8_from_u32_slot_f64(chunks, current, color, 0, line);
     emit_u8_from_u32_slot_f64(chunks, current, color, 24, line);
-    emit_gui_call(chunks, current, "canvasSetFillColor", 5, line);
+    emit_canvas_call(chunks, current, "setFillStyle", 5, line);
     chunks[current].emit_op(Op::DROP, line);
 
     emit_get_local(chunks, current, context, line);
@@ -415,7 +568,7 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     emit_get_local(chunks, current, text_value, line);
     emit_get_local(chunks, current, x, line);
     emit_get_local(chunks, current, y, line);
-    emit_gui_call(chunks, current, "canvasFillText", 4, line);
+    emit_canvas_call(chunks, current, "fillText", 4, line);
     chunks[current].emit_op(Op::DROP, line);
     emit_zero_i32(chunks, current, line);
 }
@@ -423,18 +576,15 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 pub fn emit_sdl_update_window_surface(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let window = chunks[current].alloc_scratch(1);
     emit_set_local(chunks, current, window, line);
+    // Same pointer unwrap as `SDL_GetWindowSurface`: the window arrives boxed.
+    emit_deref_cell(chunks, current, window, line);
 
-    // Frame boundary: mark the window's surface so the NEXT draw starts a
-    // fresh recording. SDL never clears its surface — the program simply
-    // redraws — so without this an animated program appends a whole frame of
-    // commands per frame forever and every frame paints over the last.
-    let suffix = chunks[current].alloc_scratch(1);
-    chunks[current].emit_string_const("_surface", line);
-    emit_set_local(chunks, current, suffix, line);
-    emit_string_concat(chunks, current, window, suffix, line);
-    emit_gui_call(chunks, current, "sdlPresent", 1, line);
-    chunks[current].emit_op(Op::DROP, line);
-
+    // There is no `present` in the web platform — a page does not push
+    // frames, it draws and the compositor shows them, and the frame
+    // BOUNDARY is `requestAnimationFrame`. So this call has no canvas
+    // counterpart to move to: it collapses to the existing run/show step,
+    // and the per-frame reset it used to carry belongs to `web:animation`
+    // (rAF), which is the next surface to land.
     emit_get_local(chunks, current, window, line);
     emit_gui_call(chunks, current, "runApplication", 1, line);
     chunks[current].emit_op(Op::DROP, line);
@@ -497,29 +647,398 @@ pub fn emit_sdl_get_performance_frequency(
 // sequence in bytecode.
 
 /// `SDL_PollEvent(SDL_Event *e)` → 1 if an event was dequeued, else 0.
+///
+/// Pure ADAPTER over `web:ui-events.pollEvent()`: takes the W3C event object
+/// and writes SDL's struct view of it. No host function of its own, no
+/// `vybe:gui` — the queue belongs to the web platform, and a browser host
+/// serves the same import from the real DOM.
 pub fn emit_sdl_poll_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_gui_call(chunks, current, "sdlPollEvent", 1, line);
+    let store_tmp = chunks[current].alloc_scratch(1);
+    let ptr = chunks[current].alloc_scratch(1);
+    let ev = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let keysym = chunks[current].alloc_scratch(1);
+    let btn = chunks[current].alloc_scratch(1);
+    let motion = chunks[current].alloc_scratch(1);
+    let wheel = chunks[current].alloc_scratch(1);
+    let kind = chunks[current].alloc_scratch(1);
+
+    emit_set_local(chunks, current, ptr, line);
+    emit_deref_cell(chunks, current, ptr, line);
+
+    emit_web_events_call(chunks, current, "pollEvent", 0, line);
+    emit_set_local(chunks, current, ev, line);
+
+    // Empty queue → 0.
+    emit_get_local(chunks, current, ev, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_if_value(line);
+    emit_zero_i32(chunks, current, line);
+    chunks[current].emit_else(line);
+
+    // SDL event type from the DOM `type` string.
+    emit_dom_kind_is(chunks, current, ev, "keydown", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0x300, line);
+    chunks[current].emit_else(line);
+    emit_dom_kind_is(chunks, current, ev, "keyup", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0x301, line);
+    chunks[current].emit_else(line);
+    emit_dom_kind_is(chunks, current, ev, "mousedown", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0x401, line);
+    chunks[current].emit_else(line);
+    emit_dom_kind_is(chunks, current, ev, "mouseup", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0x402, line);
+    chunks[current].emit_else(line);
+    emit_dom_kind_is(chunks, current, ev, "mousemove", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0x400, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0x403, line); // wheel
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    emit_set_local(chunks, current, kind, line);
+
+    emit_get_local(chunks, current, kind, line);
+    emit_store_field(chunks, current, ptr, "type", store_tmp, line);
+
+    // key.keysym.{sym,scancode,mod} — DOM keyCode IS the SDL keysym for the
+    // printable range, which is how the winit layer fills it.
+    emit_get_local(chunks, current, ptr, line);
+    let key_field = chunks[current].add_constant(Value::String(Arc::from("key")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key_field, line);
+    emit_set_local(chunks, current, key, line);
+    emit_get_local(chunks, current, key, line);
+    let keysym_field = chunks[current].add_constant(Value::String(Arc::from("keysym")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keysym_field, line);
+    emit_set_local(chunks, current, keysym, line);
+
+    // DOM `keyCode` is the legacy UPPERCASE identity (A = 65); an SDL keysym
+    // for a letter is the LOWERCASE ascii value (SDLK_a = 97). Scancode is
+    // the USB HID position: letters 4..29, digits 30..38, '0' = 39.
+    let kc = chunks[current].alloc_scratch(1);
+    emit_dom_field(chunks, current, ev, "keyCode", line);
+    emit_set_local(chunks, current, kc, line);
+
+    // sym = (65 <= kc <= 90) ? kc + 32 : kc
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(65.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(90.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(32.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_end(line);
+    emit_store_field(chunks, current, keysym, "sym", store_tmp, line);
+
+    // scancode: letters → 4 + (kc - 65); '1'..'9' → 30 + (kc - 49);
+    // '0' → 39; anything else 0 (Doom reads sym for those).
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(65.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(90.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(61.0, line); // 4 + (kc - 65) == kc - 61
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(49.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(57.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, kc, line);
+    chunks[current].emit_f64_const(19.0, line); // 49 - 30
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    emit_store_field(chunks, current, keysym, "scancode", store_tmp, line);
+
+    // KMOD_* mask from the DOM's boolean modifiers — the inverse of what the
+    // push side does, so a pushed event round-trips its modifiers.
+    let mods = chunks[current].alloc_scratch(1);
+    chunks[current].emit_i32_const(0, line);
+    emit_set_local(chunks, current, mods, line);
+    for (field, mask) in [("shiftKey", 0x1i32), ("ctrlKey", 0x40), ("altKey", 0x100)] {
+        emit_dom_field(chunks, current, ev, field, line);
+        chunks[current].emit_if_value(line);
+        emit_get_local(chunks, current, mods, line);
+        chunks[current].emit_i32_const(mask, line);
+        chunks[current].emit_op(Op::I32_OR, line);
+        chunks[current].emit_else(line);
+        emit_get_local(chunks, current, mods, line);
+        chunks[current].emit_end(line);
+        emit_set_local(chunks, current, mods, line);
+    }
+    emit_get_local(chunks, current, mods, line);
+    emit_store_field(chunks, current, keysym, "mod", store_tmp, line);
+
+    // button.{button,x,y} — DOM button is 0-based, SDL 1-based.
+    emit_get_local(chunks, current, ptr, line);
+    let btn_field = chunks[current].add_constant(Value::String(Arc::from("button")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_field, line);
+    emit_set_local(chunks, current, btn, line);
+    emit_dom_field(chunks, current, ev, "button", line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    emit_store_field(chunks, current, btn, "button", store_tmp, line);
+    emit_dom_field(chunks, current, ev, "clientX", line);
+    emit_store_field(chunks, current, btn, "x", store_tmp, line);
+    emit_dom_field(chunks, current, ev, "clientY", line);
+    emit_store_field(chunks, current, btn, "y", store_tmp, line);
+
+    // motion.{x,y}
+    emit_get_local(chunks, current, ptr, line);
+    let motion_field = chunks[current].add_constant(Value::String(Arc::from("motion")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, motion_field, line);
+    emit_set_local(chunks, current, motion, line);
+    emit_dom_field(chunks, current, ev, "clientX", line);
+    emit_store_field(chunks, current, motion, "x", store_tmp, line);
+    emit_dom_field(chunks, current, ev, "clientY", line);
+    emit_store_field(chunks, current, motion, "y", store_tmp, line);
+
+    // wheel.y — DOM deltaY is positive DOWN, SDL wheel y positive UP.
+    emit_get_local(chunks, current, ptr, line);
+    let wheel_field = chunks[current].add_constant(Value::String(Arc::from("wheel")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, wheel_field, line);
+    emit_set_local(chunks, current, wheel, line);
+    chunks[current].emit_f64_const(0.0, line);
+    emit_dom_field(chunks, current, ev, "deltaY", line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    emit_store_field(chunks, current, wheel, "y", store_tmp, line);
+
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_end(line);
 }
 
-/// `SDL_PushEvent(SDL_Event *e)` → 1 on success. Real SDL API — and the
-/// headless test path for the queue.
+/// `SDL_PushEvent(SDL_Event *e)` → 1. `EventTarget.dispatchEvent` in SDL's
+/// dialect: the injected event joins the SAME `web:ui-events` queue real
+/// input arrives on, which is also what makes the pipeline headless-testable.
 pub fn emit_sdl_push_event(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_gui_call(chunks, current, "sdlPushEvent", 1, line);
+    let store_tmp = chunks[current].alloc_scratch(1);
+    let ptr = chunks[current].alloc_scratch(1);
+    let dom = chunks[current].alloc_scratch(1);
+    let ty = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, ptr, line);
+    emit_deref_cell(chunks, current, ptr, line);
+
+    // The SDL type decides the DOM `type` string.
+    emit_get_local(chunks, current, ptr, line);
+    let type_key = chunks[current].add_constant(Value::String(Arc::from("type")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
+    emit_set_local(chunks, current, ty, line);
+
+    emit_get_local(chunks, current, ty, line);
+    chunks[current].emit_f64_const(768.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("keydown", line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, ty, line);
+    chunks[current].emit_f64_const(769.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("keyup", line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, ty, line);
+    chunks[current].emit_f64_const(1025.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("mousedown", line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, ty, line);
+    chunks[current].emit_f64_const(1026.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("mouseup", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("mousemove", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    emit_web_events_call(chunks, current, "newEvent", 1, line);
+    emit_set_local(chunks, current, dom, line);
+
+    // key.keysym.sym → keyCode; button.{button,x,y} → button/clientX/clientY.
+    // `keyCode` is the browser's legacy UPPERCASE identity (W = 87) while an
+    // SDL keysym is lowercase (SDLK_w = 119). Converting here is what lets
+    // the poll side derive both `sym` AND the USB-HID `scancode` back.
+    let sym_v = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, ptr, line);
+    let key_key = chunks[current].add_constant(Value::String(Arc::from("key")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key_key, line);
+    let keysym_key = chunks[current].add_constant(Value::String(Arc::from("keysym")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keysym_key, line);
+    let sym_key = chunks[current].add_constant(Value::String(Arc::from("sym")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, sym_key, line);
+    emit_set_local(chunks, current, sym_v, line);
+
+    emit_get_local(chunks, current, sym_v, line);
+    chunks[current].emit_f64_const(97.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    emit_get_local(chunks, current, sym_v, line);
+    chunks[current].emit_f64_const(122.0, line);
+    chunks[current].emit_op(Op::F64_LE, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    emit_get_local(chunks, current, sym_v, line);
+    chunks[current].emit_f64_const(32.0, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, sym_v, line);
+    chunks[current].emit_end(line);
+    emit_store_field(chunks, current, dom, "keyCode", store_tmp, line);
+
+    // KMOD_* → the DOM's boolean modifier attributes.
+    //
+    // Bit-tested with FLOAT ops. Struct fields arrive as numbers whose
+    // concrete tag varies, and the integer ops (`i32.and`, the f64→i32
+    // conversions) silently yielded 0 on them — the same typed-op mismatch
+    // that made `Op::EQ` fail against `f64` type codes earlier in this
+    // function. `bit = m - 2*floor(m/2)` needs no coercion at all.
+    let mods = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, ptr, line);
+    let key_key2 = chunks[current].add_constant(Value::String(Arc::from("key")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, key_key2, line);
+    let keysym_key2 = chunks[current].add_constant(Value::String(Arc::from("keysym")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, keysym_key2, line);
+    let mod_key = chunks[current].add_constant(Value::String(Arc::from("mod")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, mod_key, line);
+    emit_set_local(chunks, current, mods, line);
+
+    for (mask, field) in [(1i32, "shiftKey"), (0x40, "ctrlKey"), (0x100, "altKey")] {
+        // Integer mask directly on the field value: KMOD_* is a bitmask and
+        // the value arrives as an integer, so `i32.and` needs no conversion
+        // (adding one is what silently produced 0 in earlier attempts).
+        // `mods & mask` is already 0-or-nonzero, and the host reads these
+        // attributes with JS truthiness — so store the mask result straight
+        // in. (An `i32.ne` normalisation step here produced a value the host
+        // read as false; not worth a second opcode to find out why.)
+        emit_get_local(chunks, current, mods, line);
+        chunks[current].emit_i32_const(mask, line);
+        chunks[current].emit_op(Op::I32_AND, line);
+        emit_store_field(chunks, current, dom, field, store_tmp, line);
+    }
+
+    emit_get_local(chunks, current, ptr, line);
+    let btn_key = chunks[current].add_constant(Value::String(Arc::from("button")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_key, line);
+    let bb_key = chunks[current].add_constant(Value::String(Arc::from("button")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, bb_key, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    emit_store_field(chunks, current, dom, "button", store_tmp, line);
+
+    // `buttons` is the HELD-button mask the DOM tracks: 1 left, 2 right,
+    // 4 middle — a different assignment from SDL's, resolved here.
+    let sdl_btn = chunks[current].alloc_scratch(1);
+    emit_get_local(chunks, current, ptr, line);
+    let btn_k = chunks[current].add_constant(Value::String(Arc::from("button")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_k, line);
+    let bb_k = chunks[current].add_constant(Value::String(Arc::from("button")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, bb_k, line);
+    emit_set_local(chunks, current, sdl_btn, line);
+    emit_get_local(chunks, current, sdl_btn, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, sdl_btn, line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(4.0, line);
+    chunks[current].emit_else(line);
+    emit_get_local(chunks, current, sdl_btn, line);
+    chunks[current].emit_f64_const(3.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(2.0, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    emit_store_field(chunks, current, dom, "buttons", store_tmp, line);
+
+    emit_get_local(chunks, current, ptr, line);
+    let btn_key2 = chunks[current].add_constant(Value::String(Arc::from("button")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_key2, line);
+    let bx_key = chunks[current].add_constant(Value::String(Arc::from("x")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, bx_key, line);
+    emit_store_field(chunks, current, dom, "clientX", store_tmp, line);
+
+    emit_get_local(chunks, current, ptr, line);
+    let btn_key3 = chunks[current].add_constant(Value::String(Arc::from("button")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, btn_key3, line);
+    let by_key = chunks[current].add_constant(Value::String(Arc::from("y")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, by_key, line);
+    emit_store_field(chunks, current, dom, "clientY", store_tmp, line);
+
+    emit_get_local(chunks, current, dom, line);
+    emit_web_events_call(chunks, current, "dispatchEvent", 1, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_i32_const(1, line);
 }
 
 /// `SDL_GetMouseState(int *x, int *y)` → held-button mask. The host writes
 /// through the out-pointers.
 pub fn emit_sdl_get_mouse_state(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    let store_tmp = chunks[current].alloc_scratch(1);
     // Pad missing out-pointers so the host always sees two args.
     for _ in argc..2 {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
-    emit_gui_call(chunks, current, "sdlGetMouseState", 2, line);
+    // `pointerState()` is the browser's tracked pointer; SDL's out-params
+    // and 1-based button mask are this adapter's business.
+    let st = chunks[current].alloc_scratch(1);
+    let py = chunks[current].alloc_scratch(1);
+    let px = chunks[current].alloc_scratch(1);
+    emit_set_local(chunks, current, py, line);
+    emit_set_local(chunks, current, px, line);
+    emit_web_events_call(chunks, current, "pointerState", 0, line);
+    emit_set_local(chunks, current, st, line);
+    emit_dom_field(chunks, current, st, "clientX", line);
+    emit_store_field(chunks, current, px, "__value", store_tmp, line);
+    emit_dom_field(chunks, current, st, "clientY", line);
+    emit_store_field(chunks, current, py, "__value", store_tmp, line);
+    emit_dom_field(chunks, current, st, "buttons", line);
 }
 
 /// `SDL_GetModState()` → KMOD_* mask.
 pub fn emit_sdl_get_mod_state(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
-    emit_gui_call(chunks, current, "sdlGetModState", 0, line);
+    let st = chunks[current].alloc_scratch(1);
+    emit_web_events_call(chunks, current, "pointerState", 0, line);
+    emit_set_local(chunks, current, st, line);
+    // KMOD_LSHIFT 0x1 | KMOD_LCTRL 0x40 | KMOD_LALT 0x100 | KMOD_LGUI 0x400
+    emit_dom_field(chunks, current, st, "shiftKey", line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_i32_const(0x1, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_i32_const(0, line);
+    chunks[current].emit_end(line);
 }
 
 /// `SDL_PumpEvents()` — the winit loop pumps for us; nothing to do.

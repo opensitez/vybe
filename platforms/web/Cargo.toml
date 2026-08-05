@@ -9,6 +9,9 @@ license.workspace = true
 inventory = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_platform_ecma = { workspace = true }
+# The engine behind `web:canvas` / `web:dom`. The web platform binds it
+# DIRECTLY — no adapter crate in between, no second surface to keep in sync.
+vybe_widgets = { workspace = true, optional = true }
 
 # WHATWG / W3C web-platform support crates (moved from vybe_host).
 sha2 = { workspace = true }
@@ -16,3 +19,11 @@ md-5 = { workspace = true }
 url = { workspace = true }
 quick-xml = { workspace = true }
 form_urlencoded = { workspace = true }
+
+[features]
+default = []
+gui = ["vybe_widgets"]
+
+[dev-dependencies]
+# The seam tests drive the widget DOM directly.
+vybe_widgets = { workspace = true }
