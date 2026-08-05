@@ -206,7 +206,7 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
     write_name(&mut out, "vybe");
 
     // Version
-    out.push(2); // Version 2: adds type information with field descriptors (WASM Annotations format)
+    out.push(3); // Version 3: adds exception TAG declarations (v2: type info + descriptors)
 
     // Number of chunks
     write_leb128_u32(&mut out, chunks.len() as u32);
@@ -291,6 +291,30 @@ fn encode_custom_section(chunks: &[Chunk]) -> Vec<u8> {
             } else {
                 out.push(0);
             }
+        }
+
+        // Global imports (v3+): string constants are imported GLOBALS whose
+        // key is interned in the constants table — the VM binds
+        // `vm.globals[key]` from THIS list at instantiation. Without it, a
+        // reloaded chunk's GLOBAL_GET finds nothing and every string
+        // literal evaluates to undefined.
+        write_leb128_u32(&mut out, chunk.global_imports.len() as u32);
+        for gi in &chunk.global_imports {
+            write_name(&mut out, &gi.module);
+            write_name(&mut out, &gi.name);
+        }
+
+        // Exception tags (v3+). Without these, a reloaded module's
+        // `throw`/`try_table` resolve tag indexes against an EMPTY map and
+        // die at the first exception ("unknown exception tag index").
+        // Imported-ness matters: imports resolve by name to a SHARED entity
+        // at load (so `vybe:exception` is one entity across modules); locals
+        // mint fresh entities per spec.
+        write_leb128_u32(&mut out, chunk.tags.len() as u32);
+        for tag in &chunk.tags {
+            write_name(&mut out, &tag.debug_name);
+            out.push(tag.arity);
+            out.push(if tag.imported { 1 } else { 0 });
         }
     }
     out

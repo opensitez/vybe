@@ -106,7 +106,8 @@ fn gc_emission_struct_set_reorders_object_and_value_operands() {
                 0xFB, 0x17, 0x02, // ref.cast null typeidx 2
                 0x20, 0x00, // local.get temp = value
                 0xFB, 0x05, 0x02, 0x01, // struct.set typeidx 2 fieldidx 1
-                0x20, 0x00, // reload assigned value for VM-compatible result
+                // spec struct.set pushes nothing — no reload; the internal
+                // op has the same shape now.
             ],
         ),
         "struct.set emission should save value, cast object, set field, and reload value"

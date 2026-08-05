@@ -1369,9 +1369,9 @@ fn emit_gc_op(
             let field_name_idx = read_u16(&chunk.code, ip);
             let (typeidx, fieldidx) = wasm_struct_field_for_name(chunk, type_ctx, field_name_idx);
             // Stack: [externref_obj, externref_val]. struct.set expects
-            // [(ref $struct), externref_val] and returns void, while the
-            // VM leaves the assigned value on stack. Save the value, cast
-            // the object, set the field, then reload the saved value.
+            // [(ref $struct), externref_val] and pushes NOTHING — the VM's
+            // internal op now has the same spec shape, so no compensation:
+            // save the value, cast the object, reload, set.
             body.push(0x21); // local.set $temp = val
             write_leb128_u32(body, temp_idx);
             emit_internalize(body); // obj: externref → anyref
@@ -1382,8 +1382,6 @@ fn emit_gc_op(
             write_leb128_u32(body, 0x05); // struct.set
             write_leb128_u32(body, typeidx);
             write_leb128_u32(body, fieldidx);
-            body.push(0x20); // VM-compatible result: assigned value
-            write_leb128_u32(body, temp_idx);
         }
         _ if op == Op::ARRAY_NEW_FIXED => {
             // Spec: `array.new_fixed $t N` (0xFB 0x08), pops N values.
@@ -1635,10 +1633,7 @@ fn emit_gc_op(
             body.push(0xFB);
             write_leb128_u32(body, 0x0E); // array.set
             write_leb128_u32(body, type_ctx.array_type_idx);
-            // array.set is void in WASM but our VM leaves a value on stack.
-            // Push dummy so subsequent drop has something to consume.
-            body.push(0xD0);
-            body.push(0x6F); // ref.null extern
+            // Spec `array.set` is void — and so is the VM's op now; no dummy.
         }
         _ if op == Op::ARRAY_LENGTH => {
             // Stack: [externref_arr] → need (ref null array)

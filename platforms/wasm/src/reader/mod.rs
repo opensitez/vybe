@@ -3711,6 +3711,54 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
             }
         }
 
+        // Global imports (v3+): rebind string-constant (and other) global
+        // imports so GLOBAL_GET keys resolve after reload.
+        let mut global_imports = Vec::new();
+        if version >= 3 {
+            let (gi_count, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            for _ in 0..gi_count {
+                let (mlen, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let module = std::str::from_utf8(&data[pos..pos + mlen as usize])
+                    .unwrap_or("")
+                    .to_string();
+                pos += mlen as usize;
+                let (nlen, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                    .unwrap_or("")
+                    .to_string();
+                pos += nlen as usize;
+                global_imports.push(vybe_runtime::chunk::Import { module, name });
+            }
+        }
+
+        // Exception tags (v3+): restore declarations so `throw`/`try_table`
+        // indexes resolve; imports re-bind by NAME to shared entities at
+        // load, locals mint fresh ones (spec instantiation semantics).
+        let mut tags = Vec::new();
+        if version >= 3 {
+            let (tag_count, read) = read_leb128_u32(&data[pos..]);
+            pos += read;
+            for _ in 0..tag_count {
+                let (nlen, read) = read_leb128_u32(&data[pos..]);
+                pos += read;
+                let tag_name = std::str::from_utf8(&data[pos..pos + nlen as usize])
+                    .unwrap_or("")
+                    .to_string();
+                pos += nlen as usize;
+                let arity = data[pos];
+                pos += 1;
+                let imported = data[pos] != 0;
+                pos += 1;
+                tags.push(vybe_runtime::chunk::TagDecl {
+                    debug_name: tag_name,
+                    arity,
+                    imported });
+            }
+        }
+
         let mut chunk = Chunk::new(&name);
         chunk.arity = arity;
         chunk.local_count = lc as u16;
@@ -3719,6 +3767,8 @@ fn decode_vybe_section(data: &[u8]) -> Result<Vec<Chunk>, String> {
         chunk.code = code;
         chunk.lines = lines;
         chunk.types = types;
+        chunk.tags = tags;
+        chunk.global_imports = global_imports;
         chunks.push(chunk);
     }
     Ok(chunks)
