@@ -5,7 +5,7 @@
 //! what made one language's contract everyone's. This layer owns two things
 //! WASM can justify: ordered queues of pending work, and monotonic fire times.
 //! WHICH tier a callback belongs in, and how far each is drained per turn, is
-//! the host's policy — declared as `SchedulingPolicy` and applied by the drain
+//! the host's policy — applied by the drain
 //! loop.
 //!
 //! The storage stays here because it holds `Fiber`s, which are VM state
@@ -63,31 +63,22 @@ pub struct StreamRecord {
 pub enum Task {
     /// A suspended fiber waiting to resume with a value.
     ResumeFiber(Fiber),
-    /// A timer callback — function value + scheduled fire time (ms, monotonic)
-    /// and a unique cancellable ID.
-    Timer {
-        callback: Value,
-        fire_at_ms: f64,
-        id: u64 },
-    /// A callback with its argument, queued on some tier. The host decides
-    /// what a tier MEANS (an ECMA job, an HTML task); the VM only orders them.
+    /// A callback with its argument. The host decides what an entry MEANS
+    /// (an ECMA job, a settled reaction); the VM only orders them.
     Callback { callback: Value, value: Value } }
 
 /// The event loop — manages pending async work.
 #[derive(Debug)]
 pub struct EventLoop {
-    /// Tier 0 — drained first, and (under a tiered discipline) to empty
-    /// before tier 1. ECMA-262 calls what goes here a *job*; the VM does not.
+    /// The ONE ready queue — work that became runnable, in arrival order.
+    /// ECMA-262 calls what goes here a *job*; the VM does not. Time-deferred
+    /// work (HTML's timer wheel) is host storage, registered as a
+    /// `scheduler::DeferredSource` — it never lives in this struct.
     pub immediate: VecDeque<Task>,
-    /// Tier 1 — at most one item per turn. HTML calls what goes here a *task*;
-    /// the VM does not.
-    pub deferred: VecDeque<Task>,
     /// Suspended fibers waiting for Promise resolution.
     pub waiting_fibers: Vec<(u64, Fiber)>, // (promise_id, fiber)
     /// Next promise ID.
     next_promise_id: u64,
-    /// Next timer ID (separate counter from promise IDs).
-    next_timer_id: u64,
     /// CM3 future registry: future_id → FutureRecord
     pub future_states: HashMap<u64, FutureRecord>,
     /// Fibers suspended waiting for a specific future to resolve.
@@ -103,10 +94,8 @@ impl EventLoop {
     pub fn new() -> Self {
         EventLoop {
             immediate: VecDeque::new(),
-            deferred: VecDeque::new(),
             waiting_fibers: Vec::new(),
             next_promise_id: 1,
-            next_timer_id: 1,
             future_states: HashMap::new(),
             future_waiting_fibers: Vec::new(),
             next_future_id: 1,
@@ -126,44 +115,6 @@ impl EventLoop {
     pub fn queue_immediate(&mut self, callback: Value, value: Value) {
         self.immediate
             .push_back(Task::Callback { callback, value });
-    }
-
-    /// Schedule a macrotask (setTimeout callback). Does not return an ID.
-    pub fn queue_timer(&mut self, callback: Value, delay_ms: f64) {
-        let id = self.next_timer_id;
-        self.next_timer_id += 1;
-        let now = current_time_ms();
-        self.deferred.push_back(Task::Timer {
-            callback,
-            fire_at_ms: now + delay_ms,
-            id });
-    }
-
-    /// Schedule a macrotask and return its cancellable ID.
-    /// Use this from setTimeout host functions.
-    pub fn queue_timer_id(&mut self, callback: Value, delay_ms: f64) -> u64 {
-        let id = self.next_timer_id;
-        self.next_timer_id += 1;
-        let now = current_time_ms();
-        self.deferred.push_back(Task::Timer {
-            callback,
-            fire_at_ms: now + delay_ms,
-            id });
-        id
-    }
-
-    /// Cancel a timer by ID. Returns true if the timer was found and removed.
-    pub fn cancel_timer(&mut self, id: u64) -> bool {
-        if let Some(pos) = self
-            .deferred
-            .iter()
-            .position(|t| matches!(t, Task::Timer { id: tid, .. } if *tid == id))
-        {
-            self.deferred.remove(pos);
-            true
-        } else {
-            false
-        }
     }
 
     /// Suspend a fiber — it will resume when the promise with the given ID resolves.
@@ -202,23 +153,9 @@ impl EventLoop {
         }
     }
 
-    /// Get the next ready microtask.
+    /// Pop the next ready entry.
     pub fn next_immediate(&mut self) -> Option<Task> {
         self.immediate.pop_front()
-    }
-
-    /// Get the next ready macrotask (timer whose fire time has passed).
-    pub fn next_ready_timer(&mut self) -> Option<Task> {
-        let now = current_time_ms();
-        if let Some(pos) = self
-            .deferred
-            .iter()
-            .position(|t| matches!(t, Task::Timer { fire_at_ms, .. } if *fire_at_ms <= now))
-        {
-            Some(self.deferred.remove(pos).unwrap())
-        } else {
-            None
-        }
     }
 
     // ── CM3 futures ─────────────────────────────────────────────────────────
@@ -361,41 +298,16 @@ impl EventLoop {
 
     /// Check if there's any pending work.
     pub fn has_pending(&self) -> bool {
-        !self.immediate.is_empty() || !self.deferred.is_empty()
-    }
-
-    /// Sleep until the next timer fires (or return immediately if microtasks pending).
-    /// Uses the monotonic clock for accurate scheduling.
-    pub fn wait_for_next(&self) {
-        if !self.immediate.is_empty() {
-            return; // microtasks are processed immediately
-        }
-        if let Some(earliest) = self
-            .deferred
-            .iter()
-            .filter_map(|t| {
-                if let Task::Timer { fire_at_ms, .. } = t {
-                    Some(*fire_at_ms)
-                } else {
-                    None
-                }
-            })
-            .reduce(f64::min)
-        {
-            let now = current_time_ms();
-            if earliest > now {
-                let sleep_ms = (earliest - now) as u64;
-                // Native sleep — equivalent to wasi:clocks/monotonic-clock subscribe-duration.
-                std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
-            }
-        }
+        !self.immediate.is_empty()
     }
 }
 
 /// Monotonic milliseconds since first call.
 /// Aligned with wasi:clocks/monotonic-clock semantics: values are only
 /// meaningful relative to each other, not as wall-clock timestamps.
-fn current_time_ms() -> f64 {
+/// Public because host-owned deferred sources (the `platforms/web` timer
+/// wheel) must stamp fire times on the SAME clock the drain compares against.
+pub fn monotonic_now_ms() -> f64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     start.elapsed().as_secs_f64() * 1000.0

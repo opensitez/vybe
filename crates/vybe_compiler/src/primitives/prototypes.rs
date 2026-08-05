@@ -53,14 +53,12 @@ pub fn emit_stamp_function_kind_proto(
         chunk.emit_string_const(kind, line); // [fn, fn, kind]
         let kind_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__fn_kind")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, kind_key, line); // [fn, fn]
-        chunk.emit_op(Op::DROP, line); // [fn]
     }
     crate::primitives::globals::emit_read(chunk, intrinsic, line); // [fn, ctor]
     let proto_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("prototype")));
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key, line); // [fn, proto]
     let proto_link_key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__proto__")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key, line); // [fn]
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// §10.2.9 SetFunctionName / §10.2.10 SetFunctionLength: `name` and
@@ -77,5 +75,4 @@ pub fn emit_stamp_fn_metadata_nonenum(chunk: &mut Chunk, line: u32) {
     chunk.emit_array_new_fixed(0, 3, line); // [fn, [3 keys]]
     let key = chunk.add_constant(vybe_runtime::Value::String(Arc::from("__nonenum")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line); // [fn]
-    chunk.emit_op(Op::DROP, line);
 }

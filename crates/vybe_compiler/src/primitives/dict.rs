@@ -28,7 +28,6 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, line: u32) {
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, keys_key, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 // ── Setting keys ────────────────────────────────────────────────────────
@@ -43,7 +42,6 @@ pub fn emit_set_const_key(chunks: &mut [Chunk], current: usize, key: &str, line:
     // Convention: caller has [dict, value] on stack. We do struct_set.
     let key_idx = chunks[current].add_constant(Value::String(Arc::from(key)));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunks[current].emit_op(Op::DROP, line);
     // Append key to __keys: dict.__keys.push(key)
     chunks[current].emit_dup(line);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
@@ -261,7 +259,6 @@ pub fn emit_method_clear(chunks: &mut [Chunk], current: usize, dict_slot: u16, l
     crate::primitives::collections::emit_array_new(chunks, current, 0, line);
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, keys_key, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Stack-based variant of `emit_method_clear`. Takes the dict from TOS,
@@ -274,7 +271,6 @@ pub fn emit_method_clear_stack(chunks: &mut [Chunk], current: usize, line: u32) 
     let keys_key = chunks[current].add_constant(Value::String(Arc::from("__keys")));
     // struct_set pops [obj, val], pushes [val]
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, keys_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -488,7 +484,6 @@ pub fn emit_get(chunks: &mut [Chunk], current: usize, line: u32) {
 /// stack contract (no return).
 pub fn emit_set(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::ARRAY_SET, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Collect all values. Stack: `[dict]` → `[array_of_values]`.

@@ -18,6 +18,14 @@ use vybe_runtime::{Chunk, Value};
 /// Mapping from helper chunk name to the global name used at call sites.
 const MAPPINGS: &[(&str, &str)] = &[
     ("__stdlib_sorted", "__vybe_sorted"),
+    ("__stdlib_chan_send", "__vybe_chan_send"),
+    ("__stdlib_chan_recv", "__vybe_chan_recv"),
+    ("__stdlib_chan_recv_ok", "__vybe_chan_recv_ok"),
+    ("__stdlib_chan_len", "__vybe_chan_len"),
+    ("__stdlib_chan_cap", "__vybe_chan_cap"),
+    ("__stdlib_chan_close", "__vybe_chan_close"),
+    ("__stdlib_chan_ready_recv", "__vybe_chan_ready_recv"),
+    ("__stdlib_chan_ready_send", "__vybe_chan_ready_send"),
     ("__stdlib_sort_in_place", "__vybe_sort_in_place"),
     (
         "__stdlib_sort_with_comparator",

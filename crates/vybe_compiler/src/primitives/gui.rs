@@ -28,6 +28,8 @@
 //! different GUI binding) requires no compiler changes.
 
 use std::sync::Arc;
+use super::Compiler;
+use vybe_ast::Expression;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -191,6 +193,16 @@ pub const HOST_FN_RAISE_EVENT: &str = "raiseEvent";
 
 pub const GUI_MODULE: &str = "vybe:gui";
 
+/// WHATWG DOM — where a control is actually created.
+pub const DOM_MODULE: &str = "web:dom";
+/// WHATWG HTML — `document`, and the element IDL properties.
+pub const DOCUMENT_MODULE: &str = "web:html";
+pub const HOST_FN_CREATE_ELEMENT: &str = "createElement";
+/// `window.document` of the current browsing context.
+pub const HOST_FN_ACTIVE_DOCUMENT: &str = "activeDocument";
+/// CSSOM — `element.style`.
+pub const CSSOM_MODULE: &str = "web:cssom";
+
 // ─── Component Model Registration ────────────────────────────────────────────
 
 /// Register all `vybe:gui` host functions as component module exports.
@@ -337,6 +349,359 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
 // pass a pre-resolved `import_idx` obtained via their compiler's `import()`
 // helper (which delegates to `chunks[0].add_import`). This keeps gui.rs
 // chunk-agnostic — it doesn't need to know which chunk it's emitting into.
+
+// ─── Lowering a control to the web platform ──────────────────────────────
+
+// ─── The one GUI voice ───────────────────────────────────────────────────
+//
+// A control property is a ROLE, not a spelling. Pascal's `Caption`, .NET's
+// `Text` and Flutter's `child` are the same role, and each frontend lowers
+// its own word to it — the spelling stops at the frontend, exactly as a VB
+// constructor is recognised as a constructor because it FILLS a role.
+//
+// So nothing here speaks any language. The role IS the WHATWG IDL property
+// name, because the DOM is what we talk to and its vocabulary is already
+// standard; this maps role → the DOM operation that performs it, once.
+
+/// `gui.prop_set.<role>` / `gui.prop_get.<role>` — the emit a platform
+/// declares instead of naming a host function.
+pub const PROP_SET_EMIT: &str = "gui.prop_set.";
+pub const PROP_GET_EMIT: &str = "gui.prop_get.";
+
+/// The DOM operation a property role IS. `(module, func, attribute-key)`.
+///
+/// The roles ARE `vybe:gui`'s canonical property names — the vocabulary every
+/// language was already lowering to. Nothing was invented here; only the
+/// TARGET changed, from a custom host function to a compliant DOM operation.
+/// That is also why dotnet needs no mapping: it already emits these names.
+///
+/// Pascal never learns any of this. It calls with the same intent it always
+/// had; `vybe_widgets` is HTML underneath, which is not its business.
+///
+/// A role with no IDL counterpart becomes an attribute — where unknown
+/// properties belong on the web — so this stays the handful HTML treats
+/// specially rather than a table that grows per control.
+fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option<&'static str>) {
+    match role {
+        // The widget resolves what "text" means for the control it is: a
+        // `SetText` on a text field sets its value, on a label its caption.
+        // So this needs no element test — the engine already knows.
+        "text" | "caption" => (
+            DOM_MODULE,
+            if setting { "setTextContent" } else { "textContent" },
+            None,
+        ),
+        "value" => (
+            DOCUMENT_MODULE,
+            if setting { "setValue" } else { "value" },
+            None,
+        ),
+        "checked" | "ischecked" => (
+            DOCUMENT_MODULE,
+            if setting { "setChecked" } else { "checked" },
+            None,
+        ),
+        // A control's `Name` IS the element id — what `getElementById` and
+        // `<label for>` resolve. Not HTML's `name`, the submission key.
+        "name" => (
+            DOM_MODULE,
+            if setting { "setAttribute" } else { "getAttribute" },
+            Some("id"),
+        ),
+        // Boolean content attributes, INVERTED: true by PRESENCE, so
+        // `Enabled := False` ADDS `disabled`. `toggleAttribute` is the DOM's
+        // own add-or-remove.
+        "enabled" => (
+            DOM_MODULE,
+            if setting { "toggleAttribute" } else { "getAttribute" },
+            Some("disabled"),
+        ),
+        "visible" => (
+            DOM_MODULE,
+            if setting { "toggleAttribute" } else { "getAttribute" },
+            Some("hidden"),
+        ),
+        "left" | "top" | "width" | "height" => (
+            CSSOM_MODULE,
+            if setting { "setStyleProperty" } else { "getStyleProperty" },
+            Some(""),
+        ),
+        _ => (
+            DOM_MODULE,
+            if setting { "setAttribute" } else { "getAttribute" },
+            Some(""),
+        ) }
+}
+
+impl Compiler {
+    /// Lower `gui.prop_get.<role>` — stack in `[control]`, out `[value]`.
+    pub fn emit_gui_property_get(&mut self, role: &str, line: u32) {
+        let (module, func, key) = property_op(role, false);
+        let ctrl = self.define_local("__gui_prop_ctrl");
+        self.emit_u16(Op::LOCAL_SET, ctrl);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, ctrl);
+        let argc = match key {
+            Some(k) => {
+                emit_string_const(self.chunk(), if k.is_empty() { role } else { k }, line);
+                3
+            }
+            None => 2 };
+        let idx = self.import(module, func);
+        self.emit_host_call(idx, argc);
+    }
+
+    /// Lower `gui.prop_set.<role>` — stack in `[control, value]`, out `[_]`.
+    pub fn emit_gui_property_set(&mut self, role: &str, line: u32) {
+        let (module, func, key) = property_op(role, true);
+        let value = self.define_local("__gui_prop_value");
+        let ctrl = self.define_local("__gui_prop_ctrl");
+        self.emit_u16(Op::LOCAL_SET, value);
+        self.emit_u16(Op::LOCAL_SET, ctrl);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, ctrl);
+        let argc = match key {
+            Some(k) => {
+                emit_string_const(self.chunk(), if k.is_empty() { role } else { k }, line);
+                self.emit_u16(Op::LOCAL_GET, value);
+                // `disabled`/`hidden` are the INVERSE of enabled/visible; the
+                // frontend lowered to the ATTRIBUTE role, so negate here once.
+                if matches!(role, "enabled" | "visible") {
+                    self.chunk().emit_op(Op::I32_EQZ, line);
+                }
+                4
+            }
+            None => {
+                self.emit_u16(Op::LOCAL_GET, value);
+                3
+            }
+        };
+        let idx = self.import(module, func);
+        self.emit_host_call(idx, argc);
+    }
+}
+
+/// The HTML element a control IS — tag, plus `type` for `<input>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlElement {
+    pub tag: String,
+    pub input_type: String,
+}
+
+impl ControlElement {
+    /// Parse a platform's declaration of what its control is.
+    ///
+    /// A platform declares the ELEMENT (`"button"`, `"input:checkbox"`,
+    /// `"body"`) because it owns the vocabulary — plib knows `TEdit` is a text
+    /// input, and nothing in a shared crate should have to. That is the whole
+    /// point: no per-language table lives here.
+    fn parse(decl: &str) -> ControlElement {
+        let (tag, input_type) = decl.split_once(':').unwrap_or((decl, ""));
+        ControlElement {
+            tag: tag.trim().to_ascii_lowercase(),
+            input_type: input_type.trim().to_ascii_lowercase() }
+    }
+
+    /// Is this element FORM-ASSOCIATED — i.e. does it belong to
+    /// `form.elements` and get submitted?
+    ///
+    /// HTML's own list, not a judgement call: button, fieldset, input,
+    /// object, output, select, textarea. A `<img>`, `<div>`, `<ul>`,
+    /// `<progress>` or `<table>` is NOT one — a `PictureBox` or `Panel` is a
+    /// control in the toolkit sense but carries no submission identity, and
+    /// `name` on it is non-conforming markup that submits nothing.
+    pub fn is_form_associated(&self) -> bool {
+        matches!(
+            self.tag.as_str(),
+            "button" | "fieldset" | "input" | "object" | "output" | "select" | "textarea"
+        )
+    }
+
+    /// A control with no conforming HTML counterpart becomes a CUSTOM
+    /// ELEMENT — `<vybe-picturebox>`, `<vybe-timer>`.
+    ///
+    /// This is valid HTML, not a fudge: a custom element name only has to
+    /// contain a hyphen, and a real browser gives it behaviour through
+    /// `customElements.define`. It beats both alternatives — a `<div>` says
+    /// nothing about what the control is, and forcing a `PictureBox` into
+    /// `<img>` claims image semantics it does not have (no `src`, no
+    /// decoding, and it is not form-associated).
+    ///
+    /// Also where platforms that still name a `new_<Type>` factory land
+    /// (flutter, next to migrate), so their widgets are at least named
+    /// rather than anonymous boxes.
+    fn custom(type_name: &str) -> ControlElement {
+        let bare = type_name.rsplit(['.', ':']).next().unwrap_or(type_name);
+        let bare = bare.trim_start_matches(['T', 't']).to_ascii_lowercase();
+        ControlElement {
+            tag: format!("vybe-{}", if bare.is_empty() { "control" } else { &bare }),
+            input_type: String::new() }
+    }
+}
+
+/// What the REGISTRY says this type's control is — the same authority
+/// `is_framework_control_parent` consults, so the two can never disagree.
+pub fn registered_control_element(
+    type_scopes: &[String],
+    type_name: &str,
+) -> Option<ControlElement> {
+    let spec = vybe_runtime::namespaces::lookup_type_ctor_spec(type_scopes, type_name)?;
+    let decl = spec.control_fn?;
+    Some(if decl.starts_with("new_") {
+        ControlElement::custom(type_name)
+    } else {
+        ControlElement::parse(&decl)
+    })
+}
+
+impl Compiler {
+    /// `control.<prop> = value` → the DOM.
+    ///
+    /// Property NAMES arrive already normalised by the frontend (Pascal's
+    /// `Caption` and .NET's `Text` both reach here as `text`), so there is no
+    /// per-language vocabulary in this file — only the web one.
+    ///
+    /// Anything without an IDL counterpart becomes `setAttribute`, which is
+    /// where unknown properties belong on the web anyway; that keeps the match
+    /// to the handful of properties HTML actually treats specially instead of
+    /// a table that has to grow per control.
+    ///
+    /// Stack on entry: [value]. Stack on exit: empty.
+    pub fn emit_control_property_set(
+        &mut self,
+        object: &Expression,
+        type_name: &str,
+        prop: &str,
+        line: u32,
+    ) -> Result<(), String> {
+        let value_tmp = self.define_local("__ctrl_prop_value");
+        self.emit_u16(Op::LOCAL_SET, value_tmp);
+
+        let prop = prop.to_ascii_lowercase();
+        let (module, func, key): (&str, &str, Option<&str>) = match prop.as_str() {
+            "text" | "caption" => (DOM_MODULE, "setTextContent", None),
+            "value" => (DOCUMENT_MODULE, "setValue", None),
+            "checked" | "ischecked" => (DOCUMENT_MODULE, "setChecked", None),
+            // `Name` is handled below: it sets BOTH `id` and `name`.
+            "name" => (DOM_MODULE, "setAttribute", Some("id")),
+            // Boolean content attributes, INVERTED: `Enabled := False` must
+            // ADD `disabled`, `Enabled := True` must REMOVE it. `setAttribute`
+            // either way would disable a control when you enabled it.
+            // `toggleAttribute(name, force)` is the DOM's own add-or-remove.
+            "enabled" => (DOM_MODULE, "toggleAttribute", Some("disabled")),
+            "visible" => (DOM_MODULE, "toggleAttribute", Some("hidden")),
+            "left" | "top" | "width" | "height" => (CSSOM_MODULE, "setStyleProperty", Some("")),
+            _ => (DOM_MODULE, "setAttribute", Some("")) };
+
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.compile_expr(object)?;
+        let argc = match key {
+            Some(k) => {
+                let name = if k.is_empty() { prop.as_str() } else { k };
+                emit_string_const(self.chunk(), name, line);
+                self.emit_u16(Op::LOCAL_GET, value_tmp);
+                // `disabled`/`hidden` are the OPPOSITE of `Enabled`/`Visible`.
+                if matches!(prop.as_str(), "enabled" | "visible") {
+                    self.emit(Op::I32_EQZ);
+                }
+                4
+            }
+            None => {
+                self.emit_u16(Op::LOCAL_GET, value_tmp);
+                3
+            }
+        };
+        let idx = self.import(module, func);
+        self.emit_host_call(idx, argc);
+        self.emit(Op::DROP);
+
+        // A designer `Name` is BOTH of HTML's two identifiers, which are not
+        // the same thing: `id` is unique per document and is what
+        // `getElementById` and `<label for>` resolve, while `name` is the
+        // form-control submission key that `form.elements[…]` and
+        // serialization read. A control that set only `id` would look right
+        // and submit nothing, so set both.
+        let form_associated = registered_control_element(
+            &self.profile.namespaces.type_scopes,
+            type_name,
+        )
+        .map(|e| e.is_form_associated())
+        .unwrap_or(false);
+        if prop == "name" && form_associated {
+            let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.compile_expr(object)?;
+            emit_string_const(self.chunk(), "name", line);
+            self.emit_u16(Op::LOCAL_GET, value_tmp);
+            let idx = self.import(DOM_MODULE, "setAttribute");
+            self.emit_host_call(idx, 4);
+            self.emit(Op::DROP);
+        }
+        Ok(())
+    }
+
+    /// `control.<prop>` → the DOM. Stack on exit: [value].
+    pub fn emit_control_property_get(
+        &mut self,
+        object: &Expression,
+        prop: &str,
+        line: u32,
+    ) -> Result<(), String> {
+        let prop = prop.to_ascii_lowercase();
+        let (module, func, key): (&str, &str, Option<&str>) = match prop.as_str() {
+            "text" | "caption" => (DOM_MODULE, "textContent", None),
+            "value" => (DOCUMENT_MODULE, "value", None),
+            "checked" | "ischecked" => (DOCUMENT_MODULE, "checked", None),
+            "name" => (DOM_MODULE, "getAttribute", Some("id")),
+            "left" | "top" | "width" | "height" => (CSSOM_MODULE, "getStyleProperty", Some("")),
+            _ => (DOM_MODULE, "getAttribute", Some("")) };
+
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.compile_expr(object)?;
+        let argc = match key {
+            Some(k) => {
+                let name = if k.is_empty() { prop.as_str() } else { k };
+                emit_string_const(self.chunk(), name, line);
+                3
+            }
+            None => 2 };
+        let idx = self.import(module, func);
+        self.emit_host_call(idx, argc);
+        Ok(())
+    }
+
+    /// Create a control — the ONE place a frontend turns a canonical control
+    /// name into bytecode.
+    ///
+    /// A control is not a bespoke host function, it is
+    /// `document.createElement(tag)`. Lowering here rather than naming a
+    /// `new_<Type>` factory means `web:*` stays WHATWG (there is no
+    /// `new_Button` in any spec), and every language on this path — Pascal
+    /// today, Flutter next — gets the same element.
+    ///
+    /// Constructor arguments are evaluated for their side effects and
+    /// dropped: an owner/parent argument is a toolkit convention, and
+    /// parenting happens through `appendChild` when the control is added.
+    ///
+    /// Stack on exit: [element]
+    pub fn emit_control_element(&mut self, type_name: &str, argc: u8, line: u32) {
+        let element = registered_control_element(&self.profile.namespaces.type_scopes, type_name)
+            .unwrap_or_else(|| ControlElement::custom(type_name));
+        for _ in 0..argc {
+            self.chunk().emit_op(Op::DROP, line);
+        }
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        emit_string_const(self.chunk(), &element.tag, line);
+        emit_string_const(self.chunk(), &element.input_type, line);
+        let create_idx = self.import(DOM_MODULE, HOST_FN_CREATE_ELEMENT);
+        self.chunk().emit_call(create_idx, 3, line);
+    }
+}
 
 /// Emit `vybe:gui::new_<Type>(args)` to create a new control.
 /// `import_idx` must be the result of `compiler.import("vybe:gui", host_fn_new_control(canonical_type).as_str())`.

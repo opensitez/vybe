@@ -133,6 +133,13 @@ pub struct LanguageProfile {
     /// Entry point function name to auto-call if defined (e.g. "main").
     pub entry_point: Option<String>,
 
+    /// Namespace roots whose builtins require an ACTIVATING import. C's
+    /// headers lower to imports (`#include <stdio.h>` → `libc.stdio`), so
+    /// with `["libc", "sdl"]` a call to `printf` without its include fails
+    /// at compile time — implicit declarations stop being legal, like
+    /// modern clang. Empty (every other language today) = fully ambient.
+    pub gated_namespace_roots: Vec<String>,
+
     /// JS: `var` declarations are hoisted to function scope.
     pub hoist_var: bool,
 
@@ -783,13 +790,6 @@ pub struct LanguageProfile {
     /// so they leave this `false`. Default `true` preserves the historical
     /// behaviour for the static languages.
     pub coerces_value_to_type_hint: bool,
-    /// The language's async scheduling contract (`[async]` in the profile) —
-    /// see `vybe_ast::SchedulingPolicy`. Declared HERE because it is a fact
-    /// about the language, like `coerces_value_to_type_hint`; the walker's
-    /// `Module.scheduling` remains the per-module carrier (a synthetic module
-    /// may override), stamped from this at compile.
-    pub scheduling: vybe_ast::SchedulingPolicy,
-
     /// ECMA-262 §9.1.2 / §10.2.1.1: the receiver (`this`) is bound *ambiently*
     /// from the call context (Vybe carries it in the `__js_this` global the
     /// call site sets) rather than being passed as an explicit first positional
@@ -1419,6 +1419,15 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("entry_point")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let gated_namespace_roots = compiler
+        .get("gated_namespace_roots")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
     let hoist_var = compiler
         .get("hoist_var")
         .and_then(|v| v.as_bool())
@@ -1765,34 +1774,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("coerces_value_to_type_hint")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    // `[async]` — the language's scheduling contract. Unknown spellings are a
-    // hard error: a typo silently inheriting the ECMA default is exactly the
-    // silent-inheritance failure this section exists to end.
-    let scheduling = {
-        let section = root.get("async").and_then(|v| v.as_table());
-        let mut policy = vybe_ast::SchedulingPolicy::default();
-        if let Some(t) = section {
-            if let Some(v) = t.get("continuation").and_then(|v| v.as_str()) {
-                policy.continuation = match v {
-                    "always_deferred" => vybe_ast::ContinuationTiming::AlwaysDeferred,
-                    "sync_if_settled" => vybe_ast::ContinuationTiming::SyncIfSettled,
-                    other => {
-                        return Err(format!("[async] continuation: unknown value '{other}'"));
-                    }
-                };
-            }
-            if let Some(v) = t.get("queues").and_then(|v| v.as_str()) {
-                policy.queues = match v {
-                    "tiered_jobs" => vybe_ast::QueueDiscipline::TieredJobs,
-                    "single_ready_queue" => vybe_ast::QueueDiscipline::SingleReadyQueue,
-                    other => {
-                        return Err(format!("[async] queues: unknown value '{other}'"));
-                    }
-                };
-            }
-        }
-        policy
-    };
     let ambient_this_binding = compiler
         .get("ambient_this_binding")
         .and_then(|v| v.as_bool())
@@ -2420,6 +2401,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         unified_array_map,
         concat_stringifies_operands,
         entry_point,
+        gated_namespace_roots,
         hoist_var,
         dynamic_add,
         function_references,
@@ -2521,7 +2503,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         unresolved_reference_error,
         unresolved_reference_message,
         coerces_value_to_type_hint,
-        scheduling,
         ambient_this_binding,
         uses_common_resolver,
         missing_arg_is_undefined,

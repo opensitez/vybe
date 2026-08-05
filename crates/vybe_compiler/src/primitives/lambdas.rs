@@ -534,7 +534,6 @@ impl Compiler {
             self.emit_const(Value::F64(length as f64));
             let length_key = self.str_const("length");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
-            self.emit(Op::DROP);
 
             inst!(self, core_wasm::dup);
             {
@@ -563,7 +562,6 @@ impl Compiler {
             self.emit_const(Value::Bool(true));
             let non_ctor_key = self.str_const("__vybe_non_ctor");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, non_ctor_key);
-            self.emit(Op::DROP);
 
             // §10.2.9/§10.2.10: name/length are non-enumerable.
             inst!(self, core_wasm::dup);
@@ -581,7 +579,6 @@ impl Compiler {
                 self.emit_const(Value::Bool(true));
                 let arrow_key = self.str_const("__fn_arrow");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, arrow_key);
-                self.emit(Op::DROP);
             }
         }
         if has_rest {

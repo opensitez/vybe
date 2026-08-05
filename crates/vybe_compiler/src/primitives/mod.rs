@@ -607,6 +607,10 @@ pub struct Compiler {
     /// framework surface, such as WinForms form inference for bare VB/C#
     /// classes inside a module that explicitly imports System.Windows.Forms.
     current_module_imports: Vec<Import>,
+    /// Activation set for gated namespace roots, built from the module's
+    /// imports at compile start. `None` until then; only consulted when the
+    /// profile declares `gated_namespace_roots`.
+    active_namespaces: Option<std::collections::HashSet<String>>,
     /// JS-only: set when the module references `new Proxy(...)`. Member /
     /// Index reads + writes route through `emitter::js::proxy_adapter`
     /// for runtime trap dispatch. Off → direct `STRUCT_GET` / `ARRAY_GET`
@@ -2234,6 +2238,7 @@ impl Compiler {
             source_type_aliases: HashMap::new(),
             source_namespace_imports: Vec::new(),
             current_module_imports: Vec::new(),
+            active_namespaces: None,
             module_exports: HashMap::new(),
             module_value_exports: HashMap::new(),
             active_finally_blocks: Vec::new(),
@@ -2435,17 +2440,18 @@ impl Compiler {
             scope.fold_case = !self.case_sensitive;
         }
         self.current_module_imports = module.imports.clone();
-        // The scheduling contract: the LANGUAGE's declaration lives in its
-        // profile (`[async]`), the MODULE may override (synthetic modules,
-        // tests). A module carrying the default defers to the profile — the
-        // two values are identical in that case anyway, so "explicitly
-        // declared the default" and "didn't declare" cannot diverge.
-        self.chunks[0].scheduling = if module.scheduling == vybe_ast::SchedulingPolicy::default()
-        {
-            self.profile.scheduling
-        } else {
-            module.scheduling
-        };
+        // Gated-namespace activation: every import path activates its
+        // namespace for builtin resolution (C includes lower to these).
+        let mut active = std::collections::HashSet::new();
+        for imp in &module.imports {
+            let path = match &imp.kind {
+                vybe_ast::ImportKind::Simple { path, .. }
+                | vybe_ast::ImportKind::Wildcard { path, .. }
+                | vybe_ast::ImportKind::Named { path, .. }
+                | vybe_ast::ImportKind::Default { path, .. } => path.clone() };
+            active.insert(path);
+        }
+        self.active_namespaces = Some(active);
 
         // Pre-scan: detect `new Proxy(...)` anywhere in the module so the
         // Member / Index emit sites can route through the proxy dispatcher

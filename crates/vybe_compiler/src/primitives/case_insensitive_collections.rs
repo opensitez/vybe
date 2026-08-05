@@ -59,7 +59,6 @@ impl Compiler {
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_SET, keys_slot);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, keys_key);
-                    self.emit(Op::DROP);
 
                     self.chunk().emit_end(line);
                     self.emit_u16(Op::LOCAL_GET, keys_slot);

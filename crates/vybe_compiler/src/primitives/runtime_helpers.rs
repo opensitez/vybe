@@ -332,6 +332,19 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
 
     chunks.push(build_sorted(imports));
     exports.push("__stdlib_sorted");
+    for (build, name) in [
+        (crate::primitives::channels::build_chan_send as fn(&mut Chunk) -> Chunk, "__stdlib_chan_send"),
+        (crate::primitives::channels::build_chan_recv, "__stdlib_chan_recv"),
+        (crate::primitives::channels::build_chan_recv_ok, "__stdlib_chan_recv_ok"),
+        (crate::primitives::channels::build_chan_len, "__stdlib_chan_len"),
+        (crate::primitives::channels::build_chan_cap, "__stdlib_chan_cap"),
+        (crate::primitives::channels::build_chan_close, "__stdlib_chan_close"),
+        (crate::primitives::channels::build_chan_ready_recv, "__stdlib_chan_ready_recv"),
+        (crate::primitives::channels::build_chan_ready_send, "__stdlib_chan_ready_send"),
+    ] {
+        chunks.push(build(imports));
+        exports.push(name);
+    }
     chunks.push(build_sort_in_place(imports));
     exports.push("__stdlib_sort_in_place");
     chunks.push(build_sort_with_comparator(imports));
@@ -562,6 +575,14 @@ pub fn build_runtime_helpers_for_exports(
 fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk> {
     let chunk = match name {
         "__stdlib_sorted" => build_sorted(imports),
+        "__stdlib_chan_send" => crate::primitives::channels::build_chan_send(imports),
+        "__stdlib_chan_recv" => crate::primitives::channels::build_chan_recv(imports),
+        "__stdlib_chan_recv_ok" => crate::primitives::channels::build_chan_recv_ok(imports),
+        "__stdlib_chan_len" => crate::primitives::channels::build_chan_len(imports),
+        "__stdlib_chan_cap" => crate::primitives::channels::build_chan_cap(imports),
+        "__stdlib_chan_close" => crate::primitives::channels::build_chan_close(imports),
+        "__stdlib_chan_ready_recv" => crate::primitives::channels::build_chan_ready_recv(imports),
+        "__stdlib_chan_ready_send" => crate::primitives::channels::build_chan_ready_send(imports),
         "__stdlib_sort_in_place" => build_sort_in_place(imports),
         "__stdlib_sort_with_comparator" => build_sort_with_comparator(imports),
         "__stdlib_sort_by_key" => build_sort_by_key(imports),
@@ -3248,7 +3269,6 @@ fn build_setdefault(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
     c.emit_op_u16(Op::LOCAL_GET, default, 0);
     c.emit_op(Op::ARRAY_SET, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op_u16(Op::LOCAL_GET, default, 0);
     c.emit_op_u16(Op::LOCAL_SET, result, 0);
 

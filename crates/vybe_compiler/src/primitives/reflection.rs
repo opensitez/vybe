@@ -1508,7 +1508,6 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         let field_idx = self.str_const(&self.canon(&field_name));
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                        self.emit(Op::DROP);
                         self.emit_var_set(name);
                         self.emit_null();
                         Ok(true)
@@ -2099,7 +2098,6 @@ pub fn emit_set_slot_string_field(
     chunk.emit_string_const(value, line);
     let key = sconst(chunk, field);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Stack: unchanged. Writes `object[field] = local_value`.
@@ -2114,7 +2112,6 @@ pub fn emit_set_slot_field_from_local(
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let key = sconst(chunk, field);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Stack: unchanged. Writes `object[field] = ref_func(function_chunk)`.
@@ -2130,7 +2127,6 @@ pub fn emit_bind_method(
     chunk.emit(0, line);
     let key = sconst(chunk, field);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Create a reflection-shaped object, stamp its type, copy local-backed fields,
@@ -2495,7 +2491,6 @@ pub fn emit_reflect_set_primitive(chunks: &mut Vec<Chunk>, current: usize, line:
 pub fn emit_set_field_from_stack(chunk: &mut Chunk, field: &str, line: u32) {
     let key = sconst(chunk, field);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Stack: unchanged. Writes `object[field] = value_slot`.
@@ -2504,7 +2499,6 @@ pub fn emit_stamp_kind_from_slot(chunk: &mut Chunk, object_slot: u16, kind_slot:
     chunk.emit_op_u16(Op::LOCAL_GET, kind_slot, line);
     let key = sconst(chunk, FIELD_KIND);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_import_call(
@@ -2578,7 +2572,10 @@ pub fn emit_instanceof_chain(
     chunks[current].emit_string_const(class_name, line); // [this, array, array, name]
     crate::primitives::collections::emit_push(chunks, current, line); // [this, array, len]
     chunks[current].emit_op(Op::DROP, line); // [this, array]
-                                             // struct_set: [this, array] → sets this.__types = array, leaves array on stack.
-    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line); // [array]
-    chunks[current].emit_op(Op::DROP, line); // []
+    // Spec struct.set pushes nothing, so keep the array (this fn's OUTPUT)
+    // in a scratch local across the write.
+    let out_slot = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_TEE, out_slot, line); // [this, array]
+    chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line); // []
+    chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line); // [array]
 }

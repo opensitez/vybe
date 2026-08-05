@@ -113,7 +113,6 @@ pub fn emit_exception_constructor(
         chunk.emit_string_const(val, line);
         let k = chunk.add_constant(Value::String(Arc::from(key)));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     // name = exc_name (JS Error convention)
@@ -121,14 +120,14 @@ pub fn emit_exception_constructor(
     chunk.emit_string_const(exc_name, line);
     let n_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, n_key, line);
-    chunk.emit_op(Op::DROP, line);
+
+    // message = msg_slot
 
     // message = msg_slot
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, msg_slot, line);
     let m_key = chunk.add_constant(Value::String(Arc::from("message")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, m_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// §20.5: finish a JS error instance minted by an `ecma:error.*`
@@ -146,7 +145,6 @@ pub fn emit_finish_js_error_instance(chunk: &mut Chunk, kind: &str, line: u32) {
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key, line); // [err, err, proto]
     let link_key = chunk.add_constant(Value::String(Arc::from("__proto__")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, link_key, line); // [err, err]
-    chunk.emit_op(Op::DROP, line); // [err]
     // delete err.name — own stamp off, prototype `name` takes over
     crate::primitives::instructions::core_wasm::dup(chunk, line); // [err, err]
     chunk.emit_string_const("name", line); // [err, err, "name"]
@@ -369,7 +367,10 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     let m_key = chunk.add_constant(Value::String(Arc::from("message")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, m_key, line);
     // [obj, msg_val] → [obj]
-    chunk.emit_op(Op::DROP, line);
+
+    // Shared type/reflection stamps use the canonical name for cross-language
+    // catch dispatch and introspection compatibility.
+    // [obj, msg_val] → [obj]
 
     // Shared type/reflection stamps use the canonical name for cross-language
     // catch dispatch and introspection compatibility.
@@ -386,7 +387,6 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
         chunk.emit_string_const(val, line);
         let k = chunk.add_constant(Value::String(Arc::from(key)));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     // Set name as a dynamic (non-indexed) property with the original language-specific name.
@@ -395,7 +395,6 @@ pub fn emit_exception_new_finalize(chunk: &mut Chunk, exc_name: &str, line: u32)
     chunk.emit_string_const(original, line);
     let n_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, n_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Canonical exception ancestor chains — the Python-shaped tree used by
@@ -580,7 +579,6 @@ pub fn emit_stamp_exception_ancestors(chunk: &mut Chunk, exc_name: &str, line: u
     chunk.emit_array_new_fixed(0, chain.len() as u16, line);
     let key = chunk.add_constant(Value::String(Arc::from(reflection::FIELD_TYPES)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Emit the disposal half of a resource-management block (C# `using`,

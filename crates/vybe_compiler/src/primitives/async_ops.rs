@@ -7,7 +7,7 @@
 //! (ECMA-262 §27.2 — the SAME objects JS reaches at runtime, so cross-language
 //! async values interoperate by construction) and the JSPI suspend import for
 //! the sync↔async boundary. Timing is the module's declared
-//! [`SchedulingPolicy`]; nothing here branches on a language.
+//! nothing here branches on a language.
 //!
 //! This replaces `promises.rs`, whose emitters had ZERO callers — `.then` in
 //! JS only ever worked through runtime member dispatch, and every other

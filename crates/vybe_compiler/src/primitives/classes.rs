@@ -207,7 +207,6 @@ impl Compiler {
         self.emit_var_get(parent_name);
         let super_key = self.str_const("__super");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, super_key);
-        self.emit(Op::DROP);
     }
 
     /// Push the ECMA [[HomeObject]].[[Prototype]] base used by `super`.
@@ -340,14 +339,46 @@ impl Compiler {
     /// string match skips: only treat the name as a control when `dotnet.*` is
     /// actually in scope, so a same-named class in a non-GUI language (e.g. a
     /// Python `class X(Timer)`) never misroutes to `vybe:gui`.
+    /// Is this class parent a framework GUI control?
+    ///
+    /// That is a property of the PARENT TYPE, not of which platform happens to
+    /// be loaded. A registered type says so itself: its `CtorSpec` carries a
+    /// `control_fn`. plib (`TForm`, `TButton`) and flutter register controls
+    /// that way, so both answer here without naming a language — and any GUI
+    /// surface added later works with no change to this function.
+    ///
+    /// This used to read `profile.namespaces.use_dotnet`, which was a language
+    /// check standing in for the property: correct only while WinForms was the
+    /// only GUI surface. It silently excluded Pascal, so `class(TForm)` never
+    /// took the control path and fell through to a per-class ctor global that
+    /// control types deliberately no longer emit — `undefined is not callable`
+    /// for every form with a constructor.
     pub(crate) fn is_framework_control_parent(&self, parent_name: &str) -> bool {
+        // A user class shadowing a control name (`class Timer { … }`) wins,
+        // mirroring the standalone-`new` path's `!dotnet_ctor_registered`
+        // guard — otherwise `class X : Timer` over the user's own Timer
+        // would misroute to the control factory.
+        if self.defined_classes.contains(&self.canon(parent_name)) {
+            return false;
+        }
+        if self.registered_control_parent(parent_name) {
+            return true;
+        }
+        // dotnet INFERS its controls from the canonical name instead of
+        // registering a `CtorSpec`, so it still needs its own signal. When the
+        // dotnet registrar declares `control_fn` like the others, this arm and
+        // the flag it reads both go away.
         self.profile.namespaces.use_dotnet
             && !common::gui::canonical_control_name(parent_name).is_empty()
-            // A user class shadowing a control name (`class Timer { … }`) wins,
-            // mirroring the standalone-`new` path's `!dotnet_ctor_registered`
-            // guard — otherwise `class X : Timer` over the user's own Timer
-            // would misroute to `vybe:gui new_Timer`.
-            && !self.defined_classes.contains(&self.canon(parent_name))
+    }
+
+    /// The parent is a registered type whose construction is a GUI control.
+    fn registered_control_parent(&self, parent_name: &str) -> bool {
+        vybe_runtime::namespaces::lookup_type_ctor_spec(
+            &self.profile.namespaces.type_scopes,
+            parent_name,
+        )
+        .is_some_and(|spec| spec.control_fn.is_some())
     }
 
     fn dotnet_descriptor_parent_has_no_user_ctor(&self, parent_name: &str) -> bool {
@@ -377,13 +408,11 @@ impl Compiler {
         if canonical.is_empty() {
             return Ok(false);
         }
-        let host_name = common::gui::host_fn_new_control(&canonical);
-        let new_idx = self.import(common::gui::GUI_MODULE, &host_name);
         for a in base_args {
             self.compile_expr(a)?;
         }
         let line = self.line;
-        common::gui::emit_new_control(self.chunk(), new_idx, base_args.len() as u8, line);
+        self.emit_control_element(parent_name, base_args.len() as u8, line);
         self.emit_u16(Op::LOCAL_SET, this_slot);
         Ok(true)
     }
@@ -414,7 +443,17 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from(name)));
         let type_key = self.str_const("__type");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
-        self.emit(Op::DROP);
+        // No rtt re-stamp. `SET_TYPE_ID` used to live here because the BASE
+        // constructor allocated and handed the object up, so the derived class
+        // inherited its parent's type and had to overwrite it — something WASM
+        // GC cannot express, which is why it needed a 0xFF custom opcode.
+        //
+        // The constructor protocol is inverted now: the most-derived class
+        // allocates via `struct.new_default $T` and passes the receiver DOWN, so
+        // the instance carries the right rtt from the moment it exists and there
+        // is nothing left to re-stamp. `__type` above is still written because
+        // the string channel is what host-constructed objects use (184 stamps
+        // across 59 files); see wasmregistryfix.md steps 3–4.
         // No rtt re-stamp. `SET_TYPE_ID` used to live here because the BASE
         // constructor allocated and handed the object up, so the derived class
         // inherited its parent's type and had to overwrite it — something WASM
@@ -778,7 +817,6 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit_u16(Op::LOCAL_GET, this_slot);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key);
-                self.emit(Op::DROP);
             }
             if self.profile.supports_private_fields && bind_name.starts_with("__js_private_") {
                 inst!(self, core_wasm::dup);
@@ -789,6 +827,9 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from(display_name.as_str())));
                 let name_key = self.str_const("name");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+                // The stamp helper CONSUMES its operand — duplicate the fn,
+                // the attach below still needs it.
+                inst!(self, core_wasm::dup);
                 let line = self.line;
                 crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
             }
@@ -796,11 +837,9 @@ impl Compiler {
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::F64(fixed_count as f64));
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, rest_key);
-                self.emit(Op::DROP);
             }
             let method_key = self.str_const(&bind_name);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, method_key);
-            self.emit(Op::DROP);
         }
         Ok(())
     }
@@ -1006,14 +1045,14 @@ impl Compiler {
             self.emit_var_get(name);
             let callee_key = self.str_const("callee");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, callee_key);
-            self.emit(Op::DROP);
+            // §10.4.4.6: arguments objects report "[object Arguments]" —
+            // stamp the tag the host's object_to_string_tag reads.
             // §10.4.4.6: arguments objects report "[object Arguments]" —
             // stamp the tag the host's object_to_string_tag reads.
             self.emit_u16(Op::LOCAL_GET, slot);
             self.chunk().emit_string_const("Arguments", 0);
             let type_key = self.str_const("__type");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
-            self.emit(Op::DROP);
             Some(slot)
         } else {
             None
@@ -1438,7 +1477,9 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from(name.as_str())));
             let name_key = self.str_const("name");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
-            self.emit(Op::DROP);
+
+            // ECMA-262 §10.2.4 `length`: number of params before the
+            // first one with a default value or rest. Skip rest entirely.
 
             // ECMA-262 §10.2.4 `length`: number of params before the
             // first one with a default value or rest. Skip rest entirely.
@@ -1450,7 +1491,12 @@ impl Compiler {
             self.emit_const(Value::F64(length as f64));
             let length_key = self.str_const("length");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
-            self.emit(Op::DROP);
+
+            // The JS walker's wrap_generator lowers `function*` /
+            // `async function*` to a PLAIN outer function holding
+            // `const __gen_fn = function*(){...}` — recover the source
+            // kind from that contract so the §27.3/§27.4 intrinsic
+            // stamp survives the lowering.
 
             // The JS walker's wrap_generator lowers `function*` /
             // `async function*` to a PLAIN outer function holding
@@ -1485,7 +1531,6 @@ impl Compiler {
                 self.emit_const(Value::Bool(true));
                 let non_ctor_key = self.str_const("__vybe_non_ctor");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, non_ctor_key);
-                self.emit(Op::DROP);
             }
 
             // §27.7 / §27.3 (node-verified): async (non-generator)
@@ -1498,14 +1543,12 @@ impl Compiler {
                     self.emit_var_get(name);
                     let ctor_key = self.str_const("constructor");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
-                    self.emit(Op::DROP);
                 }
 
                 self.emit_var_get(name);
                 self.emit_u16(Op::LOCAL_GET, proto_slot);
                 let proto_key = self.str_const("prototype");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_key);
-                self.emit(Op::DROP);
             }
         }
 
@@ -2304,7 +2347,6 @@ impl Compiler {
                 cc.chunk().emit_string_const("Arguments", 0);
                 let type_key = cc.str_const("__type");
                 cc.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
-                cc.emit(Op::DROP);
 
                 let len_slot = cc.define_local("__vybe_js_arguments_length");
                 cc.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
@@ -2824,7 +2866,6 @@ impl Compiler {
                         }
                         let backing = self.str_const(&format!("__{}", pname_canon));
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, backing);
-                        self.emit(Op::DROP);
                     }
                 } else {
                     for s in &setter.body {
@@ -3379,7 +3420,6 @@ impl Compiler {
                             let msg_key = self.str_const("message");
                             self.emit_struct_field_op(Op::STRUCT_GET, 0, msg_key);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, msg_key);
-                            self.emit(Op::DROP);
                             self.chunks[self.current].emit_else(line);
                             self.emit_u16(Op::LOCAL_GET, exc_slot);
                             self.emit_u16(Op::LOCAL_SET, this_slot);
@@ -3422,7 +3462,6 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(name)));
                         let type_key = self.str_const("__type");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
-                        self.emit(Op::DROP);
                         if class.is_value_type {
                             crate::primitives::classes::emit_value_equality_stamp(
                                 self.chunk(),
@@ -3444,7 +3483,6 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, this_slot);
                             self.emit_u16(Op::LOCAL_GET, proto_local);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
-                            self.emit(Op::DROP);
                             self.chunks[self.current].emit_end(line);
                         }
 
@@ -3706,7 +3744,6 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, this_slot);
                         self.emit_u16(Op::LOCAL_GET, proto_local);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
-                        self.emit(Op::DROP);
                         self.chunks[self.current].emit_end(line);
                     }
                     let ctor_stmts: &[Statement] = ctor_body
@@ -3754,7 +3791,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_global_read(name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
-                    self.emit(Op::DROP);
                     let canon_name = self.canon(name);
                     crate::primitives::classes::emit_retype_object(
                         self.chunk(),
@@ -3774,7 +3810,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_global_read(name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, class_key);
-                    self.emit(Op::DROP);
                 }
 
                 crate::primitives::reflection::emit_instanceof_chain(
@@ -3839,7 +3874,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, this_slot);
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_key);
-                    self.emit(Op::DROP);
                     self.chunks[self.current].emit_end(line);
                 }
                 // §9.1.1.3.4 (JS): returning from a derived constructor
@@ -3991,7 +4025,6 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from(name)));
             let name_key = self.str_const("name");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
-            self.emit(Op::DROP);
         }
         for (arity, _, helper_idx, helper_captures, named) in &ctor_helpers {
             emit_helper_ref(self, *helper_idx, helper_captures)?;
@@ -4008,7 +4041,6 @@ impl Compiler {
                 emit_helper_ref(self, *helper_idx, helper_captures)?;
                 let key = self.str_const(named);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-                self.emit(Op::DROP);
             }
         }
 
@@ -4039,7 +4071,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, parent_proto_local);
                 let proto_link_key = self.str_const("__proto__");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
-                self.emit(Op::DROP);
                 self.chunks[self.current].emit_end(line);
             }
 
@@ -4047,7 +4078,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             let ctor_key = self.str_const("constructor");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
-            self.emit(Op::DROP);
+
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from("prototype")));
@@ -4056,7 +4087,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, proto_local);
             let value_key = self.str_const("value");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
-            self.emit(Op::DROP);
             for (flag, value) in [
                 ("writable", false),
                 ("enumerable", false),
@@ -4066,7 +4096,6 @@ impl Compiler {
                 self.emit_const(Value::Bool(value));
                 let flag_key = self.str_const(flag);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, flag_key);
-                self.emit(Op::DROP);
             }
             let define_prop_idx = self.import("ecma:object", "defineProperty");
             self.emit_host_call(define_prop_idx, 3);
@@ -4076,13 +4105,13 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from(name)));
             let name_key = self.str_const("name");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
-            self.emit(Op::DROP);
+
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::F64(0.0));
             let length_key = self.str_const("length");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
-            self.emit(Op::DROP);
+
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
@@ -4100,7 +4129,6 @@ impl Compiler {
                     self.emit_parent_class_value(parent_name);
                     let proto_link_key = self.str_const("__proto__");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
-                    self.emit(Op::DROP);
                     if self.profile.has_ecma_globals
                         && Self::is_ecma_typed_array_ctor_name(parent_name)
                     {
@@ -4108,7 +4136,6 @@ impl Compiler {
                         self.emit_const(Value::Bool(true));
                         let marker_key = self.str_const("__vybe_typed_array_ctor");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
-                        self.emit(Op::DROP);
                         for static_name in ["from", "of"] {
                             self.emit_u16(Op::LOCAL_GET, ctor_local);
                             self.emit_parent_class_value(parent_name);
@@ -4118,7 +4145,6 @@ impl Compiler {
                             let bind_idx = self.import("ecma:function", "bind");
                             self.emit_host_call(bind_idx, 2);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, static_key);
-                            self.emit(Op::DROP);
                         }
                     }
                 } else {
@@ -4177,6 +4203,9 @@ impl Compiler {
                 self.emit_const(Value::String(Arc::from(mname.as_str())));
                 let name_key = self.str_const("name");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+                // The stamp helper CONSUMES its operand — duplicate the
+                // method fn, the attach below still needs it.
+                inst!(self, core_wasm::dup);
                 {
                     let line = self.line;
                     crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(
@@ -4186,7 +4215,19 @@ impl Compiler {
                 }
                 let key = self.str_const(mname);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-                self.emit(Op::DROP);
+                // Publish the PROTOCOL SLOT alongside the method's own name, so
+                // a prototype-dispatch language (JS, PHP, Dart) reaches its
+                // roles through the same numeric key as a bind-dispatch one
+                // (Python, Ruby). Both paths install methods, so both have to
+                // stamp, or the slot exists in half the languages.
+                //
+                // `proto[slot] = proto[mname]`, emitted as its own sequence
+                // rather than folded into the install above: `STRUCT_SET` pops
+                // the VALUE and leaves the TARGET, so stamping mid-sequence
+                // would have to push the funcref a second time — the earlier
+                // shape dup'd the funcref and let it serve as both target and
+                // value, which stamped `fn[slot] = fn` (a cycle on the method
+                // object) and left the prototype without the slot entirely.
                 // Publish the PROTOCOL SLOT alongside the method's own name, so
                 // a prototype-dispatch language (JS, PHP, Dart) reaches its
                 // roles through the same numeric key as a bind-dispatch one
@@ -4207,7 +4248,6 @@ impl Compiler {
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, method_key);
                     let slot_const = self.str_const(&slot_key);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, slot_const);
-                    self.emit(Op::DROP);
                 }
             }
         }
@@ -4288,7 +4328,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 let value_key = self.str_const("value");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
-                self.emit(Op::DROP);
                 for (flag, value) in [
                     ("writable", true),
                     ("enumerable", true),
@@ -4298,7 +4337,6 @@ impl Compiler {
                     self.emit_const(Value::Bool(value));
                     let flag_key = self.str_const(flag);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, flag_key);
-                    self.emit(Op::DROP);
                 }
                 let define_prop_idx = self.import("ecma:object", "defineProperty");
                 self.emit_host_call(define_prop_idx, 3);
@@ -4329,7 +4367,6 @@ impl Compiler {
             self.emit_global_read(&global_name);
             let field_idx = self.str_const(const_name);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-            self.emit(Op::DROP);
         }
 
         let own_static_member_names: Vec<String> = static_field_inits
@@ -4370,7 +4407,6 @@ impl Compiler {
                     let field_idx = self.str_const(field_name);
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, field_idx);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                    self.emit(Op::DROP);
                 }
                 current_parent = next_parent;
             }
@@ -4394,7 +4430,6 @@ impl Compiler {
                 self.emit_global_read(&nested_canon);
                 let key = self.str_const(&key_name);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-                self.emit(Op::DROP);
             }
         }
 
@@ -4450,26 +4485,26 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, receiver_slot);
                         let receiver_key = self.str_const("__vybe_method_receiver");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key);
-                        self.emit(Op::DROP);
                     }
                     if let Some(fixed_count) = method_rest_fixed_count(*chunk_idx) {
                         inst!(self, core_wasm::dup);
                         self.emit_const(Value::F64(fixed_count as f64));
                         let rest_key = self.str_const("__vybe_rest_fixed_arity");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, rest_key);
-                        self.emit(Op::DROP);
                     }
                     inst!(self, core_wasm::dup);
                     self.emit_const(Value::String(Arc::from(method.source_name.as_str())));
                     let name_key = self.str_const("name");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
+                    // The stamp helper CONSUMES its operand — duplicate the
+                    // method fn, the attach below still needs it.
+                    inst!(self, core_wasm::dup);
                     crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(
                         self.chunk(),
                         line,
                     );
                     let storage_key = self.str_const(&bound_name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, storage_key);
-                    self.emit(Op::DROP);
                 }
             }
         }
@@ -4974,7 +5009,6 @@ pub fn emit_value_equality_stamp(chunk: &mut Chunk, this_slot: u16, line: u32) {
     chunk.emit_bool_const(true, line);
     let key = chunk.add_constant(Value::String(Arc::from("__value_eq")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// `isinstance(obj, "Class")` / `obj.is_a?(Class)` — the READ side of the type
@@ -5106,7 +5140,7 @@ pub fn emit_stamp_class_members(
     chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fields_slot, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, fields_key, line);
-    chunks[current].emit_op(Op::DROP, line);
+
 
     for (name, param_count, return_type, param_types, modifiers) in methods {
         push_token(
@@ -5128,7 +5162,6 @@ pub fn emit_stamp_class_members(
     chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, methods_slot, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, methods_key, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Stamp `__mro__` on the class object: an array of the ancestor class objects
@@ -5166,7 +5199,6 @@ pub fn emit_stamp_class_mro(
     // ctor.__mro__ = arr
     let key = chunks[current].add_constant(Value::String(Arc::from("__mro__")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line); // [ctor]
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Stamp `__bases__` on the class object: an array of the DIRECT parent class
@@ -5198,7 +5230,6 @@ pub fn emit_stamp_class_bases(
     }
     let key = chunks[current].add_constant(Value::String(Arc::from("__bases__")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line); // [ctor]
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 const SUPER_LOOKUP_CHUNK: &str = "__mi_super_lookup";
@@ -5416,7 +5447,6 @@ pub fn emit_save_base_method(chunk: &mut Chunk, this_slot: u16, method_name: &st
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, prop_idx, line); // val = this.method (parent version)
     let base_idx = chunk.add_constant(Value::String(Arc::from(base_name.as_str())));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, base_idx, line); // this.__base_method = val
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Store parent constructor ref as __super on the instance.
@@ -5426,7 +5456,6 @@ pub fn emit_store_super(chunk: &mut Chunk, this_slot: u16, parent_name: &str, li
     crate::primitives::globals::emit_read(chunk, parent_name, line);
     let super_key = chunk.add_constant(Value::String(Arc::from("__super")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, super_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Inherit static methods from parent constructor via Object.assign.
@@ -5556,7 +5585,6 @@ pub fn emit_attach_static_method_kinded(
         chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
         let receiver_key = chunk.add_constant(Value::String(Arc::from("__vybe_method_receiver")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, receiver_key, line);
-        chunk.emit_op(Op::DROP, line);
     }
     if let Some(fixed_count) = rest_fixed_count {
         crate::primitives::object::emit_stamp_rest_metadata(chunk, fixed_count, line);
@@ -5567,10 +5595,12 @@ pub fn emit_attach_static_method_kinded(
     chunk.emit_string_const(method_name, line);
     let name_key = chunk.add_constant(Value::String(Arc::from("name")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
+    // The stamp helper CONSUMES its operand — duplicate the fn, the attach
+    // below still needs it.
+    chunk.emit_dup(line);
     crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(chunk, line);
     let key = chunk.add_constant(Value::String(Arc::from(method_name)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 // ── Property accessors ──────────────────────────────────────────────────
@@ -5656,7 +5686,6 @@ pub fn emit_init_field_null(chunk: &mut Chunk, this_slot: u16, field_name: &str,
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     let key = chunk.add_constant(Value::String(Arc::from(field_name)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Push `this` onto the stack to start a field initialization.
@@ -5671,7 +5700,6 @@ pub fn emit_init_field_start(chunk: &mut Chunk, this_slot: u16, line: u32) {
 pub fn emit_init_field_end(chunk: &mut Chunk, field_name: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field_name)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Get a field value from `this`. Stack before: []. Stack after: [value].

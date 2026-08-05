@@ -290,27 +290,34 @@ impl Application for FormApp {
         if Self::gui_trace_enabled() {
             eprintln!("[gui] formapp.handle_mouse event={:?}", event);
         }
-        // SDL input queue (sdlplan.md Tier 1) — every raw mouse event, in
-        // SDL's own vocabulary, alongside (not instead of) widget dispatch.
+        // Window events become W3C UI Events in the `web:ui-events` queue —
+        // the same queue a browser host fills from the real DOM. SDL's
+        // vocabulary is applied later, by SDL's own adapter, not here.
         {
-            use vybe_platform_vybe::gui_state::SdlInputEvent;
+            use vybe_widgets::ui_events::{queue, UiEvent};
             use vybe_widgets::layout::{MouseButton, MouseEventKind};
-            let button = |b: &MouseButton| match b {
-                MouseButton::Left => 1u32,
-                MouseButton::Middle => 2,
-                MouseButton::Right => 3 };
-            let (event_type, btn) = match &event.kind {
-                MouseEventKind::Press(b) => (0x401u32, button(b)),
-                MouseEventKind::Release(b) => (0x402, button(b)),
-                MouseEventKind::Move => (0x400, 0),
-                // Scroll arrives via handle_scroll; the Move fallback here
-                // only fires if a scroll is ever routed through handle_mouse.
-                MouseEventKind::Scroll(_) => (0x400, 0) };
-            let mut sdl = SdlInputEvent::empty(event_type);
-            sdl.x = event.x as i32;
-            sdl.y = event.y as i32;
-            sdl.button = btn;
-            self.gui.lock().unwrap().push_input_event(sdl);
+            // DOM `button`: 0 left, 1 middle, 2 right.
+            let dom_button = |b: &MouseButton| match b {
+                MouseButton::Left => 0i32,
+                MouseButton::Middle => 1,
+                MouseButton::Right => 2 };
+            // DOM `buttons` mask: 1 left, 2 right, 4 middle.
+            let dom_mask = |b: &MouseButton| match b {
+                MouseButton::Left => 1i32,
+                MouseButton::Right => 2,
+                MouseButton::Middle => 4 };
+            let (kind, button, buttons) = match &event.kind {
+                MouseEventKind::Press(b) => ("mousedown", dom_button(b), dom_mask(b)),
+                MouseEventKind::Release(b) => ("mouseup", dom_button(b), 0),
+                MouseEventKind::Move | MouseEventKind::Scroll(_) => ("mousemove", 0, 0) };
+            queue().push(UiEvent {
+                kind: kind.to_string(),
+                client_x: event.x as i32,
+                client_y: event.y as i32,
+                button,
+                buttons,
+                ..UiEvent::default()
+            });
         }
         self.gui.lock().unwrap().form.handle_mouse(&event);
         self.process_widget_events();
@@ -318,20 +325,23 @@ impl Application for FormApp {
     }
 
     fn handle_key(&mut self, event: KeyEvent) -> bool {
-        // SDL input queue: both edges, mapped winit → SDL numbering.
+        // Both edges as `keydown`/`keyup`, in W3C shape.
         {
-            use vybe_platform_vybe::gui_state::SdlInputEvent;
+            use vybe_widgets::ui_events::{queue, UiEvent};
             let pressed = event.state == vybe_widgets::winit::event::ElementState::Pressed;
-            let (sym, scancode) = sdl_key_numbers(&event.key_without_modifiers);
-            let mut sdl = SdlInputEvent::empty(if pressed { 0x300 } else { 0x301 });
-            sdl.sym = sym;
-            sdl.scancode = scancode;
-            sdl.mod_state = (if event.shift { 0x1u32 } else { 0 })
-                | (if event.cmd { 0x40 } else { 0 })
-                | (if event.alt { 0x100 } else { 0 });
-            self.gui.lock().unwrap().push_input_event(sdl);
-            // Widget dispatch is pressed-only — releases exist solely for the
-            // SDL queue, so typing/focus behavior is unchanged.
+            let (key, code, key_code) = dom_key_fields(&event.key_without_modifiers);
+            queue().push(UiEvent {
+                kind: if pressed { "keydown" } else { "keyup" }.to_string(),
+                key,
+                code,
+                key_code,
+                ctrl_key: event.cmd,
+                shift_key: event.shift,
+                alt_key: event.alt,
+                ..UiEvent::default()
+            });
+            // Widget dispatch is pressed-only — releases exist for the event
+            // queue alone, so typing/focus behavior is unchanged.
             if !pressed {
                 return false;
             }
@@ -343,12 +353,16 @@ impl Application for FormApp {
 
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
         {
-            use vybe_platform_vybe::gui_state::SdlInputEvent;
-            let mut sdl = SdlInputEvent::empty(0x403); // SDL_MOUSEWHEEL
-            sdl.x = x as i32;
-            sdl.y = y as i32;
-            sdl.wheel_y = if delta > 0.0 { 1 } else if delta < 0.0 { -1 } else { 0 };
-            self.gui.lock().unwrap().push_input_event(sdl);
+            use vybe_widgets::ui_events::{queue, UiEvent};
+            // DOM `deltaY` is positive DOWN — the opposite of a scroll delta
+            // that reports "up" as positive.
+            queue().push(UiEvent {
+                kind: "wheel".to_string(),
+                client_x: x as i32,
+                client_y: y as i32,
+                delta_y: -(delta as f64),
+                ..UiEvent::default()
+            });
         }
         self.gui.lock().unwrap().form.handle_scroll(delta, x, y)
     }
@@ -363,6 +377,29 @@ impl Application for FormApp {
     /// state it changed. This is what makes `TTimer`/`WinForms.Timer` actually
     /// tick — nothing drove them before.
     fn on_tick(&mut self) {
+        // ── The frame boundary ────────────────────────────────────────────
+        //
+        // `requestAnimationFrame` callbacks run HERE, before the ~60 Hz
+        // repaint, which is precisely the browser's contract: a page is
+        // called back before the next paint and draws then. This is what
+        // replaces "present the buffer" — the window is already redrawing,
+        // so a guest that re-registers each frame gets a real animation
+        // loop, and one that stops asking costs nothing.
+        {
+            use vybe_runtime::scheduler::DeferredSource;
+            let clock = vybe_platform_web::animation::callbacks();
+            let stamp = vybe_runtime::Value::F64(vybe_runtime::event_loop::monotonic_now_ms());
+            // Drain only what this frame owes: `pop_due` stops handing out
+            // callbacks once the frame advances, so a callback that
+            // re-registers runs NEXT frame instead of spinning here.
+            while let Some(cb) = clock.pop_due() {
+                let mut vm = self.vm.borrow_mut();
+                let _ = match fn_arity(&cb) {
+                    0 => vm.invoke(&cb, &[]),
+                    _ => vm.invoke(&cb, &[stamp.clone()]) };
+            }
+        }
+
         let now = std::time::Instant::now();
         let due: Vec<vybe_runtime::Value> = {
             let timers = self.gui.lock().unwrap().active_timers();
@@ -822,66 +859,74 @@ pub(crate) fn fn_arity(val: &vybe_runtime::Value) -> usize {
 
 // ── Dialog registration ────────────────────────────────────────────────
 
-/// winit key → SDL `(SDLK_* sym, SDL_SCANCODE_*)`.
+/// winit key → W3C `KeyboardEvent` fields: `(key, code, keyCode)`.
 ///
-/// SDL's rule, applied rather than tabulated where possible: printable keys'
-/// sym IS the ASCII code; special keys' sym is `0x40000000 | scancode`.
-/// Letters map to scancodes 4..29, digits to 30..39 per the USB HID table.
-fn sdl_key_numbers(key: &vybe_widgets::winit::keyboard::Key) -> (i32, i32) {
+/// `key` is what the keypress MEANS ("a", "Enter", "ArrowLeft"), `code` is
+/// the physical key ("KeyA", "Digit1", "ArrowLeft") and stays layout-
+/// independent, `keyCode` is the legacy numeric identity browsers still
+/// ship. No SDL here — SDL's keysyms are derived from these by its own
+/// adapter, so a browser host producing real DOM events needs no changes.
+fn dom_key_fields(key: &vybe_widgets::winit::keyboard::Key) -> (String, String, i32) {
     use vybe_widgets::winit::keyboard::{Key, NamedKey};
     match key {
         Key::Character(text) => {
-            let Some(c) = text.chars().next().map(|c| c.to_ascii_lowercase()) else {
-                return (0, 0);
+            let Some(c) = text.chars().next() else {
+                return (String::new(), String::new(), 0);
             };
-            let sym = c as i32;
-            let scancode = match c {
-                'a'..='z' => 4 + (c as i32 - 'a' as i32),
-                '1'..='9' => 30 + (c as i32 - '1' as i32),
-                '0' => 39,
-                '-' => 45,
-                '=' => 46,
-                _ => 0 };
-            (sym, scancode)
+            let lower = c.to_ascii_lowercase();
+            let code = match lower {
+                'a'..='z' => format!("Key{}", lower.to_ascii_uppercase()),
+                '0'..='9' => format!("Digit{}", lower),
+                '-' => "Minus".to_string(),
+                '=' => "Equal".to_string(),
+                ' ' => "Space".to_string(),
+                _ => String::new() };
+            // `keyCode` is the uppercase code point for letters, the digit
+            // for digits — the browser's legacy convention.
+            let key_code = if lower.is_ascii_alphabetic() {
+                lower.to_ascii_uppercase() as i32
+            } else {
+                lower as i32
+            };
+            (c.to_string(), code, key_code)
         }
         Key::Named(named) => {
-            // (sym, scancode); sym for specials = 0x40000000 | scancode.
-            let special = |scancode: i32| (0x4000_0000 | scancode, scancode);
+            let f = |k: &str, c: &str, kc: i32| (k.to_string(), c.to_string(), kc);
             match named {
-                NamedKey::Enter => (13, 40),
-                NamedKey::Escape => (27, 41),
-                NamedKey::Backspace => (8, 42),
-                NamedKey::Tab => (9, 43),
-                NamedKey::Space => (32, 44),
-                NamedKey::Delete => (127, 76),
-                NamedKey::ArrowRight => special(79),
-                NamedKey::ArrowLeft => special(80),
-                NamedKey::ArrowDown => special(81),
-                NamedKey::ArrowUp => special(82),
-                NamedKey::Home => special(74),
-                NamedKey::End => special(77),
-                NamedKey::PageUp => special(75),
-                NamedKey::PageDown => special(78),
-                NamedKey::Insert => special(73),
-                NamedKey::CapsLock => special(57),
-                NamedKey::F1 => special(58),
-                NamedKey::F2 => special(59),
-                NamedKey::F3 => special(60),
-                NamedKey::F4 => special(61),
-                NamedKey::F5 => special(62),
-                NamedKey::F6 => special(63),
-                NamedKey::F7 => special(64),
-                NamedKey::F8 => special(65),
-                NamedKey::F9 => special(66),
-                NamedKey::F10 => special(67),
-                NamedKey::F11 => special(68),
-                NamedKey::F12 => special(69),
-                NamedKey::Control => special(224),
-                NamedKey::Shift => special(225),
-                NamedKey::Alt => special(226),
-                _ => (0, 0) }
+                NamedKey::Enter => f("Enter", "Enter", 13),
+                NamedKey::Escape => f("Escape", "Escape", 27),
+                NamedKey::Backspace => f("Backspace", "Backspace", 8),
+                NamedKey::Tab => f("Tab", "Tab", 9),
+                NamedKey::Space => f(" ", "Space", 32),
+                NamedKey::Delete => f("Delete", "Delete", 46),
+                NamedKey::ArrowRight => f("ArrowRight", "ArrowRight", 39),
+                NamedKey::ArrowLeft => f("ArrowLeft", "ArrowLeft", 37),
+                NamedKey::ArrowDown => f("ArrowDown", "ArrowDown", 40),
+                NamedKey::ArrowUp => f("ArrowUp", "ArrowUp", 38),
+                NamedKey::Home => f("Home", "Home", 36),
+                NamedKey::End => f("End", "End", 35),
+                NamedKey::PageUp => f("PageUp", "PageUp", 33),
+                NamedKey::PageDown => f("PageDown", "PageDown", 34),
+                NamedKey::Insert => f("Insert", "Insert", 45),
+                NamedKey::CapsLock => f("CapsLock", "CapsLock", 20),
+                NamedKey::F1 => f("F1", "F1", 112),
+                NamedKey::F2 => f("F2", "F2", 113),
+                NamedKey::F3 => f("F3", "F3", 114),
+                NamedKey::F4 => f("F4", "F4", 115),
+                NamedKey::F5 => f("F5", "F5", 116),
+                NamedKey::F6 => f("F6", "F6", 117),
+                NamedKey::F7 => f("F7", "F7", 118),
+                NamedKey::F8 => f("F8", "F8", 119),
+                NamedKey::F9 => f("F9", "F9", 120),
+                NamedKey::F10 => f("F10", "F10", 121),
+                NamedKey::F11 => f("F11", "F11", 122),
+                NamedKey::F12 => f("F12", "F12", 123),
+                NamedKey::Control => f("Control", "ControlLeft", 17),
+                NamedKey::Shift => f("Shift", "ShiftLeft", 16),
+                NamedKey::Alt => f("Alt", "AltLeft", 18),
+                _ => (String::new(), String::new(), 0) }
         }
-        _ => (0, 0) }
+        _ => (String::new(), String::new(), 0) }
 }
 
 fn register_dialog_fns(vm: &mut vybe_runtime::VM) {

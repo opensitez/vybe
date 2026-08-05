@@ -40,7 +40,7 @@ pub enum SuspensionKind {
 /// Provides only the capabilities a host function needs:
 /// - Invoke VM callbacks (for LINQ, event handlers, etc.)
 /// - Access linear memory (for WASI filesystem, network, etc.)
-/// - Queue microtasks/timers through the event loop
+/// - Enqueue ready callbacks through the event loop
 ///
 /// Does NOT expose: globals, stack, frames, bytecode, type registry.
 /// This matches the WASM security model (Wasmtime Caller<State>).
@@ -50,7 +50,7 @@ pub struct HostContext<'a> {
     invoker: Option<&'a mut dyn FnMut(&Value, &[Value]) -> Value>,
     /// Linear memory access (WASM MVP memory[0]).
     pub memory: Option<&'a mut [u8]>,
-    /// Event loop reference for queuing microtasks and timers.
+    /// Event loop reference for enqueueing ready callbacks.
     /// Cloned from VM.event_loop — valid for the lifetime of the host call.
     event_loop: Option<Rc<RefCell<EventLoop>>>,
     /// Raw pointer to VM.last_exception — set by THROW when no handler matches.
@@ -195,30 +195,12 @@ impl<'a> HostContext<'a> {
         }
     }
 
-    /// Queue a microtask (Promise reaction) to run after the current task.
-    /// ECMA-262 §27.2.1.3 EnqueueJob("PromiseJobs", ...).
-    pub fn queue_microtask(&mut self, callback: Value, value: Value) {
+    /// Enqueue a callback on the ready queue. What the entry MEANS is the
+    /// caller's spec (`platforms/ecma` enqueues §27.2.1.3 PromiseJobs here);
+    /// the VM only preserves arrival order.
+    pub fn queue_ready(&mut self, callback: Value, value: Value) {
         if let Some(ref el) = self.event_loop {
             el.borrow_mut().queue_immediate(callback, value);
-        }
-    }
-
-    /// Queue a timer macrotask and return its cancellable ID.
-    /// HTML Living Standard §8.7 setTimeout semantics.
-    pub fn queue_timer(&mut self, callback: Value, delay_ms: f64) -> u64 {
-        if let Some(ref el) = self.event_loop {
-            el.borrow_mut().queue_timer_id(callback, delay_ms)
-        } else {
-            0
-        }
-    }
-
-    /// Cancel a previously scheduled timer by ID. Returns true if found.
-    pub fn cancel_timer(&mut self, id: u64) -> bool {
-        if let Some(ref el) = self.event_loop {
-            el.borrow_mut().cancel_timer(id)
-        } else {
-            false
         }
     }
 
@@ -231,7 +213,7 @@ impl<'a> HostContext<'a> {
         }
     }
 
-    /// Resolve a suspended promise fiber and queue it in the microtask queue.
+    /// Resolve a suspended promise fiber and queue its resumption as ready.
     pub fn resolve_promise(&mut self, promise_id: u64, value: Value) {
         if let Some(ref el) = self.event_loop {
             let mut el_mut = el.borrow_mut();
@@ -596,6 +578,11 @@ pub struct VM {
     /// tests run without any platform. Installed at plugin registration,
     /// like host functions; deliberately NOT part of snapshots.
     pub scheduler: Option<std::sync::Arc<dyn crate::scheduler::Scheduler>>,
+    /// Host-owned sources of time-deferred work (see
+    /// [`crate::scheduler::DeferredSource`]) — e.g. `platforms/web`'s timer
+    /// wheel. Registered at plugin init; the VM polls readiness, the host
+    /// owns the storage. Deliberately NOT part of snapshots.
+    pub deferred_sources: Vec<std::sync::Arc<dyn crate::scheduler::DeferredSource>>,
     /// WASM GC-style type definitions with vtable method dispatch.
     pub type_registry: crate::typedef::TypeRegistry,
     /// Names of the running module's own defined types, in `chunk.types` order.
@@ -616,9 +603,6 @@ pub struct VM {
     /// `test_type` early-returns on `type_id > 0`, a WRONG rtt is worse than
     /// none: it suppresses every fallback.
     pub(crate) chunk_type_base: Vec<usize>,
-    /// The running module's declared scheduling contract. Read by the drain
-    /// loop; the VM's own suspend/resume path never consults it.
-    pub scheduling: vybe_ast::SchedulingPolicy,
     /// Linear memory (WASM MVP) — byte buffer for binary data.
     /// This is memory index 0 for backward compatibility.
     pub memory: SharedMemory,
@@ -700,9 +684,9 @@ pub struct VM {
     /// `await` on an ALREADY-SETTLED promise inside an async boundary: JSPI
     /// resumes "by the event queue task runner" even when the promise is
     /// resolved, so the suspension still happens (bounded) and the resume is
-    /// queued as an immediate microtask. This side-channel carries the settled
+    /// queued as immediately ready. This side-channel carries the settled
     /// (id, value, is_exception) from `do_await` to `call_async`, which wakes
-    /// the just-registered fiber via the microtask queue.
+    /// the just-registered fiber via the ready queue.
     pub(crate) pending_settled_await: Option<(u64, Value, bool)>,
     /// Completion value of the most recent fiber the event loop resumed.
     /// A top-level await suspends the script fiber; its eventual RETURN
@@ -947,11 +931,11 @@ impl VM {
             imported_tag_registry: HashMap::from([("vybe:exception".to_string(), 0usize)]),
             event_loop: Rc::new(RefCell::new(EventLoop::new())),
             scheduler: None,
+            deferred_sources: Vec::new(),
             type_registry: crate::typedef::TypeRegistry::new(),
             module_type_names: Vec::new(),
             module_type_ids: Vec::new(),
             chunk_type_base: Vec::new(),
-            scheduling: vybe_ast::SchedulingPolicy::default(),
             memory: SharedMemory::default(),
             extra_memories: Vec::new(),
             extra_memory_max_pages: Vec::new(),
@@ -1107,7 +1091,7 @@ impl VM {
         self.block_tables.clear(); // code-derived cache; rebuilds lazily.
         // 6. Event loop: reset the SHARED RefCell contents in place so host fns
         //    holding an `Rc` clone see the drained loop (reassigning the Rc would
-        //    desync them). Drops all queued micro/macrotasks + pending fibers.
+        //    desync them). Drops all queued ready work + pending fibers.
         *self.event_loop.borrow_mut() = EventLoop::new();
         // 7. Fiber / async scalars back to baseline; per-run flags cleared.
         self.cur_fiber_id = snap.cur_fiber_id;
@@ -1383,7 +1367,7 @@ impl VM {
             let idxs: Vec<usize> = fib.frames.iter().map(|f| f.chunk_index).collect();
             out.push((idxs, format!("await stream {sid}")));
         }
-        for task in el.immediate.iter().chain(el.deferred.iter()) {
+        for task in el.immediate.iter() {
             if let crate::event_loop::Task::ResumeFiber(fib) = task {
                 let idxs: Vec<usize> = fib.frames.iter().map(|f| f.chunk_index).collect();
                 out.push((idxs, "queued resume".to_string()));
@@ -1422,7 +1406,7 @@ impl VM {
                 set.insert(sf.chunk_index);
             }
         }
-        for task in el.immediate.iter().chain(el.deferred.iter()) {
+        for task in el.immediate.iter() {
             if let crate::event_loop::Task::ResumeFiber(fib) = task {
                 for sf in &fib.frames {
                     set.insert(sf.chunk_index);
@@ -1935,7 +1919,7 @@ impl VM {
         // Instead, we pass raw pointers — this is safe because the HostContext
         // lifetime is strictly scoped within the host function call.
         let vm_ptr = self as *mut VM;
-        // Clone the Rc so host functions can queue microtasks/timers without
+        // Clone the Rc so host functions can enqueue ready work without
         // holding a mutable borrow of the VM.
         let el = self.event_loop.clone();
         // Raw pointer to last_exception — safe: valid for host call duration.
@@ -1960,7 +1944,7 @@ impl VM {
     }
 
     /// Close open upvalues in a lambda value that escapes the current stack frame.
-    /// When a closure is stored in a macrotask queue (setTimeout), it will run in
+    /// When a closure is stored in a host timer wheel (setTimeout), it will run in
     /// a fresh execution context. Any `Open(slot)` upvalue referencing the current
     /// stack must be converted to `Closed(value)` so the slot index remains valid.
     #[allow(dead_code)]
@@ -2488,8 +2472,6 @@ impl VM {
             // are numbered from 1 against the table loaded just below.
             let type_base = self.module_type_ids.len();
             self.set_chunk_type_base(script_idx, type_base);
-            // The module's declared scheduling contract, for the drain loop.
-            self.scheduling = self.chunks[script_idx].scheduling;
             let types = self.chunks[script_idx].types.clone();
             if !types.is_empty() {
                 // `array.new` immediates index the module's own types in this
@@ -2804,6 +2786,46 @@ impl VM {
     /// Install the host scheduler — the policy half of async. Called at
     /// plugin registration (the ecma platform installs the ECMA-262 §9.5 job
     /// discipline); the VM itself never decides which callback runs next.
+    /// Register a host-owned deferred-work source (a timer wheel). Plugin
+    /// init calls this, exactly like `register_host_fn` / `set_scheduler`.
+    pub fn register_deferred_source(
+        &mut self,
+        source: std::sync::Arc<dyn crate::scheduler::DeferredSource>,
+    ) {
+        self.deferred_sources.push(source);
+    }
+
+    /// Any host-deferred work registered (due or not)?
+    pub fn deferred_pending(&self) -> bool {
+        self.deferred_sources.iter().any(|s| s.has_pending())
+    }
+
+    /// Pop ONE due deferred callback across the registered sources, in
+    /// registration order. The one-task-per-turn contract lives in the
+    /// caller (the drain); this is only the mechanism.
+    pub fn next_due_deferred(&self) -> Option<Value> {
+        self.deferred_sources.iter().find_map(|s| s.pop_due())
+    }
+
+    /// Sleep until the earliest deferred deadline (`wasi:clocks` 
+    /// subscribe-duration shape). Returns immediately if ready work exists.
+    pub fn wait_for_deferred(&self) {
+        if self.event_loop.borrow().has_pending() {
+            return;
+        }
+        let earliest = self
+            .deferred_sources
+            .iter()
+            .filter_map(|s| s.earliest_deadline_ms())
+            .reduce(f64::min);
+        if let Some(earliest) = earliest {
+            let now = crate::event_loop::monotonic_now_ms();
+            if earliest > now {
+                std::thread::sleep(std::time::Duration::from_millis((earliest - now) as u64));
+            }
+        }
+    }
+
     pub fn set_scheduler(&mut self, scheduler: std::sync::Arc<dyn crate::scheduler::Scheduler>) {
         self.scheduler = Some(scheduler);
     }

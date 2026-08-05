@@ -394,6 +394,30 @@ impl Compiler {
                         }
                     }
                 }
+                // A PROPERTY read carries the same tree-declared return
+                // type as a member call — the Call arm below already asks
+                // `lookup_type_member_return`; without the symmetric ask
+                // here, chains through properties (`date.dayOfWeek.value`)
+                // lost their type at the property hop.
+                if !self.profile.namespaces.type_scopes.is_empty() {
+                    if let Some(receiver_type) = self.infer_expr_type_hint(object) {
+                        if self
+                            .resolve_pending_class_name_for_type_hint(&receiver_type)
+                            .is_none()
+                        {
+                            let class_name = Self::normalize_type_hint(&receiver_type);
+                            if let Some(return_type) =
+                                vybe_runtime::namespaces::lookup_type_member_return(
+                                    &self.profile.namespaces.type_scopes,
+                                    &class_name,
+                                    field,
+                                )
+                            {
+                                return Some(return_type);
+                            }
+                        }
+                    }
+                }
                 let enum_type = Self::expr_terminal_type_name(object)?;
                 self.enum_value_names
                     .contains_key(&self.canon(&enum_type))
@@ -944,7 +968,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, source_slot);
             self.emit_struct_field_op(Op::STRUCT_GET, 0, member_key);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, member_key);
-            self.emit(Op::DROP);
         }
 
         self.emit_u16(Op::LOCAL_GET, clone_slot);

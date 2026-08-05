@@ -146,6 +146,60 @@ impl Compiler {
     // Builtins (profile-driven)
     // ════════════════════════════════════════════════════════════════════════
 
+    /// The gated namespace `name`/`def` needs but the module never imported,
+    /// or `None` when the call is allowed (no gating configured, root not
+    /// gated, or namespace active). Attribution: a `Common` emit's path minus
+    /// its final segment (`libc.stdio.printf` → `libc.stdio`); host-backed
+    /// builtins under the `sdl` root attribute by their `SDL_` name prefix.
+    fn gated_namespace_violation(
+        &self,
+        name: &str,
+        def: &vybe_runtime::profile::BuiltinDef,
+    ) -> Option<String> {
+        let roots = &self.profile.gated_namespace_roots;
+        if roots.is_empty() {
+            return None;
+        }
+        // Compiler-internal helpers (`__c_sprintf` behind swprintf/printf
+        // lowerings) are plumbing, not user calls — the gate applies to what
+        // the USER wrote, which walker-side gating checks by its own name.
+        if name.starts_with("__") {
+            return None;
+        }
+        let ns = match &def.emit {
+            vybe_runtime::profile::BuiltinEmit::Common(path) => {
+                let root = path.split('.').next().unwrap_or("");
+                if !roots.iter().any(|r| r == root) {
+                    return None;
+                }
+                let mut segs: Vec<&str> = path.split('.').collect();
+                if segs.len() > 1 {
+                    segs.pop();
+                }
+                segs.join(".")
+            }
+            _ => {
+                // Host-backed SDL builtins attribute by name; same namespace
+                // as the Common-emitted SDL surface (`libc.sdl`).
+                if name.starts_with("SDL_") && roots.iter().any(|r| r == "libc" || r == "sdl") {
+                    "libc.sdl".to_string()
+                } else {
+                    return None;
+                }
+            }
+        };
+        let active = self.active_namespaces.as_ref()?;
+        if active.contains(&ns) {
+            return None;
+        }
+        // An explicit user prototype for exactly this name is a legal C
+        // declaration — the header's content hand-written. Honor it.
+        if active.contains(&format!("decl:{name}")) {
+            return None;
+        }
+        Some(ns)
+    }
+
     pub(super) fn try_compile_builtin(
         &mut self,
         name: &str,
@@ -164,7 +218,6 @@ impl Compiler {
             self.emit_const(Value::String(Arc::from("__main__")));
             let name_key = self.str_const("__name__");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
-            self.emit(Op::DROP);
             inst!(self, core_wasm::dup);
             let keys_key = self.str_const("__keys");
             self.emit_struct_field_op(Op::STRUCT_GET, 0, keys_key);
@@ -183,7 +236,6 @@ impl Compiler {
                 self.emit_var_get(&global);
                 let key = self.str_const(&global);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-                self.emit(Op::DROP);
 
                 inst!(self, core_wasm::dup);
                 let keys_key = self.str_const("__keys");
@@ -318,7 +370,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.compile_expr(args[1])?;
                 self.emit(Op::ARRAY_SET);
-                self.emit(Op::DROP);
 
                 self.emit_u16(Op::LOCAL_GET, idx_slot);
                 self.emit_const(Value::I32(1));
@@ -696,6 +747,20 @@ impl Compiler {
         }
 
         let builtin = self.profile.lookup_builtin(name).cloned();
+        // Gated namespaces: a builtin under a gated root resolves only when
+        // the module IMPORTED its namespace (C: the include lowers to that
+        // import — `printf` without `<stdio.h>` is an implicit declaration,
+        // a compile error like modern clang). Attribution comes from the
+        // emit path itself (`libc.stdio.printf` → needs `libc.stdio`);
+        // host-backed SDL builtins attribute by their `SDL_` name.
+        if let Some(ref def) = builtin {
+            if let Some(ns) = self.gated_namespace_violation(name, def) {
+                return Err(format!(
+                    "call to undeclared function '{name}': namespace '{ns}' \
+                     is not imported (missing #include?)"
+                ));
+            }
+        }
         // Check common import table only if the profile didn't bind it.
         if builtin.is_none() {
             if let Some(resolved) = crate::primitives::imports::resolve_common_import(name) {
@@ -1326,6 +1391,18 @@ impl Compiler {
         // (`emit = "common:control_flow.exit"`) instead of naming the host
         // function directly, which is what gives every language the same
         // flush-then-exit behaviour.
+        // `gui.prop_get.<role>` / `gui.prop_set.<role>` — a platform declares
+        // the ROLE and this is the only place a role becomes a DOM call.
+        if let Some(role) = name.strip_prefix(common::gui::PROP_GET_EMIT) {
+            let role = role.to_string();
+            self.emit_gui_property_get(&role, line);
+            return;
+        }
+        if let Some(role) = name.strip_prefix(common::gui::PROP_SET_EMIT) {
+            let role = role.to_string();
+            self.emit_gui_property_set(&role, line);
+            return;
+        }
         if name == "control_flow.exit" {
             self.line = line;
             // The emitter signature is infallible; an exit that cannot be

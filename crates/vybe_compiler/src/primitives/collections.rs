@@ -774,13 +774,11 @@ pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32
     lget(chunk, best, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     lget(chunk, arr, line);
     lget(chunk, best, line);
     lget(chunk, tmp, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
 
     lget(chunk, i, line);

@@ -24,6 +24,9 @@ impl Compiler {
             }
         }
         match &stmt.kind {
+            StmtKind::Select { arms, default } => {
+                self.emit_select(arms, default.as_deref())?;
+            }
             // ── Expression statement ────────────────────────────────────
             StmtKind::Expr(expr) => {
                 match &expr.kind {
@@ -1921,7 +1924,6 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, val_slot);
                                 let field_idx = self.str_const(cname);
                                 self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                                self.emit(Op::DROP);
                             }
                         }
                         ClassMember::NestedType(stmt) => {
@@ -1986,7 +1988,6 @@ impl Compiler {
                     self.emit_global_read(global_name);
                     let key = self.str_const(mn);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-                    self.emit(Op::DROP);
                     // Register bare member → module name for qualified resolution
                     self.enum_members.insert(mn.clone(), module_name.clone());
                 }
@@ -2094,7 +2095,6 @@ impl Compiler {
                     self.emit_global_read(qualified_name);
                     let key = self.str_const(member_name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-                    self.emit(Op::DROP);
                 }
                 self.emit_global_write(&ns_name);
                 self.defined_globals.insert(ns_name.clone());
@@ -2119,7 +2119,6 @@ impl Compiler {
                         self.emit_global_read(&child_name);
                         let key_idx = self.str_const(&child_key);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx);
-                        self.emit(Op::DROP);
                         self.emit_global_write(&parent_name);
                         self.defined_globals.insert(parent_name);
                     }
@@ -2525,14 +2524,12 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 self.emit_u16(Op::LOCAL_GET, path_slot);
                 self.emit(Op::ARRAY_SET);
-                self.emit(Op::DROP);
 
                 self.emit_ensure_global_map("__vb_file_eof_by_handle");
                 self.emit_global_read("__vb_file_eof_by_handle");
                 self.emit_u16(Op::LOCAL_GET, file_slot);
                 self.emit_const(Value::Bool(false));
                 self.emit(Op::ARRAY_SET);
-                self.emit(Op::DROP);
 
                 self.emit_global_map_set_null("__vb_record_rows_by_handle", file_slot);
                 self.emit_global_map_set_null("__vb_record_next_index_by_handle", file_slot);
@@ -2554,14 +2551,12 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, file_slot);
                     self.emit_null();
                     self.emit(Op::ARRAY_SET);
-                    self.emit(Op::DROP);
 
                     self.emit_ensure_global_map("__vb_file_eof_by_handle");
                     self.emit_global_read("__vb_file_eof_by_handle");
                     self.emit_u16(Op::LOCAL_GET, file_slot);
                     self.emit_const(Value::Bool(false));
                     self.emit(Op::ARRAY_SET);
-                    self.emit(Op::DROP);
 
                     self.emit_global_map_set_null("__vb_record_rows_by_handle", file_slot);
                     self.emit_global_map_set_null("__vb_record_next_index_by_handle", file_slot);
@@ -2656,7 +2651,6 @@ impl Compiler {
                     crate::primitives::ops::emit_dyn_ge(self.chunk(), line);
                 };
                 self.emit(Op::ARRAY_SET);
-                self.emit(Op::DROP);
             }
             StmtKind::LineInput {
                 file_number,
@@ -2709,7 +2703,6 @@ impl Compiler {
                     crate::primitives::ops::emit_dyn_ge(self.chunk(), line);
                 };
                 self.emit(Op::ARRAY_SET);
-                self.emit(Op::DROP);
             }
             StmtKind::StartFile {
                 file_number,
@@ -3136,7 +3129,6 @@ impl Compiler {
                             let field_name = self.canon(field);
                             let idx = self.str_const(&field_name);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                            self.emit(Op::DROP);
                         }
                         ExprKind::Index { object, index, .. } => {
                             let line = self.line;
@@ -4260,7 +4252,6 @@ impl Compiler {
                             self.emit_const(Value::String(Arc::from(name.as_str())));
                             let name_key = self.str_const("name");
                             self.chunk().emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
-                            self.emit(Op::DROP);
                         }
                     }
                 } else if decl.array_bounds.is_some() || decl.type_hint.is_some() {
@@ -4280,7 +4271,6 @@ impl Compiler {
                         self.emit_global_read("globalThis");
                         self.emit_global_read(&cn);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, field_key);
-                        self.emit(Op::DROP);
                     }
                     if let Some(type_hint) = inferred_type_hint.as_deref() {
                         self.global_type_hints
@@ -4650,7 +4640,6 @@ impl Compiler {
                             .unwrap_or_else(|| self.canon(name));
                         let idx = self.str_const(&field_name);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                        self.emit(Op::DROP);
                         return Ok(());
                     }
                     self.emit_u16(Op::LOCAL_GET, tmp);
@@ -4705,14 +4694,12 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
                         let idx = self.str_const(&field_name);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                        self.emit(Op::DROP);
                         self.chunk().emit_end(line);
                     } else {
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
                         let idx = self.str_const(&field_name);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                        self.emit(Op::DROP);
                     }
                 } else {
                     self.emit_u16(Op::LOCAL_GET, class_tmp);
@@ -4727,6 +4714,24 @@ impl Compiler {
                 if self.private_member_access_forbidden(field) {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
+                }
+                // A GUI control IS a DOM element: its properties are DOM
+                // operations, not `__set_<prop>` accessors bound onto an
+                // instance. Checked FIRST because every later path assumes an
+                // object with a method table, and an element has none — that
+                // lookup is what resolved to `undefined` for every Pascal form.
+                if let Some(type_hint) = self.infer_expr_type_hint(object) {
+                    let class_name = Self::normalize_type_hint(&type_hint);
+                    if common::gui::registered_control_element(
+                        &self.profile.namespaces.type_scopes,
+                        &class_name,
+                    )
+                    .is_some()
+                    {
+                        let line = self.line;
+                        self.emit_control_property_set(object, &class_name, field, line)?;
+                        return Ok(());
+                    }
                 }
                 if self.class_prototype_dispatch()
                     && self.profile.ecma_object_literals
@@ -4761,7 +4766,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_tmp);
                     let field_idx = self.str_const(field);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                    self.emit(Op::DROP);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, setter_tmp);
                     self.emit_u16(Op::LOCAL_GET, receiver_tmp);
@@ -4771,12 +4775,36 @@ impl Compiler {
                     self.chunk().emit_end(line);
                     return Ok(());
                 }
+                // A GUI control's property write goes to the DOM: the object
+                // IS an element, so there is no accessor to emit and no
+                // per-class setter global to call. Any platform that declares
+                // its controls answers here.
+                if !self.expr_user_value_type_name(object).is_some() {
+                    if let Some(type_hint) = self.infer_expr_type_hint(object) {
+                        let class_name = Self::normalize_type_hint(&type_hint);
+                        if common::gui::registered_control_element(
+                            &self.profile.namespaces.type_scopes,
+                            &class_name,
+                        )
+                        .is_some()
+                        {
+                            let line = self.line;
+                            self.emit_control_property_set(object, &class_name, field, line)?;
+                            return Ok(());
+                        }
+                    }
+                }
                 // .NET control property write resolves through the component
                 // descriptor to a direct `vybe:gui` host call — no emitted
                 // accessor. Stack on entry is [value]. The generic property
                 // setter takes (this, "Key", value); dedicated setters (this,
                 // value).
-                if self.profile.namespaces.use_dotnet
+                // Gated on whether the language HAS namespace type scopes, not
+                // on which platform is loaded: the lookup itself answers "is
+                // this a declared platform property", and `use_dotnet` only
+                // excluded every other GUI language from an answer it could
+                // give. Mirrors the getter site, which was already structural.
+                if !self.profile.namespaces.type_scopes.is_empty()
                     && !self.expr_user_value_type_name(object).is_some()
                 {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
@@ -4855,7 +4883,6 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_var_set(obj_name);
@@ -4920,7 +4947,6 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, elem_tmp);
                         self.emit_u16(Op::LOCAL_GET, tmp);
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                        self.emit(Op::DROP);
 
                         self.emit_u16(Op::LOCAL_GET, coll_tmp);
                         self.emit_u16(Op::LOCAL_GET, key_tmp);
@@ -4984,7 +5010,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let idx = self.str_const(&field_name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                    self.emit(Op::DROP);
 
                     self.chunk().emit_end(line);
                     self.chunk().emit_end(line);
@@ -5013,7 +5038,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let idx = self.str_const(&field_name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                    self.emit(Op::DROP);
 
                     self.chunk().emit_else(line);
 
@@ -5081,7 +5105,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, tmp);
                     let idx = self.str_const(&field_name);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                    self.emit(Op::DROP);
                 }
                 // Writing a member of the global namespace object also sets
                 // the module global, so a bare `X` resolves — ECMA-262 §19.3
@@ -5567,13 +5590,11 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_GET, recv_tmp);
                                 self.emit_u16(Op::LOCAL_GET, coll_tmp);
                                 self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                                self.emit(Op::DROP);
                             }
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
                             self.emit_u16(Op::LOCAL_GET, coll_tmp);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                            self.emit(Op::DROP);
                             return Ok(());
                         }
                     }
@@ -5610,7 +5631,6 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
                             self.emit_u16(Op::LOCAL_GET, coll_tmp);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, recv_tmp);
                             self.compile_assign_target(recv)?;

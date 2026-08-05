@@ -473,7 +473,6 @@ fn emit_parse_syntactic(chunks: &mut [Chunk], current: usize, opts: ParseOptions
         lget_at(chunks, current, out, line);
         lget_at(chunks, current, v, line);
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
 
     // `host` is `hostname[:port]` — WHATWG exposes it, and `Netloc` builds on it.
@@ -505,7 +504,6 @@ fn emit_host_composite(chunks: &mut [Chunk], current: usize, out: u16, line: u32
     call_import(chunks, current, "wasm:js-string", "concat", 2, line);
     let k = chunks[current].add_constant(Value::String(Arc::from("host")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Read one canonical component from a parsed URL **on the stack**.

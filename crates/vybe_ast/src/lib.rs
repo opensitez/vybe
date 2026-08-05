@@ -17,7 +17,6 @@
 
 pub mod builtin_slots;
 pub mod builtin_types;
-pub mod channels;
 pub mod class_normalize;
 pub mod datetime;
 
@@ -30,48 +29,7 @@ pub struct Module {
     pub name: String,
     pub language: Lang,
     pub body: Vec<Statement>,
-    pub imports: Vec<Import>,
-    /// How this module's async work is scheduled. Set by the WALKER, which is
-    /// the only component that knows its own language's contract; shared code
-    /// reads the fact and never asks whose language it is. Defaults to the
-    /// ECMA-262 model, which is what every language got implicitly before this
-    /// existed.
-    pub scheduling: SchedulingPolicy }
-
-/// A language's async scheduling contract.
-///
-/// These contracts genuinely differ and are not interchangeable — `await` on
-/// an already-settled value defers in JS and may resume synchronously in .NET;
-/// asyncio has no microtask tier at all. Encoding that as a declared fact is
-/// what lets ONE runtime serve all of them: the VM only suspends and resumes
-/// (JSPI / stack-switching, which is WASM), and the host applies the policy
-/// (ECMA-262 §9.5 jobs, HTML task queues).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct SchedulingPolicy {
-    pub continuation: ContinuationTiming,
-    pub queues: QueueDiscipline }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ContinuationTiming {
-    /// `await` on an ALREADY-SETTLED value still resumes on a later turn —
-    /// ECMA-262 §27.7.5.3 enqueues a job unconditionally. JS, Dart.
-    #[default]
-    AlwaysDeferred,
-    /// A completed antecedent may resume its continuation SYNCHRONOUSLY, on
-    /// the completing thread. .NET Tasks do this unless told otherwise, which
-    /// is why the same source can be correct with two different orderings.
-    SyncIfSettled }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum QueueDiscipline {
-    /// Two tiers: the job queue (ECMA-262 §9.5) drains to EMPTY before the
-    /// next task from the host's task queue (HTML). JS; Dart's microtask /
-    /// event split.
-    #[default]
-    TieredJobs,
-    /// One ready queue, FIFO, drained per loop iteration — asyncio's
-    /// `call_soon`. No microtask tier exists to drain.
-    SingleReadyQueue }
+    pub imports: Vec<Import> }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
@@ -298,6 +256,15 @@ pub enum StmtKind {
     /// Expression used as a statement.
     Expr(Expression),
 
+    /// CSP `select` — readiness choice over channel communications
+    /// (Go §Select statements). Structural, not an if-chain: readiness
+    /// includes "closed" (always ready, yields zero/ok=false) and excludes
+    /// nil channels, which no expression-level rewrite can express without
+    /// re-evaluating operands. Lowered ONCE in `primitives/channels.rs`.
+    Select {
+        arms: Vec<SelectArm>,
+        default: Option<Vec<Statement>> },
+
     /// Block of statements.
     Block(Vec<Statement>),
 
@@ -350,7 +317,11 @@ pub enum StmtKind {
         interfaces: Vec<String>,
         members: Vec<ClassMember>,
         visibility: Visibility,
-        decorators: Vec<Expression> },
+        decorators: Vec<Expression>,
+        /// Declared record semantics — storage, equality, layout, variant part.
+        /// Defaults to a plain reference aggregate, so a walker that does not
+        /// set it behaves exactly as before. See `recordprimitiveplan.md`.
+        record: RecordPolicy },
 
     ModuleDecl {
         name: String,
@@ -1011,6 +982,12 @@ pub enum ExprKind {
     /// compiler onto the ECMA-262 §27.2 host surface + the JSPI suspend
     /// mechanism. Languages differ only in normalization; the tree is common.
     Async(AsyncOp),
+    /// A normalized channel operation — see [`ChanOp`]. CSP is its OWN model,
+    /// deliberately not shoehorned into [`AsyncOp`]: a channel is a value
+    /// with buffer/closed state and blocking rendezvous semantics, not a
+    /// one-shot settled result. Go is the first normalizer; Rust
+    /// (`std::sync::mpsc`) and Kotlin (`Channel<T>`) share the vocabulary.
+    Chan(ChanOp),
     Await(Box<Expression>),
     Yield(Option<Box<Expression>>),
     YieldFrom(Box<Expression>),
@@ -1625,6 +1602,10 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
             .children()
             .into_iter()
             .any(expr_contains_yield_outside_nested_scopes),
+        ExprKind::Chan(op) => op
+            .children()
+            .into_iter()
+            .any(expr_contains_yield_outside_nested_scopes),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
@@ -1888,8 +1869,10 @@ pub enum BinOp {
 /// CSP is its own model and is not forced into promises.
 ///
 /// The lowering (`primitives/async_ops.rs`) targets `ecma:promise` (§27.2) and
-/// the JSPI await import — under the hood wasm/ecma, per module policy
-/// (`SchedulingPolicy`).
+/// the JSPI await imports — under the hood wasm/ecma. Where languages'
+/// semantics genuinely differ (eager vs deferred await), the difference is a
+/// DIFFERENT operation in this vocabulary, chosen at normalization — never a
+/// runtime-consulted property.
 #[derive(Debug, Clone)]
 pub enum AsyncOp {
     /// §27.2.4.7 PromiseResolve: an already-settled (or adopted) async value.
@@ -1987,6 +1970,89 @@ pub enum JoinMode {
     Race,
     /// First FULFILLED wins; all-rejected → AggregateError (§27.2.4.3 any).
     Any }
+
+/// The channel (CSP) vocabulary — one model behind every language's spelling.
+///
+/// | op | Go | Rust | Kotlin |
+/// |----|----|------|--------|
+/// | `New` | `make(chan T, n)` | `mpsc::channel` | `Channel<T>(n)` |
+/// | `Send` | `ch <- v` | `tx.send(v)` | `ch.send(v)` |
+/// | `Recv` | `<-ch` | `rx.recv()` | `ch.receive()` |
+/// | `RecvOk` | `v, ok := <-ch` | `recv().ok()` | `receiveCatching` |
+/// | `Len`/`Cap` | `len(ch)`/`cap(ch)` | — | — |
+/// | `Close` | `close(ch)` | drop tx | `ch.close()` |
+///
+/// Semantics live in the ONE lowering (`primitives/channels.rs`), Go-spec
+/// anchored: receive on a closed channel drains the buffer then yields the
+/// element ZERO VALUE with `ok == false`; send/close on a closed channel
+/// panic; a nil channel is never ready. The zero value is normalized onto
+/// `New` by the walker (which knows the declared element type) and travels
+/// WITH the channel — any consumer of the tree reads the semantics off the
+/// operation, never off a runtime property.
+///
+/// Blocking `Send`/`Recv` (empty-buffer rendezvous) is fiber + scheduler
+/// territory and lands on the `DeferredSource`/scheduler seam; until then
+/// the lowering keeps the historical non-blocking shapes.
+#[derive(Debug, Clone)]
+pub enum ChanOp {
+    /// `make(chan T, capacity?)` — `zero` is T's zero value, stored with the
+    /// channel so closed-receive can produce it far from the declaration.
+    New {
+        capacity: Option<Box<Expression>>,
+        zero: Box<Expression> },
+    Send {
+        channel: Box<Expression>,
+        value: Box<Expression> },
+    /// Receive the value alone (`<-ch`).
+    Recv(Box<Expression>),
+    /// Receive `(value, ok)` — `ok == false` iff the channel is closed AND
+    /// drained (Go spec: a closed channel first yields its buffered values).
+    RecvOk(Box<Expression>),
+    Len(Box<Expression>),
+    Cap(Box<Expression>),
+    Close(Box<Expression>) }
+
+impl ChanOp {
+    pub fn children(&self) -> Vec<&Expression> {
+        match self {
+            ChanOp::New { capacity, zero } => {
+                let mut v: Vec<&Expression> = Vec::new();
+                if let Some(c) = capacity {
+                    v.push(c);
+                }
+                v.push(zero);
+                v
+            }
+            ChanOp::Send { channel, value } => vec![channel, value],
+            ChanOp::Recv(e) | ChanOp::RecvOk(e) | ChanOp::Len(e) | ChanOp::Cap(e)
+            | ChanOp::Close(e) => vec![e] }
+    }
+
+    pub fn children_mut(&mut self) -> Vec<&mut Expression> {
+        match self {
+            ChanOp::New { capacity, zero } => {
+                let mut v: Vec<&mut Expression> = Vec::new();
+                if let Some(c) = capacity {
+                    v.push(c);
+                }
+                v.push(zero);
+                v
+            }
+            ChanOp::Send { channel, value } => vec![channel, value],
+            ChanOp::Recv(e) | ChanOp::RecvOk(e) | ChanOp::Len(e) | ChanOp::Cap(e)
+            | ChanOp::Close(e) => vec![e] }
+    }
+}
+
+/// One arm of a `select` — the communication (used for the READINESS test)
+/// and the body. The body's first statement performs the communication and
+/// binds its results (`v, ok := ChanOp::RecvOk(ch)` as a plain declaration),
+/// so binding, scoping and destructuring ride the ordinary statement
+/// machinery instead of a parallel surface.
+#[derive(Debug, Clone)]
+pub struct SelectArm {
+    pub comm: ChanOp,
+    pub body: Vec<Statement> }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
@@ -2719,7 +2785,21 @@ pub struct ClassModifiers {
     /// `class` / `interface` / `trait` / `mixin` / `module` / `struct` — all of
     /// which parse to `StmtKind::ClassDecl`. Defaults to `Class`, so a walker
     /// that does not set it is unchanged.
-    pub kind: ClassKind }
+    pub kind: ClassKind,
+    /// Declared record semantics, for the declarations that parse to a
+    /// `ClassDecl` rather than a `StructDecl` — a C# `record`, a Java `record`,
+    /// a Kotlin `data class`, a Python `@dataclass`.
+    ///
+    /// It lives HERE rather than as a direct field because `ClassDecl` carries
+    /// `parents` and `StructDecl` does not: a C# `record B : A` inherits, so
+    /// normalizing records onto `StructDecl` would silently drop the base type.
+    /// `ClassModifiers` already answers "what flavour of declaration is this",
+    /// derives `Default`, and is built with `..default()` at every site but one
+    /// — so this reaches all 28 `ClassDecl` constructions at no cost.
+    ///
+    /// The two declaration nodes converging is the real endgame; see
+    /// `recordprimitiveplan.md`.
+    pub record: RecordPolicy }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Visibility {
@@ -2728,6 +2808,85 @@ pub enum Visibility {
     Private,
     Protected,
     Internal }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Records
+// ════════════════════════════════════════════════════════════════════════════
+//
+// One flexible record concept. The grammar is language-specific, with every
+// quirk; after the walker normalizes, it is the same thing. A language declares
+// POLICY here and the shared compiler owns the BEHAVIOUR — so a new language
+// gets records by setting three properties, not by writing a lowering.
+//
+// The two semantic axes are INDEPENDENT, which is why one boolean cannot
+// express them: `storage` is whether `b = a` copies, `equality` is whether
+// `a == b` compares fields. Most languages pick one. C# needs all three
+// combinations (`struct`, `record`, `record struct`).
+//
+// Every field defaults to what the tree did before this type existed, so a
+// walker that sets nothing is unchanged. See `recordprimitiveplan.md`.
+
+/// Does assignment copy, or alias?
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum RecordStorage {
+    /// `b = a` aliases — a class, a C# `record`, a Python `@dataclass`.
+    #[default]
+    Reference,
+    /// `b = a` produces an independent value — a Pascal `record`, a C/Go
+    /// `struct`, a C# `struct`, a VB `Structure`. Bites at THREE sites:
+    /// assignment, argument passing and return.
+    Value }
+
+/// Does `==` compare fields, or identity?
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum RecordEquality {
+    /// Reference identity.
+    #[default]
+    Identity,
+    /// Field-wise. The instance stamp `__value_eq` is this policy's runtime
+    /// channel, already read by the language equality paths.
+    Structural }
+
+/// Storage layout. Only meaningful where bytes are observable — C, COBOL
+/// groups, Pascal `packed record`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum RecordLayout {
+    #[default]
+    Auto,
+    Packed,
+    Explicit { align: u32 } }
+
+/// Overlapping storage: a Pascal variant part, a C `union`, a COBOL
+/// `REDEFINES`. **One feature, currently implemented three times and two of
+/// them are wrong** — Pascal flattens the arms into sibling fields and loses
+/// the overlap, and a COBOL write through a REDEFINES alias does not propagate
+/// back because it copies rather than sharing storage.
+///
+/// Modelled as TRUE overlapping storage rather than discriminated alternatives:
+/// C's type-punning tests need a byte view, and "tag plus one active arm" can
+/// be expressed on top of overlap but not the other way round.
+#[derive(Debug, Clone, Default)]
+pub struct VariantPart {
+    /// The discriminant field, when the language has one (Pascal `case tag:`).
+    /// `None` is a plain overlap — a C `union`, a COBOL `REDEFINES`.
+    pub tag: Option<String>,
+    /// Each arm is a set of members sharing the same region.
+    pub arms: Vec<VariantArm> }
+
+#[derive(Debug, Clone, Default)]
+pub struct VariantArm {
+    /// Tag values selecting this arm; empty for an untagged overlap.
+    pub labels: Vec<Expression>,
+    pub members: Vec<ClassMember> }
+
+/// The declared semantics of a record. Defaults reproduce a plain reference
+/// aggregate, which is what every `StructDecl` was before this existed.
+#[derive(Debug, Clone, Default)]
+pub struct RecordPolicy {
+    pub storage: RecordStorage,
+    pub equality: RecordEquality,
+    pub layout: RecordLayout,
+    pub variant: Option<VariantPart> }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Enum members
@@ -2937,6 +3096,11 @@ impl Expression {
                     child.walk_exprs_mut(f);
                 }
             }
+            ExprKind::Chan(op) => {
+                for child in op.children_mut() {
+                    child.walk_exprs_mut(f);
+                }
+            }
             ExprKind::Binary { left, right, .. }
             | ExprKind::NullCoalesce { left, right }
             | ExprKind::Assign { target: left, value: right }
@@ -3083,6 +3247,17 @@ impl Statement {
         match &mut self.kind {
             StmtKind::Expr(expr) => expr.walk_exprs_mut(f),
             StmtKind::Block(stmts) => body(stmts, f),
+            StmtKind::Select { arms, default } => {
+                for arm in arms {
+                    for child in arm.comm.children_mut() {
+                        child.walk_exprs_mut(f);
+                    }
+                    body(&mut arm.body, f);
+                }
+                if let Some(default) = default {
+                    body(default, f);
+                }
+            }
             StmtKind::FunctionDecl { body: b, params, .. } => {
                 for param in params {
                     if let Some(default) = &mut param.default {
@@ -3249,6 +3424,7 @@ fn expr_has_yield(expr: &Expression) -> bool {
         | ExprKind::Void(expr)
         | ExprKind::Delete(expr) => expr_has_yield(expr),
         ExprKind::Async(op) => op.children().into_iter().any(expr_has_yield),
+        ExprKind::Chan(op) => op.children().into_iter().any(expr_has_yield),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {

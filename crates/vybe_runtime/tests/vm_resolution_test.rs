@@ -221,15 +221,20 @@ fn globals_persist_across_multiple_runs() {
 // ============================================================
 
 #[test]
-fn struct_set_returns_value() {
+fn struct_set_pushes_nothing_and_writes_field() {
+    // Spec `struct.set`: pops [obj, val], pushes NOTHING. Read the field
+    // back to observe the write.
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     let prop = chunk.add_constant(Value::String(Arc::from("x")));
     let val = chunk.add_constant(Value::F64(42.0));
     chunk.emit_struct_new(0, 0, 0);
+    chunk.emit_op_u16(Op::LOCAL_TEE, 0, 0);
     chunk.emit_op_u16(Op::CONST, val, 0);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, prop, 0);
+    chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    chunk.emit_struct_field_op(Op::STRUCT_GET, 0, prop, 0);
     chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 42.0);

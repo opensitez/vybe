@@ -35,7 +35,6 @@ pub fn emit_env_set(chunk: &mut Chunk, env_slot: u16, index: u16, line: u32) {
     chunk.emit_i32_const(index as i32, line);
     chunk.emit_op_u16(Op::LOCAL_GET, tmp, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Create a new environment array and populate with captured variable values.

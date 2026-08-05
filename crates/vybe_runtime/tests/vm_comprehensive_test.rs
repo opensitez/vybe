@@ -1046,7 +1046,11 @@ fn struct_setter_auto_dispatch() {
     main.emit_op_u16(Op::CONST, val, 0);
     let bar_key = main.add_constant(Value::String(Arc::from("bar")));
     main.emit_struct_field_op(Op::STRUCT_SET, 0, bar_key, 0);
-    // setter return is discarded, val (5) is pushed
+    // Spec struct.set pushes nothing; assert the setter's EFFECT by reading
+    // the property it wrote (5 * 2 = 10).
+    main.emit_op_u16(Op::LOCAL_GET, 1, 0);
+    let read_key = main.add_constant(Value::String(Arc::from("_bar")));
+    main.emit_struct_field_op(Op::STRUCT_GET, 0, read_key, 0);
     main.emit_op(Op::HALT, 0);
 
     // chunk 1: setter(self, value) => sets self._bar = value * 2
@@ -1060,13 +1064,11 @@ fn struct_setter_auto_dispatch() {
     setter.emit_op(Op::I32_MUL, 0);
     let bar_key2 = setter.add_constant(Value::String(Arc::from("_bar")));
     setter.emit_struct_field_op(Op::STRUCT_SET, 0, bar_key2, 0);
+    setter.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     setter.emit_op(Op::RETURN, 0);
 
     let result = run_chunks(vec![main, setter]);
-    // JS semantics: `obj.bar = 5` evaluates to the RHS (5), not to whatever the
-    // setter returns. VM pushes `val` after auto-dispatch, regardless of the
-    // setter's return value.
-    assert_i32(&result, 5);
+    assert_i32(&result, 10);
 }
 
 // ============================================================

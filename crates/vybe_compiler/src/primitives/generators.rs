@@ -121,7 +121,6 @@ pub fn emit_next(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, cont_slot, line); // [retval, cont]
     core_wasm::i32_const(chunk, line, 1); // [retval, cont, 1]
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_key, line); // [retval, 1]
-    chunk.emit_op(Op::DROP, line); // [retval]
     core_wasm::i32_const(chunk, line, 0); // has_more = 0 → [retval, 0]
     chunk.emit_br(0, line); // br $block → converge at END, skipping the yield arm
     // Yield arm: the VM jumps here (ip = handler_ip) with [yielded_value]
@@ -191,7 +190,6 @@ fn emit_drain_loop(cont_slot: u16, result_slot: u16, val_slot: u16, chunk: &mut 
     chunk.emit_op(Op::ARRAY_LENGTH, line); // i32 length = next index
     chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line); // pushes val back
-    chunk.emit_op(Op::DROP, line); // drop it (stack must be clean for br 0)
 
     chunk.emit_br(0, line); // restart loop
     chunk.emit_end(line);
@@ -853,13 +851,11 @@ pub fn build_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
     c.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, has_more_local, 0);
     ops::emit_dyn_to_bool_into(imports, &mut c, 0);
     ops::emit_dyn_not_into(imports, &mut c, 0);
     c.emit_struct_field_op(Op::STRUCT_SET, 0, done_key, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_op(Op::RETURN, 0);
     c
 }
@@ -941,7 +937,11 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     crate::primitives::globals::emit_read(&mut c, "__js_this", 0);
     core_wasm::bool_const(&mut c, 0, true);
     c.emit_struct_field_op(Op::STRUCT_SET, 0, started_key, 0);
-    c.emit_op(Op::DROP, 0);
+
+    // §27.6.1.2: Await(value). Async bodies hand back promises (the
+    // completion value arrives promise-wrapped); deliver the settled
+    // value. Non-promises pass through; a rejection throws into the
+    // catch below and rejects the result promise.
 
     // §27.6.1.2: Await(value). Async bodies hand back promises (the
     // completion value arrives promise-wrapped); deliver the settled
@@ -971,13 +971,11 @@ pub fn build_async_generator_next(imports: &mut Chunk) -> Chunk {
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, value_local, 0);
     c.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_dup(0);
     c.emit_op_u16(Op::LOCAL_GET, done_local, 0);
     // §27.6.1.2: `done` is a Boolean, not the raw i32 flag.
     ops::emit_i32_to_bool(&mut c, 0);
     c.emit_struct_field_op(Op::STRUCT_SET, 0, done_key, 0);
-    c.emit_op(Op::DROP, 0);
     c.emit_call(resolve_idx, 1, 0);
     c.emit_op(Op::RETURN, 0);
 
@@ -1014,7 +1012,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::Bool(value));
         self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-        self.emit(Op::DROP);
     }
 
     fn emit_buffered_generator_mark_started(&mut self, obj_slot: u16, started_key: u16) {
@@ -1032,7 +1029,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_generator_yield_value(value_slot);
         self.emit_struct_field_op(Op::STRUCT_SET, 0, current_key);
-        self.emit(Op::DROP);
     }
 
     fn emit_buffered_generator_store_completed_state(
@@ -1047,7 +1043,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_struct_field_op(Op::STRUCT_SET, 0, return_key);
-        self.emit(Op::DROP);
         self.emit_buffered_generator_set_bool_property(obj_slot, current_key, false);
     }
 
@@ -1224,7 +1219,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(true));
         self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
-        self.emit(Op::DROP);
+
 
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
         {
@@ -1237,25 +1232,20 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(false));
         self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
-        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_generator_yield_value(value_slot);
         self.emit_struct_field_op(Op::STRUCT_SET, 0, current_key);
-        self.emit(Op::DROP);
         self.chunk().emit_else(line);
 
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(true));
         self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
-        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_struct_field_op(Op::STRUCT_SET, 0, return_key);
-        self.emit(Op::DROP);
         self.emit_u16(Op::LOCAL_GET, cont_slot);
         self.emit_const(Value::Bool(false));
         self.emit_struct_field_op(Op::STRUCT_SET, 0, current_key);
-        self.emit(Op::DROP);
         self.chunk().emit_br(2, line);
 
         self.chunk().emit_end(line);
@@ -1442,7 +1432,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, moved_key);
-                self.emit(Op::DROP);
             }
             "throw" => {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -1493,7 +1482,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
-                self.emit(Op::DROP);
+
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 {

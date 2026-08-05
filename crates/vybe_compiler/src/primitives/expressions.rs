@@ -41,12 +41,24 @@ impl Compiler {
 
         use crate::primitives::namespaces::FieldGui;
 
-        // Every widget is a config OBJECT (data), never a control at
-        // construction — the runtime realizer creates/updates the backing
-        // `vybe:gui` control once, keyed by a stable path name, so `setState`
-        // updates by name instead of rebuilding.
+        // A GUI control IS its element — `CtorSpec`'s own contract says "the
+        // object IS the control". It used to build a plain config object and
+        // defer to a runtime realizer that would create the backing control
+        // from `__controlfn`/`__ops`; no such realizer exists (nothing reads
+        // either key), so the control was never created and every property
+        // write landed on the document instead of the element.
+        //
+        // Creating the element here makes the stamps below land ON it, so the
+        // object carries both its class identity and its node.
         let this_slot = self.define_local("__tree_ctor_this");
-        self.emit_struct_new(0, 0);
+        let control_type = spec.ancestry.first().cloned().unwrap_or_default();
+        let is_control = spec.control_fn.is_some();
+        if is_control {
+            let line = self.line;
+            self.emit_control_element(&control_type, 0, line);
+        } else {
+            self.emit_struct_new(0, 0);
+        }
         self.emit_u16(Op::LOCAL_SET, this_slot);
 
         // Compile each constructor arg ONCE into a slot (child widgets must not
@@ -67,7 +79,6 @@ impl Compiler {
             self.emit_const(Value::String(std::sync::Arc::from(name.as_str())));
             let k = self.str_const("__type");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, k);
-            self.emit(Op::DROP);
         }
         // __types = full ancestry array (js_instanceof membership check)
         self.emit_u16(Op::LOCAL_GET, this_slot);
@@ -77,7 +88,6 @@ impl Compiler {
         self.emit_array_new_fixed(0, spec.ancestry.len() as u16);
         let tk = self.str_const("__types");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, tk);
-        self.emit(Op::DROP);
 
         // __controlfn — the `vybe:gui` factory for this widget (`new_Label`…),
         // or null for a plain tree type. Marks a GUI-adapter widget.
@@ -87,7 +97,6 @@ impl Compiler {
             None => self.emit_null() }
         let cfk = self.str_const("__controlfn");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, cfk);
-        self.emit(Op::DROP);
 
         // __value_eq — mark immutable value types (Flutter ValueKey/Color/…)
         // so the language `==` compares them structurally (by __type + fields)
@@ -97,7 +106,6 @@ impl Compiler {
             self.emit_const(Value::Bool(true));
             let vk = self.str_const("__value_eq");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, vk);
-            self.emit(Op::DROP);
         }
 
         // Store each arg as a readable field (`Scaffold(appBar:x).appBar`).
@@ -106,7 +114,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, arg_slots[i]);
             let fk = self.str_const(field);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, fk);
-            self.emit(Op::DROP);
         }
 
         // For GUI widgets, stamp __ops = [[kind,key,value],…] — the realizer's
@@ -129,7 +136,6 @@ impl Compiler {
             self.emit_array_new_fixed(0, spec.fields.len() as u16);
             let ok = self.str_const("__ops");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, ok);
-            self.emit(Op::DROP);
         }
 
         self.emit_u16(Op::LOCAL_GET, this_slot);
@@ -282,7 +288,6 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("")));
         let url_key = self.str_const("url");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, url_key);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, init_slot);
         self.emit_global_write(global_name);
@@ -302,7 +307,6 @@ impl Compiler {
         self.emit_const(Value::String(Arc::from("")));
         let url_key = self.str_const("url");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, url_key);
-        self.emit(Op::DROP);
 
         self.emit_u16(Op::LOCAL_GET, init_slot);
         self.emit_global_write(global_name);
@@ -4318,18 +4322,11 @@ impl Compiler {
                             || self.defined_globals.contains(&bare_str.to_lowercase()));
                     let canonical = common::gui::canonical_control_name(bare_str);
                     if !canonical.is_empty() && !dotnet_ctor_registered {
-                        let host_name = common::gui::host_fn_new_control(&canonical);
-                        let new_idx = self.import("vybe:gui", &host_name);
                         for a in args {
                             self.compile_expr(&a.value)?;
                         }
                         let line = self.line;
-                        common::gui::emit_new_control(
-                            self.chunk(),
-                            new_idx,
-                            args.len() as u8,
-                            line,
-                        );
+                        self.emit_control_element(bare_str, args.len() as u8, line);
                         return Ok(());
                     }
                     // Registered-type constructors — after GUI so .NET-only
@@ -4391,7 +4388,6 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(proper_name.as_str())));
                         let type_key = self.str_const("__type");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
-                        self.emit(Op::DROP);
 
                         // …and stamp the ANCESTRY chain when the registered
                         // type declares one, so `isInstance` / `instanceof` /
@@ -4425,7 +4421,6 @@ impl Compiler {
                                 let types_key =
                                     self.str_const(crate::primitives::reflection::FIELD_TYPES);
                                 self.emit_struct_field_op(Op::STRUCT_SET, 0, types_key);
-                                self.emit(Op::DROP);
                             }
                         }
 
@@ -4443,13 +4438,11 @@ impl Compiler {
                             inst!(self, core_wasm::dup);
                             self.emit_global_read("__vybe_sort_in_place");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, sort_key);
-                            self.emit(Op::DROP);
 
                             let sort_pascal_key = self.str_const("Sort");
                             inst!(self, core_wasm::dup);
                             self.emit_global_read("__vybe_sort_in_place");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, sort_pascal_key);
-                            self.emit(Op::DROP);
                         }
                         return Ok(());
                     }
@@ -4506,13 +4499,11 @@ impl Compiler {
                             inst!(self, core_wasm::dup);
                             self.emit_global_read("__vybe_sort_in_place");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, sort_key);
-                            self.emit(Op::DROP);
 
                             let sort_pascal_key = self.str_const("Sort");
                             inst!(self, core_wasm::dup);
                             self.emit_global_read("__vybe_sort_in_place");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, sort_pascal_key);
-                            self.emit(Op::DROP);
                         }
                         return Ok(());
                     }
@@ -5006,12 +4997,10 @@ impl Compiler {
                                         )));
                                         let name_key = self.str_const("name");
                                         self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
-                                        self.emit(Op::DROP);
                                     }
                                 }
                                 let idx = self.str_const(&key_name);
                                 self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                                self.emit(Op::DROP);
                                 // Non-JS: append to __keys directly (JS already
                                 // tracked it via the deduping `trackKey` above).
                                 if !self.profile.ecma_object_literals {
@@ -5060,7 +5049,6 @@ impl Compiler {
                             self.emit_var_get(name);
                             let idx = self.str_const(name);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                            self.emit(Op::DROP);
                             // Track key in __keys
                             inst!(self, core_wasm::dup);
                             let keys_key = self.str_const("__keys");
@@ -5131,11 +5119,9 @@ impl Compiler {
                                 self.emit_const(Value::String(Arc::from(key.as_str())));
                                 let name_key = self.str_const("name");
                                 self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
-                                self.emit(Op::DROP);
                             }
                             let idx = self.str_const(key);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                            self.emit(Op::DROP);
                         }
                         ObjectProperty::Accessor { kind, key, value } => {
                             inst!(self, core_wasm::dup);
@@ -5187,13 +5173,11 @@ impl Compiler {
                             self.emit_const(Value::String(Arc::from(accessor_name.as_str())));
                             let name_key = self.str_const("name");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
-                            self.emit(Op::DROP);
                             let accessor_slot = match kind {
                                 AccessorKind::Get => format!("__get_{}", key),
                                 AccessorKind::Set => format!("__set_{}", key) };
                             let idx = self.str_const(&accessor_slot);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                            self.emit(Op::DROP);
                         }
                         ObjectProperty::Computed { key, value } => {
                             // ecma:array.set expects [obj, key, val] → null
@@ -5939,7 +5923,6 @@ impl Compiler {
                                     self.emit_u16(Op::LOCAL_GET, value_slot);
                                     self.emit_u16(Op::LOCAL_GET, member_slot);
                                     self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-                                    self.emit(Op::DROP);
                                     self.chunk().emit_end(set_line);
                                 }
                             }
@@ -6087,6 +6070,9 @@ impl Compiler {
             ExprKind::Async(op) => {
                 self.emit_async(op)?;
             }
+            ExprKind::Chan(op) => {
+                self.emit_chan(op)?;
+            }
             ExprKind::Await(inner) => {
                 // ECMA-262 §27.2: WASM JSPI suspend point, lowered to the spec
                 // stack-switching `suspend` (AWAIT_SUSPEND_TAG). The VM unwraps
@@ -6125,17 +6111,14 @@ impl Compiler {
                         self.emit_const(Value::Bool(true));
                         let marker_key = self.str_const("__vybe_generator_yield");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
-                        self.emit(Op::DROP);
                         inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_GET, key_slot);
                         let key_key = self.str_const("key");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, key_key);
-                        self.emit(Op::DROP);
                         inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_GET, payload_id_slot);
                         let payload_id_key = self.str_const("payload_id");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, payload_id_key);
-                        self.emit(Op::DROP);
                     } else {
                         self.compile_expr(v)?;
                     }
@@ -6355,18 +6338,11 @@ impl Compiler {
                             // leaves no longer have a ctor global to CALL_REF.
                             if self.is_framework_control_parent(&parent_name) {
                                 let canonical = common::gui::canonical_control_name(&parent_name);
-                                let host_name = common::gui::host_fn_new_control(&canonical);
-                                let new_idx = self.import(common::gui::GUI_MODULE, &host_name);
                                 for a in args {
                                     self.compile_expr(&a.value)?;
                                 }
                                 let line = self.line;
-                                common::gui::emit_new_control(
-                                    self.chunk(),
-                                    new_idx,
-                                    args.len() as u8,
-                                    line,
-                                );
+                                self.emit_control_element(&parent_name, args.len() as u8, line);
                             } else {
                                 self.emit_var_get(&parent_name);
                                 for a in args {

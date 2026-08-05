@@ -476,7 +476,7 @@ impl VM {
     /// Top-level settled/plain-value await (no promising boundary, not inside
     /// a driven continuation): ECMA-262 §6.2.3.1 still requires one job tick.
     /// Save the whole fiber exactly like a pending top-level await and wake it
-    /// immediately off the microtask queue with the value (or rejection).
+    /// immediately off the ready queue with the value (or rejection).
     fn tick_top_level_await(&mut self, value: Value, is_exception: bool) -> VMError {
         let id = self.event_loop.borrow_mut().next_promise_id();
         let err = self.suspend_for_pending_promise(id);
@@ -540,7 +540,7 @@ impl VM {
                 Value::Object(o) => o.clone(),
                 // Primitive: ECMA-262 §6.2.3.1 Await performs
                 // PromiseResolve(v) and ALWAYS resumes as a job — one
-                // microtask tick even for plain values. Inside an async
+                // turn even for plain values. Inside an async
                 // boundary, suspend and schedule the immediate resume; at
                 // top level (no boundary) keep the direct return.
                 _ => {
@@ -635,7 +635,7 @@ impl VM {
                 // JSPI: even a settled promise resumes "by the event queue
                 // task runner" — inside an async boundary, suspend (bounded)
                 // and schedule the rejection to be thrown into the resumed
-                // fiber as a microtask (its captured try/catch handlers fire
+                // fiber off the ready queue (its captured try/catch handlers fire
                 // there). No synchronous shortcut.
                 if !self.async_floors.is_empty() && !eager {
                     drop(o);
@@ -668,7 +668,7 @@ impl VM {
             }
             // JSPI: a resolved promise still resumes via the event queue task
             // runner. Inside an async boundary, suspend (bounded) and schedule
-            // an immediate microtask resume with the fulfilled value — the
+            // an immediately-ready resume with the fulfilled value — the
             // spec "await always yields one tick" ordering, no sync shortcut.
             if !self.async_floors.is_empty() && !eager {
                 let id = self.event_loop.borrow_mut().next_promise_id();
@@ -1424,7 +1424,6 @@ impl VM {
                             let _result =
                                 self.invoke_callback(&setter_fn, &[obj.clone(), val.clone()]);
                             self.stack.truncate(stack_save);
-                            self.push(val)?;
                         } else {
                             // Set property in properties HashMap
                             o.lock().unwrap().set(name.clone(), val.clone());
@@ -1440,11 +1439,13 @@ impl VM {
                                     }
                                 }
                             }
-                            self.push(val)?;
                         }
-                    } else {
-                        self.push(val)?;
                     }
+                    // Spec `struct.set`: pops [obj, val], pushes NOTHING. The
+                    // name-keyed addressing is this VM's dynamic-object
+                    // extension; the stack contract is not. (It used to push
+                    // `val` back on every path — the reason ~500 emit sites
+                    // carried a compensating DROP.)
                 }
                 _ if op == Op::ARRAY_GET => {
                     let key = self.pop();
@@ -1618,8 +1619,6 @@ impl VM {
                                 match idx {
                                     Some(i) if i < a.len() => {
                                         a[i] = val.clone();
-                                        drop(ob);
-                                        self.push(val)?;
                                         continue;
                                     }
                                     _ => {
@@ -1641,8 +1640,6 @@ impl VM {
                                     _ => None };
                                 if let Some(idx) = numeric_idx {
                                     typed_array_write(ta, idx, &val);
-                                    drop(ob);
-                                    self.push(val)?;
                                     continue;
                                 }
                             }
@@ -1656,7 +1653,6 @@ impl VM {
                             self.push(val.clone())?; // value
                             self.call_value(3)?;
                             self.pop(); // discard __setitem__ return
-                            self.push(val)?;
                             continue;
                         }
                         // Map (Python dict, PHP keyed array, Ruby hash, JS Map):
@@ -1675,15 +1671,14 @@ impl VM {
                                     }
                                 };
                                 m.insert(map_key, val.clone());
-                                drop(ob);
-                                self.push(val)?;
                                 continue;
                             }
                         }
                         let k = format!("{}", key);
                         o.lock().unwrap().set(k, val.clone());
                     }
-                    self.push(val)?;
+                    // Spec `array.set`: pops [array, index, value], pushes
+                    // NOTHING — same contract flip as name-keyed `struct.set`.
                 }
 
                 // -- F32 arithmetic (f32 precision, stored as F64) --
@@ -5216,6 +5211,24 @@ impl VM {
                         _ => None };
 
                     if let Some(func) = function {
+                        // A closure crossing the thread boundary must CARRY
+                        // its environment: an Open upvalue indexes the
+                        // SPAWNING stack, which the child VM doesn't have —
+                        // every goroutine capture read back Null (measured).
+                        // Close them against the parent stack now, exactly
+                        // as `save_fiber` does for callbacks that escape
+                        // their frame. wasi-threads has no shared stack;
+                        // materializing the environment is the contract.
+                        // (Objects/channels stay SHARED — the closed value
+                        // is the Arc; only scalar rebinding diverges.)
+                        for uv in &func.upvalues {
+                            let mut u = uv.lock().unwrap();
+                            if let crate::value::UpvalueLocation::Open(slot) = u.location {
+                                let val =
+                                    self.stack.get(slot).cloned().unwrap_or(Value::Null);
+                                u.location = crate::value::UpvalueLocation::Closed(val);
+                            }
+                        }
                         let tid = self.next_thread_id;
                         self.next_thread_id += 1;
 

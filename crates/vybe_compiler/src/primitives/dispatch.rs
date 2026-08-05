@@ -499,13 +499,6 @@ pub fn emit_common(
         "heap.nlargest" => heap::emit_nlargest(chunks, current, argc, line),
         "heap.merge" => heap::emit_merge(chunks, current, argc, line),
 
-        // ── Channel ops ──
-        "channels.send" => crate::primitives::channels::emit_send(chunks, current, line),
-        "channels.receive" => crate::primitives::channels::emit_receive(chunks, current, line),
-        "channels.len" => crate::primitives::channels::emit_len(chunks, current, line),
-        "channels.cap" => crate::primitives::channels::emit_cap(chunks, current, line),
-        "channels.close" => crate::primitives::channels::emit_close(chunks, current, line),
-
         // ── Python adapters ──
         "strings.join_iterable" => strings::emit_join_iterable(chunks, current, line),
         "strings.length" => strings::emit_length(&mut chunks[current], line),

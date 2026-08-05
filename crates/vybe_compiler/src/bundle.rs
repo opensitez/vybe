@@ -13,6 +13,10 @@ use vybe_runtime::{ExportEntry, ModuleRecord};
 pub enum EntryPoint {
     /// Infer from code (Sub Main, main(), etc.)
     Auto,
+    /// A named free function as the entry symbol — `ld -e` semantics: the
+    /// LINKER default is the profile's `entry_point` (C: "main"), and this
+    /// overrides that NAME, so no project file is needed to select it.
+    Function(String),
     /// Launch a named form as the startup window.
     Form(String),
     /// Call a static method on a class as the program entry point, e.g. Program.Main().
@@ -287,6 +291,13 @@ impl Bundle {
             });
         }
         let mut profile = crate::profile::parse_profile((self.language.profile_source)())?;
+
+        // Entry override, `ld -e` style: the profile's `entry_point` is the
+        // linker DEFAULT (C: "main"); an explicit Function entry replaces the
+        // symbol the compiler auto-invokes. One mechanism, no double call.
+        if let EntryPoint::Function(ref name) = self.entry_point {
+            profile.entry_point = Some(name.clone());
+        }
 
         // Add shared GUI namespace automatically to all languages
         // (replaces per-language profile duplication)

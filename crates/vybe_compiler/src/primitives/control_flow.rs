@@ -381,7 +381,6 @@ impl Compiler {
         inst!(self, core_wasm::bool_const, true);
         let returned_key = self.str_const("__vybe_gen_returned");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, returned_key);
-        self.emit(Op::DROP);
         self.chunk().emit_end(line);
 
         self.chunk().emit_end(line);
@@ -499,7 +498,6 @@ impl Compiler {
         self.emit_const(Value::Bool(true));
         let marker_key = self.str_const(&marker);
         self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
-        self.emit(Op::DROP);
     }
 
     /// Return `Some((N, [ident...]))` when `targets`/`value` match the

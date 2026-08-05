@@ -18,11 +18,32 @@ use crate::vm::VM;
 
 pub trait Scheduler: Send + Sync {
     /// One turn of host-scheduled work — the job queue under the module's
-    /// declared discipline (`vm.scheduling`), then at most one deferred task.
+    /// job queue drained to empty, then at most one deferred task.
     /// Returns `true` if any work ran.
     fn turn(&self, vm: &mut VM) -> Result<bool, VMError>;
     /// Anything pending (jobs, timers, suspended fibers awaiting settlement)?
     fn has_pending(&self, vm: &VM) -> bool;
     /// Block until the nearest deadline/readiness (`wasi:io/poll` shape).
     fn wait(&self, vm: &VM);
+}
+
+/// A host-owned source of time-deferred work, `wasi:io/poll` shaped: the VM
+/// (or the installed scheduler) can ask whether anything is registered, when
+/// to wake, and pop one DUE callback per turn. The STORAGE lives with the
+/// host that owns the concept — HTML's timer wheel is `platforms/web`'s, not
+/// this crate's — and is registered here at plugin init, exactly like host
+/// functions. The VM never sees a fire time being set or a timer id being
+/// cancelled; it only polls readiness.
+pub trait DeferredSource: Send + Sync {
+    /// Any entries registered, due or not?
+    fn has_pending(&self) -> bool;
+    /// Earliest wake deadline (monotonic ms, `event_loop::monotonic_now_ms`
+    /// clock), if any entry is pending.
+    fn earliest_deadline_ms(&self) -> Option<f64>;
+    /// Pop ONE due entry's callback — first-registered-due-first, matching
+    /// the drain's one-task-per-turn contract. `None` if nothing is due yet.
+    fn pop_due(&self) -> Option<crate::value::Value>;
+    /// Visit every queued callback. Fiber capture needs this: a callback's
+    /// open upvalues must be closed before the stack it indexes is saved.
+    fn for_each_callback(&self, f: &mut dyn FnMut(&crate::value::Value));
 }

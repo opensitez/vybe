@@ -691,7 +691,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, obj_slot);
             self.emit_u16(Op::LOCAL_GET, value_slot);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-            self.emit(Op::DROP);
         }
 
         self.emit_u16(Op::LOCAL_GET, obj_slot);
@@ -1214,7 +1213,6 @@ impl Compiler {
         inst!(self, core_wasm::dup);
         self.emit_const(Value::F64(fixed_count as f64));
         self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-        self.emit(Op::DROP);
     }
 
     fn bind_js_this_for_call(
@@ -2335,12 +2333,10 @@ impl Compiler {
                 self.emit_struct_field_op(Op::STRUCT_GET, 0, prop_key);
                 let val_key = self.str_const("value");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, val_key);
-                self.emit(Op::DROP);
                 inst!(self, core_wasm::dup);
                 self.emit_const(Value::Bool(false));
                 let enum_key = self.str_const("enumerable");
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, enum_key);
-                self.emit(Op::DROP);
                 // §20.5 instance property descriptors are
                 // { writable: true, enumerable: false, configurable: true } —
                 // omitting these lets defineProperty default them to false,
@@ -2351,7 +2347,6 @@ impl Compiler {
                     self.emit_const(Value::Bool(true));
                     let flag_key = self.str_const(flag);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, flag_key);
-                    self.emit(Op::DROP);
                 }
                 self.emit_host_call(define_prop_idx, 3);
                 self.emit(Op::DROP);
@@ -2365,12 +2360,10 @@ impl Compiler {
             inst!(self, core_wasm::string_const, "Error");
             let val_key = self.str_const("value");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, val_key);
-            self.emit(Op::DROP);
             inst!(self, core_wasm::dup);
             inst!(self, core_wasm::bool_const, false);
             let enum_key = self.str_const("enumerable");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, enum_key);
-            self.emit(Op::DROP);
             self.emit_host_call(define_prop_idx, 3);
             self.emit(Op::DROP);
         }
@@ -2393,12 +2386,10 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, stack_val);
             let val_key = self.str_const("value");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, val_key);
-            self.emit(Op::DROP);
             inst!(self, core_wasm::dup);
             inst!(self, core_wasm::bool_const, false);
             let enum_key = self.str_const("enumerable");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, enum_key);
-            self.emit(Op::DROP);
             self.emit_host_call(define_prop_idx, 3);
             self.emit(Op::DROP);
         } else {
@@ -2406,7 +2397,6 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, stack_val);
             let stack_key = self.str_const("stack");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, stack_key);
-            self.emit(Op::DROP);
         }
 
         if self.profile.ecma_error_object_shape {
@@ -2455,7 +2445,6 @@ impl Compiler {
             }
             let errors_key = self.str_const("errors");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, errors_key);
-            self.emit(Op::DROP);
 
             if let Some(opts_arg) = args.get(2) {
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
@@ -2467,7 +2456,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, exc_tmp);
                 self.emit_u16(Op::LOCAL_GET, cause_val);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, cause_key);
-                self.emit(Op::DROP);
             }
 
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
@@ -2512,7 +2500,6 @@ impl Compiler {
                 let k = self.str_const(key);
                 self.emit_struct_field_op(Op::STRUCT_GET, 0, k);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, k);
-                self.emit(Op::DROP);
             }
             self.emit_u16(Op::LOCAL_GET, exc_tmp);
         }
@@ -2530,19 +2517,16 @@ impl Compiler {
         self.emit_const(Value::Bool(true));
         let marker_key = self.str_const("__vybe_generator_control");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key);
-        self.emit(Op::DROP);
 
         inst!(self, core_wasm::dup);
         self.emit_const(Value::String(Arc::from(op)));
         let op_key = self.str_const("op");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, op_key);
-        self.emit(Op::DROP);
 
         inst!(self, core_wasm::dup);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         let value_key = self.str_const("value");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
-        self.emit(Op::DROP);
     }
 
     pub(crate) fn reorder_named_args_with_signatures(
@@ -2787,6 +2771,79 @@ impl Compiler {
         self.chunk().emit_end(line);
         Ok(true)
     }
+    /// Emit a profile value-method call with the RECEIVER read from a local
+    /// slot (not recompiled — the caller already evaluated it once, e.g. for
+    /// a runtime primitive test). Mirrors the inline matched-value-method
+    /// emission in `compile_call`; `BuiltinEmit::Intrinsic` defs recompile
+    /// from the AST and cannot take a slot receiver — callers must filter
+    /// them out.
+    fn emit_value_method_call_from_slot(
+        &mut self,
+        def: &crate::profile::BuiltinDef,
+        obj_tmp: u16,
+        arg_exprs: &[&Expression],
+    ) -> Result<(), String> {
+        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+        for a in arg_exprs {
+            self.compile_expr(a)?;
+        }
+        if let BuiltinEmit::Opcode(op) | BuiltinEmit::Common(op) = &def.emit {
+            match op.as_str() {
+                "array_join" | "collections.join" if arg_exprs.is_empty() => {
+                    self.emit_const(Value::String(Arc::from(",")));
+                }
+                "array_fill" if arg_exprs.len() < 2 => {
+                    if arg_exprs.is_empty() {
+                        self.emit_null();
+                    }
+                    inst!(self, core_wasm::i32_const, 0);
+                    self.emit_const(Value::I32(i32::MAX));
+                }
+                "strings.substring" | "strings.slice" if arg_exprs.len() < 2 => {
+                    self.emit_const(Value::I32(i32::MAX));
+                }
+                "str_split" if arg_exprs.is_empty() => {
+                    self.emit_const(Value::String(Arc::from("")));
+                }
+                _ => {}
+            }
+        }
+        match &def.emit {
+            BuiltinEmit::HostCall(module, func) => {
+                let module = module.clone();
+                let func = func.clone();
+                let idx = self.import(&module, &func);
+                self.emit_host_call(idx, (arg_exprs.len() + 1) as u8);
+            }
+            BuiltinEmit::Opcode(op_name) => {
+                let op_name = op_name.clone();
+                self.emit_named_opcode(&op_name);
+            }
+            BuiltinEmit::StrLength => {
+                let line = self.line;
+                common::strings::emit_length(self.chunk(), line);
+            }
+            BuiltinEmit::Common(name) => {
+                let line = self.line;
+                let name = name.clone();
+                self.emit_common(&name, (arg_exprs.len() + 1) as u8, line);
+            }
+            BuiltinEmit::Invoke(method_name) => {
+                let line = self.line;
+                let name = method_name.clone();
+                common::invoke::emit_invoke_method(
+                    &mut self.chunks,
+                    self.current,
+                    &name,
+                    arg_exprs.len() as u8,
+                    line,
+                );
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(super) fn compile_call(
         &mut self,
         callee: &Expression,
@@ -2878,13 +2935,11 @@ impl Compiler {
                     && !self.defined_functions.contains(&canon_last)
                     && !self.defined_classes.contains(&canon_last)
                 {
-                    let host_name = common::gui::host_fn_new_control(&canonical);
-                    let new_idx = self.import("vybe:gui", &host_name);
                     for a in args {
                         self.compile_expr(&a.value)?;
                     }
                     let line = self.line;
-                    common::gui::emit_new_control(self.chunk(), new_idx, args.len() as u8, line);
+                    self.emit_control_element(&canon_last, args.len() as u8, line);
                     return Ok(());
                 }
             }
@@ -3691,7 +3746,6 @@ impl Compiler {
                             self.emit_struct_field_op(Op::STRUCT_GET, 0, proto_key);
                             let proto_link_key = self.str_const("__proto__");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, proto_link_key);
-                            self.emit(Op::DROP);
 
                             self.emit_u16(Op::LOCAL_GET, promise_slot);
                             return Ok(());
@@ -5676,6 +5730,95 @@ impl Compiler {
                 .lookup_array_method(&field_lower_check)
                 .is_some();
             if user_method_shadow || is_array_method {
+                // A user method shadows this name, so the compile-time value
+                // method is skipped — but only an OBJECT can carry the user
+                // method. In a bind-dispatch profile (Ruby, Python; primitive
+                // "prototypes" are not user-patchable there), a PRIMITIVE
+                // receiver at runtime means the dynamic path resolves nothing
+                // and calls undefined (`3.to_s` with a user `to_s` defined).
+                // Split at runtime: primitive → the profile's value
+                // semantics; object → the polymorphic dynamic shim. The
+                // receiver is evaluated exactly once, into a slot.
+                // Prototype-dispatch profiles (JS/PHP/Dart) keep their path:
+                // their primitives DO have patchable prototypes, so the
+                // value-method shortcut would bypass user monkey-patches.
+                if user_method_shadow
+                    && !is_array_method
+                    && !self.class_prototype_dispatch()
+                    && !args.iter().any(|arg| arg.spread)
+                {
+                    if let Some(def) = matched_value_method
+                        .as_ref()
+                        .filter(|d| !matches!(d.emit, BuiltinEmit::Intrinsic(_)))
+                        .cloned()
+                    {
+                        self.compile_expr(object)?;
+                        let obj_tmp = self.define_local("__shadowed_value_recv");
+                        self.emit_u16(Op::LOCAL_SET, obj_tmp);
+
+                        let type_tmp = self.define_local("__shadowed_value_type");
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        fn_call!(self, "ecma:value", "typeof", 1);
+                        self.emit_u16(Op::LOCAL_SET, type_tmp);
+                        let primitive_slot =
+                            self.define_local("__shadowed_value_is_primitive");
+                        self.emit_const(Value::I32(0));
+                        self.emit_u16(Op::LOCAL_SET, primitive_slot);
+                        for type_name in
+                            ["number", "i32", "i64", "string", "boolean", "bigint"]
+                        {
+                            self.emit_u16(Op::LOCAL_GET, type_tmp);
+                            self.emit_const(Value::String(Arc::from(type_name)));
+                            {
+                                let line = self.line;
+                                crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+                            }
+                            let line = self.line;
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                            self.chunk().emit_if(line);
+                            self.emit_const(Value::I32(1));
+                            self.emit_u16(Op::LOCAL_SET, primitive_slot);
+                            self.chunk().emit_end(line);
+                        }
+                        self.emit_u16(Op::LOCAL_GET, primitive_slot);
+                        let split_line = self.line;
+                        self.chunk().emit_if_value(split_line);
+                        self.emit_value_method_call_from_slot(&def, obj_tmp, &arg_exprs)?;
+                        self.chunk().emit_else(split_line);
+                        // Object receiver: the bind-dispatch fast path's own
+                        // shape — fetch the method off the instance, call it
+                        // with its bound receiver as arg0 (methods stamp
+                        // `__vybe_method_receiver` at attach).
+                        let field_name =
+                            self.js_member_storage_name_for_receiver(object, field);
+                        let prop = self.str_const(&field_name);
+                        self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                        self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
+                        let fn_tmp = self.define_local("__shadowed_value_fn");
+                        self.emit_u16(Op::LOCAL_SET, fn_tmp);
+                        let receiver_key = self.str_const("__vybe_method_receiver");
+                        self.emit_u16(Op::LOCAL_GET, fn_tmp);
+                        self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
+                        let receiver_slot =
+                            self.define_local("__shadowed_value_bound_recv");
+                        self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                        let mut arg_slots = Vec::with_capacity(arg_exprs.len());
+                        for (index, arg) in arg_exprs.iter().enumerate() {
+                            self.compile_expr(arg)?;
+                            let arg_slot = self
+                                .define_local(&format!("__shadowed_value_arg_{}", index));
+                            self.emit_u16(Op::LOCAL_SET, arg_slot);
+                            arg_slots.push(arg_slot);
+                        }
+                        self.emit_call_ref_with_arg_slots(
+                            fn_tmp,
+                            Some(receiver_slot),
+                            &arg_slots,
+                        );
+                        self.chunk().emit_end(split_line);
+                        return Ok(());
+                    }
+                }
                 // Fall through — let the HOF dispatch or generic call path handle it
             } else if array_only_value_method_for_non_array {
                 // Array-only value methods like `.entries()` must not steal
@@ -6804,19 +6947,16 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     inst!(self, core_wasm::bool_const, true);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, returned_key);
-                    self.emit(Op::DROP);
 
                     common::dict::emit_new(&mut self.chunks, self.current, line);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let value_key = self.str_const("value");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
-                    self.emit(Op::DROP);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
                     let done_key = self.str_const("done");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
-                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
@@ -6930,7 +7070,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     inst!(self, core_wasm::bool_const, true);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
-                    self.emit(Op::DROP);
                     // Both the early-`returned` short-circuit and the
                     // GEN_NEXT/RESUME paths converge here to build the
                     // `{value, done}` wrapper.
@@ -6939,12 +7078,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let value_key = self.str_const("value");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
-                    self.emit(Op::DROP);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
                     let done_key = self.str_const("done");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
-                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);
@@ -6984,7 +7121,6 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     inst!(self, core_wasm::bool_const, true);
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
-                    self.emit(Op::DROP);
 
                     self.emit_u16(Op::LOCAL_GET, has_more_slot);
                     {
@@ -7026,12 +7162,10 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     let value_key = self.str_const("value");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, value_key);
-                    self.emit(Op::DROP);
                     inst!(self, core_wasm::dup);
                     self.emit_u16(Op::LOCAL_GET, done_slot);
                     let done_key = self.str_const("done");
                     self.emit_struct_field_op(Op::STRUCT_SET, 0, done_key);
-                    self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit_const(Value::I32(1));
                     self.emit_u16(Op::LOCAL_SET, js_handled_slot);

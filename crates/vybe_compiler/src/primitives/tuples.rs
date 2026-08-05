@@ -49,7 +49,6 @@ pub fn emit_tag(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::bool_const(c, line, true); // [arr, arr, true]
     let k = c.add_constant(Value::String(Arc::from(TUPLE_TAG)));
     c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, true]
-    c.emit_op(Op::DROP, line); // [arr]
 }
 
 /// Build a tuple from the top `n` stack values: pack them into a growable
@@ -281,7 +280,6 @@ pub fn emit_named_tuple(
         c.emit_op(Op::ARRAY_GET, line); // [arr, arr, arr[i]]
         let k = c.add_constant(Value::String(Arc::from(name.as_str())));
         c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, arr[i]]
-        c.emit_op(Op::DROP, line); // [arr]
     }
 
     // 3. Ordered field-name list.
@@ -294,7 +292,6 @@ pub fn emit_named_tuple(
         c.emit_array_new_fixed(0, field_names.len() as u16, line); // [arr, fields]
         let k = c.add_constant(Value::String(Arc::from(FIELDS_TAG)));
         c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line); // [arr, fields]
-        c.emit_op(Op::DROP, line); // [arr]
     }
 
     // 4. Type name (Python `namedtuple`) → drives the `Name(f=v)` repr.
@@ -304,6 +301,5 @@ pub fn emit_named_tuple(
         core_wasm::string_const(c, line, tn);
         let k = c.add_constant(Value::String(Arc::from(TYPENAME_TAG)));
         c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-        c.emit_op(Op::DROP, line);
     }
 }

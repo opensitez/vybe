@@ -6,8 +6,8 @@
 //! When the Promise resolves, `resume_fiber` restores the saved state
 //! and execution continues from the suspended opcode.
 //!
-//! `run_event_loop` drains microtasks (Promise callbacks) and
-//! macrotasks (timers) until no pending work remains.
+//! `run_event_loop` drains the ready queue and polls host-registered
+//! deferred sources (timer wheels) until no pending work remains.
 
 use crate::error::VMError;
 use crate::event_loop::Task;
@@ -30,39 +30,16 @@ impl VM {
             return Ok(());
         }
         loop {
-            let has_pending = self.event_loop.borrow().has_pending();
+            let has_pending =
+                self.event_loop.borrow().has_pending() || self.deferred_pending();
             if !has_pending {
                 break;
             }
 
-            // 1. Run the job queue under the module's DECLARED discipline.
-            //
-            // `TieredJobs` (ECMA-262 §9.5 + the HTML microtask checkpoint):
-            // drain to EMPTY before any task — a job may enqueue another
+            // 1. Drain the job queue to EMPTY before any task (ECMA-262 §9.5
+            // job checkpoint): an entry may enqueue another
             // (`.then()` → `.finally()`), and all of them run first.
-            //
-            // `SingleReadyQueue` (asyncio): there is no second tier. The loop
-            // takes the callbacks that were ready at the START of this
-            // iteration and runs those; anything they schedule waits for the
-            // next turn, which is what `call_soon` guarantees.
-            //
-            // The VM does not decide this — the walker declared it and the
-            // policy rode in on the script chunk. Suspending and resuming a
-            // fiber is WASM (JSPI); which callback runs next is host policy.
-            let drain_to_empty = matches!(
-                self.scheduling.queues,
-                vybe_ast::QueueDiscipline::TieredJobs
-            );
-            let mut ready_at_turn_start = if drain_to_empty {
-                usize::MAX
-            } else {
-                self.event_loop.borrow().immediate.len()
-            };
             loop {
-                if ready_at_turn_start == 0 {
-                    break;
-                }
-                ready_at_turn_start = ready_at_turn_start.saturating_sub(1);
                 let task = self.event_loop.borrow_mut().next_immediate();
                 let Some(task) = task else { break };
                 match task {
@@ -76,17 +53,12 @@ impl VM {
                         // value (top-level await suspends the script fiber).
                         self.last_fiber_completion = Some(completion);
                     }
-                    _ => {}
                 }
             }
 
-            // 2. Wait for and process one macrotask (timer)
-            {
-                let el = self.event_loop.borrow();
-                el.wait_for_next();
-            }
-            let timer = self.event_loop.borrow_mut().next_ready_timer();
-            if let Some(Task::Timer { callback, .. }) = timer {
+            // 2. Wait for and process one due deferred callback
+            self.wait_for_deferred();
+            if let Some(callback) = self.next_due_deferred() {
                 self.invoke(&callback, &[])?;
             }
         }
@@ -323,7 +295,7 @@ impl VM {
                     self.suspend_async_call(floor, call_base, label_floor, promise_id);
                 // Await on an ALREADY-SETTLED promise: JSPI still resumes via
                 // the event queue — wake the just-registered fiber with an
-                // immediate microtask carrying the settled value/rejection.
+                // immediately-ready resume carrying the settled value/rejection.
                 self.wake_pending_settled(promise_id);
                 self.push(result_promise)?;
                 Ok(())
@@ -407,7 +379,7 @@ impl VM {
 
     /// If `do_await` parked a settled value for `promise_id` (await of an
     /// already-settled promise / plain value), wake the just-registered fiber
-    /// with an immediate microtask carrying that value or rejection.
+    /// with an immediately-ready resume carrying that value or rejection.
     fn wake_pending_settled(&mut self, promise_id: u64) {
         if let Some((id, value, is_exception)) = self.pending_settled_await.take() {
             if id == promise_id {
@@ -482,7 +454,7 @@ impl VM {
 
     /// Save the current execution state to a Fiber.
     pub fn save_fiber(&mut self) -> Fiber {
-        // Close open upvalues for all lambdas stored in the macrotask queue.
+        // Close open upvalues for all lambdas held by host deferred sources.
         // These callbacks escape the current stack frame — they will run in a
         // fresh execution context after this fiber suspends. Any Open(slot)
         // upvalue would then index an invalid stack. We resolve them now using
@@ -490,11 +462,7 @@ impl VM {
         {
             let stack = &self.stack;
             use crate::value::{ObjectKind, UpvalueLocation};
-            let el_ref = self.event_loop.borrow();
-            for task in el_ref.deferred.iter() {
-                let callback = match task {
-                    crate::event_loop::Task::Timer { callback, .. } => callback,
-                    _ => continue };
+            let mut close = |callback: &Value| {
                 if let Value::Object(obj) = callback {
                     let o = obj.lock().unwrap();
                     if let ObjectKind::Function(func) = &o.kind {
@@ -507,6 +475,9 @@ impl VM {
                         }
                     }
                 }
+            };
+            for source in &self.deferred_sources {
+                source.for_each_callback(&mut close);
             }
         }
 

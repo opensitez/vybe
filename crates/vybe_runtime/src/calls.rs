@@ -505,7 +505,7 @@ impl VM {
         // this call. The body runs inline until it returns (result Promise on
         // the stack) or suspends at an `await`, in which case only the async
         // frames are captured, the caller receives a pending Promise and
-        // KEEPS RUNNING — resumption comes off the event queue (microtask).
+        // KEEPS RUNNING — resumption comes off the ready queue.
         if !bypass_generator
             && self.chunks[chunk_index].is_async
             && !self.chunks[chunk_index].is_generator

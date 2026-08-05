@@ -231,12 +231,6 @@ pub struct Chunk {
     /// pause in user code and to skip/step-over "system" (prelude) code. Never
     /// read during execution.
     pub user_code_offset: Option<u32>,
-    /// The scheduling contract this module was compiled under (script chunk
-    /// only). Set from `Module.scheduling` — the walker declares it, the host
-    /// drain loop honours it. The VM itself never branches on it: suspending
-    /// and resuming a fiber is WASM (JSPI / stack-switching), while WHICH
-    /// callback runs next is host policy (ECMA-262 §9.5 jobs, HTML tasks).
-    pub scheduling: vybe_ast::SchedulingPolicy,
     /// Import table — only on the script chunk (chunk 0).
     /// Each entry is a (module, name) pair.
     /// CallHost operand indexes into this table.
@@ -369,7 +363,6 @@ impl Chunk {
             local_names: Vec::new(),
             user_code_offset: None,
             dup_slot: None,
-            scheduling: vybe_ast::SchedulingPolicy::default(),
             imports: Vec::new(),
             global_imports: Vec::new(),
             types: Vec::new(),

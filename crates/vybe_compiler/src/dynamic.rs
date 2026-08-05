@@ -1824,6 +1824,10 @@ fn resolve_imports(vm: &VM, imports: &[Import]) -> Result<Vec<ImportTarget>, Str
             resolved.push(ImportTarget::JspiSuspend);
             continue;
         }
+        if import.module == "jspi" && import.name == "await_eager" {
+            resolved.push(ImportTarget::JspiSuspendEager);
+            continue;
+        }
         if import.module == "wasm:string-constants" {
             resolved.push(ImportTarget::StringConst(std::sync::Arc::from(
                 import.name.as_str(),

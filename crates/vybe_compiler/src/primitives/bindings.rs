@@ -600,7 +600,6 @@ impl Compiler {
                     .unwrap_or_else(|| self.canon(name));
                 let idx = self.str_const(&cname);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-                self.emit(Op::DROP);
                 return;
             }
             self.emit_u16(Op::LOCAL_GET, value_slot);
@@ -616,7 +615,6 @@ impl Compiler {
             let bare_name = self.canon(name);
             let field_idx = self.str_const(&bare_name);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, field_idx);
-            self.emit(Op::DROP);
             if self.defined_globals.contains(&bare_name) {
                 self.emit_u16(Op::LOCAL_GET, value_slot);
                 self.emit_global_write(&bare_name);

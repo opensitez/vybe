@@ -6,6 +6,7 @@
 //!   --dump, -d        Disassemble bytecode and exit (no run)
 //!   --dump-ast        Parse and print the prepared common AST, then exit
 //!   --emit-wasm, -w   Compile to .wasm binary and exit
+//!   --entry, -e NAME  Override the entry symbol (ld -e style; Class.Method for static methods)
 //!   --eval CODE       Compile and run source from a string
 //!   --lang NAME       Language to use with --eval
 //!   --virtual-path P  Virtual source path to use with --eval
@@ -234,6 +235,10 @@ pub fn run() {
     let mut capture: Option<String> = None;
     let mut capture_control: Option<String> = None;
     let mut chunk_filter = None;
+    // `--entry <name>` — override the linker's default entry symbol, `ld -e`
+    // style (`name` for a free function, `Class.Method` for a static method).
+    // Removes the need for a project file just to pick the entry point.
+    let mut entry_override: Option<String> = None;
     // Every non-flag positional is a source file. Several files link into one
     // bundle (C-compiler style); the first is the entry file.
     let mut file_args: Vec<String> = Vec::new();
@@ -251,6 +256,13 @@ pub fn run() {
             "--dump" | "-d" => dump = true,
             "--dump-ast" => dump_ast = true,
             "--emit-wasm" | "-w" => emit_wasm = true,
+            "--entry" | "-e" => {
+                let Some(name) = iter.next() else {
+                    eprintln!("Missing value for --entry");
+                    std::process::exit(1);
+                };
+                entry_override = Some(name.clone());
+            }
             "--eval" => {
                 let Some(code) = iter.next() else {
                     eprintln!("Missing value for --eval");
@@ -490,6 +502,15 @@ pub fn run() {
         }
     };
 
+    let mut bundle = bundle;
+    if let Some(spec) = entry_override.as_ref() {
+        bundle.entry_point = match spec.split_once('.') {
+            Some((class, method)) => vybe_compiler::bundle::EntryPoint::Method(
+                class.to_string(),
+                method.to_string(),
+            ),
+            None => vybe_compiler::bundle::EntryPoint::Function(spec.clone()) };
+    }
     eprintln!(
         "[vybex] Project '{}', sources={}, entry={:?}",
         bundle.name,

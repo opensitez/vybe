@@ -565,7 +565,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, key_slot);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit(Op::ARRAY_SET);
-        self.emit(Op::DROP);
     }
 
     pub(super) fn emit_global_map_set_const(
@@ -579,7 +578,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, key_slot);
         self.emit_const(value);
         self.emit(Op::ARRAY_SET);
-        self.emit(Op::DROP);
     }
 
     pub(super) fn emit_global_map_set_null(&mut self, map_name: &str, key_slot: u16) {
@@ -588,7 +586,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, key_slot);
         self.emit_null();
         self.emit(Op::ARRAY_SET);
-        self.emit(Op::DROP);
     }
 
     pub(super) fn emit_record_rows_cache(&mut self, file_slot: u16, rows_slot: u16, len_slot: u16) {
@@ -883,7 +880,6 @@ impl Compiler {
             self.compile_expr(&number.value)?;
             let key = self.str_const("number");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-            self.emit(Op::DROP);
         }
 
         if let Some(source) = args.get(1) {
@@ -891,7 +887,6 @@ impl Compiler {
             self.compile_expr(&source.value)?;
             let key = self.str_const("source");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-            self.emit(Op::DROP);
         }
 
         let line = self.line;

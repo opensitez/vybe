@@ -26,7 +26,6 @@ pub fn emit_tag(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_dup(line);
     chunks[current].emit_bool_const(true, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, tag, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Pack the top `n` stack values into a shared multi-value packet.
