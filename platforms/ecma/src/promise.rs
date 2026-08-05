@@ -714,7 +714,7 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let cb = args.first().cloned().unwrap_or(Value::Undefined);
             if is_callable(&cb) {
-                ctx.queue_microtask(cb, Value::Undefined);
+                ctx.queue_ready(cb, Value::Undefined);
             }
             Value::Undefined
         }),
@@ -783,7 +783,7 @@ fn finally_impl(ctx: &mut HostContext, p: Value, on_finally: Value) -> Value {
         "fulfilled" | "rejected" => {
             let result_promise = pending_promise_with_id(ctx);
             let reaction = finally_reaction(result_promise.clone(), state.as_str(), on_finally);
-            ctx.queue_microtask(reaction, value);
+            ctx.queue_ready(reaction, value);
             result_promise
         }
         // Pending: register a reaction so onFinally runs (and can override with a
@@ -891,7 +891,7 @@ fn queue_promise_reaction(
     value: Value,
 ) {
     let reaction = promise_reaction(result_promise, state, on_fulfilled, on_rejected);
-    ctx.queue_microtask(reaction, value);
+    ctx.queue_ready(reaction, value);
 }
 
 fn run_reaction(
@@ -940,8 +940,8 @@ fn run_reaction(
                         .unwrap_or(Value::Undefined);
                     let (ts, tv) = read_promise_state(&temp);
                     match ts.as_str() {
-                        "fulfilled" => ctx.queue_microtask(preserve, tv),
-                        "rejected" => ctx.queue_microtask(reject_fwd, tv),
+                        "fulfilled" => ctx.queue_ready(preserve, tv),
+                        "rejected" => ctx.queue_ready(reject_fwd, tv),
                         _ => {
                             add_reaction(&temp, preserve, reject_fwd, pending_promise_with_id(ctx))
                         }
@@ -1040,7 +1040,7 @@ fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Val
             remember_thenable_resolution(promise, &value);
             if let Some(&job_idx) = THENABLE_JOB_IDX.get() {
                 let job = bound_settler3(job_idx, promise.clone(), value, then_fn);
-                ctx.queue_microtask(job, Value::Undefined);
+                ctx.queue_ready(job, Value::Undefined);
             }
         }
         Ok(None) => mutate_promise_state(ctx, promise, "fulfilled", value) }

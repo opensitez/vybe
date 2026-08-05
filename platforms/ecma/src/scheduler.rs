@@ -4,14 +4,15 @@
 //! This is the loop that used to live inside the WASM runtime (`jspi.rs`),
 //! moved to the layer whose spec defines it: jobs and their drain-to-empty
 //! discipline are ECMA-262 §8.6/§9.5 (`HostEnqueuePromiseJob`), the
-//! one-task-per-turn structure is HTML's processing model. The module's
-//! DECLARED contract (`vm.scheduling`, from the profile's `[async]` section)
-//! chooses between drain-to-empty (`TieredJobs`) and asyncio's
-//! ready-at-turn-start FIFO (`SingleReadyQueue`).
+//! one-task-per-turn structure is HTML's processing model. Time-deferred work
+//! (timers) is not this crate's either — HTML owns it, `platforms/web`'s
+//! wheel stores it, and the drain reaches it only through the VM's
+//! `DeferredSource` registrations (`wasi:io/poll` shape).
 //!
-//! Stateless by design: all state (queues, fibers, the declared policy) lives
-//! on the VM; the scheduler reads it through the mechanism surface
-//! (`run_scheduled_callback`, `resume_scheduled_fiber`, `event_loop`).
+//! Stateless by design: all state (the ready queue, fibers, the host wheels)
+//! lives on the VM or with the host that owns it; the scheduler reads it
+//! through the mechanism surface (`run_scheduled_callback`,
+//! `resume_scheduled_fiber`, `event_loop`, `next_due_deferred`).
 
 use vybe_runtime::VM;
 use vybe_runtime::error::VMError;
@@ -24,21 +25,11 @@ impl Scheduler for EcmaScheduler {
     fn turn(&self, vm: &mut VM) -> Result<bool, VMError> {
         let mut ran = false;
 
-        // 1. The job queue, under the module's declared discipline.
-        let drain_to_empty = matches!(
-            vm.scheduling.queues,
-            vybe_ast::QueueDiscipline::TieredJobs
-        );
-        let mut ready_at_turn_start = if drain_to_empty {
-            usize::MAX
-        } else {
-            vm.event_loop.borrow().immediate.len()
-        };
+        // 1. The job queue: drained to EMPTY before the next task — the §9.5
+        // job checkpoint. This is mechanics, not a per-language property: a
+        // language whose contract differs says so in its normalized AST ops
+        // (which tier its lowerings enqueue on), never via a runtime flag.
         loop {
-            if ready_at_turn_start == 0 {
-                break;
-            }
-            ready_at_turn_start = ready_at_turn_start.saturating_sub(1);
             let task = vm.event_loop.borrow_mut().next_immediate();
             let Some(task) = task else { break };
             ran = true;
@@ -49,16 +40,14 @@ impl Scheduler for EcmaScheduler {
                 Task::ResumeFiber(fiber) => {
                     vm.resume_scheduled_fiber(fiber)?;
                 }
-                _ => {}
             }
         }
 
         // 2. Wait for, then run, at most ONE deferred task (HTML: one task
         // per turn; the next job checkpoint follows on the next turn).
-        if vm.event_loop.borrow().has_pending() {
+        if vm.deferred_pending() {
             self.wait(vm);
-            let timer = vm.event_loop.borrow_mut().next_ready_timer();
-            if let Some(Task::Timer { callback, .. }) = timer {
+            if let Some(callback) = vm.next_due_deferred() {
                 vm.run_scheduled_callback(&callback, &[])?;
                 ran = true;
             }
@@ -67,10 +56,10 @@ impl Scheduler for EcmaScheduler {
     }
 
     fn has_pending(&self, vm: &VM) -> bool {
-        vm.event_loop.borrow().has_pending()
+        vm.event_loop.borrow().has_pending() || vm.deferred_pending()
     }
 
     fn wait(&self, vm: &VM) {
-        vm.event_loop.borrow().wait_for_next();
+        vm.wait_for_deferred();
     }
 }
