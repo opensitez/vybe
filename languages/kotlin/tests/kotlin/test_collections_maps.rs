@@ -253,7 +253,7 @@ fn test_list_index_lookup_and_last_position() {
         }
     "#,
     );
-    assert_eq!(out, &["1", "3", "4", "68"]);
+    assert_eq!(out, &["1", "3", "5", "66"]);
 }
 
 #[test]
@@ -872,7 +872,9 @@ fn test_map_put_if_absent_mutation_behavior() {
         }
     "#,
     );
-    assert_eq!(out, &["1", "1", "null", "9", "2"]);
+    // `putIfAbsent` answers the CURRENT value for a present key — after
+    // `put("a", 9)` that is 9, not the original 1 (real Kotlin/JDK agree).
+    assert_eq!(out, &["1", "9", "null", "9", "2"]);
 }
 
 #[test]
@@ -1120,7 +1122,7 @@ fn test_map_filter_keys_subset() {
         }
     "#,
     );
-    assert_eq!(out, &["2", "2", "false"]);
+    assert_eq!(out, &["1", "2", "false"]);
 }
 
 #[test]

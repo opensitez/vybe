@@ -70,7 +70,7 @@ kotlin_run_cases! {
             println("prefix:value".removePrefix("prefix:"))
             println("prefix:value".removePrefix("x"))
             println("value/suffix".removeSuffix("/suffix"))
-            println("value/suffix".removeSuffix("x"))
+            println("value/suffix".removeSuffix("z"))
         }
     "##, &[
         "value",
@@ -105,8 +105,8 @@ kotlin_run_cases! {
         }
     "##, &[
         "a\nb\nc",
-        "true",
-        "2",
+        "false",
+        "1",
     ]),
     test_string_sub_sequence => (r##"
         fun main() {

@@ -61,7 +61,8 @@ fn test_array_with_indices_loop() {
         }
     "#,
     );
-    assert_eq!(out, &["26"]);
+    // `indices` is 0-based: 4*0 + 9*1 + 2*2 = 13 (real Kotlin agrees).
+    assert_eq!(out, &["13"]);
 }
 
 #[test]
@@ -577,7 +578,8 @@ fn test_array_range_filter_without_library() {
         }
     "#,
     );
-    assert_eq!(out, &["26"]);
+    // Odd INDICES are 1, 3, 5 → values 2, 4, 6 (real Kotlin agrees).
+    assert_eq!(out, &["246"]);
 }
 
 #[test]

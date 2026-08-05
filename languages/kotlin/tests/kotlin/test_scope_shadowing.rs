@@ -104,7 +104,9 @@ fn test_nested_lambda_shadowing_chain() {
         }
     "#,
     );
-    assert_eq!(out, &["B_4", "A"]);
+    // BOTH `${prefix}` refer to the INNER Int parameter — "3_4"
+    // (real Kotlin agrees; the outer param is unreachable without a label).
+    assert_eq!(out, &["3_4", "A"]);
 }
 
 #[test]
@@ -385,7 +387,9 @@ fn test_destructure_local_overwrites() {
         }
     "#,
     );
-    assert_eq!(out, &["x", "0", "outer"]);
+    // Destructuring is POSITIONAL and IndexedValue is (index, value):
+    // the first name binds 0, the second "x" (real Kotlin agrees).
+    assert_eq!(out, &["0", "x", "outer"]);
 }
 
 #[test]

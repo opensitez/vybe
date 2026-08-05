@@ -230,7 +230,9 @@ fn test_kotlin_time_duration_to_double_seconds() {
         }
     "#,
     );
-    assert_eq!(out, &["1500", "1.5"]);
+    // Real Kotlin agrees: `toDouble` answers a Double, and
+    // `println(1500.0)` prints "1500.0" — never "1500".
+    assert_eq!(out, &["1500.0", "1.5"]);
 }
 
 #[test]

@@ -31,7 +31,6 @@ pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     get(&mut chunks[current], initial, line);
     let key = chunks[current].add_constant(vybe_runtime::Value::String(BUFFER_KEY.into()));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 pub fn emit_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -74,6 +73,17 @@ fn append_slot(
     line: u32,
 ) {
     let key = chunks[current].add_constant(vybe_runtime::Value::String(BUFFER_KEY.into()));
+    // Appending a CHAR ARRAY appends its characters, not "x,y,z".
+    get(&mut chunks[current], value, line);
+    let is_arr = chunks[current].add_import("ecma:array", "isArray");
+    chunks[current].emit_call(is_arr, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], value, line);
+    chunks[current].emit_string_const("", line);
+    vybe_compiler::primitives::collections::emit_join(chunks, current, line);
+    set(&mut chunks[current], value, line);
+    chunks[current].emit_end(line);
     // Appending another BUILDER appends its text, not "[object StringBuilder]".
     get(&mut chunks[current], value, line);
     let tof = chunks[current].add_import("ecma:value", "typeof");
@@ -104,7 +114,6 @@ fn append_slot(
         strings::emit_str_concat(&mut chunks[current], line);
     }
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], sb, line);
 }
 
@@ -137,7 +146,6 @@ fn buffer_set(chunks: &mut [Chunk], current: usize, sb: u16, line: u32) {
     get(&mut chunks[current], sb, line);
     get(&mut chunks[current], tmp, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunks[current].emit_op(Op::DROP, line);
     get(&mut chunks[current], sb, line);
 }
 
@@ -320,4 +328,44 @@ pub fn emit_is_not_empty(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     emit_is_empty(chunks, current, argc, line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `sb.substring(from[, to])` / `sb.subSequence(from, to)`.
+pub fn emit_substring(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc >= 3 {
+        let to = chunks[current].alloc_scratch(1);
+        let from = chunks[current].alloc_scratch(1);
+        let sb = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], to, line);
+        set(&mut chunks[current], from, line);
+        set(&mut chunks[current], sb, line);
+        buffer_slice(chunks, current, sb, from, Some(to), line);
+    } else {
+        let from = chunks[current].alloc_scratch(1);
+        let sb = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], from, line);
+        set(&mut chunks[current], sb, line);
+        buffer_slice(chunks, current, sb, from, None, line);
+    }
+}
+
+/// `sb.replace(from, to, replacement)` — JDK end-exclusive splice.
+pub fn emit_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+    let rep = chunks[current].alloc_scratch(1);
+    let to = chunks[current].alloc_scratch(1);
+    let from = chunks[current].alloc_scratch(1);
+    let sb = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], rep, line);
+    set(&mut chunks[current], to, line);
+    set(&mut chunks[current], from, line);
+    set(&mut chunks[current], sb, line);
+    let zero = chunks[current].alloc_scratch(1);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(&mut chunks[current], zero, line);
+    buffer_slice(chunks, current, sb, zero, Some(from), line);
+    get(&mut chunks[current], rep, line);
+    strings::emit_str_concat_coercing(&mut chunks[current], line);
+    buffer_slice(chunks, current, sb, to, None, line);
+    strings::emit_str_concat(&mut chunks[current], line);
+    buffer_set(chunks, current, sb, line);
 }

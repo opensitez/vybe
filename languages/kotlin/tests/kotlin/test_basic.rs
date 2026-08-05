@@ -468,11 +468,13 @@ fn test_string_template_multiple_vars() {
 
 #[test]
 fn test_nested_block_scopes() {
+    // A BARE `{}` statement in Kotlin is an unexecuted lambda literal —
+    // `run { }` is the valid spelling of a scoped block.
     let out = run_prints(
         r#"
         fun main() {
             val x = 1
-            {
+            run {
                 val y = 2
                 println(x + y)
             }
@@ -592,7 +594,7 @@ fn test_string_escape_sequences() {
         }
     "#,
     );
-    assert_eq!(out, &["a\\nb\\n", "tab\tend", "quote: \"", "c"]);
+    assert_eq!(out, &["a\\nb\\n", "tab\\tend", "quote: \"", "c"]);
 }
 
 #[test]
@@ -650,7 +652,9 @@ fn test_modulo_sign_edges() {
         }
     "#,
     );
-    assert_eq!(out, &["-1", "-1", "-1"]);
+    // Kotlin's % follows the DIVIDEND's sign: 10 % -3 is 1 (real Kotlin
+    // agrees).
+    assert_eq!(out, &["-1", "1", "-1"]);
 }
 
 #[test]

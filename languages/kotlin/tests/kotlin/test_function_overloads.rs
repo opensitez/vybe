@@ -42,7 +42,9 @@ fn test_overload_with_default_and_no_default_call() {
         }
     "#,
     );
-    assert_eq!(out, &["double:1", "double:2ok"]);
+    // Kotlin prefers the candidate that needs NO default arguments —
+    // `mark(1)` resolves to the 1-parameter overload (real Kotlin agrees).
+    assert_eq!(out, &["single", "double:2ok"]);
 }
 
 #[test]

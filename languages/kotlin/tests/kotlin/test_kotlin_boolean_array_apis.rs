@@ -106,5 +106,7 @@ kotlin_run_cases! {
             }
             println(out)
         }
-    "#, vec![String::from("1010")]),
+    "#, vec![String::from("1000")]),
+    // ^ x && y in pair order (t,t)(t,f)(f,t)(f,f) → 1,0,0,0 (real Kotlin
+    // agrees).
 }

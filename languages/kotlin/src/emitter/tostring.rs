@@ -191,6 +191,21 @@ fn emit_object_to_string(
     expressions::emit_rich_to_string(&mut chunks[current], v, line);
     chunks[current].emit_else(line);
 
+    // A StringBuilder renders as its TEXT — `"x$sb"` and `println(sb)` must
+    // not print `[object StringBuilder]`.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    let buf_key = chunks[current]
+        .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__buffer")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    let buf = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, buf, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, buf, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, buf, line);
+    chunks[current].emit_else(line);
+
     emit_is_set(chunks, current, v, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
@@ -214,9 +229,10 @@ fn emit_object_to_string(
     // second copy of the calling convention that would drift from it.
     expressions::emit_rich_to_string(&mut chunks[current], v, line);
 
-    // One `end` per `if_value` above — slot, set, map. Getting this count
-    // wrong does not fail to compile: it silently rebalances the surrounding
-    // blocks, and every later value renders as its NEIGHBOUR.
+    // One `end` per `if_value` above — slot, BUFFER, set, map. Getting this
+    // count wrong does not fail to compile: it silently rebalances the
+    // surrounding blocks, and every later value renders as its NEIGHBOUR.
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -376,6 +392,10 @@ pub fn emit_join_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
     let sep = chunks[current].alloc_scratch(1);
     let arr = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, sep, line);
+    // Materialize first: a dict-backed SET (or a map) joined as a bare array
+    // answered the empty string — the list view iterates set VALUES, map
+    // entries, string chars, and passes arrays through.
+    crate::emitter::collections::emit_dict_as_list(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
     emit_join_rendered_local(chunks, current, arr, sep, None, render_idx, line);
 }

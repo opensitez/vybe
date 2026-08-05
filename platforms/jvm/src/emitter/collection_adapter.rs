@@ -532,6 +532,27 @@ pub fn emit_iterator_next(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], iterator, line);
     get_object_prop(chunks, current, iterator, "__index", line);
     set(&mut chunks[current], index, line);
+    // `next()` past the end THROWS NoSuchElementException (Iterator contract);
+    // the bare index read answered undefined.
+    get(&mut chunks[current], index, line);
+    {
+        let it = iterator;
+        get_iterator_list(chunks, current, it, line);
+    }
+    collections::emit_len(chunks, current, line);
+    ops::emit_dyn_ge(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_struct_new(0, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "NoSuchElementException",
+        line,
+    );
+    errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
     set_object_prop_from_local(chunks, current, iterator, "__last", index, line);
     get(&mut chunks[current], index, line);
     chunks[current].emit_i32_const(1, line);
@@ -681,6 +702,24 @@ pub fn emit_collection_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     get(&mut chunks[current], source, line);
     collections::emit_len(chunks, current, line);
     set(&mut chunks[current], len, line);
+    // `Collections.copy` THROWS IndexOutOfBoundsException when the
+    // destination is shorter than the source (javadoc-specified).
+    get(&mut chunks[current], dest, line);
+    collections::emit_len(chunks, current, line);
+    get(&mut chunks[current], len, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_struct_new(0, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("Source does not fit in dest", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "IndexOutOfBoundsException",
+        line,
+    );
+    errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     set(&mut chunks[current], index, line);
 

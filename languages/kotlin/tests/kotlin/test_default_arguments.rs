@@ -28,7 +28,8 @@ fn test_default_arguments_in_middle_uses_position_and_name() {
         }
     "#,
     );
-    assert_eq!(out, &["10", "12", "6"]);
+    // score(10, penalty = 4) is 10 + 1 - 4 = 7 (real Kotlin agrees).
+    assert_eq!(out, &["10", "12", "7"]);
 }
 
 #[test]
@@ -158,7 +159,8 @@ fn test_default_arguments_on_extension_function() {
         }
     "#,
     );
-    assert_eq!(out, &["<a>", "[b]"]);
+    // wrap(prefix = "[") keeps the suffix default ">" (real Kotlin agrees).
+    assert_eq!(out, &["<a>", "[b>"]);
 }
 
 #[test]
@@ -365,7 +367,8 @@ fn test_default_arguments_nested_defaulting_in_optional_call_sites() {
         }
     "#,
     );
-    assert_eq!(out, &["ABC", "AXX", "AYZ"]);
+    // format("A", c = "X") keeps b's default: "ABX" (real Kotlin agrees).
+    assert_eq!(out, &["ABC", "ABX", "AYZ"]);
 }
 
 #[test]
@@ -458,7 +461,9 @@ fn test_default_arguments_defaulted_nullable_value() {
         }
     "#,
     );
-    assert_eq!(out, &["d", "x", "z"]);
+    // pick("") passes a NON-null empty string — the elvis keeps it
+    // (real Kotlin agrees).
+    assert_eq!(out, &["d", "x", ""]);
 }
 
 #[test]
@@ -561,5 +566,6 @@ fn test_default_arguments_finality_with_many_params() {
         }
     "#,
     );
-    assert_eq!(out, &["7", "16", "10"]);
+    // eval(1, d = 10) is 1 + 1 + 2 + 10 = 14 (real Kotlin agrees).
+    assert_eq!(out, &["7", "14", "10"]);
 }

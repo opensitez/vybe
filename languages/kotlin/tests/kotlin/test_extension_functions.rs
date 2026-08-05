@@ -175,7 +175,9 @@ fn test_extension_function_chain_with_let() {
         }
     "#,
     );
-    assert_eq!(out, &["bbaaaak"]);
+    // Real Kotlin agrees: "a".repeat(3)+"k" is "aaak", then "bb"+"aaak"
+    // is "bbaaak" — six characters, not seven.
+    assert_eq!(out, &["bbaaak"]);
 }
 
 #[test]

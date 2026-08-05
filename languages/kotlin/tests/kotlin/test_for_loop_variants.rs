@@ -258,7 +258,10 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-    &["33"]
+    // Real Kotlin agrees: the shadowing `val i`'s INITIALIZER still sees the
+    // loop variable (the new binding starts after its declaration), so the
+    // body adds 11+12+13 = 36.
+    &["36"]
 );
 
 kotlin_run_test!(
@@ -378,7 +381,9 @@ kotlin_run_test!(
             println(total)
         }
     "#,
-    &["30"]
+    // Real Kotlin agrees: 0..20 step 5 visits 0,5,10,15,20 — the sum is 50
+    // (20 IS included; the old "30" assumed an exclusive end).
+    &["50"]
 );
 
 kotlin_run_test!(
@@ -392,7 +397,8 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-    &["14"]
+    // Real Kotlin agrees: multiples of 4 in 10 downTo 1 are 8 and 4 — sum 12.
+    &["12"]
 );
 
 kotlin_run_test!(

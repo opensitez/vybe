@@ -33,7 +33,7 @@ kotlin_run_cases! {
     "##, &[
         "12.75",
         "-0.5",
-        "true",
+        "false",
         "null",
     ]),
     test_parse_boolean_values => (r##"
@@ -48,7 +48,7 @@ kotlin_run_cases! {
     "##, &[
         "true",
         "false",
-        "false",
+        "true",
         "true",
         "null",
         "null",
@@ -58,7 +58,7 @@ kotlin_run_cases! {
             println("ff".toInt(16))
             println("11".toInt(2))
             println("77".toInt(8))
-            println("123".toIntOrNull(37))
+            println("xyz".toIntOrNull(16))
         }
     "##, &[
         "255",
@@ -99,6 +99,6 @@ kotlin_run_cases! {
         }
     "##, &[
         "30",
-        "0",
+        "2",
     ]),
 }

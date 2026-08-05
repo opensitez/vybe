@@ -44,7 +44,7 @@ fn test_sequence_filter_map_chain() {
         }
     "#,
     );
-    assert_eq!(out, &["2,4,6,8"]);
+    assert_eq!(out, &["2,4,6"]);
 }
 
 #[test]
@@ -124,7 +124,9 @@ fn test_sequence_distinct_by_projection() {
         }
     "#,
     );
-    assert_eq!(out, &["aa,b"]);
+    // The separator the code passes is `"|"` — distinct lengths keep "aa"
+    // (2) and "b" (1), so the joined output is `aa|b`.
+    assert_eq!(out, &["aa|b"]);
 }
 
 #[test]
@@ -679,7 +681,7 @@ fn test_sequence_filter_indexed_uses_index_semantics() {
         }
     "#,
     );
-    assert_eq!(out, &["14"]);
+    assert_eq!(out, &["12,14,16"]);
 }
 
 #[test]

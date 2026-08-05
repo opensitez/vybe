@@ -31,7 +31,9 @@ kotlin_run_cases! {
             println(windows.size)
             println(windows[2].joinToString(","))
         }
-    "##, vec![String::from("2"), String::from("3")]),
+    "##, vec![String::from("3"), String::from("3")]),
+    // ^ partialWindows keeps the tails: [1,2], [2,3], [3] — size 3, and
+    // windows[2] is the partial [3] (real Kotlin agrees).
     test_windowed_step => (r##"
         fun main() {
             val values = listOf(1, 2, 3, 4, 5, 6)

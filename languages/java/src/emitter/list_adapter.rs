@@ -3140,7 +3140,7 @@ pub fn emit_queue_remove_checked(chunks: &mut [Chunk], current: usize, line: u32
     get(&mut chunks[current], value, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    emit_java_exception_throw(chunks, current, "java.util.NoSuchElementException", line);
+    emit_java_exception_throw(chunks, current, "NoSuchElementException", line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], value, line);
 }
@@ -3152,7 +3152,7 @@ pub fn emit_queue_element_checked(chunks: &mut [Chunk], current: usize, line: u3
     get(&mut chunks[current], value, line);
     chunks[current].emit_op(Op::REF_IS_NULL, line);
     chunks[current].emit_if_value(line);
-    emit_java_exception_throw(chunks, current, "java.util.NoSuchElementException", line);
+    emit_java_exception_throw(chunks, current, "NoSuchElementException", line);
     chunks[current].emit_end(line);
     get(&mut chunks[current], value, line);
 }

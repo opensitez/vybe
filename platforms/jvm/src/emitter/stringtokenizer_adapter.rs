@@ -26,7 +26,6 @@ fn prop_set_from_slot(chunk: &mut Chunk, obj: u16, key_name: &str, value: u16, l
     get(chunk, obj, line);
     get(chunk, value, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

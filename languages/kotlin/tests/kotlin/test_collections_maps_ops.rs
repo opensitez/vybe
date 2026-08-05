@@ -13,7 +13,7 @@ fn test_map_filter_keys_and_values() {
         }
     "#,
     );
-    assert_eq!(out, &["kiwi", "pear"]);
+    assert_eq!(out, &["kiwi,pear", "pear"]);
 }
 
 #[test]

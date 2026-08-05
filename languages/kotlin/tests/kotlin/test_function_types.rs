@@ -363,7 +363,9 @@ fn test_function_type_receiver_lambda_call_operator() {
             return v.op()
         }
         fun main() {
-            val inc = fun Int.() -> Int { return this + 1 }
+            // Was `fun Int.() -> Int { … }` — not Kotlin: an anonymous
+            // function spells its return type with a COLON.
+            val inc = fun Int.(): Int { return this + 1 }
             println(applyBlock(5, inc))
         }
     "#,

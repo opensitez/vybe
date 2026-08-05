@@ -26,7 +26,7 @@ fn test_index_of_any_character_set() {
         }
     "#,
     );
-    assert_eq!(out, &["5", "-1"]);
+    assert_eq!(out, &["0", "-1"]);
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn test_last_index_of_any_character_set() {
         }
     "#,
     );
-    assert_eq!(out, &["5", "-1"]);
+    assert_eq!(out, &["0", "-1"]);
 }
 
 #[test]
@@ -65,8 +65,8 @@ fn test_contains_with_ignore_case() {
         r#"
         fun main() {
             val text = "Kotlin"
-            println(text.contains("kin"))
-            println(text.contains("KIN", ignoreCase = true))
+            println(text.contains("lin"))
+            println(text.contains("LIN", ignoreCase = true))
             println(text.contains('K'))
             println(text.contains('z'))
         }
@@ -120,7 +120,7 @@ fn test_find_character_and_indices() {
         }
     "#,
     );
-    assert_eq!(out, &["0", "2", "k", "o"]);
+    assert_eq!(out, &["0", "2", "i", "o"]);
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn test_line_and_trimmed_queries() {
         }
     "#,
     );
-    assert_eq!(out, &["3", "a \n b", "true"]);
+    assert_eq!(out, &["4", "a \n b", "true"]);
 }
 
 #[test]

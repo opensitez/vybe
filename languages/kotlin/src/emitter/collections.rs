@@ -1,7 +1,9 @@
 //! Kotlin collection adapters that need Kotlin-specific return contracts.
 
 use std::sync::Arc;
-use vybe_compiler::primitives::{collections as common_collections, dict, instructions::host, ops};
+use vybe_compiler::primitives::{
+    collections as common_collections, dict, instructions::host, loops, ops,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::Value;
 use vybe_runtime::opcode::Op;
@@ -18,12 +20,41 @@ fn set(chunk: &mut Chunk, slot: u16, line: u32) {
 ///
 /// Arrays/lists append and return `true`; Kotlin's dict-backed sets use
 /// `MutableSet.add` duplicate semantics and return whether the set changed.
+/// Throw UnsupportedOperationException when `slot` carries a
+/// `Collections.unmodifiable*`/`singleton` marker (the jvm platform stamps
+/// `__java_immutable_list` on lists AND sets, `__java_immutable_map` on maps).
+pub fn emit_throw_if_java_immutable(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    slot: u16,
+    line: u32,
+) {
+    for key in ["__java_immutable_list", "__java_immutable_map"] {
+        get(&mut chunks[current], slot, line);
+        chunks[current].emit_string_const(key, line);
+        host::emit(&mut chunks[current], "ecma:object", "get", 2, line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_string_const("collection is unmodifiable", line);
+        crate::emitter::nullability::emit_exception(
+            chunks,
+            current,
+            1,
+            "UnsupportedOperationException",
+            line,
+        );
+        vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    }
+}
+
 pub fn emit_add(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     let collection = chunks[current].alloc_scratch(1);
 
     set(&mut chunks[current], value, line);
     set(&mut chunks[current], collection, line);
+    emit_throw_if_java_immutable(chunks, current, collection, line);
 
     get(&mut chunks[current], collection, line);
     host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
@@ -116,7 +147,26 @@ pub fn emit_set_add(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u3
 
 /// Kotlin dict-backed set `size`. The marker property is implementation detail.
 pub fn emit_set_size(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    // `java.util.HashSet` (and other jvm sets) are ARRAY-backed — the dict
+    // size probe threw on them.
+    let v = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], v, line);
+    get(&mut chunks[current], v, line);
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], v, line);
+    common_collections::emit_len(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], v, line);
     dict::emit_method_size(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+/// `CharArray.concatToString()` — the chars, joined bare.
+pub fn emit_concat_to_string(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    chunks[current].emit_string_const("", line);
+    common_collections::emit_join(chunks, current, line);
 }
 
 fn emit_collection_values_array(
@@ -132,8 +182,41 @@ fn emit_collection_values_array(
     get(&mut chunks[current], collection, line);
     common_collections::emit_clone(chunks, current, line);
     chunks[current].emit_else(line);
-    get(&mut chunks[current], collection, line);
-    dict::emit_values(chunks, current, line);
+    // From `__keys`, NOT `ecma:object.entries`: JS enumerates integer-like
+    // keys ASCENDING, so `linkedSetOf(4, 1, 3)` iterated sorted instead of
+    // in insertion order. A set LITERAL's `__keys` also lists the
+    // `__kt_set` marker (and `withDefault` maps their provider) — skipped.
+    {
+        let keys = chunks[current].alloc_scratch(1);
+        let result = chunks[current].alloc_scratch(1);
+        let idx = chunks[current].alloc_scratch(1);
+        let key = chunks[current].alloc_scratch(1);
+        get(&mut chunks[current], collection, line);
+        dict::emit_keys(chunks, current, line);
+        set(&mut chunks[current], keys, line);
+        common_collections::emit_array_new(chunks, current, 0, line);
+        set(&mut chunks[current], result, line);
+        let state = loops::emit_for_in_start(chunks, current, keys, idx, line);
+        set(&mut chunks[current], key, line);
+        get(&mut chunks[current], key, line);
+        chunks[current].emit_string_const(crate::emitter::tostring::SET_MARKER, line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        get(&mut chunks[current], key, line);
+        chunks[current].emit_string_const("__kt_default", line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_OR, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_if(line);
+        get(&mut chunks[current], result, line);
+        get(&mut chunks[current], collection, line);
+        get(&mut chunks[current], key, line);
+        dict::emit_get_dynamic(chunks, current, line);
+        common_collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_end(line);
+        loops::emit_for_in_end(chunks, current, idx, state, line);
+        get(&mut chunks[current], result, line);
+    }
     chunks[current].emit_end(line);
 }
 
@@ -144,7 +227,6 @@ fn emit_mark_kotlin_set(chunks: &mut Vec<Chunk>, current: usize, out: u16, line:
     )));
     chunks[current].emit_bool_const(true, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, marker, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 /// Kotlin `toList()` / `toTypedArray()` for arrays and dict-backed sets.
@@ -551,11 +633,28 @@ pub fn emit_is_empty(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u
     ops::emit_dyn_eq(&mut chunks[current], line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
+    // StringBuilder: empty when its `__buffer` is.
+    get(&mut chunks[current], value, line);
+    let buf_key = chunks[current].add_constant(Value::String(Arc::from("__buffer")));
+    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
+    let buf = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], buf, line);
+    get(&mut chunks[current], buf, line);
+    chunks[current].emit_op(Op::REF_IS_NULL, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], buf, line);
+    vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+    chunks[current].emit_i32_const(0, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_else(line);
     get(&mut chunks[current], value, line);
     dict::emit_method_size(chunks, current, line);
     chunks[current].emit_i32_const(0, line);
     ops::emit_dyn_eq(&mut chunks[current], line);
     ops::emit_i32_to_bool(&mut chunks[current], line);
+    chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -586,7 +685,6 @@ pub fn emit_make_entry(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
         get(&mut chunks[current], slot, line);
         let key_idx = chunks[current].add_constant(Value::String(Arc::from(prop)));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
 }
 
@@ -614,7 +712,10 @@ pub fn emit_dict_as_list(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if_value(line);
+    // CLONE, not the array itself: `arr.toList()` is a snapshot in Kotlin —
+    // mutating the source must not show through.
     get(&mut chunks[current], v, line);
+    common_collections::emit_clone(chunks, current, line);
     chunks[current].emit_else(line);
 
     // A Set is its keys; a Map is its entries.
@@ -667,4 +768,114 @@ fn emit_entries_list(chunks: &mut Vec<Chunk>, current: usize, v: u16, line: u32)
     chunks[current].emit_op(Op::DROP, line);
     vybe_compiler::primitives::loops::emit_for_in_end(chunks, current, idx, state, line);
     get(&mut chunks[current], out, line);
+}
+
+/// `reverse()` — IN PLACE, answers Unit (`reversed()`/`reversedArray()` are
+/// the copying forms).
+pub fn emit_reverse_in_place(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    common_collections::emit_reverse(chunks, current, line);
+}
+
+/// `sortedArray()` — sorted COPY.
+pub fn emit_sorted_copy(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    common_collections::emit_clone(chunks, current, line);
+    common_collections::emit_sort(chunks, current, line);
+}
+
+/// `sortedArrayDescending()` — descending sorted COPY.
+pub fn emit_sorted_desc_copy(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    common_collections::emit_clone(chunks, current, line);
+    common_collections::emit_sort(chunks, current, line);
+    common_collections::emit_reverse(chunks, current, line);
+}
+
+/// `sort(fromIndex, toIndex)` — sort the RANGE in place.
+/// Stack: [arr, from, to] → [arr].
+pub fn emit_sort_range(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let to = chunks[current].alloc_scratch(1);
+    let from = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    let piece = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], to, line);
+    set(&mut chunks[current], from, line);
+    set(&mut chunks[current], arr, line);
+    get(&mut chunks[current], arr, line);
+    get(&mut chunks[current], from, line);
+    get(&mut chunks[current], to, line);
+    common_collections::emit_slice(chunks, current, line);
+    common_collections::emit_sort(chunks, current, line);
+    set(&mut chunks[current], piece, line);
+    // write the sorted run back: arr[from + i] = piece[i]
+    chunks[current].emit_i32_const(0, line);
+    set(&mut chunks[current], i, line);
+    let _block = chunks[current].emit_block(line);
+    let (_loop, _) = chunks[current].emit_loop_s(line);
+    get(&mut chunks[current], i, line);
+    get(&mut chunks[current], piece, line);
+    common_collections::emit_len(chunks, current, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+    get(&mut chunks[current], arr, line);
+    get(&mut chunks[current], from, line);
+    get(&mut chunks[current], i, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    get(&mut chunks[current], piece, line);
+    get(&mut chunks[current], i, line);
+    common_collections::emit_get(chunks, current, line);
+    common_collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    get(&mut chunks[current], i, line);
+    chunks[current].emit_i32_const(1, line);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(&mut chunks[current], i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    get(&mut chunks[current], arr, line);
+}
+
+/// `binarySearch(element, fromIndex, toIndex)` — Kotlin's member order vs
+/// Java's static `(a, from, to, key)`; reorder and delegate.
+/// Stack: [arr, key, from, to] → [index | -(insertion)-1].
+pub fn emit_binary_search_range(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    if argc < 4 {
+        // 1-arg form: [arr, key] — Java's order already.
+        vybe_platform_jvm::emitter::arrays_adapter::emit_binary_search(chunks, current, argc, line);
+        return;
+    }
+    let to = chunks[current].alloc_scratch(1);
+    let from = chunks[current].alloc_scratch(1);
+    let key = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], to, line);
+    set(&mut chunks[current], from, line);
+    set(&mut chunks[current], key, line);
+    set(&mut chunks[current], arr, line);
+    get(&mut chunks[current], arr, line);
+    get(&mut chunks[current], from, line);
+    get(&mut chunks[current], to, line);
+    get(&mut chunks[current], key, line);
+    vybe_platform_jvm::emitter::arrays_adapter::emit_binary_search(chunks, current, 4, line);
+}
+
+/// `toByteArray()` for ANY receiver — strings via the jvm encoder, arrays as
+/// a plain copy.
+pub fn emit_to_byte_array(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], v, line);
+    get(&mut chunks[current], v, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], v, line);
+    vybe_platform_jvm::emitter::io_adapter::emit_string_to_byte_array(chunks, current, argc, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], v, line);
+    common_collections::emit_clone(chunks, current, line);
+    chunks[current].emit_end(line);
 }

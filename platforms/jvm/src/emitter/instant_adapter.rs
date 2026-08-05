@@ -276,11 +276,46 @@ pub fn emit_local_date_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     make_time_from_ms_slots(chunks, current, ms, zero, zero, "LocalDate", line);
 }
 
+/// `YearMonth.parse("2024-05")` — a first-of-month LocalDate carries the
+/// year+month surface the type exposes.
+pub fn emit_year_month_parse(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_string_const("-01", line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    emit_local_date_parse(chunks, current, line);
+}
+
+/// `MonthDay.parse("--12-25")` — year 2000 (a leap year, so `--02-29`
+/// parses), month/day from the `--MM-dd` tail.
+pub fn emit_month_day_parse(chunks: &mut [Chunk], current: usize, line: u32) {
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    chunks[current].emit_string_const("2000-", line);
+    get(&mut chunks[current], s, line);
+    core_wasm::i32_const(&mut chunks[current], line, 2);
+    get(&mut chunks[current], s, line);
+    vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+    host::emit(&mut chunks[current], "ecma:string", "substring", 3, line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    emit_local_date_parse(chunks, current, line);
+}
+
 pub fn emit_local_time_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     let time = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], time, line);
     chunks[current].emit_string_const("1970-01-01T", line);
+    // "08:00" (minute precision) is a valid LocalTime — the host parser
+    // wants seconds, same normalization the datetime parse does.
     get(&mut chunks[current], time, line);
+    vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+    core_wasm::i32_const(&mut chunks[current], line, 5);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], time, line);
+    chunks[current].emit_string_const(":00", line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], time, line);
+    chunks[current].emit_end(line);
     vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     chunks[current].emit_string_const("Z", line);
     vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
@@ -292,6 +327,22 @@ pub fn emit_local_time_parse(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_local_datetime_parse(chunks: &mut [Chunk], current: usize, line: u32) {
+    // `LocalDateTime.parse` accepts MINUTE precision ("2024-01-01T00:00");
+    // the host date parser does not — every such value silently became NaN
+    // (and compareTo answered 1 for two equal parses). Normalize to seconds.
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    get(&mut chunks[current], s, line);
+    vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+    core_wasm::i32_const(&mut chunks[current], line, 16);
+    chunks[current].emit_op(Op::I32_EQ, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_string_const(":00", line);
+    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_end(line);
     chunks[current].emit_string_const("Z", line);
     vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
     host::emit(&mut chunks[current], "ecma:date", "parse", 1, line);
@@ -493,7 +544,29 @@ pub fn emit_zoned_datetime_parse(chunks: &mut [Chunk], current: usize, line: u32
     emit_offset_datetime_parse(chunks, current, line);
     let out = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], out, line);
+    // A `[Europe/Paris]` suffix IS the zone — the offset only stands in
+    // when the bracket form is absent (`value.zone.id` printed the offset).
+    let bracket = chunks[current].alloc_scratch(1);
+    get(&mut chunks[current], text, line);
+    chunks[current].emit_string_const("[", line);
+    vybe_compiler::primitives::strings::emit_index_of(&mut chunks[current], line);
+    set(&mut chunks[current], bracket, line);
+    get(&mut chunks[current], bracket, line);
+    core_wasm::f64_const(&mut chunks[current], line, 0.0);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if_value(line);
     prop_get(chunks, current, out, "offset", line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], text, line);
+    get(&mut chunks[current], bracket, line);
+    core_wasm::f64_const(&mut chunks[current], line, 1.0);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    get(&mut chunks[current], text, line);
+    vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    chunks[current].emit_op(Op::I32_SUB, line);
+    host::emit(&mut chunks[current], "ecma:string", "substring", 3, line);
+    chunks[current].emit_end(line);
     let zone = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], zone, line);
     set_zone_from_slot(chunks, current, out, zone, line);
@@ -943,20 +1016,85 @@ pub fn emit_period_get_years(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_period_between(chunks: &mut [Chunk], current: usize, line: u32) {
+    // Java's CALENDAR decomposition, not a day count: 2024-01-01 →
+    // 2024-03-11 is 2 months 10 days (the flat `/86400` answered 0y 0m 70d).
     let end = chunks[current].alloc_scratch(1);
     let start = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], end, line);
     set(&mut chunks[current], start, line);
-    prop_get(chunks, current, end, "sec", line);
-    prop_get(chunks, current, start, "sec", line);
-    chunks[current].emit_op(Op::F64_SUB, line);
-    core_wasm::f64_const(&mut chunks[current], line, 86400.0);
-    chunks[current].emit_op(Op::F64_DIV, line);
-    host::emit(&mut chunks[current], "ecma:math", "floor", 1, line);
+
+    fn component(
+        chunks: &mut [Chunk],
+        current: usize,
+        slot: u16,
+        getter: &'static str,
+        line: u32,
+    ) {
+        emit_epoch_milli_from_slot(chunks, current, slot, line);
+        host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
+        host::emit(&mut chunks[current], "ecma:date", getter, 1, line);
+    }
+
+    let months = chunks[current].alloc_scratch(1);
     let days = chunks[current].alloc_scratch(1);
+    let years = chunks[current].alloc_scratch(1);
+
+    // months = (y2 - y1) * 12 + (m2 - m1)
+    component(chunks, current, end, "getUTCFullYear", line);
+    component(chunks, current, start, "getUTCFullYear", line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    core_wasm::f64_const(&mut chunks[current], line, 12.0);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    component(chunks, current, end, "getUTCMonth", line);
+    component(chunks, current, start, "getUTCMonth", line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(&mut chunks[current], months, line);
+
+    // days = d2 - d1
+    component(chunks, current, end, "getUTCDate", line);
+    component(chunks, current, start, "getUTCDate", line);
+    chunks[current].emit_op(Op::F64_SUB, line);
     set(&mut chunks[current], days, line);
-    let zero = zero_slot(chunks, current, line);
-    make_period_from_slots(chunks, current, zero, zero, days, line);
+
+    // Borrow a month when days went negative: the borrowed month's length
+    // is the month BEFORE the end month (`Date.UTC(y2, m2, 0)` is its last
+    // day).
+    get(&mut chunks[current], days, line);
+    core_wasm::f64_const(&mut chunks[current], line, 0.0);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if(line);
+    get(&mut chunks[current], months, line);
+    core_wasm::f64_const(&mut chunks[current], line, 1.0);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    set(&mut chunks[current], months, line);
+    get(&mut chunks[current], days, line);
+    component(chunks, current, end, "getUTCFullYear", line);
+    component(chunks, current, end, "getUTCMonth", line);
+    for _ in 0..5 {
+        core_wasm::f64_const(&mut chunks[current], line, 0.0);
+    }
+    host::emit(&mut chunks[current], "ecma:date", "UTC", 7, line);
+    host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
+    host::emit(&mut chunks[current], "ecma:date", "getUTCDate", 1, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+    set(&mut chunks[current], days, line);
+    chunks[current].emit_end(line);
+
+    // years = trunc(months / 12); months -= years * 12
+    get(&mut chunks[current], months, line);
+    core_wasm::f64_const(&mut chunks[current], line, 12.0);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_op(Op::F64_TRUNC, line);
+    set(&mut chunks[current], years, line);
+    get(&mut chunks[current], months, line);
+    get(&mut chunks[current], years, line);
+    core_wasm::f64_const(&mut chunks[current], line, 12.0);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    set(&mut chunks[current], months, line);
+
+    make_period_from_slots(chunks, current, years, months, days, line);
 }
 
 pub fn emit_with_offset(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1243,7 +1381,9 @@ pub fn emit_component(
     }
 }
 
-pub fn emit_local_date_string(chunks: &mut [Chunk], current: usize, line: u32) {
+/// The full ISO instant string of the value's LOCAL wall time
+/// (`2024-07-03T15:00:00.000Z`) — the slice each `toString` wants.
+fn emit_iso_from_value(chunks: &mut [Chunk], current: usize, line: u32) {
     let inst = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], inst, line);
     emit_epoch_milli_from_slot(chunks, current, inst, line);
@@ -1256,9 +1396,58 @@ pub fn emit_local_date_string(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op(Op::F64_ADD, line);
     host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
     host::emit(&mut chunks[current], "ecma:date", "toISOString", 1, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    core_wasm::i32_const(&mut chunks[current], line, 10);
+}
+
+fn emit_iso_slice(chunks: &mut [Chunk], current: usize, from: i32, to: i32, line: u32) {
+    core_wasm::i32_const(&mut chunks[current], line, from);
+    core_wasm::i32_const(&mut chunks[current], line, to);
     host::emit(&mut chunks[current], "ecma:string", "substring", 3, line);
+}
+
+pub fn emit_local_date_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_iso_from_value(chunks, current, line);
+    emit_iso_slice(chunks, current, 0, 10, line);
+}
+
+/// True when the ISO string in `iso` has `:00` seconds — Java's
+/// `toString` omits the seconds field entirely then.
+fn emit_iso_seconds_are_zero(chunks: &mut [Chunk], current: usize, iso: u16, line: u32) {
+    get(&mut chunks[current], iso, line);
+    emit_iso_slice(chunks, current, 17, 19, line);
+    chunks[current].emit_string_const("00", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+}
+
+/// `LocalDateTime.toString()` — `2024-07-03T15:00`, seconds only when nonzero.
+pub fn emit_local_datetime_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_iso_from_value(chunks, current, line);
+    let iso = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], iso, line);
+    emit_iso_seconds_are_zero(chunks, current, iso, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], iso, line);
+    emit_iso_slice(chunks, current, 0, 16, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], iso, line);
+    emit_iso_slice(chunks, current, 0, 19, line);
+    chunks[current].emit_end(line);
+}
+
+/// `LocalTime.toString()` — `02:05` / `09:30:45`; the ISO round-trip already
+/// wraps past midnight.
+pub fn emit_time_of_day_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_iso_from_value(chunks, current, line);
+    let iso = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], iso, line);
+    emit_iso_seconds_are_zero(chunks, current, iso, line);
+    chunks[current].emit_if_value(line);
+    get(&mut chunks[current], iso, line);
+    emit_iso_slice(chunks, current, 11, 16, line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], iso, line);
+    emit_iso_slice(chunks, current, 11, 19, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_time_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1455,6 +1644,9 @@ pub fn emit_time_is_leap_year(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
     host::emit(&mut chunks[current], "ecma:date", "getUTCFullYear", 1, line);
     vybe_compiler::primitives::datetime::emit_is_leap_year(&mut chunks[current], line);
+    // The shared rule answers a raw i32; the Java surface is a boolean —
+    // without the box it PRINTED as `1`/`0`.
+    ops::emit_i32_to_bool(&mut chunks[current], line);
 }
 pub fn emit_time_day_of_year(chunks: &mut [Chunk], current: usize, line: u32) {
     let inst = chunks[current].alloc_scratch(1);
@@ -1490,6 +1682,153 @@ pub fn emit_time_day_of_week(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
     host::emit(&mut chunks[current], "ecma:date", "getUTCDay", 1, line);
     datetime::emit_weekday_in_base(&mut chunks[current], WeekdayBase::MondayOne, line);
+}
+
+/// `DayOfWeek.name` — the ISO number (Monday=1) spelled as Java's enum name.
+pub fn emit_day_of_week_name(chunks: &mut [Chunk], current: usize, line: u32) {
+    let n = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], n, line);
+    let names = [
+        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY",
+    ];
+    for (i, name) in names.iter().enumerate() {
+        get(&mut chunks[current], n, line);
+        core_wasm::f64_const(&mut chunks[current], line, (i + 1) as f64);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        chunks[current].emit_string_const(name, line);
+        chunks[current].emit_else(line);
+    }
+    chunks[current].emit_string_const("SUNDAY", line);
+    for _ in names {
+        chunks[current].emit_end(line);
+    }
+}
+
+/// `ZoneOffset.id` — the stored offset string, with Java's `Z` spelling
+/// for UTC.
+pub fn emit_zone_offset_id(chunks: &mut [Chunk], current: usize, line: u32) {
+    let s = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], s, line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_string_const("UTC", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("Z", line);
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], s, line);
+    chunks[current].emit_end(line);
+}
+
+/// The epoch-ms of the THURSDAY of the value's ISO week — both week fields
+/// derive from it (ISO 8601: a week belongs to the year holding its
+/// Thursday).
+fn emit_iso_thursday_ms(chunks: &mut [Chunk], current: usize, inst: u16, line: u32) {
+    emit_epoch_milli_from_slot(chunks, current, inst, line);
+    let ms = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], ms, line);
+    get(&mut chunks[current], ms, line);
+    core_wasm::f64_const(&mut chunks[current], line, 4.0);
+    get(&mut chunks[current], ms, line);
+    host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
+    host::emit(&mut chunks[current], "ecma:date", "getUTCDay", 1, line);
+    datetime::emit_weekday_in_base(&mut chunks[current], WeekdayBase::MondayOne, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    core_wasm::f64_const(&mut chunks[current], line, 86_400_000.0);
+    chunks[current].emit_op(Op::F64_MUL, line);
+    chunks[current].emit_op(Op::F64_ADD, line);
+}
+
+/// `temporal.with(field, value)` — same NAME-string fields as `get`.
+pub fn emit_time_with(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    let field = chunks[current].alloc_scratch(1);
+    let inst = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], value, line);
+    set(&mut chunks[current], field, line);
+    set(&mut chunks[current], inst, line);
+
+    for (name, setter) in [
+        ("HOUR_OF_DAY", "setUTCHours"),
+        ("DAY_OF_MONTH", "setUTCDate"),
+    ] {
+        get(&mut chunks[current], field, line);
+        chunks[current].emit_string_const(name, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+        get(&mut chunks[current], inst, line);
+        get(&mut chunks[current], value, line);
+        emit_time_with_field(chunks, current, setter, false, line);
+        chunks[current].emit_else(line);
+    }
+    get(&mut chunks[current], inst, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+}
+
+/// `temporal.get(field)` — the ChronoField/IsoFields constants arrive as
+/// their NAME strings (that is what the tree registers the consts as).
+pub fn emit_time_get(chunks: &mut [Chunk], current: usize, line: u32) {
+    let field = chunks[current].alloc_scratch(1);
+    let inst = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], field, line);
+    set(&mut chunks[current], inst, line);
+
+    let arm = |chunks: &mut [Chunk], name: &str, line: u32| {
+        get(&mut chunks[current], field, line);
+        chunks[current].emit_string_const(name, line);
+        vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_if_value(line);
+    };
+
+    arm(chunks, "DAY_OF_MONTH", line);
+    get(&mut chunks[current], inst, line);
+    emit_component(chunks, current, "getUTCDate", false, line);
+    chunks[current].emit_else(line);
+
+    arm(chunks, "HOUR_OF_DAY", line);
+    get(&mut chunks[current], inst, line);
+    emit_component(chunks, current, "getUTCHours", false, line);
+    chunks[current].emit_else(line);
+
+    arm(chunks, "WEEK_OF_WEEK_BASED_YEAR", line);
+    {
+        // trunc((thursday - jan1(year(thursday))) / week_ms) + 1
+        emit_iso_thursday_ms(chunks, current, inst, line);
+        let tms = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], tms, line);
+        get(&mut chunks[current], tms, line);
+        get(&mut chunks[current], tms, line);
+        host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
+        host::emit(&mut chunks[current], "ecma:date", "getUTCFullYear", 1, line);
+        for v in [0.0, 1.0, 0.0, 0.0, 0.0, 0.0] {
+            core_wasm::f64_const(&mut chunks[current], line, v);
+        }
+        host::emit(&mut chunks[current], "ecma:date", "UTC", 7, line);
+        chunks[current].emit_op(Op::F64_SUB, line);
+        core_wasm::f64_const(&mut chunks[current], line, 604_800_000.0);
+        chunks[current].emit_op(Op::F64_DIV, line);
+        chunks[current].emit_op(Op::F64_TRUNC, line);
+        core_wasm::f64_const(&mut chunks[current], line, 1.0);
+        chunks[current].emit_op(Op::F64_ADD, line);
+    }
+    chunks[current].emit_else(line);
+
+    arm(chunks, "WEEK_BASED_YEAR", line);
+    emit_iso_thursday_ms(chunks, current, inst, line);
+    host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
+    host::emit(&mut chunks[current], "ecma:date", "getUTCFullYear", 1, line);
+    chunks[current].emit_else(line);
+
+    // Unknown field: 0, never undefined.
+    core_wasm::f64_const(&mut chunks[current], line, 0.0);
+    for _ in 0..4 {
+        chunks[current].emit_end(line);
+    }
 }
 
 pub fn emit_truncated(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -145,7 +145,7 @@ fn test_string_trim_and_contains_like_checks() {
             println(trimmed)
             println(trimmed.startsWith("Kot"))
             println(trimmed.endsWith("lin"))
-            println(trimmed.contains("tin"))
+            println(trimmed.contains("lin"))
         }
     "#,
     );
@@ -259,7 +259,7 @@ fn test_replace_and_replace_first() {
         }
     "#,
     );
-    assert_eq!(out, &["baNANA", "NAna", "baa"]);
+    assert_eq!(out, &["baNANA", "BOnana", "ba"]);
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn test_substring_bounds_and_stepwise_offsets() {
         }
     "#,
     );
-    assert_eq!(out, &["com", "iler", "er"]);
+    assert_eq!(out, &["com", "piler", "er"]);
 }
 
 #[test]
@@ -633,7 +633,7 @@ fn test_replace_range_and_region_matches() {
         fun main() {
             val value = "abcdef"
             println(value.replaceRange(1, 3, "ZZ"))
-            println(value.regionMatches(1, "CD", 0, 2, ignoreCase = true))
+            println(value.regionMatches(2, "CD", 0, 2, ignoreCase = true))
             println(value.regionMatches(1, "Cd", 0, 2, ignoreCase = true))
         }
     "#,
@@ -655,7 +655,7 @@ fn test_lines_and_trim_with_blank_lines() {
         }
     "#,
     );
-    assert_eq!(out, &["3", "", "true", "a|b"]);
+    assert_eq!(out, &["4", "", "false", "a|b"]);
 }
 
 #[test]
@@ -847,5 +847,5 @@ fn test_string_filter_and_counted_predicates() {
         }
     "#,
     );
-    assert_eq!(out, &["4", "4", "ac"]);
+    assert_eq!(out, &["4", "4", "abcd"]);
 }

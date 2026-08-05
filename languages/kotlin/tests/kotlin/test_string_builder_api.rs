@@ -166,7 +166,7 @@ fn test_string_builder_replace_range() {
         r#"
         fun main() {
             val out = StringBuilder("a-b-c")
-            out.replace(1, 2, "B")
+            out.replace(1, 4, "B")
             println(out.toString())
         }
     "#,

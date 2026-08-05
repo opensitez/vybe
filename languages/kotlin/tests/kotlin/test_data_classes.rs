@@ -447,7 +447,9 @@ fn test_data_class_rebinds_in_iteration() {
         }
     "#,
     );
-    assert_eq!(out, &["12", "1"]);
+    // copy(value = value + 5) over 1 and 2 sums 6 + 7 = 13 (real Kotlin
+    // agrees).
+    assert_eq!(out, &["13", "1"]);
 }
 
 #[test]

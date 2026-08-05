@@ -120,7 +120,18 @@ pub fn emit_drop_while(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
 }
 
 fn emit_while_split(chunks: &mut Vec<Chunk>, current: usize, take: bool, line: u32) {
-    let (arr, f) = pop_recv_fn(chunks, current, line);
+    let (recv, f) = pop_recv_fn(chunks, current, line);
+    let is_str = chunks[current].alloc_scratch(1);
+    get(chunks, current, recv, line);
+    let type_of = chunks[current].add_import("ecma:value", "typeof");
+    chunks[current].emit_call(type_of, 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    set(chunks, current, is_str, line);
+    let arr = chunks[current].alloc_scratch(1);
+    get(chunks, current, recv, line);
+    crate::emitter::collections::emit_dict_as_list(chunks, current, line);
+    set(chunks, current, arr, line);
     let out = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
     let elem = chunks[current].alloc_scratch(1);
@@ -156,7 +167,15 @@ fn emit_while_split(chunks: &mut Vec<Chunk>, current: usize, take: bool, line: u
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_end(line);
     });
+    get(chunks, current, is_str, line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if_value(line);
     get(chunks, current, out, line);
+    chunks[current].emit_string_const("", line);
+    collections::emit_join(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, out, line);
+    chunks[current].emit_end(line);
 }
 
 /// `count()` / `count { }`.
@@ -221,7 +240,8 @@ pub fn emit_max_by_or_null(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, l
 }
 
 fn emit_extreme_by(chunks: &mut Vec<Chunk>, current: usize, min: bool, line: u32) {
-    let (arr, f) = pop_recv_fn(chunks, current, line);
+    let (recv, f) = pop_recv_fn(chunks, current, line);
+    let arr = emit_list_view(chunks, current, recv, line);
     let best = chunks[current].alloc_scratch(1);
     let best_key = chunks[current].alloc_scratch(1);
     let key = chunks[current].alloc_scratch(1);
@@ -281,11 +301,22 @@ pub fn emit_find_last(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: 
 enum ScanResult {
     FirstIndex,
     LastIndex,
+    FirstElem,
     LastElem,
 }
 
+/// `find { }` / `findLast { }` — element or null, over any receiver.
+pub fn emit_find(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    emit_scan_matches(chunks, current, ScanResult::FirstElem, line);
+}
+
+pub fn emit_find_last_any(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    emit_scan_matches(chunks, current, ScanResult::LastElem, line);
+}
+
 fn emit_scan_matches(chunks: &mut Vec<Chunk>, current: usize, kind: ScanResult, line: u32) {
-    let (arr, f) = pop_recv_fn(chunks, current, line);
+    let (recv, f) = pop_recv_fn(chunks, current, line);
+    let arr = emit_list_view(chunks, current, recv, line);
     let result = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
     let elem = chunks[current].alloc_scratch(1);
@@ -294,7 +325,7 @@ fn emit_scan_matches(chunks: &mut Vec<Chunk>, current: usize, kind: ScanResult, 
         ScanResult::FirstIndex | ScanResult::LastIndex => {
             core_wasm::i32_const(&mut chunks[current], line, -1);
         }
-        ScanResult::LastElem => {
+        ScanResult::FirstElem | ScanResult::LastElem => {
             chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
     }
@@ -302,7 +333,7 @@ fn emit_scan_matches(chunks: &mut Vec<Chunk>, current: usize, kind: ScanResult, 
     chunks[current].emit_bool_const(false, line);
     set(chunks, current, done, line);
 
-    let first_only = matches!(kind, ScanResult::FirstIndex);
+    let first_only = matches!(kind, ScanResult::FirstIndex | ScanResult::FirstElem);
     for_each(chunks, current, arr, idx, elem, line, |chunks| {
         if first_only {
             get(chunks, current, done, line);
@@ -319,7 +350,7 @@ fn emit_scan_matches(chunks: &mut Vec<Chunk>, current: usize, kind: ScanResult, 
             ScanResult::FirstIndex | ScanResult::LastIndex => {
                 get(chunks, current, idx, line);
             }
-            ScanResult::LastElem => {
+            ScanResult::FirstElem | ScanResult::LastElem => {
                 get(chunks, current, elem, line);
             }
         }
@@ -553,9 +584,21 @@ pub fn emit_filter_not(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
     get(chunks, current, out, line);
 }
 
-/// `filterIndexed { i, v -> }`.
+/// `filterIndexed { i, v -> }` — a string filters characters and returns a
+/// STRING.
 pub fn emit_filter_indexed(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let (arr, f) = pop_recv_fn(chunks, current, line);
+    let (recv, f) = pop_recv_fn(chunks, current, line);
+    let is_str = chunks[current].alloc_scratch(1);
+    get(chunks, current, recv, line);
+    let type_of = chunks[current].add_import("ecma:value", "typeof");
+    chunks[current].emit_call(type_of, 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    set(chunks, current, is_str, line);
+    let arr = chunks[current].alloc_scratch(1);
+    get(chunks, current, recv, line);
+    crate::emitter::collections::emit_dict_as_list(chunks, current, line);
+    set(chunks, current, arr, line);
     let out = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
     let elem = chunks[current].alloc_scratch(1);
@@ -571,7 +614,15 @@ pub fn emit_filter_indexed(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, l
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_end(line);
     });
+    get(chunks, current, is_str, line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if_value(line);
     get(chunks, current, out, line);
+    chunks[current].emit_string_const("", line);
+    collections::emit_join(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, out, line);
+    chunks[current].emit_end(line);
 }
 
 /// `filterNotNull()`.
@@ -715,6 +766,20 @@ pub fn emit_fold_right(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
 /// `reduceRight { e, acc -> }` — seeded with the LAST element.
 pub fn emit_reduce_right(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     let (arr, f) = pop_recv_fn(chunks, current, line);
+    len_of(chunks, current, arr, line);
+    truthy(chunks, current, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("Empty collection can't be reduced.", line);
+    crate::emitter::nullability::emit_exception(
+        chunks,
+        current,
+        1,
+        "UnsupportedOperationException",
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
     let acc = chunks[current].alloc_scratch(1);
     // acc = arr[len-1]; then fold the prefix.
     get(chunks, current, arr, line);
@@ -868,12 +933,54 @@ pub fn emit_group_by(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u
 }
 
 /// `groupByTo(dest) { }`.
-pub fn emit_group_by_to(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+pub fn emit_group_by_to(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    // 3-arg form carries a VALUE transform: groupByTo(dest, keySel, valueSel).
+    let vf = if argc >= 4 {
+        let vf = chunks[current].alloc_scratch(1);
+        set(chunks, current, vf, line);
+        Some(vf)
+    } else {
+        None
+    };
     let f = chunks[current].alloc_scratch(1);
     let dest = chunks[current].alloc_scratch(1);
     let arr = chunks[current].alloc_scratch(1);
     set(chunks, current, f, line);
     set(chunks, current, dest, line);
+    if let Some(vf) = vf {
+        // Transform the elements first; the grouping loop then buckets the
+        // transformed values while keys come from the ORIGINAL elements —
+        // so run both selectors per element inline instead.
+        set(chunks, current, arr, line);
+        let idx = chunks[current].alloc_scratch(1);
+        let elem = chunks[current].alloc_scratch(1);
+        let key = chunks[current].alloc_scratch(1);
+        let bucket = chunks[current].alloc_scratch(1);
+        for_each(chunks, current, arr, idx, elem, line, |chunks| {
+            call_fn(chunks, current, f, &[elem], line);
+            set(chunks, current, key, line);
+            get(chunks, current, dest, line);
+            get(chunks, current, key, line);
+            dict::emit_get_dynamic(chunks, current, line);
+            set(chunks, current, bucket, line);
+            get(chunks, current, bucket, line);
+            chunks[current].emit_op(Op::REF_IS_NULL, line);
+            chunks[current].emit_if(line);
+            collections::emit_array_new(chunks, current, 0, line);
+            set(chunks, current, bucket, line);
+            get(chunks, current, dest, line);
+            get(chunks, current, key, line);
+            get(chunks, current, bucket, line);
+            crate::emitter::maps::emit_dict_set_tracked(chunks, current, line);
+            chunks[current].emit_end(line);
+            get(chunks, current, bucket, line);
+            call_fn(chunks, current, vf, &[elem], line);
+            collections::emit_push(chunks, current, line);
+            chunks[current].emit_op(Op::DROP, line);
+        });
+        get(chunks, current, dest, line);
+        return;
+    }
     set(chunks, current, arr, line);
     emit_group_by_loop(chunks, current, arr, f, dest, line);
     get(chunks, current, dest, line);
@@ -965,8 +1072,12 @@ pub fn emit_map_indexed_not_null(chunks: &mut Vec<Chunk>, current: usize, _argc:
     for_each(chunks, current, arr, idx, elem, line, |chunks| {
         call_fn(chunks, current, f, &[idx, elem], line);
         set(chunks, current, mapped, line);
+        // NOT `REF_IS_NULL`: a NUMBER result reads as null there, so every
+        // kept element was dropped. Compare against a pushed null instead.
         get(chunks, current, mapped, line);
-        chunks[current].emit_op(Op::REF_IS_NULL, line);
+        chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        truthy(chunks, current, line);
         chunks[current].emit_op(Op::I32_EQZ, line);
         chunks[current].emit_if(line);
         get(chunks, current, out, line);
@@ -1056,12 +1167,38 @@ fn emit_associate_loop(
 
 // ── Pair producers ──────────────────────────────────────────────────────────
 
+/// Build a tagged Pair from two locals, with `first`/`second` properties so
+/// zip results answer both destructuring AND the property spelling.
+fn emit_pair_with_props(chunks: &mut Vec<Chunk>, current: usize, a: u16, b: u16, line: u32) {
+    get(chunks, current, a, line);
+    get(chunks, current, b, line);
+    tuples::emit_tuple(chunks, current, 2, line);
+    for (prop, slot) in [("first", a), ("second", b)] {
+        chunks[current].emit_dup(line);
+        get(chunks, current, slot, line);
+        let k = chunks[current]
+            .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
+        chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
+    }
+}
+
 /// `zip(other)` → list of tagged Pairs, truncated to the shorter side.
-pub fn emit_zip(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+/// `zip(other) { a, b -> }` maps the pair through the transform instead.
+pub fn emit_zip(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let f = if argc >= 3 {
+        let f = chunks[current].alloc_scratch(1);
+        set(chunks, current, f, line);
+        Some(f)
+    } else {
+        None
+    };
     let other = chunks[current].alloc_scratch(1);
     let arr = chunks[current].alloc_scratch(1);
     set(chunks, current, other, line);
     set(chunks, current, arr, line);
+    if let Some(f) = f {
+        return emit_zip_transform(chunks, current, arr, other, f, line);
+    }
     let out = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
     let elem = chunks[current].alloc_scratch(1);
@@ -1074,9 +1211,41 @@ pub fn emit_zip(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
         truthy(chunks, current, line);
         chunks[current].emit_if(line);
         get(chunks, current, out, line);
-        get(chunks, current, elem, line);
+        let b = chunks[current].alloc_scratch(1);
         elem_at(chunks, current, other, idx, line);
-        tuples::emit_tuple(chunks, current, 2, line);
+        set(chunks, current, b, line);
+        emit_pair_with_props(chunks, current, elem, b, line);
+        collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_end(line);
+    });
+    get(chunks, current, out, line);
+}
+
+fn emit_zip_transform(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    arr: u16,
+    other: u16,
+    f: u16,
+    line: u32,
+) {
+    let out = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let elem = chunks[current].alloc_scratch(1);
+    let b = chunks[current].alloc_scratch(1);
+    collections::emit_array_new(chunks, current, 0, line);
+    set(chunks, current, out, line);
+    for_each(chunks, current, arr, idx, elem, line, |chunks| {
+        get(chunks, current, idx, line);
+        len_of(chunks, current, other, line);
+        ops::emit_dyn_lt(&mut chunks[current], line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        elem_at(chunks, current, other, idx, line);
+        set(chunks, current, b, line);
+        get(chunks, current, out, line);
+        call_fn(chunks, current, f, &[elem, b], line);
         collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_end(line);
@@ -1085,9 +1254,17 @@ pub fn emit_zip(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
 }
 
 /// `zipWithNext()` → Pairs of consecutive elements.
-pub fn emit_zip_with_next(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+pub fn emit_zip_with_next(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let f = if argc >= 2 {
+        let f = chunks[current].alloc_scratch(1);
+        set(chunks, current, f, line);
+        Some(f)
+    } else {
+        None
+    };
     let arr = chunks[current].alloc_scratch(1);
     set(chunks, current, arr, line);
+    let _ = &f;
     let out = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
     let elem = chunks[current].alloc_scratch(1);
@@ -1105,9 +1282,13 @@ pub fn emit_zip_with_next(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, li
         truthy(chunks, current, line);
         chunks[current].emit_if(line);
         get(chunks, current, out, line);
-        get(chunks, current, elem, line);
+        let b = chunks[current].alloc_scratch(1);
         elem_at(chunks, current, arr, next_i, line);
-        tuples::emit_tuple(chunks, current, 2, line);
+        set(chunks, current, b, line);
+        match f {
+            Some(f) => call_fn(chunks, current, f, &[elem, b], line),
+            None => emit_pair_with_props(chunks, current, elem, b, line),
+        }
         collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_end(line);
@@ -1141,9 +1322,7 @@ pub fn emit_unzip(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32)
         collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     });
-    get(chunks, current, firsts, line);
-    get(chunks, current, seconds, line);
-    tuples::emit_tuple(chunks, current, 2, line);
+    emit_pair_with_props(chunks, current, firsts, seconds, line);
 }
 
 /// `withIndex()` → list of `(index, value)` Pairs — destructures like
@@ -1169,7 +1348,6 @@ pub fn emit_with_index(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
             let k = chunks[current]
                 .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
             chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-            chunks[current].emit_op(Op::DROP, line);
         }
         collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
@@ -1179,7 +1357,9 @@ pub fn emit_with_index(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line:
 
 /// `partition { }` → `Pair(matching, rest)`.
 pub fn emit_partition(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let (arr, f) = pop_recv_fn(chunks, current, line);
+    let (arr0, f) = pop_recv_fn(chunks, current, line);
+    // Sets/maps are dicts — iterate the list VIEW, not the raw receiver.
+    let arr = emit_list_view(chunks, current, arr0, line);
     let yes = chunks[current].alloc_scratch(1);
     let no = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
@@ -1200,9 +1380,7 @@ pub fn emit_partition(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: 
         collections::emit_push(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     });
-    get(chunks, current, yes, line);
-    get(chunks, current, no, line);
-    tuples::emit_tuple(chunks, current, 2, line);
+    emit_pair_with_props(chunks, current, yes, no, line);
 }
 
 // ── Non-HOF list ops that still need composition ────────────────────────────
@@ -1262,16 +1440,19 @@ fn emit_len_minus_clamped(chunks: &mut Vec<Chunk>, current: usize, arr: u16, n: 
 
 /// `flatten()` — one level.
 pub fn emit_flatten(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let arr = chunks[current].alloc_scratch(1);
-    set(chunks, current, arr, line);
+    let arr0 = chunks[current].alloc_scratch(1);
+    set(chunks, current, arr0, line);
+    // Sets/maps at EITHER level are dicts — iterate list views.
+    let arr = emit_list_view(chunks, current, arr0, line);
     let out = chunks[current].alloc_scratch(1);
     let idx = chunks[current].alloc_scratch(1);
-    let elem = chunks[current].alloc_scratch(1);
+    let elem0 = chunks[current].alloc_scratch(1);
     let jdx = chunks[current].alloc_scratch(1);
     let inner = chunks[current].alloc_scratch(1);
     collections::emit_array_new(chunks, current, 0, line);
     set(chunks, current, out, line);
-    for_each(chunks, current, arr, idx, elem, line, |chunks| {
+    for_each(chunks, current, arr, idx, elem0, line, |chunks| {
+        let elem = emit_list_view(chunks, current, elem0, line);
         for_each(chunks, current, elem, jdx, inner, line, |chunks| {
             get(chunks, current, out, line);
             get(chunks, current, inner, line);
@@ -1433,7 +1614,6 @@ pub fn emit_grouping_by(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
         let k = chunks[current]
             .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(prop)));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
 }
 
@@ -1947,6 +2127,33 @@ pub fn emit_slice_any(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: 
     ops::emit_dyn_eq(&mut chunks[current], line);
     truthy(chunks, current, line);
     chunks[current].emit_if_value(line);
+    // Kotlin's slice THROWS out of range; ECMA's clamps.
+    {
+        let bad = chunks[current].alloc_scratch(1);
+        get(chunks, current, from, line);
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        ops::emit_dyn_lt(&mut chunks[current], line);
+        truthy(chunks, current, line);
+        set(chunks, current, bad, line);
+        get(chunks, current, to, line);
+        get(chunks, current, recv, line);
+        vybe_compiler::primitives::strings::emit_length(&mut chunks[current], line);
+        ops::emit_dyn_gt(&mut chunks[current], line);
+        truthy(chunks, current, line);
+        get(chunks, current, bad, line);
+        chunks[current].emit_op(Op::I32_OR, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_string_const("index out of bounds", line);
+        crate::emitter::nullability::emit_exception(
+            chunks,
+            current,
+            1,
+            "IndexOutOfBoundsException",
+            line,
+        );
+        vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+    }
     get(chunks, current, recv, line);
     get(chunks, current, from, line);
     get(chunks, current, to, line);
@@ -1957,5 +2164,277 @@ pub fn emit_slice_any(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: 
     get(chunks, current, from, line);
     get(chunks, current, to, line);
     collections::emit_slice(chunks, current, line);
+    chunks[current].emit_end(line);
+}
+
+/// `takeLastWhile { }` / `dropLastWhile { }` — the same split, from the END.
+pub fn emit_last_while_split(chunks: &mut Vec<Chunk>, current: usize, take: bool, line: u32) {
+    let (recv, f) = pop_recv_fn(chunks, current, line);
+    let is_str = chunks[current].alloc_scratch(1);
+    get(chunks, current, recv, line);
+    let type_of = chunks[current].add_import("ecma:value", "typeof");
+    chunks[current].emit_call(type_of, 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    set(chunks, current, is_str, line);
+    let arr = chunks[current].alloc_scratch(1);
+    get(chunks, current, recv, line);
+    crate::emitter::collections::emit_dict_as_list(chunks, current, line);
+    collections::emit_reverse(chunks, current, line);
+    set(chunks, current, arr, line);
+
+    let out = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let elem = chunks[current].alloc_scratch(1);
+    let active = chunks[current].alloc_scratch(1);
+    collections::emit_array_new(chunks, current, 0, line);
+    set(chunks, current, out, line);
+    chunks[current].emit_bool_const(true, line);
+    set(chunks, current, active, line);
+    for_each(chunks, current, arr, idx, elem, line, |chunks| {
+        get(chunks, current, active, line);
+        truthy(chunks, current, line);
+        chunks[current].emit_if(line);
+        call_fn(chunks, current, f, &[elem], line);
+        truthy(chunks, current, line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_bool_const(false, line);
+        set(chunks, current, active, line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_end(line);
+        get(chunks, current, active, line);
+        truthy(chunks, current, line);
+        if !take {
+            chunks[current].emit_op(Op::I32_EQZ, line);
+        }
+        chunks[current].emit_if(line);
+        get(chunks, current, out, line);
+        get(chunks, current, elem, line);
+        collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_end(line);
+    });
+    // Built backwards — restore source order.
+    get(chunks, current, out, line);
+    collections::emit_reverse(chunks, current, line);
+    set(chunks, current, out, line);
+    get(chunks, current, is_str, line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if_value(line);
+    get(chunks, current, out, line);
+    chunks[current].emit_string_const("", line);
+    collections::emit_join(chunks, current, line);
+    chunks[current].emit_else(line);
+    get(chunks, current, out, line);
+    chunks[current].emit_end(line);
+}
+
+/// `foldRightIndexed(init) { i, v, acc -> }` — walk-time reversed the last
+/// two args like `fold`, so the adapter receives `(f, init)`.
+pub fn emit_fold_right_indexed(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let f = chunks[current].alloc_scratch(1);
+    let acc = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    set(chunks, current, f, line);
+    set(chunks, current, acc, line);
+    set(chunks, current, arr, line);
+    let n = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let elem = chunks[current].alloc_scratch(1);
+    len_of(chunks, current, arr, line);
+    set(chunks, current, n, line);
+    // i = n-1 down to 0
+    get(chunks, current, n, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    dyn_sub(chunks, current, line);
+    set(chunks, current, i, line);
+    let _block = chunks[current].emit_block(line);
+    let (_loop, _) = chunks[current].emit_loop_s(line);
+    get(chunks, current, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    ops::emit_dyn_ge(&mut chunks[current], line);
+    truthy(chunks, current, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+    elem_at(chunks, current, arr, i, line);
+    set(chunks, current, elem, line);
+    call_fn(chunks, current, f, &[i, elem, acc], line);
+    set(chunks, current, acc, line);
+    get(chunks, current, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    dyn_sub(chunks, current, line);
+    set(chunks, current, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    get(chunks, current, acc, line);
+}
+
+/// `runningFoldIndexed(init) { i, acc, e -> }` — prefix results, indexed.
+pub fn emit_running_fold_indexed(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let f = chunks[current].alloc_scratch(1);
+    let acc = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    set(chunks, current, f, line);
+    set(chunks, current, acc, line);
+    set(chunks, current, arr, line);
+    let out = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let elem = chunks[current].alloc_scratch(1);
+    collections::emit_array_new(chunks, current, 0, line);
+    set(chunks, current, out, line);
+    get(chunks, current, out, line);
+    get(chunks, current, acc, line);
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    for_each(chunks, current, arr, idx, elem, line, |chunks| {
+        call_fn(chunks, current, f, &[idx, acc, elem], line);
+        set(chunks, current, acc, line);
+        get(chunks, current, out, line);
+        get(chunks, current, acc, line);
+        collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    });
+    get(chunks, current, out, line);
+}
+
+/// `Array(n) { init }` / `IntArray(n) { init }` / `List(n) { init }` — size
+/// plus per-index initializer. The 1-arg numeric-array form zero-fills.
+/// Stack: [n, (f)] → [array].
+pub fn emit_array_init(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let f = if argc >= 2 {
+        let f = chunks[current].alloc_scratch(1);
+        set(chunks, current, f, line);
+        Some(f)
+    } else {
+        None
+    };
+    let n = chunks[current].alloc_scratch(1);
+    let out = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    set(chunks, current, n, line);
+    collections::emit_array_new(chunks, current, 0, line);
+    set(chunks, current, out, line);
+    core_wasm::i32_const(&mut chunks[current], line, 0);
+    set(chunks, current, i, line);
+
+    let _block = chunks[current].emit_block(line);
+    let (_loop, _) = chunks[current].emit_loop_s(line);
+    get(chunks, current, i, line);
+    get(chunks, current, n, line);
+    ops::emit_dyn_lt(&mut chunks[current], line);
+    truthy(chunks, current, line);
+    chunks[current].emit_op(Op::I32_EQZ, line);
+    chunks[current].emit_br_if(1, line);
+
+    get(chunks, current, out, line);
+    if let Some(f) = f {
+        call_fn(chunks, current, f, &[i], line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+    }
+    collections::emit_push(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    get(chunks, current, i, line);
+    core_wasm::i32_const(&mut chunks[current], line, 1);
+    ops::emit_dyn_add(&mut chunks[current], line);
+    set(chunks, current, i, line);
+    chunks[current].emit_br(0, line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_end(line);
+    get(chunks, current, out, line);
+}
+
+/// Kotlin `array.fill(value, from = 0, to = size)` — argument order differs
+/// from Java's `Arrays.fill(a, from, to, value)`, which the jvm adapter
+/// expects; routing Kotlin's member spelling there filled the wrong range.
+/// Stack: [arr, value, (from), (to)] → [] (fills in place, answers Unit).
+pub fn emit_fill(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    let to = chunks[current].alloc_scratch(1);
+    let from = chunks[current].alloc_scratch(1);
+    let v = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    let has_range = argc >= 4;
+    if has_range {
+        set(chunks, current, to, line);
+        set(chunks, current, from, line);
+    }
+    set(chunks, current, v, line);
+    set(chunks, current, arr, line);
+    get(chunks, current, arr, line);
+    get(chunks, current, v, line);
+    if has_range {
+        get(chunks, current, from, line);
+        get(chunks, current, to, line);
+    } else {
+        core_wasm::i32_const(&mut chunks[current], line, 0);
+        len_of(chunks, current, arr, line);
+    }
+    collections::emit_fill(chunks, current, line);
+}
+
+/// `removeAll { p }` / `retainAll { p }` / `removeIf { p }` — predicate
+/// forms. Answers whether anything was removed.
+/// Stack: [recv, f] → [bool].
+pub fn emit_remove_if(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_mutate_if(chunks, current, argc, /*invert:*/ false, line);
+}
+
+pub fn emit_retain_if(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
+    emit_mutate_if(chunks, current, argc, /*invert:*/ true, line);
+}
+
+fn emit_mutate_if(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, invert: bool, line: u32) {
+    let f = chunks[current].alloc_scratch(1);
+    let recv = chunks[current].alloc_scratch(1);
+    let values = chunks[current].alloc_scratch(1);
+    let idx = chunks[current].alloc_scratch(1);
+    let elem = chunks[current].alloc_scratch(1);
+    let changed = chunks[current].alloc_scratch(1);
+    set(chunks, current, f, line);
+    set(chunks, current, recv, line);
+    chunks[current].emit_bool_const(false, line);
+    set(chunks, current, changed, line);
+    // Snapshot the element view first — removal mutates the receiver.
+    get(chunks, current, recv, line);
+    crate::emitter::collections::emit_dict_as_list(chunks, current, line);
+    collections::emit_clone(chunks, current, line);
+    set(chunks, current, values, line);
+    for_each(chunks, current, values, idx, elem, line, |chunks| {
+        call_fn(chunks, current, f, &[elem], line);
+        truthy(chunks, current, line);
+        if invert {
+            chunks[current].emit_op(Op::I32_EQZ, line);
+        }
+        chunks[current].emit_if(line);
+        get(chunks, current, recv, line);
+        get(chunks, current, elem, line);
+        crate::emitter::maps::emit_remove_any(chunks, current, 2, line);
+        chunks[current].emit_op(Op::DROP, line);
+        chunks[current].emit_bool_const(true, line);
+        set(chunks, current, changed, line);
+        chunks[current].emit_end(line);
+    });
+    get(chunks, current, changed, line);
+    ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// `x.ifEmpty { fallback }` — the receiver when non-empty, else the
+/// lambda's value. Strings, lists and dict-backed sets all answer their own
+/// emptiness through `kotlin.is_empty`.
+pub fn emit_if_empty(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let f = chunks[current].alloc_scratch(1);
+    let recv = chunks[current].alloc_scratch(1);
+    set(chunks, current, f, line);
+    set(chunks, current, recv, line);
+    get(chunks, current, recv, line);
+    crate::emitter::collections::emit_is_empty(chunks, current, 1, line);
+    truthy(chunks, current, line);
+    chunks[current].emit_if_value(line);
+    call_fn(chunks, current, f, &[], line);
+    chunks[current].emit_else(line);
+    get(chunks, current, recv, line);
     chunks[current].emit_end(line);
 }

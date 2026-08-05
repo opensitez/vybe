@@ -63,7 +63,10 @@ some         = "__array_some"
 any          = "__array_some"
 every        = "__array_every"
 all          = "__array_every"
-joinToString = "join"
+# NO `joinToString = "join"` alias here: the walker rewrites every
+# `joinToString` to `__coll_join` (kotlin.join_to_string), which renders
+# elements Kotlin-style and materializes dict-backed sets/maps first —
+# the ECMA join answered the empty string on those.
 slice        = "slice"
 sortedBy     = "__array_sort_by_key"
 sortedWith   = "__array_sort"
@@ -95,9 +98,9 @@ __coll_get        = { emit = "common:collections.get", min_args = 2, max_args = 
 __coll_set        = { emit = "common:collections.set", min_args = 3, max_args = 3, slot = "set_item" }
 __coll_push       = { emit = "common:collections.push", min_args = 2, max_args = 2 }
 __coll_pop        = { emit = "common:collections.pop", min_args = 1, max_args = 1 }
-__coll_contains   = { emit = "common:collections.contains", min_args = 2, max_args = 2, slot = "contains" }
-__coll_indexOf    = { emit = "common:collections.index_of", min_args = 2, max_args = 2 }
-__coll_lastIndexOf= { emit = "common:collections.last_index_of", min_args = 2, max_args = 2 }
+__coll_contains   = { emit = "common:kotlin.contains_any", min_args = 2, max_args = 2, slot = "contains" }
+__coll_indexOf    = { emit = "common:kotlin.index_of_any_recv", min_args = 2, max_args = 2 }
+__coll_lastIndexOf= { emit = "common:kotlin.last_index_of_any_recv", min_args = 2, max_args = 2 }
 __coll_removeAt   = { emit = "common:collections.remove_at", min_args = 2, max_args = 2 }
 __coll_remove     = { emit = "common:collections.remove", min_args = 2, max_args = 2 }
 __coll_insert     = { emit = "common:collections.insert", min_args = 3, max_args = 3 }
@@ -123,8 +126,27 @@ __dict_get    = { emit = "common:dict.get_dynamic", min_args = 2, max_args = 2, 
 # never enumerated (the map printed `{}` while `m[k]` answered).
 __dict_set    = { emit = "common:kotlin.dict_set_tracked", min_args = 3, max_args = 3, slot = "set_item" }
 __dict_has    = { emit = "common:dict.has",         min_args = 2, max_args = 2, slot = "contains" }
-__dict_delete = { emit = "common:kotlin.dict_delete_full", min_args = 2, max_args = 2 }
-__dict_clear  = { emit = "common:dict.clear",       min_args = 1, max_args = 1 }
+__dict_delete = { emit = "common:kotlin.remove_any", min_args = 2, max_args = 3 }
+__kt_map_put  = { emit = "common:kotlin.map_put", min_args = 3, max_args = 3 }
+__kt_safe_get = { emit = "common:kotlin.safe_get", min_args = 2, max_args = 2 }
+__kt_tuple_prop = { emit = "common:kotlin.tuple_prop", min_args = 3, max_args = 3 }
+__kt_first         = { emit = "common:kotlin.first", min_args = 1, max_args = 1 }
+__kt_first_or_null = { emit = "common:kotlin.first_or_null", min_args = 1, max_args = 1 }
+__kt_last          = { emit = "common:kotlin.last", min_args = 1, max_args = 1 }
+__kt_last_or_null  = { emit = "common:kotlin.last_or_null", min_args = 1, max_args = 1 }
+__kt_get_throwing  = { emit = "common:kotlin.list_get_throwing", min_args = 2, max_args = 2 }
+__kt_array_init    = { emit = "common:kotlin.array_init", min_args = 1, max_args = 2 }
+__kt_windowed_partial = { emit = "common:kotlin.windowed_partial", min_args = 2, max_args = 3 }
+__kt_remove_if     = { emit = "common:kotlin.remove_if", min_args = 2, max_args = 2 }
+__kt_sort_range    = { emit = "common:kotlin.sort_range", min_args = 3, max_args = 3 }
+__kt_double_str    = { emit = "common:kotlin.double_str", min_args = 1, max_args = 1 }
+__kt_dur_whole     = { emit = "common:kotlin.duration_whole", min_args = 3, max_args = 3 }
+__kt_as_double     = { emit = "common:kotlin.as_double", min_args = 1, max_args = 1 }
+__kt_as_result     = { emit = "common:kotlin.as_double", min_args = 1, max_args = 1 }
+__kt_duration_str  = { emit = "common:kotlin.duration_str", min_args = 1, max_args = 1 }
+__kt_ref_eq        = { emit = "common:kotlin.ref_eq", min_args = 2, max_args = 2 }
+__kt_retain_if     = { emit = "common:kotlin.retain_if", min_args = 2, max_args = 2 }
+__dict_clear  = { emit = "common:kotlin.clear_any", min_args = 1, max_args = 1 }
 __dict_keys   = { emit = "common:dict.keys",        min_args = 1, max_args = 1 }
 __dict_values = { emit = "common:dict.values",      min_args = 1, max_args = 1 }
 __dict_items  = { emit = "common:dict.items",       min_args = 1, max_args = 1 }
@@ -260,6 +282,7 @@ check          = { emit = "common:kotlin.check", min_args = 1, max_args = 2 }
 requireNotNull = { emit = "common:kotlin.require_not_null", min_args = 1, max_args = 1 }
 checkNotNull   = { emit = "common:kotlin.check_not_null", min_args = 1, max_args = 1 }
 __kt_not_null_assert = { emit = "common:kotlin.not_null_assert", min_args = 1, max_args = 1 }
+__kt_throw           = { emit = "common:kotlin.throw_expr", min_args = 1, max_args = 1 }
 __kt_class_of = { emit = "common:kotlin.class_of", min_args = 1, max_args = 1 }
 __kt_char_code = { emit = "common:jvm.java.char_code", min_args = 1, max_args = 1 }
 __kt_illegal_state_exception = { emit = "common:kotlin.illegal_state_exception", min_args = 0, max_args = 1 }
@@ -272,7 +295,13 @@ NoSuchElementException     = { emit = "common:kotlin.no_such_element_exception",
 UnsupportedOperationException = { emit = "common:kotlin.unsupported_operation_exception", min_args = 0, max_args = 1 }
 __kt_reduce   = { emit = "common:kotlin.reduce_throwing", min_args = 2, max_args = 2 }
 __kt_slice       = { emit = "common:kotlin.slice_any", min_args = 3, max_args = 3 }
+__kt_char_at     = { emit = "common:kotlin.char_at_throwing", min_args = 2, max_args = 2 }
+__kt_find        = { emit = "common:kotlin.find", min_args = 2, max_args = 2 }
+__kt_find_last   = { emit = "common:kotlin.find_last_any", min_args = 2, max_args = 2 }
 __kt_contains_ic = { emit = "common:kotlin.contains_ic", min_args = 3, max_args = 3 }
+__kt_index_of_from = { emit = "common:kotlin.index_of_from", min_args = 3, max_args = 3 }
+__kt_slice_r     = { emit = "common:kotlin.slice_range_value", min_args = 2, max_args = 2 }
+IntRange         = { emit = "common:collections.range_inc", min_args = 2, max_args = 2 }
 __kt_starts_with_ic = { emit = "common:kotlin.starts_with_ic", min_args = 3, max_args = 3 }
 __kt_ends_with_ic = { emit = "common:kotlin.ends_with_ic", min_args = 3, max_args = 3 }
 
@@ -294,7 +323,7 @@ isNaN      = { emit = "host:ecma:number:isNaN",   min_args = 0, max_args = 0 }
 # ── Numeric conversions (kotlin.Number) ─────────────────────────────────────
 # Kotlin's `toInt()`/`toLong()` TRUNCATE toward zero (`4.9.toInt() == 4`,
 # `(-4.9).toInt() == -4`) — `Math.trunc`, not `floor`, which would answer -5.
-toInt      = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
+toInt      = { emit = "common:kotlin.to_int_radix", min_args = 0, max_args = 1 }
 toChar     = { emit = "common:jvm.java.int_to_char", min_args = 0, max_args = 0 }
 roundToInt = { emit = "host:ecma:math:round",     min_args = 0, max_args = 0 }
 toLong     = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
@@ -303,7 +332,7 @@ toLong     = { emit = "host:ecma:math:trunc",     min_args = 0, max_args = 0 }
 # integer division, and an absent method is an "undefined is not callable" trap.
 toDouble   = { emit = "host:ecma:number:Number",  min_args = 0, max_args = 0 }
 toFloat    = { emit = "host:ecma:number:Number",  min_args = 0, max_args = 0 }
-toIntOrNull    = { emit = "common:kotlin.to_int_or_null", min_args = 0, max_args = 1 }
+toIntOrNull    = { emit = "common:kotlin.to_int_or_null_radix", min_args = 0, max_args = 1 }
 toDoubleOrNull = { emit = "common:kotlin.to_double_or_null", min_args = 0, max_args = 0 }
 isFinite   = { emit = "host:ecma:number:isFinite", min_args = 0, max_args = 0 }
 # No host fn answers this one: ECMA has `isFinite` and `isNaN` but nothing for
@@ -311,9 +340,16 @@ isFinite   = { emit = "host:ecma:number:isFinite", min_args = 0, max_args = 0 }
 isInfinite = { emit = "common:kotlin.is_infinite", min_args = 0, max_args = 0 }
 uppercase  = { emit = "common:strings.to_upper", min_args = 0, max_args = 0 }
 lowercase  = { emit = "common:strings.to_lower", min_args = 0, max_args = 0 }
+# The pre-1.5 spellings still compile (deprecated, not removed).
+toUpperCase = { emit = "common:strings.to_upper", min_args = 0, max_args = 0 }
+toLowerCase = { emit = "common:strings.to_lower", min_args = 0, max_args = 0 }
 capitalize = { emit = "intrinsic:capitalize", min_args = 0, max_args = 0 }
-toByteArray = { emit = "common:jvm.java.string_to_byte_array", min_args = 0, max_args = 1 }
-toCharArray = { emit = "common:jvm.java.string_to_char_array", min_args = 0, max_args = 0 }
+toByteArray = { emit = "common:kotlin.to_byte_array", min_args = 0, max_args = 1 }
+# `as_list`, not the jvm string splitter: `toCharArray` also runs on LISTS
+# of chars (`listOf('a','b').toCharArray()`), and the list view handles both
+# receivers (string → chars, array → clone).
+toCharArray = { emit = "common:kotlin.as_list", min_args = 0, max_args = 0 }
+concatToString = { emit = "common:kotlin.concat_to_string", min_args = 0, max_args = 0 }
 
 # ── kotlin.text extensions (adapters in emitter/strings.rs) ────────────────
 isBlank          = { emit = "common:kotlin.is_blank", min_args = 0, max_args = 0 }
@@ -327,32 +363,41 @@ substringAfter   = { emit = "common:kotlin.substring_after", min_args = 1, max_a
 substringBeforeLast = { emit = "common:kotlin.substring_before_last", min_args = 1, max_args = 2 }
 substringAfterLast  = { emit = "common:kotlin.substring_after_last", min_args = 1, max_args = 2 }
 lines            = { emit = "common:kotlin.lines", min_args = 0, max_args = 0 }
+chunked          = { emit = "common:kotlin.chunked", min_args = 1, max_args = 1 }
+windowed         = { emit = "common:kotlin.windowed", min_args = 1, max_args = 3 }
 lineSequence     = { emit = "common:kotlin.lines", min_args = 0, max_args = 0 }
 replaceRange     = { emit = "common:kotlin.replace_range", min_args = 3, max_args = 3 }
 compareTo        = { emit = "common:kotlin.compare_to", min_args = 1, max_args = 1 }
 regionMatches    = { emit = "common:kotlin.region_matches", min_args = 4, max_args = 5 }
-indexOfAny       = { emit = "common:kotlin.index_of_any", min_args = 1, max_args = 1 }
+indexOfAny       = { emit = "common:kotlin.index_of_any", min_args = 1, max_args = 2 }
 lastIndexOfAny   = { emit = "common:kotlin.last_index_of_any", min_args = 1, max_args = 1 }
 toBoolean        = { emit = "common:kotlin.to_boolean", min_args = 0, max_args = 0 }
 toBooleanStrictOrNull = { emit = "common:kotlin.to_boolean_strict_or_null", min_args = 0, max_args = 0 }
+toBooleanOrNull  = { emit = "common:kotlin.to_boolean_strict_or_null", min_args = 0, max_args = 0 }
 isDigit          = { emit = "common:kotlin.is_digit", min_args = 0, max_args = 0 }
 isLetter         = { emit = "common:kotlin.is_letter", min_args = 0, max_args = 0 }
 trimIndent       = { emit = "common:kotlin.trim_indent", min_args = 0, max_args = 0 }
 trimMargin       = { emit = "common:kotlin.trim_margin", min_args = 0, max_args = 1 }
 padStart         = { emit = "host:ecma:string:padStart", min_args = 1, max_args = 2 }
 padEnd           = { emit = "host:ecma:string:padEnd", min_args = 1, max_args = 2 }
-trim             = { emit = "host:ecma:string:trim", min_args = 0, max_args = 0 }
-trimStart        = { emit = "host:ecma:string:trimStart", min_args = 0, max_args = 0 }
-trimEnd          = { emit = "host:ecma:string:trimEnd", min_args = 0, max_args = 0 }
-substring        = { emit = "host:ecma:string:slice", min_args = 1, max_args = 2 }
+trim             = { emit = "common:kotlin.trim_any", min_args = 0, max_args = 3 }
+trimStart        = { emit = "common:kotlin.trim_start_any", min_args = 0, max_args = 3 }
+trimEnd          = { emit = "common:kotlin.trim_end_any", min_args = 0, max_args = 3 }
+substring        = { emit = "common:kotlin.substring_throwing", min_args = 1, max_args = 2 }
 subSequence      = { emit = "host:ecma:string:slice", min_args = 2, max_args = 2 }
-split            = { emit = "host:ecma:string:split", min_args = 1, max_args = 1 }
+split            = { emit = "common:kotlin.split_limit", min_args = 1, max_args = 2 }
 replaceFirst     = { emit = "host:ecma:string:replace", min_args = 2, max_args = 2 }
-toByteOrNull     = { emit = "common:kotlin.to_int_or_null", min_args = 0, max_args = 0 }
-toLongOrNull     = { emit = "common:kotlin.to_int_or_null", min_args = 0, max_args = 0 }
-toShortOrNull    = { emit = "common:kotlin.to_int_or_null", min_args = 0, max_args = 0 }
-toByte           = { emit = "host:ecma:math:trunc", min_args = 0, max_args = 0 }
-toShort          = { emit = "host:ecma:math:trunc", min_args = 0, max_args = 0 }
+toByteOrNull     = { emit = "common:kotlin.to_byte_or_null", min_args = 0, max_args = 0 }
+toLongOrNull     = { emit = "common:kotlin.to_int_or_null_radix", min_args = 0, max_args = 1 }
+toShortOrNull    = { emit = "common:kotlin.to_short_or_null", min_args = 0, max_args = 0 }
+toByte           = { emit = "common:kotlin.to_byte_wrap", min_args = 0, max_args = 0 }
+toShort          = { emit = "common:kotlin.to_short_wrap", min_args = 0, max_args = 0 }
+# Unsigned casts mask to the width; toUInt/toULong just truncate (values
+# beyond 2^31 would need a real unsigned representation).
+toUByte          = { emit = "common:kotlin.to_ubyte", min_args = 0, max_args = 0 }
+toUShort         = { emit = "common:kotlin.to_ushort", min_args = 0, max_args = 0 }
+toUInt           = { emit = "host:ecma:math:trunc", min_args = 0, max_args = 0 }
+toULong          = { emit = "host:ecma:math:trunc", min_args = 0, max_args = 0 }
 hashCode         = { emit = "common:object.hash_code", min_args = 0, max_args = 0 }
 equals           = { emit = "common:kotlin.equals_ic", min_args = 1, max_args = 2 }
 
@@ -368,19 +413,31 @@ contentToString     = { emit = "common:jvm.java.arrays_to_string", min_args = 0,
 contentDeepToString = { emit = "common:jvm.java.arrays_deep_to_string", min_args = 0, max_args = 0 }
 contentHashCode     = { emit = "common:jvm.java.arrays_hash_code", min_args = 0, max_args = 0 }
 contentDeepHashCode = { emit = "common:jvm.java.arrays_deep_hash_code", min_args = 0, max_args = 0 }
-fill                = { emit = "common:jvm.java.arrays_fill", min_args = 1, max_args = 3 }
+# Kotlin's member order is (value, from, to) — NOT Java's (a, from, to, value);
+# the jvm adapter read the range from the wrong slots.
+fill                = { emit = "common:kotlin.fill", min_args = 1, max_args = 3 }
+# The typed-array converters are all "the values, as a fresh array" here —
+# lists/sets/maps share one runtime representation.
+toTypedArray        = { emit = "common:kotlin.to_list", min_args = 0, max_args = 0 }
+toIntArray          = { emit = "common:kotlin.to_list", min_args = 0, max_args = 0 }
+toLongArray         = { emit = "common:kotlin.to_list", min_args = 0, max_args = 0 }
+toDoubleArray       = { emit = "common:kotlin.to_list", min_args = 0, max_args = 0 }
 copyOf              = { emit = "common:jvm.java.arrays_copy_of", min_args = 0, max_args = 1 }
 copyOfRange         = { emit = "common:jvm.java.arrays_copy_of_range", min_args = 2, max_args = 2 }
 sortedArray         = { emit = "common:collections.sorted", min_args = 0, max_args = 0 }
-reversedArray       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
+reversedArray       = { emit = "common:kotlin.reversed_any", min_args = 0, max_args = 0 }
+reverse             = { emit = "common:kotlin.reverse_in_place", min_args = 0, max_args = 0 }
+sortedArrayDescending = { emit = "common:kotlin.sorted_desc_copy", min_args = 0, max_args = 0 }
 asList              = { emit = "common:jvm.java.arrays_as_list", min_args = 0, max_args = 0 }
-elementAt        = { emit = "common:collections.get", min_args = 1, max_args = 1 }
+elementAt        = { emit = "common:kotlin.list_get_throwing", min_args = 1, max_args = 1 }
 elementAtOrNull  = { emit = "common:kotlin.get_or_null", min_args = 1, max_args = 1 }
 elementAtOrElse  = { emit = "common:kotlin.get_or_else", min_args = 2, max_args = 2 }
 getOrNull        = { emit = "common:kotlin.get_or_null", min_args = 1, max_args = 1 }
 getOrElse        = { emit = "common:kotlin.get_or_else", min_args = 2, max_args = 2 }
 takeWhile        = { emit = "common:kotlin.take_while", min_args = 1, max_args = 1 }
 dropWhile        = { emit = "common:kotlin.drop_while", min_args = 1, max_args = 1 }
+takeLastWhile    = { emit = "common:kotlin.take_last_while", min_args = 1, max_args = 1 }
+dropLastWhile    = { emit = "common:kotlin.drop_last_while", min_args = 1, max_args = 1 }
 takeLast         = { emit = "common:kotlin.take_last", min_args = 1, max_args = 1 }
 dropLast         = { emit = "common:kotlin.drop_last", min_args = 1, max_args = 1 }
 count            = { emit = "common:kotlin.count", min_args = 0, max_args = 1 }
@@ -411,19 +468,22 @@ distinct         = { emit = "common:kotlin.distinct", min_args = 0, max_args = 0
 distinctBy       = { emit = "common:kotlin.distinct_by", min_args = 1, max_args = 1 }
 foldRight        = { emit = "common:kotlin.fold_right", min_args = 2, max_args = 2 }
 foldIndexed      = { emit = "common:kotlin.fold_indexed", min_args = 2, max_args = 2 }
+foldRightIndexed = { emit = "common:kotlin.fold_right_indexed", min_args = 2, max_args = 2 }
+runningFoldIndexed = { emit = "common:kotlin.running_fold_indexed", min_args = 2, max_args = 2 }
+scanIndexed      = { emit = "common:kotlin.running_fold_indexed", min_args = 2, max_args = 2 }
 reduceRight      = { emit = "common:kotlin.reduce_right", min_args = 1, max_args = 1 }
 reduceOrNull     = { emit = "common:kotlin.reduce_or_null", min_args = 1, max_args = 1 }
 runningFold      = { emit = "common:kotlin.running_fold", min_args = 2, max_args = 2 }
 scan             = { emit = "common:kotlin.running_fold", min_args = 2, max_args = 2 }
 runningReduce    = { emit = "common:kotlin.running_reduce", min_args = 1, max_args = 1 }
 groupBy          = { emit = "common:kotlin.group_by", min_args = 1, max_args = 1 }
-groupByTo        = { emit = "common:kotlin.group_by_to", min_args = 2, max_args = 2 }
+groupByTo        = { emit = "common:kotlin.group_by_to", min_args = 2, max_args = 3 }
 associateBy      = { emit = "common:kotlin.associate_by", min_args = 1, max_args = 2 }
 associateByTo    = { emit = "common:kotlin.associate_by_to", min_args = 2, max_args = 2 }
 associateWith    = { emit = "common:kotlin.associate_with", min_args = 1, max_args = 1 }
 associate        = { emit = "common:kotlin.associate", min_args = 1, max_args = 1 }
-zip              = { emit = "common:kotlin.zip", min_args = 1, max_args = 1 }
-zipWithNext      = { emit = "common:kotlin.zip_with_next", min_args = 0, max_args = 0 }
+zip              = { emit = "common:kotlin.zip", min_args = 1, max_args = 2 }
+zipWithNext      = { emit = "common:kotlin.zip_with_next", min_args = 0, max_args = 1 }
 unzip            = { emit = "common:kotlin.unzip", min_args = 0, max_args = 0 }
 withIndex        = { emit = "common:kotlin.with_index", min_args = 0, max_args = 0 }
 partition        = { emit = "common:kotlin.partition", min_args = 1, max_args = 1 }
@@ -434,12 +494,13 @@ constrainOnce    = { emit = "common:kotlin.or_empty", min_args = 0, max_args = 0
 sortedDescending = { emit = "common:kotlin.sorted_descending", min_args = 0, max_args = 0 }
 toMap            = { emit = "common:kotlin.to_map", min_args = 0, max_args = 0 }
 toMutableMap     = { emit = "common:kotlin.copy_map", min_args = 0, max_args = 0 }
-toSortedMap      = { emit = "common:kotlin.to_sorted_map", min_args = 0, max_args = 0 }
+toSortedMap      = { emit = "common:kotlin.to_sorted_map", min_args = 0, max_args = 1 }
 toSortedSet      = { emit = "common:kotlin.to_sorted_set", min_args = 0, max_args = 0 }
+ifEmpty          = { emit = "common:kotlin.if_empty", min_args = 1, max_args = 1 }
 toHashSet        = { emit = "common:kotlin.to_set", min_args = 0, max_args = 0 }
-subList          = { emit = "common:collections.slice", min_args = 2, max_args = 2 }
+subList          = { emit = "common:kotlin.sub_list", min_args = 2, max_args = 2 }
 asReversed       = { emit = "common:collections.reverse", min_args = 0, max_args = 0 }
-binarySearch     = { emit = "common:jvm.java.arrays_binary_search", min_args = 1, max_args = 1 }
+binarySearch     = { emit = "common:kotlin.binary_search_range", min_args = 1, max_args = 3 }
 plus             = { emit = "common:kotlin.plus", min_args = 1, max_args = 1 }
 minus            = { emit = "common:kotlin.minus", min_args = 1, max_args = 1 }
 union            = { emit = "common:kotlin.set_union", min_args = 1, max_args = 1 }
@@ -456,6 +517,7 @@ withDefault      = { emit = "common:kotlin.with_default", min_args = 1, max_args
 getOrPut         = { emit = "common:kotlin.get_or_put", min_args = 2, max_args = 2 }
 putAll           = { emit = "common:kotlin.put_all", min_args = 1, max_args = 1 }
 putIfAbsent      = { emit = "common:kotlin.put_if_absent", min_args = 2, max_args = 2 }
+put              = { emit = "common:kotlin.map_put", min_args = 2, max_args = 2 }
 groupingBy       = { emit = "common:kotlin.grouping_by", min_args = 1, max_args = 1 }
 eachCount        = { emit = "common:kotlin.each_count", min_args = 0, max_args = 0 }
 aggregate        = { emit = "common:kotlin.grouping_aggregate", min_args = 1, max_args = 1 }
@@ -490,6 +552,10 @@ array  = [
     "array", "array<*", "collection", "collection<*", "iterable", "iterable<*",
     "intarray", "longarray", "doublearray", "floatarray",
     "booleanarray", "chararray", "shortarray",
+    # `bytearray` MUST be declared: the platform table classifies it as
+    # BYTES (Python's bytearray → Uint8Array), whose get_item is
+    # `uint8array.at` — undefined on Kotlin's plain-array ByteArray.
+    "bytearray", "uintarray", "ubytearray", "ushortarray", "ulongarray",
 ]
 
 
@@ -526,6 +592,21 @@ to_string = "common:kotlin.print_double"
 # as the `__dict_set` builtin above.
 [builtin_slots.map]
 set_item = "common:kotlin.dict_set_tracked"
+# `m[k]` on a missing key answers js-undefined via the default dynamic get;
+# Kotlin's absent is null (`map["gone"]` prints `null`, never `undefined`).
+get_item = "common:kotlin.dict_get_null"
+
+# `list[i]` out of range THROWS IndexOutOfBoundsException in Kotlin — the
+# platform default (`common:collections.get`) answers undefined, per the
+# documented out-of-range caveat on the shared binding.
+[builtin_slots.array]
+get_item = "common:kotlin.list_get_throwing"
+# `Collections.unmodifiableList`/`singleton` views throw on write.
+set_item = "common:kotlin.list_set_checked"
+# Kotlin's `==` is `equals()` — STRUCTURAL for collections: sets and maps
+# order-independent, lists in order. This is the same slot Python binds
+# (`python.value_eq`); the platform fallback compares references.
+eq = "common:kotlin.value_eq"
 
 # ── `in` is `contains()`, NOT a key/index test — NOT YET FIXED ──────────────
 #

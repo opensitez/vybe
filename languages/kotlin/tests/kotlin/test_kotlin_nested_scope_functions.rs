@@ -84,7 +84,9 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-    &["3", "12"]
+    // Real Kotlin agrees: `[2,4,6].filter { it > 2 }` EXCLUDES 2, so the
+    // `also` sees size 2 and the sum is 4+6 = 10.
+    &["2", "10"]
 );
 
 kotlin_run_test!(

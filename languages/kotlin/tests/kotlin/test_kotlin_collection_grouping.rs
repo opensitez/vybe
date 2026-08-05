@@ -40,7 +40,9 @@ kotlin_run_cases! {
             println(grouped["high"]!!.size)
             println(grouped["low"]!!.size)
         }
-    "#, &["2", "3"]),
+    "#, &["3", "2"]),
+    // ^ >= 10 holds for 12, 20 and 17 — "high" has 3, "low" has 2
+    // (real Kotlin agrees).
     test_grouping_to_existing_map => (r#"
         fun main() {
             val source = listOf("k", "kk", "kotlin")
@@ -98,7 +100,8 @@ kotlin_run_cases! {
             println(keys.joinToString(","))
             println(grouped[3]!!.size)
         }
-    "#, &["3,4", "2"]),
+    "#, &["3,4", "3"]),
+    // ^ the 3-letter group is [ant, cat, eel] — size 3 (real Kotlin agrees).
     test_grouping_by_chars => (r#"
         fun main() {
             val values = listOf("a,b", "c,d", "a:e")
@@ -141,7 +144,9 @@ kotlin_run_cases! {
             println(out['b'])
             println(out['c'])
         }
-    "#, &["42", "12", "3"]),
+    "#, &["53", "34", "3"]),
+    // ^ lengths concatenated per group: 'a' = apple(5) + ape(3) = "53",
+    // 'b' = bat(3) + ball(4) = "34", 'c' = cat(3) = "3" (real Kotlin agrees).
     test_grouping_by_index => (r#"
         fun main() {
             val values = listOf("a", "b", "c", "aa")
@@ -253,7 +258,9 @@ kotlin_run_cases! {
             val oddLast = grouped[1]!![2]
             println(evenFirst + oddLast)
         }
-    "#, &["16"]),
+    "#, &["15"]),
+    // ^ grouped[0] = [6, 8, 10] and grouped[1] = [5, 7, 9], so 6 + 9 = 15
+    // (real Kotlin agrees).
     test_grouping_zip_projection => (r#"
         fun main() {
             val grouped = listOf("aa", "bbb", "cccc", "d").groupBy { it.length }

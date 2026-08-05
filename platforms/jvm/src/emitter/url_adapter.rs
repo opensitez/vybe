@@ -59,7 +59,6 @@ fn sget(chunks: &mut [Chunk], c: usize, key: &str, line: u32) {
 fn sset(chunks: &mut [Chunk], c: usize, key: &str, line: u32) {
     let k = chunks[c].add_constant(Value::String(Arc::from(key)));
     chunks[c].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    chunks[c].emit_op(Op::DROP, line);
 }
 
 fn call(chunks: &mut [Chunk], c: usize, module: &str, name: &str, argc: u8, line: u32) {

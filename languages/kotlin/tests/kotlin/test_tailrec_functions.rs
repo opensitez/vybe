@@ -121,7 +121,9 @@ kotlin_run_test!(
             println(countChars("abracadabra"))
         }
     "#,
-    &["4"]
+    // Real Kotlin agrees: "abracadabra" holds FIVE 'a's
+    // (a-br-a-c-a-d-a-br-a).
+    &["5"]
 );
 
 kotlin_run_test!(

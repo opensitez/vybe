@@ -186,7 +186,9 @@ fn test_int_array_binary_search_range_start() {
         }
     "#,
     );
-    assert_eq!(out, &["3", "-5"]);
+    // In [0, 3) the values are [1, 2, 3]; 4 is absent with insertion point 3
+    // → -(3) - 1 = -4 (JDK javadoc semantics; real Kotlin agrees).
+    assert_eq!(out, &["3", "-4"]);
 }
 
 #[test]
@@ -687,7 +689,8 @@ fn test_byte_array_join_to_string_with_charset_preserves_signs() {
         }
     "#,
     );
-    assert_eq!(out, &["1,-2,127,-128", "-130"]);
+    // The separator the code passes is `"|"` (real Kotlin agrees).
+    assert_eq!(out, &["1|-2|127|-128", "-130"]);
 }
 
 #[test]
@@ -763,7 +766,10 @@ fn test_array_copy_of_range_out_of_bounds_throws() {
             val nums = intArrayOf(1, 2, 3)
             try {
                 nums.copyOfRange(-1, 2)
-            } catch (e: IllegalArgumentException) {
+            } catch (e: IndexOutOfBoundsException) {
+                // A negative fromIndex is ArrayIndexOutOfBoundsException on
+                // the JVM (an IndexOutOfBoundsException) — never
+                // IllegalArgumentException, which is reserved for from > to.
                 println("bad")
             }
         }

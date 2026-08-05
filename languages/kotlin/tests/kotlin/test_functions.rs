@@ -569,8 +569,9 @@ fn test_function_vararg_with_spread_operator() {
             println(sum("empty"))
         }
     "#,
+    // 1 + 2 + 3 + *[4, 5] sums to 15 (real Kotlin agrees).
     );
-    assert_eq!(out, &["base:12", "empty:0"]);
+    assert_eq!(out, &["base:15", "empty:0"]);
 }
 
 #[test]

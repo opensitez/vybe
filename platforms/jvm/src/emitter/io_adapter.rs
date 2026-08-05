@@ -38,7 +38,6 @@ fn field_set_from_stack(chunk: &mut Chunk, obj: u16, name: &str, line: u32) {
     get(chunk, value, line);
     let k = key(chunk, name);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn new_object_with_data(chunks: &mut [Chunk], current: usize, data_slot: u16, line: u32) {
@@ -810,8 +809,45 @@ pub fn emit_writer_to_char_array(chunks: &mut [Chunk], current: usize, line: u32
 }
 
 pub fn emit_chars_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    // A byte/char array whose elements are NUMBERS holds CODES —
+    // `String(s.toByteArray())` round-trips through `fromCharCode`, not a
+    // join of the digits.
+    let arr = chunks[current].alloc_scratch(1);
+    set(&mut chunks[current], arr, line);
+    get(&mut chunks[current], arr, line);
+    chunks[current].emit_i32_const(0, line);
+    collections::emit_get(chunks, current, line);
+    let idx = chunks[current].add_import("ecma:value", "typeof");
+    chunks[current].emit_call(idx, 1, line);
+    chunks[current].emit_string_const("number", line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    {
+        // out = "" ; for code in arr: out += fromCharCode(code)
+        let out = chunks[current].alloc_scratch(1);
+        let i = chunks[current].alloc_scratch(1);
+        chunks[current].emit_string_const("", line);
+        set(&mut chunks[current], out, line);
+        let state = vybe_compiler::primitives::loops::emit_for_in_start(
+            chunks, current, arr, i, line,
+        );
+        let fcc = chunks[current].add_import("ecma:string", "fromCharCode");
+        chunks[current].emit_call(fcc, 1, line);
+        let piece = chunks[current].alloc_scratch(1);
+        set(&mut chunks[current], piece, line);
+        get(&mut chunks[current], out, line);
+        get(&mut chunks[current], piece, line);
+        strings::emit_str_concat(&mut chunks[current], line);
+        set(&mut chunks[current], out, line);
+        vybe_compiler::primitives::loops::emit_for_in_end(chunks, current, i, state, line);
+        get(&mut chunks[current], out, line);
+    }
+    chunks[current].emit_else(line);
+    get(&mut chunks[current], arr, line);
     chunks[current].emit_string_const("", line);
     collections::emit_join(chunks, current, line);
+    chunks[current].emit_end(line);
 }
 
 pub fn emit_read_utf(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -20,6 +20,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "kotlin.dict_set_tracked" => { crate::emitter::maps::emit_dict_set_stmt(chunks, current, argc, line); true }
         "kotlin.map_for_each" => { crate::emitter::maps::emit_map_for_each(chunks, current, argc, line); true }
         "kotlin.null_array" => { crate::emitter::hof::emit_null_array(chunks, current, argc, line); true }
+        "kotlin.array_init" => { crate::emitter::hof::emit_array_init(chunks, current, argc, line); true }
+        "kotlin.fill" => { crate::emitter::hof::emit_fill(chunks, current, argc, line); true }
+        "kotlin.remove_if" => { crate::emitter::hof::emit_remove_if(chunks, current, argc, line); true }
+        "kotlin.retain_if" => { crate::emitter::hof::emit_retain_if(chunks, current, argc, line); true }
         "kotlin.map_replace" => { crate::emitter::maps::emit_map_replace(chunks, current, argc, line); true }
         "kotlin.map_indexed_not_null" => { crate::emitter::hof::emit_map_indexed_not_null(chunks, current, argc, line); true }
         "kotlin.size_any" => { crate::emitter::hof::emit_size_any(chunks, current, line); true }
@@ -61,6 +65,93 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "kotlin.slice_any" => { crate::emitter::hof::emit_slice_any(chunks, current, argc, line); true }
         "kotlin.reversed_any" => { crate::emitter::strings::emit_reversed_any(chunks, current, argc, line); true }
         "kotlin.region_matches" => { crate::emitter::strings::emit_region_matches(chunks, current, argc, line); true }
+        "kotlin.index_of_from" => { crate::emitter::strings::emit_index_of_from(chunks, current, argc, false, line); true }
+        "kotlin.last_index_of_from" => { crate::emitter::strings::emit_index_of_from(chunks, current, argc, true, line); true }
+        "kotlin.chunked" => { crate::emitter::strings::emit_chunked_windowed(chunks, current, argc, false, line); true }
+        "kotlin.windowed" => { crate::emitter::strings::emit_chunked_windowed(chunks, current, argc, true, line); true }
+        "kotlin.windowed_partial" => { crate::emitter::strings::emit_chunked_windowed_ex(chunks, current, argc, true, true, line); true }
+        "kotlin.slice_range_value" => { crate::emitter::strings::emit_slice_range_value(chunks, current, argc, line); true }
+        "kotlin.index_of_any_recv" => { crate::emitter::strings::emit_index_of_any_recv(chunks, current, argc, false, line); true }
+        "kotlin.last_index_of_any_recv" => { crate::emitter::strings::emit_index_of_any_recv(chunks, current, argc, true, line); true }
+        "kotlin.to_byte_or_null" => { crate::emitter::strings::emit_to_bounded_or_null(chunks, current, -128, 127, line); true }
+        "kotlin.to_short_or_null" => { crate::emitter::strings::emit_to_bounded_or_null(chunks, current, -32768, 32767, line); true }
+        "kotlin.take_last_while" => { crate::emitter::hof::emit_last_while_split(chunks, current, true, line); true }
+        "kotlin.drop_last_while" => { crate::emitter::hof::emit_last_while_split(chunks, current, false, line); true }
+        "kotlin.trim_any" => {
+            if argc <= 1 {
+                let idx = chunks[current].add_import("ecma:string", "trim");
+                chunks[current].emit_call(idx, 1, line);
+            } else {
+                crate::emitter::strings::emit_trim_chars(chunks, current, argc, true, true, line);
+            }
+            true
+        }
+        "kotlin.trim_start_any" => {
+            if argc <= 1 {
+                let idx = chunks[current].add_import("ecma:string", "trimStart");
+                chunks[current].emit_call(idx, 1, line);
+            } else {
+                crate::emitter::strings::emit_trim_chars(chunks, current, argc, true, false, line);
+            }
+            true
+        }
+        "kotlin.trim_end_any" => {
+            if argc <= 1 {
+                let idx = chunks[current].add_import("ecma:string", "trimEnd");
+                chunks[current].emit_call(idx, 1, line);
+            } else {
+                crate::emitter::strings::emit_trim_chars(chunks, current, argc, false, true, line);
+            }
+            true
+        }
+        "kotlin.split_limit" => { crate::emitter::strings::emit_split_limit(chunks, current, argc, line); true }
+        "kotlin.char_at_throwing" => { crate::emitter::strings::emit_char_at_throwing(chunks, current, argc, line); true }
+        "kotlin.substring_throwing" => { crate::emitter::strings::emit_substring_throwing(chunks, current, argc, line); true }
+        "kotlin.contains_any" => { crate::emitter::strings::emit_contains_any(chunks, current, argc, line); true }
+        "kotlin.to_int_radix" => {
+            if argc >= 2 {
+                crate::emitter::strings::emit_parse_radix(chunks, current, argc, false, line);
+            } else {
+                // NOT a bare trunc: a string receiver must THROW
+                // NumberFormatException on garbage (`"x".toInt()` was NaN,
+                // so `runCatching` never caught anything).
+                crate::emitter::numbers::emit_to_int_throwing(chunks, current, line);
+            }
+            true
+        }
+        "kotlin.to_int_or_null_radix" => {
+            if argc >= 2 {
+                crate::emitter::strings::emit_parse_radix(chunks, current, argc, true, line);
+            } else {
+                crate::emitter::strings::emit_strict_int_or_null(chunks, current, argc, line);
+            }
+            true
+        }
+        "kotlin.find" => { crate::emitter::hof::emit_find(chunks, current, argc, line); true }
+        "kotlin.find_last_any" => { crate::emitter::hof::emit_find_last_any(chunks, current, argc, line); true }
+        "kotlin.remove_any" => { crate::emitter::maps::emit_remove_any(chunks, current, argc, line); true }
+        "kotlin.clear_any" => { crate::emitter::maps::emit_clear_any(chunks, current, argc, line); true }
+        "kotlin.map_put" => { crate::emitter::maps::emit_map_put(chunks, current, argc, line); true }
+        "kotlin.safe_get" => { crate::emitter::maps::emit_safe_get(chunks, current, argc, line); true }
+        "kotlin.dict_get_null" => { crate::emitter::maps::emit_dict_get_null(chunks, current, argc, line); true }
+        "kotlin.list_set_checked" => { crate::emitter::maps::emit_list_set_checked(chunks, current, argc, line); true }
+        "kotlin.concat_to_string" => { crate::emitter::collections::emit_concat_to_string(chunks, current, argc, line); true }
+        "kotlin.reverse_in_place" => { crate::emitter::collections::emit_reverse_in_place(chunks, current, argc, line); true }
+        "kotlin.sorted_copy" => { crate::emitter::collections::emit_sorted_copy(chunks, current, argc, line); true }
+        "kotlin.sorted_desc_copy" => { crate::emitter::collections::emit_sorted_desc_copy(chunks, current, argc, line); true }
+        "kotlin.sort_range" => { crate::emitter::collections::emit_sort_range(chunks, current, argc, line); true }
+        "kotlin.binary_search_range" => { crate::emitter::collections::emit_binary_search_range(chunks, current, argc, line); true }
+        "kotlin.to_byte_array" => { crate::emitter::collections::emit_to_byte_array(chunks, current, argc, line); true }
+        "kotlin.to_byte_wrap" => { crate::emitter::numbers::emit_wrap_int(chunks, current, 8, true, line); true }
+        "kotlin.to_short_wrap" => { crate::emitter::numbers::emit_wrap_int(chunks, current, 16, true, line); true }
+        "kotlin.to_ubyte" => { crate::emitter::numbers::emit_wrap_int(chunks, current, 8, false, line); true }
+        "kotlin.to_ushort" => { crate::emitter::numbers::emit_wrap_int(chunks, current, 16, false, line); true }
+        "kotlin.double_str" => { crate::emitter::numbers::emit_double_to_string(chunks, current, line); true }
+        "kotlin.tuple_prop" => { crate::emitter::maps::emit_tuple_prop(chunks, current, argc, line); true }
+        "kotlin.list_get_throwing" => { crate::emitter::maps::emit_list_get_throwing(chunks, current, argc, line); true }
+        "kotlin.sub_list" => { crate::emitter::maps::emit_sub_list(chunks, current, argc, line); true }
+        "kotlin.fold_right_indexed" => { crate::emitter::hof::emit_fold_right_indexed(chunks, current, argc, line); true }
+        "kotlin.running_fold_indexed" => { crate::emitter::hof::emit_running_fold_indexed(chunks, current, argc, line); true }
         "kotlin.distinct" => { crate::emitter::hof::emit_distinct(chunks, current, argc, line); true }
         "kotlin.to_sorted_set" => { crate::emitter::hof::emit_to_sorted_set(chunks, current, argc, line); true }
         "kotlin.take_while" => { crate::emitter::hof::emit_take_while(chunks, current, argc, line); true }
@@ -138,6 +229,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "kotlin.minus" => { crate::emitter::maps::emit_minus(chunks, current, argc, line); true }
         "kotlin.entries" => { crate::emitter::collections::emit_entries(chunks, current, argc, line); true }
         "kotlin.as_list" => { crate::emitter::collections::emit_dict_as_list(chunks, current, line); true }
+        "kotlin.value_eq" => { crate::emitter::equality::emit_value_eq(chunks, current, line); true }
+        "kotlin.ref_eq" => { crate::emitter::equality::emit_ref_eq(chunks, current, line); true }
+        // Identity at RUNTIME — the marker's whole job is carrying the
+        // Double static type out of the erased `toDouble(unit)` call.
+        "kotlin.as_double" => true,
+        "kotlin.duration_whole" => {
+            crate::emitter::time::emit_duration_whole(chunks, current, argc, line);
+            true
+        }
+        "kotlin.duration_str" => {
+            crate::emitter::time::emit_duration_str(chunks, current, argc, line);
+            true
+        }
         "kotlin.print" => {
             crate::emitter::tostring::emit_print(chunks, current, argc, line);
             true
@@ -256,6 +360,14 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "kotlin.is_not_empty" => {
             crate::emitter::collections::emit_is_not_empty(chunks, current, argc, line);
+            true
+        }
+        "kotlin.if_empty" => {
+            crate::emitter::hof::emit_if_empty(chunks, current, argc, line);
+            true
+        }
+        "kotlin.throw_expr" => {
+            crate::emitter::nullability::emit_throw_expr(chunks, current, argc, line);
             true
         }
         "kotlin.not_null_assert" => {

@@ -39,7 +39,7 @@ fn test_reduce_vs_reduce_or_null() {
             val r = a.reduce { acc, value -> acc + value }
             println(r)
             val b = emptyList<Int>()
-            println(b.reduceOrNull() ?: "empty")
+            println(b.reduceOrNull { acc, value -> acc + value } ?: "empty")
         }
     "#,
     );
@@ -151,7 +151,9 @@ fn test_running_fold_with_indexed_progression() {
         }
     "#,
     );
-    assert_eq!(out, &["0,1,3,6,10"]);
+    // `index` is the ELEMENT's index and is added each step: 0, 0+1+0=1,
+    // 1+1+1=3, 3+2+2=7, 7+3+3=13 (real Kotlin agrees).
+    assert_eq!(out, &["0,1,3,7,13"]);
 }
 
 #[test]
@@ -214,5 +216,5 @@ fn test_counting_and_aggregation_shortcuts() {
         }
     "#,
     );
-    assert_eq!(out, &["2", "28", "5.6"]);
+    assert_eq!(out, &["3", "28", "5.6"]);
 }

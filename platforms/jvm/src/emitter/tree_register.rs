@@ -69,9 +69,17 @@ fn ensure_type_node(root: &mut Subtree, path: &str) {
             NamespaceNode::Type { statics, .. } => statics,
             _ => return };
     }
-    let Some(existing) = cursor.get_mut(leaf) else {
-        return;
-    };
+    // A type with no statics (`DayOfWeek` — instance surface only) has no
+    // node yet: CREATE it, or the merge helpers silently no-op and every
+    // instance member registered for it is dropped.
+    let existing = cursor.entry(leaf.to_string()).or_insert_with(|| {
+        NamespaceNode::Type {
+            ctor: None,
+            ctor_call: None,
+            statics: Subtree::new(),
+            methods: Subtree::new(),
+            member_returns: Default::default() }
+    });
     if let NamespaceNode::Namespace(children) = existing {
         let statics = std::mem::take(children);
         *existing = NamespaceNode::Type {
@@ -1270,9 +1278,9 @@ fn insert_java_util_collection_statics(root: &mut Subtree) {
             "jvm.java.unmodifiable_map",
         ),
         ("util.collections", "synchronizedlist", "jvm.java.identity"),
-        ("util.collections", "singleton", "jvm.java.list_of"),
+        ("util.collections", "singleton", "jvm.java.singleton_list"),
         ("util.collections", "singletonmap", "jvm.java.map_of"),
-        ("util.collections", "singletonlist", "jvm.java.list_of"),
+        ("util.collections", "singletonlist", "jvm.java.singleton_list"),
         ("util.collections", "emptylist", "jvm.java.empty_list"),
         ("util.collections", "emptyset", "jvm.java.empty_set"),
         ("util.collections", "emptymap", "jvm.java.map_of"),
@@ -1404,8 +1412,8 @@ fn insert_java_time_statics(root: &mut Subtree) {
         ("time.duration", "ofminutes", "jvm.java.duration_of_minutes"),
         ("time.duration", "ofseconds", "jvm.java.duration_of_seconds"),
         ("time.duration", "between", "jvm.java.duration_between"),
-        ("time.yearmonth", "parse", "jvm.java.local_date_parse"),
-        ("time.monthday", "parse", "jvm.java.local_date_parse"),
+        ("time.yearmonth", "parse", "jvm.java.year_month_parse"),
+        ("time.monthday", "parse", "jvm.java.month_day_parse"),
         (
             "time.zoneoffset",
             "ofhours",
@@ -1449,8 +1457,10 @@ fn insert_java_time_statics(root: &mut Subtree) {
                 ("ofEpochSecond", "java.time.Instant"),
                 ("ofEpochMilli", "java.time.Instant"),
                 ("parse", "java.time.Instant"),
+                ("now", "java.time.Instant"),
             ][..],
         ),
+        ("time.clock", &[("fixed", "java.time.Clock")][..]),
         (
             "time.localdate",
             &[
@@ -1545,7 +1555,7 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         ("getdayofmonth", "jvm.java.instant_get_day", 0, 0),
         ("getdayofyear", "jvm.java.time_day_of_year", 0, 0),
         ("getdayofweek", "jvm.java.time_day_of_week", 0, 0),
-        ("get", "jvm.java.identity", 1, 1),
+        ("get", "jvm.java.time_get", 1, 1),
         ("isleapyear", "jvm.java.time_is_leap_year", 0, 0),
         ("plusdays", "jvm.java.time_plus_days", 1, 1),
         ("minusdays", "jvm.java.time_minus_days", 1, 1),
@@ -1569,6 +1579,8 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         root,
         "time.localdate",
         &[
+            ("dayOfWeek", "java.time.DayOfWeek"),
+            ("getDayOfWeek", "java.time.DayOfWeek"),
             ("plusDays", "java.time.LocalDate"),
             ("minusDays", "java.time.LocalDate"),
             ("plusWeeks", "java.time.LocalDate"),
@@ -1604,7 +1616,7 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         ("isbefore", "jvm.java.instant_is_before", 1, 1),
         ("isafter", "jvm.java.instant_is_after", 1, 1),
         ("compareto", "jvm.java.instant_compare_to", 1, 1),
-        ("tostring", "jvm.java.time_to_string", 0, 0),
+        ("tostring", "jvm.java.timeofday_to_string", 0, 0),
     ] {
         time.insert(name.to_string(), common_method(emit, min_args, max_args));
     }
@@ -1737,11 +1749,12 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         ("withhour", "jvm.java.time_with_hour", 1, 1),
         ("withminute", "jvm.java.time_with_minute", 1, 1),
         ("withsecond", "jvm.java.time_with_second", 1, 1),
-        ("with", "jvm.java.identity", 2, 2),
+        ("with", "jvm.java.time_with", 2, 2),
+        ("get", "jvm.java.time_get", 1, 1),
         ("isbefore", "jvm.java.instant_is_before", 1, 1),
         ("isafter", "jvm.java.instant_is_after", 1, 1),
         ("compareto", "jvm.java.instant_compare_to", 1, 1),
-        ("tostring", "jvm.java.time_to_string", 0, 0),
+        ("tostring", "jvm.java.datetime_to_string", 0, 0),
         ("tolocaldate", "jvm.java.instant_to_local_date", 0, 0),
         ("tolocaltime", "jvm.java.identity", 0, 0),
         ("tolocaldatetime", "jvm.java.identity", 0, 0),
@@ -1799,8 +1812,13 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
                 ("minusMinutes", "java.time.LocalDateTime"),
                 ("plusSeconds", "java.time.LocalDateTime"),
                 ("minusSeconds", "java.time.LocalDateTime"),
+                ("with", "java.time.LocalDateTime"),
                 ("toLocalDate", "java.time.LocalDate"),
                 ("toLocalTime", "java.time.LocalTime"),
+                ("offset", "java.time.ZoneOffset"),
+                ("zone", "java.time.ZoneId"),
+                ("dayOfWeek", "java.time.DayOfWeek"),
+                ("getDayOfWeek", "java.time.DayOfWeek"),
                 ("toLocalDateTime", "java.time.LocalDateTime"),
                 ("toInstant", "java.time.Instant"),
                 ("toOffsetDateTime", "java.time.OffsetDateTime"),
@@ -1845,6 +1863,35 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
         "time.yearmonth",
         &[("plusMonths", "java.time.YearMonth")],
     );
+
+    let mut day_of_week = Subtree::new();
+    day_of_week.insert("value".to_string(), prop("jvm.java.identity"));
+    day_of_week.insert("name".to_string(), prop("jvm.java.day_of_week_name"));
+    day_of_week.insert(
+        "getvalue".to_string(),
+        common_method("jvm.java.identity", 0, 0),
+    );
+    day_of_week.insert(
+        "tostring".to_string(),
+        common_method("jvm.java.day_of_week_name", 0, 0),
+    );
+    ensure_type_node(root, "time.dayofweek");
+    merge_type_methods(root, "time.dayofweek", day_of_week);
+
+    let mut zone_offset = Subtree::new();
+    zone_offset.insert("id".to_string(), prop("jvm.java.zone_offset_id"));
+    zone_offset.insert(
+        "getid".to_string(),
+        common_method("jvm.java.zone_offset_id", 0, 0),
+    );
+    ensure_type_node(root, "time.zoneoffset");
+    merge_type_methods(root, "time.zoneoffset", zone_offset);
+
+    let mut zone_id = Subtree::new();
+    zone_id.insert("id".to_string(), prop("jvm.java.identity"));
+    zone_id.insert("getid".to_string(), common_method("jvm.java.identity", 0, 0));
+    ensure_type_node(root, "time.zoneid");
+    merge_type_methods(root, "time.zoneid", zone_id);
 
     let mut month_day = Subtree::new();
     for (name, emit) in [
@@ -1991,6 +2038,9 @@ fn insert_java_text_buffer_methods(root: &mut Subtree) {
         ("get", "jvm.java.sb_char_at", 1, 1),
         ("charat", "jvm.java.sb_char_at", 1, 1),
         ("appendcodepoint", "jvm.java.sb_append_code_point", 1, 1),
+        ("substring", "jvm.java.sb_substring", 1, 2),
+        ("subsequence", "jvm.java.sb_substring", 2, 2),
+        ("replace", "jvm.java.sb_replace", 3, 3),
         ("isempty", "jvm.java.sb_is_empty", 0, 0),
         ("isnotempty", "jvm.java.sb_is_not_empty", 0, 0),
     ] {

@@ -251,6 +251,16 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "jvm.java.instant_to_local_date" => instant::emit_local_date_string(chunks, current, line),
         "jvm.java.time_to_string" => instant::emit_time_to_string(chunks, current, line),
+        "jvm.java.datetime_to_string" => {
+            instant::emit_local_datetime_string(chunks, current, line)
+        }
+        "jvm.java.timeofday_to_string" => instant::emit_time_of_day_string(chunks, current, line),
+        "jvm.java.year_month_parse" => instant::emit_year_month_parse(chunks, current, line),
+        "jvm.java.month_day_parse" => instant::emit_month_day_parse(chunks, current, line),
+        "jvm.java.day_of_week_name" => instant::emit_day_of_week_name(chunks, current, line),
+        "jvm.java.zone_offset_id" => instant::emit_zone_offset_id(chunks, current, line),
+        "jvm.java.time_get" => instant::emit_time_get(chunks, current, line),
+        "jvm.java.time_with" => instant::emit_time_with(chunks, current, line),
         "jvm.java.time_format" => instant::emit_time_format(chunks, current, line),
         "jvm.java.time_plus_days" => {
             instant::emit_time_plus_unit(chunks, current, 1.0, 86400.0, line)
@@ -535,7 +545,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "jvm.java.arrays_sort" => arrays::emit_sort(chunks, current, argc, line),
         "jvm.java.arrays_fill" => arrays::emit_fill(chunks, current, argc, line),
-        "jvm.java.arrays_copy_of" => arrays::emit_copy_of(chunks, current, line),
+        "jvm.java.arrays_copy_of" => arrays::emit_copy_of_ex(chunks, current, argc, line),
         "jvm.java.arrays_copy_of_range" => arrays::emit_copy_of_range(chunks, current, line),
         "jvm.java.arrays_to_string" => arrays::emit_to_string(chunks, current, line),
         "jvm.java.arrays_deep_to_string" => arrays::emit_deep_to_string(chunks, current, line),
@@ -740,6 +750,11 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.vector_new" => collection::emit_vector_new(chunks, current, argc, line),
         "jvm.java.hash_set_new" => collection::emit_hash_set_new(chunks, current, argc, line),
         "jvm.java.list_of" => collection::emit_list_of(chunks, current, argc, line),
+        // `Collections.singleton`/`singletonList` answer IMMUTABLE views.
+        "jvm.java.singleton_list" => {
+            collection::emit_list_of(chunks, current, argc, line);
+            collection::emit_mark_immutable_list(chunks, current, line);
+        }
         "jvm.java.list_copy_of" => collection::emit_list_copy_of(chunks, current, line),
         "jvm.java.set_of" => collection::emit_set_of(chunks, current, argc, line),
         "jvm.java.set_copy_of" => collection::emit_set_copy_of(chunks, current, line),
@@ -823,6 +838,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.sorted_map_values" => map::emit_sorted_map_values(chunks, current, line),
         "jvm.java.stringbuilder_new" => sb::emit_new(chunks, current, argc, line),
         "jvm.java.sb_length" => sb::emit_length(chunks, current, argc, line),
+        "jvm.java.sb_substring" => sb::emit_substring(chunks, current, argc, line),
+        "jvm.java.sb_replace" => sb::emit_replace(chunks, current, argc, line),
         "jvm.java.sb_is_empty" => sb::emit_is_empty(chunks, current, argc, line),
         "jvm.java.sb_is_not_empty" => sb::emit_is_not_empty(chunks, current, argc, line),
         "jvm.java.sb_insert" => sb::emit_insert(chunks, current, argc, line),

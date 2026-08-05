@@ -410,7 +410,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Java,
         body,
-            scheduling: Default::default(),
         imports })
 }
 
@@ -2520,7 +2519,18 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
         parents: vec![],
         interfaces: vec![],
         members,
-        modifiers: into_class_modifiers(pm),
+        modifiers: ClassModifiers {
+            // A Java `record` has REFERENCE storage with VALUE equality.
+            // Measured, because the two disagree here: `r1 == r2` on two records
+            // holding the same component is **false**, `r1.equals(r2)` is
+            // **true**. `equality` states whether value-equality compares
+            // FIELDS; which syntax reaches it is the language's business.
+            record: RecordPolicy {
+                equality: RecordEquality::Structural,
+                ..Default::default()
+            },
+            ..into_class_modifiers(pm)
+        },
         decorators: vec![] })
 }
 

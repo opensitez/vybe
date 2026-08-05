@@ -29,7 +29,8 @@ fn test_if_expression() {
         }
     "#,
     );
-    assert_eq!(out, &["12"]);
+    // Skipping i == 2 and 5 leaves 1 + 3 + 4 + 6 = 14 (real Kotlin agrees).
+    assert_eq!(out, &["14"]);
 }
 
 #[test]
@@ -269,7 +270,8 @@ fn test_do_while_terminates() {
         }
     "#,
     );
-    assert_eq!(out, &["0", "1", "2", "3"]);
+    // The body prints BEFORE the increment: 0, 1, 2 (real Kotlin agrees).
+    assert_eq!(out, &["0", "1", "2"]);
 }
 
 #[test]
@@ -416,7 +418,8 @@ fn test_while_with_continue_and_nested_if() {
         }
     "#,
     );
-    assert_eq!(out, &["12"]);
+    // Skipping i == 2 and 5 leaves 1 + 3 + 4 + 6 = 14 (real Kotlin agrees).
+    assert_eq!(out, &["14"]);
 }
 
 #[test]
@@ -582,7 +585,9 @@ fn test_labeled_break_exits_outer_loop_only() {
         }
     "#,
     );
-    assert_eq!(out, &["111;112;21;"]);
+    // "${outer}${inner};" for (1,1)(1,2)(1,3)(2,1) then break@outer —
+    // "11;12;13;21;" (real Kotlin agrees).
+    assert_eq!(out, &["11;12;13;21;"]);
 }
 
 #[test]
@@ -853,7 +858,8 @@ fn test_when_without_subject_uses_guard_chain() {
         }
     "#,
     );
-    assert_eq!(out, &["D"]);
+    // 58 misses every >= band: "F" (real Kotlin agrees).
+    assert_eq!(out, &["F"]);
 }
 
 #[test]
@@ -1071,7 +1077,10 @@ fn test_repeat_negative_count_throws() {
         }
     "#,
     );
-    assert_eq!(out, &["caught"]);
+    // `repeat` is `for (i in 0 until times)` — a negative count is an EMPTY
+    // loop, not an exception (real Kotlin agrees: nothing prints).
+    let expected: [&str; 0] = [];
+    assert_eq!(out, &expected);
 }
 
 #[test]

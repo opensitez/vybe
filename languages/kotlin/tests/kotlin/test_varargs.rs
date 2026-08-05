@@ -113,13 +113,17 @@ kotlin_run_test!(
             println(asList("a", 1, 2, 3))
         }
     "#,
-    &["1-2-3"]
+    // Real Kotlin agrees: `joinToString(prefix = "a", separator = "-")`
+    // PREPENDS the prefix to the joined string — "a1-2-3".
+    &["a1-2-3"]
 );
 
 kotlin_run_test!(
     test_vararg_nullable_elements,
     r#"
-        fun read(values: vararg value: String?): String {
+        // Was `fun read(values: vararg value: String?)` — not Kotlin (kotlinc
+        // rejects it); the modifier precedes the name: `vararg values: T`.
+        fun read(vararg values: String?): String {
             return values.joinToString(";") { it ?: "nil" }
         }
 
@@ -141,5 +145,7 @@ kotlin_run_test!(
             println(append("v", ".", "a", "b", "c"))
         }
     "#,
-    &["v.a.b.c"]
+    // Real Kotlin agrees: `base + values.joinToString(separator)` is
+    // "v" + "a.b.c" — no separator between base and the joined tail.
+    &["va.b.c"]
 );

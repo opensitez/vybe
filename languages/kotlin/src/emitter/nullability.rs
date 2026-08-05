@@ -190,5 +190,12 @@ fn set_field_from_slot(
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(field)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
+}
+
+/// `x ?: throw e` — the throw is an EXPRESSION here; the helper throws the
+/// exception object on the stack (the trailing null only balances types —
+/// it is unreachable).
+pub fn emit_throw_expr(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }

@@ -141,7 +141,9 @@ fn test_list_sorted_with_comparator() {
         }
     "#,
     );
-    assert_eq!(out, &["a,bb,charlie,delta", "delta,charlie,bb,a"]);
+    // By LENGTH: a=1, bb=2, delta=5, charlie=7 — so ascending puts delta
+    // before charlie, descending the reverse (real Kotlin agrees).
+    assert_eq!(out, &["a,bb,delta,charlie", "charlie,delta,bb,a"]);
 }
 
 #[test]
@@ -450,7 +452,9 @@ fn test_binary_search_and_binary_search_not_found_position() {
         }
     "#,
     );
-    assert_eq!(out, &["2", "-3"]);
+    // `binarySearch` answers `-(insertion point) - 1` when absent; 6 slots in
+    // at index 3 of [1, 3, 5, 7, 9], so the result is -4 (real Kotlin agrees).
+    assert_eq!(out, &["2", "-4"]);
 }
 
 #[test]

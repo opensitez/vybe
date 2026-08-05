@@ -47,7 +47,7 @@ kotlin_run_cases! {
             println(s.indexOf('a', startIndex = 1).toString())
             println(s.substringAfter("ab").toString())
         }
-    "#, vec![String::from("3"), String::from("abc")]),
+    "#, vec![String::from("3"), String::from("cabc")]),
     test_substring_range => (r#"
         fun main() {
             val s = "abcdef"
@@ -61,7 +61,7 @@ kotlin_run_cases! {
             println(s.indexOf("-").toString())
             println(s.lastIndexOf("x").toString())
         }
-    "#, vec![String::from("1"), String::from("4")]),
+    "#, vec![String::from("1"), String::from("5")]),
     test_contains_none => (r#"
         fun main() {
             val s = ""

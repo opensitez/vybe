@@ -103,6 +103,52 @@ pub fn emit_is_infinite(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     chunks[current].emit_end(line);
 }
 
+/// Kotlin `toInt()` with no radix: a STRING receiver parses strictly and
+/// throws NumberFormatException on garbage (`"x".toInt()`), a numeric
+/// receiver truncates (`3.9.toInt() == 3`). One spelling, two receivers —
+/// decided at runtime.
+pub fn emit_to_int_throwing(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let v = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    let type_of = chunks[current].add_import("ecma:value", "typeof");
+    chunks[current].emit_call(type_of, 1, line);
+    chunks[current].emit_string_const("string", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    {
+        chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+        crate::emitter::strings::emit_strict_int_or_null(chunks, current, 1, line);
+        let parsed = chunks[current].alloc_scratch(1);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, parsed, line);
+        // `typeof`, not REF_IS_NULL: the probe misreads numbers.
+        chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+        chunks[current].emit_call(type_of, 1, line);
+        chunks[current].emit_string_const("number", line);
+        ops::emit_dyn_eq(&mut chunks[current], line);
+        ops::emit_dyn_to_bool(&mut chunks[current], line);
+        chunks[current].emit_op(Op::I32_EQZ, line);
+        chunks[current].emit_if(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+        crate::emitter::nullability::emit_exception(
+            chunks,
+            current,
+            1,
+            "NumberFormatException",
+            line,
+        );
+        vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+        chunks[current].emit_end(line);
+        chunks[current].emit_op_u16(Op::LOCAL_GET, parsed, line);
+    }
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    let trunc = chunks[current].add_import("ecma:math", "trunc");
+    chunks[current].emit_call(trunc, 1, line);
+    chunks[current].emit_end(line);
+}
+
 /// Kotlin `String.toIntOrNull(radix?)`.
 ///
 /// Stack: `[receiver]` or `[receiver, radix]` -> `[number|null]`.
@@ -177,4 +223,34 @@ pub fn emit_compare_zero(chunks: &mut Vec<Chunk>, current: usize, op: CompareZer
         CompareZero::Ge => ops::emit_dyn_ge(&mut chunks[current], line),
     }
     ops::emit_i32_to_bool(&mut chunks[current], line);
+}
+
+/// Fixed-width integer casts: `toByte()`/`toShort()` sign-extend from the
+/// low bits (255.toByte() is -1, like the JVM); `toUByte()`/`toUShort()`
+/// mask unsigned. `math.trunc` alone never wrapped.
+pub fn emit_wrap_int(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    bits: u8,
+    signed: bool,
+    line: u32,
+) {
+    let chunk = &mut chunks[current];
+    // `Number` first: `"-128".toByte()` arrives with a STRING receiver, and
+    // `toI32` traps on it. Numbers pass through unchanged.
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+    let to_i32 = chunk.add_import("wasm:js-number", "toI32");
+    chunk.emit_call(to_i32, 1, line);
+    if signed {
+        let shift = 32 - bits as i32;
+        chunk.emit_i32_const(shift, line);
+        chunk.emit_op(Op::I32_SHL, line);
+        chunk.emit_i32_const(shift, line);
+        chunk.emit_op(Op::I32_SHR_S, line);
+    } else {
+        let mask = if bits >= 32 { -1 } else { (1i64 << bits) as i32 - 1 };
+        chunk.emit_i32_const(mask, line);
+        chunk.emit_op(Op::I32_AND, line);
+    }
 }

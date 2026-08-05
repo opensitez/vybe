@@ -22,12 +22,14 @@ fn test_top_level_and_local_scope_isolation() {
 
 #[test]
 fn test_shadowing_in_nested_blocks() {
+    // A BARE `{}` statement in Kotlin is an unexecuted lambda literal —
+    // `run { }` is the valid spelling of a scoped block.
     let out = run_prints(
         r#"
         fun main() {
             val mode = "outer"
             println(mode)
-            {
+            run {
                 val mode = "inner"
                 println(mode)
             }
@@ -117,11 +119,13 @@ fn test_member_and_receiver_scope_split() {
 
 #[test]
 fn test_nested_block_rebinds_local_name() {
+    // A BARE `{}` statement in Kotlin is an unexecuted lambda literal —
+    // `run { }` is the valid spelling of a scoped block.
     let out = run_prints(
         r#"
         fun main() {
             val token = "global"
-            {
+            run {
                 val token = "inner"
                 println(token)
             }
@@ -335,11 +339,13 @@ fn test_nested_scope_with_return_value_capture() {
 
 #[test]
 fn test_block_reused_name_after_scope() {
+    // A BARE `{}` statement in Kotlin is an unexecuted lambda literal —
+    // `run { }` is the valid spelling of a scoped block.
     let out = run_prints(
         r#"
         fun main() {
             var name = "outer"
-            {
+            run {
                 val name = "inner"
                 println(name)
             }
@@ -472,7 +478,9 @@ fn test_local_scope_inside_class_member() {
         }
     "#,
     );
-    assert_eq!(out, &["4", "8"]);
+    // Real Kotlin agrees: at the call `this.value` is 8 and the local
+    // `value` is 4, so `bump()` returns 12 (the local SHADOWS the property).
+    assert_eq!(out, &["12", "8"]);
 }
 
 #[test]
@@ -481,7 +489,10 @@ fn test_nested_blocks_inside_expression() {
         r#"
         fun main() {
             val value = 2
-            val result = {
+            // Was a BARE `{ … }` block: that is a LAMBDA value in real
+            // Kotlin (printing it gives a function ref, never 15). `run`
+            // keeps the intent — a nested scope evaluated as an expression.
+            val result = run {
                 val value = 5
                 value * 3
             }

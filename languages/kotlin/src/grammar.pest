@@ -131,7 +131,11 @@ annotation = { "@" ~ type_ref ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_termina
 
 // Types (including function types)
 type_ref = !{
-    "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
+    // Receiver-typed function types: `String.() -> String`, `Int.(Int) -> Int`.
+    dotted_name ~ type_args? ~ "." ~ "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
+  | "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
+  // `((Int) -> Int)?` — a PARENTHESIZED type with its own nullability.
+  | "(" ~ eat_terminators ~ type_ref ~ eat_terminators ~ ")" ~ "?"?
   | dotted_name ~ type_args? ~ "?"?
 }
 
@@ -147,21 +151,30 @@ modifier = {
   | crossinline_kw | reified_kw
 }
 
-// Receiver prefix for extension functions
-receiver_prefix = { identifier ~ "." }
+// Receiver prefix for extension functions. Generic (`List<T>.`), nullable
+// (`Int?.`), DOTTED (`Factory.Companion.`) and parenthesized function-type
+// (`((Int) -> Int).`) receivers all spell extensions. Each segment requires
+// its trailing dot, so the function name never joins the receiver.
+receiver_prefix = { (identifier ~ type_args? ~ "?"? ~ ".")+ | "(" ~ type_ref ~ ")" ~ "?"? ~ "." }
+
+// An anonymous function EXPRESSION — `fun(x: Int): Int = x`, and with a
+// receiver `fun Int.(): Int { return this + 1 }`.
+anon_fun = { fun_kw ~ receiver_prefix? ~ parameter_list ~ (":" ~ type_ref)? ~ (function_body_expr | block) }
 
 // Functions
 function_decl = {
     annotation* ~ modifier* ~ fun_kw ~ type_params? ~ receiver_prefix? ~ identifier ~ parameter_list ~ (":" ~ type_ref)? ~ where_clause? ~ (function_body_expr | block)?
 }
-function_body_expr = { "=" ~ expr }
+// The `=` may sit at end-of-line with the body expression on the NEXT line
+// (idiomatic for long single-expression functions) — eat terminators after it.
+function_body_expr = { "=" ~ eat_terminators ~ expr }
 
 parameter_list = { "(" ~ eat_terminators ~ (parameter ~ (eat_terminators ~ "," ~ eat_terminators ~ parameter)* ~ eat_terminators ~ ","?)? ~ eat_terminators ~ ")" }
 parameter = { annotation* ~ vararg_kw? ~ identifier ~ ":" ~ type_ref ~ ("=" ~ expr)? }
 
 // Variables, Properties & Destructuring
 var_decl = !{
-    annotation* ~ modifier* ~ (val_kw | var_kw) ~ receiver_prefix? ~ (destructuring_target | identifier) ~ (":" ~ type_ref)? ~ ("=" ~ expr | by_kw ~ expr)? ~ (eat_terminators ~ property_accessor)*
+    annotation* ~ modifier* ~ (val_kw | var_kw) ~ type_params? ~ receiver_prefix? ~ (destructuring_target | identifier) ~ (":" ~ type_ref)? ~ ("=" ~ expr | by_kw ~ expr)? ~ (eat_terminators ~ property_accessor)*
 }
 
 destructuring_target = !{ "(" ~ eat_terminators ~ identifier ~ (eat_terminators ~ "," ~ eat_terminators ~ identifier)* ~ eat_terminators ~ ")" }
@@ -271,8 +284,13 @@ expr = { assignment }
 assignment = { infix_expr ~ compound_op ~ expr | elvis }
 compound_op = { "=" | "+=" | "-=" | "*=" | "/=" | "%=" }
 
-elvis = { logical_or ~ (elvis_op ~ logical_or)* }
+// The RHS may be a control-flow ESCAPE: `v ?: return "none"`,
+// `v ?: throw …`, `v ?: break/continue` are all expressions in Kotlin.
+elvis = { logical_or ~ (elvis_op ~ (elvis_escape | logical_or))* }
 elvis_op = { "?:" }
+elvis_escape = {
+    return_kw ~ expr? | throw_kw ~ expr | break_kw | continue_kw
+}
 
 logical_or = { logical_and ~ (or_op ~ logical_and)* }
 or_op = { "||" }
@@ -312,7 +330,19 @@ infix_expr = { unary }
 // mid-check, and a word that is also a METHOD name (`zip`, `union`) sent the
 // parser into pathological backtracking on `(x.zip(y)).m()` shapes (measured:
 // stack overflow).
-infix_op = { to_kw | infix_word }
+// A USER `infix fun` spelling — CONSTRAINED. A bare `identifier` here once
+// joined consecutive STATEMENTS (something in the enclosing rules eats
+// newlines between operands, so `__p(x)\nprintln(y)` became one chain —
+// measured: 273 of 276 function tests failed). The lookahead refuses every
+// statement-start shape: a call `name(...)`, a trailing lambda `name {...}`,
+// an assignment `name = …`, an index write `name[...]`, a member chain
+// `name.`, or a lambda arrow — so only genuine `a word b` operand pairs
+// match, and those cannot begin a Kotlin statement after an expression.
+infix_op = { to_kw | infix_word | user_infix_word }
+user_infix_word = @{
+    !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+        ~ !(" "* ~ ("(" | "{" | "[" | "." | "->" | ("=" ~ !"=") | "++" | "--"))
+}
 infix_word = @{
     ("until" | "downTo" | "step" | "and" | "or" | "xor" | "shl" | "shr" | "ushr"
         | "matches" | "zip" | "union" | "intersect" | "plus" | "minus")
@@ -337,7 +367,12 @@ type_args = !{ "<" ~ eat_terminators ~ type_arg ~ (eat_terminators ~ "," ~ eat_t
 // token here rather than skipped whitespace, so a `{` on the next line cannot
 // be captured as an argument to the expression above it.
 call_suffix = {
-    "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")"? ~ eat_terminators ~ lambda_literal?
+    // NO eat_terminators before the trailing lambda: it consumed the
+    // statement separator after EVERY call even when no lambda followed, so
+    // `val q = v.toString()` fused with a next line starting `q + s` (the
+    // infix level then read `q` as a user infix word). pest keeps input
+    // consumed by a succeeded prefix of a sequence — the probe itself ate it.
+    "(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")"? ~ lambda_literal?
   | lambda_literal
 }
 index_suffix = { eat_terminators ~ "[" ~ eat_terminators ~ arg_list ~ eat_terminators ~ "]" }
@@ -356,6 +391,7 @@ primary = {
   | when_expr
   | try_expr
   | object_expr
+  | anon_fun
   | lambda_literal
   | callable_ref
   | "(" ~ expr ~ ")"

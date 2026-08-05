@@ -107,14 +107,28 @@ pub fn emit_fill(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
 }
 
 pub fn emit_copy_of(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_copy_of_ex(chunks, current, 2, line);
+}
+
+/// `argc` INCLUDES the receiver: Kotlin's no-arg member `arr.copyOf()` is a
+/// same-length clone (the old fixed-arity pop read the RECEIVER as the
+/// length and crashed).
+pub fn emit_copy_of_ex(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let new_len_slot = chunks[current].alloc_scratch(1);
     let source_slot = chunks[current].alloc_scratch(1);
     let result_slot = chunks[current].alloc_scratch(1);
     let source_len_slot = chunks[current].alloc_scratch(1);
     let index_slot = chunks[current].alloc_scratch(1);
 
-    chunks[current].emit_op_u16(Op::LOCAL_SET, new_len_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
+    if argc >= 2 {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, new_len_slot, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
+    } else {
+        chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
+        get(&mut chunks[current], source_slot, line);
+        collections::emit_len(chunks, current, line);
+        chunks[current].emit_op_u16(Op::LOCAL_SET, new_len_slot, line);
+    }
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, new_len_slot, line);
     collections::emit_new_with_length(chunks, current, line);
@@ -195,6 +209,49 @@ pub fn emit_copy_of_range(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, to_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, from_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, source_slot, line);
+
+    // `Arrays.copyOfRange` THROWS: IllegalArgumentException when from > to,
+    // ArrayIndexOutOfBoundsException when from is outside the source
+    // (javadoc-specified); the plain slice silently clamped.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, from_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, to_slot, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_struct_new(0, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("fromIndex > toIndex", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "IllegalArgumentException",
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, from_slot, line);
+    chunks[current].emit_i32_const(0, line);
+    vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, from_slot, line);
+    {
+        let c = &mut chunks[current];
+        c.emit_op_u16(Op::LOCAL_GET, source_slot, line);
+    }
+    collections::emit_len(chunks, current, line);
+    vybe_compiler::primitives::ops::emit_dyn_gt(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_op(Op::I32_OR, line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_struct_new(0, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_string_const("fromIndex out of range", line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        "IndexOutOfBoundsException",
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, source_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, from_slot, line);

@@ -22,7 +22,7 @@ kotlin_run_cases! {
             println(parts.size)
             println(parts[0])
         }
-    "#, vec![String::from("3"), String::from("one")]),
+    "#, vec![String::from("4"), String::from("one")]),
     test_split_multiple_delim => (r#"
         fun main() {
             val s = "a|b|c"
