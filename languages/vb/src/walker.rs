@@ -94,7 +94,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::VB,
         body: synthesized,
-            scheduling: Default::default(),
         imports };
     normalize_vb_type_hint_whitespace(&mut module);
     rewrite_vb_import_aliases(&mut module);
@@ -10592,6 +10591,11 @@ fn normalize_vb_convert_change_type_reflection_expr(
                 normalize_vb_convert_change_type_reflection_expr(child, locals);
             }
         }
+        ExprKind::Chan(op) => {
+            for child in op.children_mut() {
+                normalize_vb_convert_change_type_reflection_expr(child, locals);
+            }
+        }
         ExprKind::Ident(name) => {
             if let Some(value) = locals.values.get(&name.to_ascii_lowercase()) {
                 *expr = value.clone();
@@ -17382,6 +17386,11 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
                 rewrite_vb_aliases_in_expr(child, aliases);
             }
         }
+        ExprKind::Chan(op) => {
+            for child in op.children_mut() {
+                rewrite_vb_aliases_in_expr(child, aliases);
+            }
+        }
         ExprKind::Ident(name) => {
             if let Some(path) = aliases.get(name) {
                 *expr = build_dotted_expr(path);
@@ -17873,6 +17882,11 @@ fn normalize_vb_date_literal_statement(
 fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String, Expression>) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                normalize_vb_date_literal_expr(child, dates);
+            }
+        }
+        ExprKind::Chan(op) => {
             for child in op.children_mut() {
                 normalize_vb_date_literal_expr(child, dates);
             }
@@ -19611,6 +19625,11 @@ fn normalize_vb_delegate_binding_expr(
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                normalize_vb_delegate_binding_expr(child, delegates, locals, bindings);
+            }
+        }
+        ExprKind::Chan(op) => {
             for child in op.children_mut() {
                 normalize_vb_delegate_binding_expr(child, delegates, locals, bindings);
             }
@@ -28895,6 +28914,13 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             }
             changed
         }
+        ExprKind::Chan(op) => {
+            let mut changed = false;
+            for child in op.children_mut() {
+                changed |= rewrite_vb_err_expr(child);
+            }
+            changed
+        }
         ExprKind::Member { object, field, .. } => {
             let mut used = rewrite_vb_err_expr(object);
             if is_vb_err_ident(object) {
@@ -32142,7 +32168,8 @@ fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 is_abstract: is_must_inherit,
                 is_sealed: is_not_inheritable,
                 is_static: false,
-                kind: vybe_ast::ClassKind::Class },
+                kind: vybe_ast::ClassKind::Class,
+                ..ClassModifiers::default() },
             decorators },
         span,
     ))
@@ -37993,7 +38020,16 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             interfaces,
             members,
             visibility,
-            decorators },
+            decorators,
+            // A VB `Structure` is a VALUE type with VALUE equality — it inherits
+            // the same field-wise `ValueType.Equals` measured for C# structs.
+            // `=` needs an explicit `Operator =` overload; that is a mapping
+            // from syntax to the policy, not a different policy.
+            record: RecordPolicy {
+                storage: RecordStorage::Value,
+                equality: RecordEquality::Structural,
+                ..Default::default()
+            } },
         span,
     ))
 }

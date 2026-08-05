@@ -152,7 +152,8 @@ for_update = { simple_statement }
 simple_statement = _{ assignment_stmt | increment_stmt | expr_statement }
 expr_statement = { expression }
 
-assignment_stmt = { lvalue ~ ws* ~ assignment_op ~ eat_ws_nl ~ rhs_value }
+// `$a, $b = 1, 2` destructures — every lvalue before the `=` takes one element.
+assignment_stmt = { lvalue ~ (ws* ~ "," ~ ws* ~ lvalue)* ~ ws* ~ assignment_op ~ eat_ws_nl ~ rhs_value }
 // RHS may be a pipeline: `$x = Get-Item | Select-Object -First 1`.
 // It may also be a STATEMENT — `$r = switch ($v) { … }` and `$r = if (…) { … }`
 // are ordinary PowerShell, where the value is whatever the taken branch output.

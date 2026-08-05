@@ -30,9 +30,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
     Ok(Module {
         name: "main".into(),
         language: Lang::Unknown,
-        body,
+        body: apply_traps(body),
         imports: Vec::new(),
-        scheduling: Default::default(),
     })
 }
 
@@ -184,6 +183,10 @@ fn parse_labeled_stmt(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
 /// it lowers to a try/catch wrapping the rest of the enclosing block. Here it
 /// becomes the catch half; the walker cannot see the remainder, so the body is
 /// emitted as a catch-all handler.
+/// The variable a `trap` handler binds, and the marker that identifies a parsed
+/// `trap` before [`apply_traps`] turns it into real handlers.
+const TRAP_VAR: &str = "__trap";
+
 fn parse_trap_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut body = Vec::new();
     for child in pair.into_inner() {
@@ -191,11 +194,31 @@ fn parse_trap_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
             body = parse_block_statements(child)?;
         }
     }
+
+    // `continue` in a trap means "resume at the next statement" — which is
+    // already what falling out of the handler does under the lowering below.
+    // `break` means "give up and rethrow". Neither is the LOOP keyword, so
+    // leaving them in place would make the shared compiler read them as one.
+    let body = body
+        .into_iter()
+        .map(|stmt| match stmt.kind {
+            StmtKind::Break { .. } => Statement::new(StmtKind::Throw {
+                expr: Some(Expression::ident(TRAP_VAR)),
+                cause: None,
+            }),
+            _ => stmt,
+        })
+        .filter(|stmt| !matches!(stmt.kind, StmtKind::Continue { .. }))
+        .collect();
+
+    // A marker, not the final shape: an empty `try` guarding nothing. Which
+    // statements it guards is not known until the enclosing list is complete,
+    // so `apply_traps` rewrites it there.
     Ok(Statement::new(StmtKind::Try {
         body: Vec::new(),
         catches: vec![CatchClause {
             types: Vec::new(),
-            var_name: Some("__trap".to_string()),
+            var_name: Some(TRAP_VAR.to_string()),
             stack_var: None,
             body,
             when_clause: None,
@@ -203,6 +226,58 @@ fn parse_trap_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
         else_body: None,
         finally: None,
     }))
+}
+
+/// `trap { … }` guards every statement that FOLLOWS it in its own block, and
+/// execution resumes at the statement after the one that threw. So each of
+/// those statements gets its own `try`/`catch` rather than one `try` around the
+/// remainder — wrapping the remainder once would skip everything after the
+/// throw, which is what `catch` means and precisely not what `trap` means.
+fn apply_traps(stmts: Vec<Statement>) -> Vec<Statement> {
+    let Some(at) = stmts.iter().position(is_trap_marker) else {
+        return stmts;
+    };
+
+    let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
+    let mut rest = stmts;
+    let tail = rest.split_off(at);
+    out.append(&mut rest);
+
+    let mut tail = tail.into_iter();
+    let handler = match tail.next().map(|s| s.kind) {
+        Some(StmtKind::Try { catches, .. }) => catches,
+        _ => return out,
+    };
+
+    // Recurse first, so a second `trap` later in the same block installs its own
+    // handler before this one wraps the statements around it.
+    for stmt in apply_traps(tail.collect()) {
+        out.push(Statement::new(StmtKind::Try {
+            body: vec![stmt],
+            catches: handler.clone(),
+            else_body: None,
+            finally: None,
+        }));
+    }
+    out
+}
+
+fn drop_trailing_break(mut body: Vec<Statement>) -> Vec<Statement> {
+    if matches!(body.last().map(|s| &s.kind), Some(StmtKind::Break { .. })) {
+        body.pop();
+    }
+    body
+}
+
+fn is_trap_marker(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Try { body, catches, .. } => {
+            body.is_empty()
+                && catches.len() == 1
+                && catches[0].var_name.as_deref() == Some(TRAP_VAR)
+        }
+        _ => false,
+    }
 }
 
 fn parse_namespace_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -229,7 +304,7 @@ fn parse_block_statements(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             body.push(stmt);
         }
     }
-    Ok(body)
+    Ok(apply_traps(body))
 }
 
 fn parse_class_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -444,7 +519,31 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             }
             Rule::function_params => params = parse_function_params(child),
             Rule::block => {
-                body = implicit_return(parse_block_with_function_params(child, &mut params)?)
+                let locals = function_local_names(&child);
+                let wants_args = mentions_args(child.as_str());
+                // `return_last_of_branches`, not `implicit_return`: a function
+                // ending in `if ($x) { 'yes' }` outputs `'yes'`, so the trailing
+                // expression of each BRANCH is the return value, not just a
+                // trailing expression statement.
+                body = return_last_of_branches(parse_block_with_function_params(
+                    child, &mut params,
+                )?);
+                // `$args` is the automatic variable holding every argument the
+                // declared parameters did not take — a rest parameter, which is
+                // a shape the compiler already has.
+                if wants_args && !params.iter().any(|p| p.name.eq_ignore_ascii_case("args")) {
+                    params.push(Param {
+                        name: "args".to_string(),
+                        type_hint: None,
+                        default: None,
+                        pass_by: PassBy::Value,
+                        is_rest: true,
+                        is_kwargs: false,
+                        is_optional: true,
+                        is_nullable: false,
+                    });
+                }
+                body = declare_function_locals(locals, &params, body);
             }
             _ => {}
         }
@@ -461,6 +560,89 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         is_generator: false,
         is_sub: false,
     }))
+}
+
+/// PowerShell function scoping: a function READS the caller's variables, but an
+/// ASSIGNMENT always creates a local — `function F { $x = 99 }` never touches
+/// the caller's `$x`. Without this the shared `emit_var_set` falls through to
+/// the module global and the function mutates its caller.
+///
+/// Expressed as an explicit declaration rather than a scope policy because the
+/// rule is per-NAME, not per-scope: `ScopeDeclKind::Closed` would also cut off
+/// reads, which PowerShell allows. Declaring exactly the assigned names leaves
+/// every other name resolving outward as before.
+///
+/// `$script:x` / `$global:x` name the outer storage on purpose and are excluded.
+fn function_local_names(block: &Pair<Rule>) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_assigned_locals(block.clone(), &mut out);
+    out
+}
+
+fn collect_assigned_locals(pair: Pair<Rule>, out: &mut Vec<String>) {
+    match pair.as_rule() {
+        // A nested function owns its own locals; hoisting them here would make
+        // the inner function write the outer one's frame.
+        Rule::function_decl => return,
+        Rule::assignment_stmt | Rule::increment_stmt => {
+            for child in pair.clone().into_inner() {
+                if child.as_rule() != Rule::lvalue {
+                    continue;
+                }
+                // Only a BARE `$name` is a local. An indexed or member target
+                // (`$h['k'] = 1`) mutates something that already exists, and
+                // declaring the base would shadow it with an empty local.
+                let mut parts = child.into_inner();
+                let Some(first) = parts.next() else { continue };
+                if first.as_rule() != Rule::var_ref || parts.next().is_some() {
+                    continue;
+                }
+                let raw = first.as_str().trim().trim_start_matches('$');
+                let name = raw.trim_matches(|c| c == '{' || c == '}');
+                if name.contains(':') {
+                    continue;
+                }
+                if !name.is_empty() && !out.iter().any(|n| n == name) {
+                    out.push(name.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    for child in pair.into_inner() {
+        collect_assigned_locals(child, out);
+    }
+}
+
+fn declare_function_locals(
+    names: Vec<String>,
+    params: &[Param],
+    body: Vec<Statement>,
+) -> Vec<Statement> {
+    let declarations: Vec<VarDeclarator> = names
+        .into_iter()
+        .filter(|n| !params.iter().any(|p| p.name.eq_ignore_ascii_case(n)))
+        .map(|name| VarDeclarator {
+            pattern: BindingPattern::Ident(name),
+            type_hint: None,
+            init: None,
+            array_bounds: None,
+            with_events: false,
+        })
+        .collect();
+
+    if declarations.is_empty() {
+        return body;
+    }
+
+    let mut out = Vec::with_capacity(body.len() + 1);
+    out.push(Statement::new(StmtKind::VarDecl {
+        declarations,
+        kind: VarDeclKind::Var,
+    }));
+    out.extend(body);
+    out
 }
 
 fn parse_function_params(pair: Pair<Rule>) -> Vec<Param> {
@@ -496,7 +678,10 @@ fn parse_function_params(pair: Pair<Rule>) -> Vec<Param> {
                 Rule::var_ref | Rule::IDENT => {
                     name = scope_qualified_name(piece.as_str().trim_start_matches('$')).to_string();
                 }
-                Rule::expression => {
+                // The grammar spells a default as `ternary_expr`, not
+                // `expression` — matching only the latter dropped every
+                // `param($name = "World")` default on the floor.
+                Rule::expression | Rule::ternary_expr => {
                     default = Some(walk_expr(piece));
                 }
                 _ => {}
@@ -633,9 +818,20 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut expr = None;
     let mut cases = Vec::new();
     let mut default = None;
+    let mut matcher = None;
 
     for child in pair.into_inner() {
         match child.as_rule() {
+            // `switch -Regex (…)` / `-Wildcard (…)` change how each case
+            // CONDITION is tested against the subject: pattern match, not
+            // equality.
+            Rule::switch_flag => {
+                matcher = match child.as_str().trim_start_matches('-').to_lowercase().as_str() {
+                    "regex" => Some(false),
+                    "wildcard" => Some(true),
+                    _ => matcher,
+                };
+            }
             Rule::expression => {
                 expr = Some(walk_expr(child));
             }
@@ -695,11 +891,70 @@ fn parse_switch_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
         }
     }
 
+    let subject = expr.unwrap_or_else(Expression::null);
+
+    // A pattern switch is not a `Switch` at all — the shared node compares each
+    // condition for EQUALITY. Lowered to the if/elseif chain it stands for, so
+    // the pattern test is the same `Regex.IsMatch` `-match` / `-like` use.
+    if let Some(is_wildcard) = matcher {
+        return Ok(pattern_switch(subject, cases, default, is_wildcard));
+    }
+
     Ok(Statement::new(StmtKind::Switch {
-        expr: expr.unwrap_or_else(Expression::null),
+        expr: subject,
         cases,
         default,
     }))
+}
+
+fn pattern_switch(
+    subject: Expression,
+    cases: Vec<SwitchCase>,
+    default: Option<Vec<Statement>>,
+    is_wildcard: bool,
+) -> Statement {
+    let test = |cond: CaseCondition| -> Expression {
+        let pattern = match cond {
+            CaseCondition::Value(p) => p,
+            _ => Expression::null(),
+        };
+        let pattern = if is_wildcard {
+            glob_to_regex(pattern)
+        } else {
+            pattern
+        };
+        dotnet_static_call(
+            "System.Text.RegularExpressions.Regex",
+            "IsMatch",
+            vec![subject.clone(), pattern],
+        )
+    };
+
+    let mut arms: Vec<(Expression, Vec<Statement>)> = Vec::new();
+    for case in cases {
+        let mut conds = case.conditions.into_iter().map(test);
+        let Some(first) = conds.next() else { continue };
+        let cond = conds.fold(first, |acc, next| {
+            Expression::new(ExprKind::Binary {
+                op: BinOp::Or,
+                left: Box::new(acc),
+                right: Box::new(next),
+            })
+        });
+        arms.push((cond, case.body));
+    }
+
+    let mut arms = arms.into_iter();
+    let Some((cond, then_body)) = arms.next() else {
+        return Statement::new(StmtKind::Block(default.unwrap_or_default()));
+    };
+
+    Statement::new(StmtKind::If {
+        cond,
+        then_body,
+        elifs: arms.collect(),
+        else_body: default,
+    })
 }
 
 fn parse_for_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -813,7 +1068,12 @@ fn return_last_of_branches(body: Vec<Statement>) -> Vec<Statement> {
                 .into_iter()
                 .map(|c| SwitchCase {
                     conditions: c.conditions,
-                    body: return_last_of_branches(c.body),
+                    // `1 { 'one'; break }` — the `break` stops the switch from
+                    // testing later conditions, it is not the case's VALUE.
+                    // Left in place it would be the last statement and the
+                    // trailing `return` would land on it, so the case yielded
+                    // nothing.
+                    body: return_last_of_branches(drop_trailing_break(c.body)),
                 })
                 .collect(),
             default: default.map(return_last_of_branches),
@@ -929,7 +1189,16 @@ fn parse_try_stmt(pair: Pair<Rule>) -> Result<Statement, String> {
         match child.as_rule() {
             Rule::block => body = parse_block_statements(child)?,
             Rule::catch_clause => catches.push(parse_catch_clause(child)?),
-            Rule::finally_clause => finally = Some(parse_block_statements(child)?),
+            // The `block` INSIDE the clause, not the clause. `parse_block_statements`
+            // walks its argument's children as statements, and a `finally_clause`'s
+            // children are `kw_finally` and `block` — neither is a statement, so
+            // every `finally` body came out empty and simply never ran.
+            Rule::finally_clause => {
+                finally = Some(match child.into_inner().find(|p| p.as_rule() == Rule::block) {
+                    Some(block) => parse_block_statements(block)?,
+                    None => Vec::new(),
+                });
+            }
             _ => {}
         }
     }
@@ -1036,14 +1305,15 @@ fn parse_exit_command_statement(text: &str) -> Option<Statement> {
 }
 
 fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
-    let mut target = None;
+    let mut targets: Vec<Expression> = Vec::new();
     let mut op = "=".to_string();
     let mut rhs = None;
 
     for child in pair.into_inner() {
         match child.as_rule() {
+            // Several when the source destructures: `$a, $b = 1, 2`.
             Rule::lvalue => {
-                target = Some(walk_lvalue(child));
+                targets.push(walk_lvalue(child));
             }
             Rule::assignment_op => {
                 op = child.as_str().to_string();
@@ -1051,7 +1321,19 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
             // `rhs_value` is a silent rule: the RHS arrives as either an
             // `expression` or a `command_pipeline` (`$x = Get-Item | …`).
             Rule::expression | Rule::command_pipeline => {
-                rhs = Some(walk_expr(child));
+                // A lone bare word on the right of `=` is a COMMAND, not a name:
+                // `$r = Test-Local` calls the function. The `expression` branch
+                // of `rhs_value` matches first (a bare word is a valid primary),
+                // so `command_pipeline` never sees it and `$r` was bound to the
+                // function object itself.
+                rhs = Some(match lone_bare_word(&child) {
+                    Some(word) if !is_literal_word(&word) => Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident(&word)),
+                        args: Vec::new(),
+                        optional: false,
+                    }),
+                    _ => walk_expr(child),
+                });
             }
             // `$r = switch (…) { … }` — the RHS is a statement used as a value.
             Rule::value_stmt => {
@@ -1065,11 +1347,33 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
         }
     }
 
-    let target = target.unwrap_or_else(Expression::null);
     let value = rhs.unwrap_or_else(Expression::null);
+    // Compound assignment has exactly one target; only `=` destructures.
+    let target = targets.first().cloned().unwrap_or_else(Expression::null);
+    // Several `targets` in a shared `Assign` means CHAINED assignment (`a = b =
+    // c`) — every target takes the same value. `$a, $b = 1, 2` gives each target
+    // one ELEMENT, which is `Destructure`, the node Python builds for `x, y = …`.
+    let targets = if targets.len() > 1 {
+        vec![Expression::new(ExprKind::Destructure(
+            DestructurePattern::Array(
+                targets
+                    .into_iter()
+                    .map(|t| {
+                        let name = match &t.kind {
+                            ExprKind::Ident(name) => name.clone(),
+                            _ => String::new(),
+                        };
+                        ArrayPatternElem::Pattern(BindingPattern::Ident(name), None)
+                    })
+                    .collect(),
+            ),
+        ))]
+    } else {
+        targets
+    };
     let kind = match op.as_str() {
         "=" => StmtKind::Assign {
-            targets: vec![target],
+            targets,
             value,
             by_ref: false,
         },
@@ -1217,7 +1521,7 @@ fn walk_lvalue(pair: Pair<Rule>) -> Expression {
                     .unwrap_or_else(Expression::null);
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
-                    index: Box::new(index),
+                    index: Box::new(fold_literal_key(index)),
                     null_safe: false,
                 });
             }
@@ -1367,7 +1671,11 @@ fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)>
                 continue;
             }
             if let Some(next) = tokens.get(i + 1) {
-                if next.starts_with('-') || next.trim().is_empty() {
+                // `-x -5` passes -5 TO `-x`; a leading `-` only starts another
+                // parameter when what follows is a name, not a number.
+                if (next.starts_with('-') && !is_negative_number(next))
+                    || next.trim().is_empty()
+                {
                     args.push(Argument {
                         value: Expression::bool(true),
                         name: Some(flag.to_string()),
@@ -1395,6 +1703,20 @@ fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)>
             i += 1;
             continue;
         }
+        // `Cmd @params` SPLATS: the collection or hashtable in `$params` supplies
+        // the arguments, positionally or by name depending on its runtime shape.
+        // Marked `spread` — the same flag Python's `*args` AND `**kwargs` both
+        // set, because the shape is a runtime question either way.
+        if let Some(name) = splat_token_name(token) {
+            args.push(Argument {
+                value: Expression::ident(name),
+                name: None,
+                by_ref: false,
+                spread: true,
+            });
+            i += 1;
+            continue;
+        }
         args.push(Argument {
             value: parse_atom(token),
             name: None,
@@ -1404,6 +1726,41 @@ fn parse_command_parts(tokens: &[String]) -> Option<(Expression, Vec<Argument>)>
         i += 1;
     }
     Some((callee, args))
+}
+
+/// A hashtable key is CASE-INSENSITIVE in PowerShell: `$h['Name']` and
+/// `$h['name']` name one entry. The compiler already folds keys at construction
+/// and on member access (this profile is `case_sensitive = false`), but the
+/// index path passed the literal through unchanged, so `$h['Name']` missed the
+/// `name` it had just stored. Folding a literal key here matches the storage the
+/// compiler chose. Only a LITERAL is folded — a computed key is whatever it
+/// evaluates to.
+fn fold_literal_key(index: Expression) -> Expression {
+    match &index.kind {
+        ExprKind::Lit(Literal::Str(s)) if s.chars().any(|c| c.is_uppercase()) => {
+            Expression::string(&s.to_lowercase())
+        }
+        _ => index,
+    }
+}
+
+/// `-5` / `-3.2` — a negative numeric literal, not a parameter name.
+fn is_negative_number(token: &str) -> bool {
+    let rest = token.trim().trim_start_matches('-');
+    !rest.is_empty()
+        && rest.starts_with(|c: char| c.is_ascii_digit() || c == '.')
+        && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// `@name` as a command argument is a splat. `@(…)` and `@{…}` are an array and
+/// a hashtable literal and are NOT — the character only splats before a name.
+fn splat_token_name(token: &str) -> Option<&str> {
+    let rest = token.strip_prefix('@')?;
+    let ok = !rest.is_empty()
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    ok.then_some(rest)
 }
 
 fn parse_command_head(raw: &str) -> Expression {
@@ -1612,6 +1969,9 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
         // The argument list of `-replace` / `-split` / `-join`. Reuses the comma
         // walk so a single operand stays scalar and several become an `Array`
         // that `spread_operands` unpacks back into arguments.
+        Rule::here_string_double => walk_here_string(pair.as_str(), true),
+        Rule::here_string_single => walk_here_string(pair.as_str(), false),
+
         Rule::cmp_list => walk_comma_expr(pair),
         Rule::format_expr => walk_format(pair),
         Rule::range_expr => walk_range(pair),
@@ -1662,6 +2022,31 @@ fn lone_bare_word(pair: &Pair<Rule>) -> Option<String> {
         }
         current = only;
     }
+}
+
+/// Whether a function body reads `$args`. Scanned from the source text because
+/// the answer is needed to build the parameter list, before the body walks.
+fn mentions_args(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while let Some(hit) = text[at..].find('$') {
+        let start = at + hit + 1;
+        let end = (start + 4).min(bytes.len());
+        if text[start..end].eq_ignore_ascii_case("args")
+            && !bytes
+                .get(end)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+        {
+            return true;
+        }
+        at = start;
+    }
+    false
+}
+
+/// The bare words that are VALUES rather than command names.
+fn is_literal_word(word: &str) -> bool {
+    matches!(word.to_lowercase().as_str(), "true" | "false" | "null")
 }
 
 fn first_inner_expr(pair: Pair<Rule>) -> Expression {
@@ -1915,6 +2300,24 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                     }
                 }
 
+                // `$sb.Invoke(…)` / `.InvokeReturnAsIs(…)` CALL the script
+                // block. There is no `Invoke` member on a lambda to look up, so
+                // this is the call itself — the same thing `& $sb` already
+                // compiles to.
+                if !is_static
+                    && matches!(
+                        name.to_lowercase().as_str(),
+                        "invoke" | "invokereturnasis"
+                    )
+                {
+                    expr = Expression::new(ExprKind::Call {
+                        callee: Box::new(expr),
+                        args: args.into_iter().map(Argument::positional).collect(),
+                        optional: false,
+                    });
+                    continue;
+                }
+
                 expr = method_call_expr(expr, &name, args);
             }
             Rule::index_get => {
@@ -1925,7 +2328,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                     .unwrap_or_else(Expression::null);
                 expr = Expression::new(ExprKind::Index {
                     object: Box::new(expr),
-                    index: Box::new(index),
+                    index: Box::new(fold_literal_key(index)),
                     null_safe: false,
                 });
             }
@@ -2241,6 +2644,9 @@ fn walk_sub_expr(pair: Pair<Rule>) -> Expression {
 fn walk_script_block_expr(pair: Pair<Rule>) -> Expression {
     let mut params = Vec::new();
     let mut body = Vec::new();
+    // A script block scopes exactly like a function: `& { $x = 3 }` leaves the
+    // caller's `$x` alone.
+    let locals = function_local_names(&pair);
 
     for child in pair.into_inner() {
         if child.as_rule() == Rule::param_stmt {
@@ -2265,9 +2671,11 @@ fn walk_script_block_expr(pair: Pair<Rule>) -> Expression {
         });
     }
 
+    let body = declare_function_locals(locals, &params, return_last_of_branches(body));
+
     Expression::new(ExprKind::Lambda {
         params,
-        body: LambdaBody::Block(implicit_return(body)),
+        body: LambdaBody::Block(body),
         is_async: false,
         captures: Vec::new(),
     })
@@ -2463,6 +2871,25 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
     // `-notin` / `-notcontains` become `Not(In(…))` rather than `NotIn`: the
     // negation then goes through the same materialization the other comparison
     // operators use, so the result is the boolean `$false`, not `1`.
+    // `-match` is a REGEX test and `-like` a wildcard one. `BinOp::Like` lowers
+    // to `ecma:regexp.test`, which takes (pattern, string) while the operands
+    // arrive as (string, pattern) — the arm even documents itself as unreachable
+    // because VB rewrites before it. So rewrite here too, onto `Regex.IsMatch`
+    // in the dotnet tree, which takes the input first.
+    if matches!(word.as_str(), "match" | "notmatch" | "like" | "notlike") {
+        let pattern = if word.starts_with("like") || word == "notlike" {
+            glob_to_regex(right)
+        } else {
+            right
+        };
+        let test = dotnet_static_call(
+            "System.Text.RegularExpressions.Regex",
+            "IsMatch",
+            vec![left, pattern],
+        );
+        return if word.starts_with("not") { negate(test) } else { test };
+    }
+
     // `-is` / `-isnot` are TYPE TESTS. `BinOp::Is` is reference equality
     // (Python's `is`), so it answered `$x -is [int]` by comparing 42 to the
     // resolved type — false for every operand, primitive or class alike.
@@ -2567,6 +2994,33 @@ fn negate(expr: Expression) -> Expression {
     })
 }
 
+/// `-like`'s wildcard pattern as the equivalent anchored regex, so both
+/// operators reach one matcher. Only a literal pattern can be translated; a
+/// computed one is passed through and matches as a regex, which is wrong but
+/// visible, rather than silently never matching.
+fn glob_to_regex(pattern: Expression) -> Expression {
+    let ExprKind::Lit(Literal::Str(glob)) = &pattern.kind else {
+        return pattern;
+    };
+
+    let mut out = String::from("^");
+    for ch in glob.chars() {
+        match ch {
+            '*' => out.push_str(".*"),
+            '?' => out.push('.'),
+            // `[a-c]` is a character class in both syntaxes.
+            '[' | ']' => out.push(ch),
+            c if "\\.+^$(){}|".contains(c) => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('$');
+    Expression::string(&out)
+}
+
 /// `$x -is [T]`. A BUILT-IN spelling is a value-kind question and answers
 /// through `typeof`; anything else names a type and answers through
 /// `instanceof`. The two cannot share a mechanism: `42` has no prototype chain
@@ -2581,6 +3035,10 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
         | "decimal" => Some("number"),
         "string" | "char" => Some("string"),
         "bool" | "boolean" => Some("boolean"),
+        // A PowerShell hashtable is an ordinary object here — `@{a=1}` walks to
+        // `ExprKind::Object`, not a Map — so the value-kind tag answers it.
+        "hashtable" | "dictionary" | "ordereddictionary" | "ordered" | "psobject"
+        | "pscustomobject" => Some("object"),
         _ => None,
     };
 
@@ -2592,20 +3050,21 @@ fn type_test_expr(value: Expression, type_expr: &Expression) -> Expression {
         });
     }
 
-    // `[array]` / `[hashtable]` are PowerShell spellings for the runtime's own
-    // Array and Map; every other name is taken as written so a user class
-    // reaches its own prototype.
-    let ctor = match leaf.as_str() {
-        "array" => "Array".to_string(),
-        "hashtable" | "dictionary" | "ordered" => "Map".to_string(),
-        _ => name,
+    // `[array]` is the runtime's own Array; every other name is taken as
+    // written so a user class reaches its own prototype. Double-negated
+    // because `InstanceOf` yields a truthy value rather than a boolean, and
+    // `$r -ne $true` in the tests compares against the real `$true`.
+    let ctor = if leaf.trim_end_matches("[]") == "array" || leaf.ends_with("[]") {
+        "Array".to_string()
+    } else {
+        name
     };
 
-    Expression::new(ExprKind::Binary {
+    negate(negate(Expression::new(ExprKind::Binary {
         op: BinOp::InstanceOf,
         left: Box::new(value),
         right: Box::new(type_literal_expr(&ctor)),
-    })
+    })))
 }
 
 /// The dotted name a type-literal member chain spells, if it is one.
@@ -2639,6 +3098,33 @@ fn is_comparison_word(word: &str) -> bool {
             | "split"
             | "join"
     )
+}
+
+/// `@"…"@` / `@'…'@`. The body starts on the line AFTER the opener and ends at
+/// the newline before the closer, so neither delimiter line is content. The
+/// double-quoted form interpolates; the single-quoted form is literal, and
+/// neither treats its own quote character as a delimiter — that is the whole
+/// point of a here-string.
+fn walk_here_string(raw: &str, interpolating: bool) -> Expression {
+    // Past `@"` / `@'` and its line, up to the newline before `"@` / `'@`.
+    let body = raw
+        .get(2..raw.len().saturating_sub(2))
+        .unwrap_or("")
+        .strip_prefix('\n')
+        .or_else(|| {
+            raw.get(2..raw.len().saturating_sub(2))
+                .unwrap_or("")
+                .split_once('\n')
+                .map(|(_, rest)| rest)
+        })
+        .unwrap_or("");
+    let body = body.strip_suffix('\n').unwrap_or(body);
+
+    if interpolating {
+        parse_double_quoted_string(body)
+    } else {
+        Expression::string(body)
+    }
 }
 
 fn parse_double_quoted_string(text: &str) -> Expression {

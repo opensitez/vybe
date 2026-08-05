@@ -83,7 +83,29 @@ Substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 
 PadLeft       = { emit = "common:str_pad_start",       min_args = 1, max_args = 2 }
 PadRight      = { emit = "common:str_pad_end",         min_args = 1, max_args = 2 }
 ToCharArray   = { emit = "common:str_split",           min_args = 0, max_args = 0 }
-Insert        = { emit = "common:str_insert",          min_args = 2, max_args = 2 }
+Equals        = { emit = "common:object.equals",       min_args = 1, max_args = 2 }
+# NO `Insert` / `Remove`. `str_insert` does not exist, and `str_splice` — the
+# nearest primitive — takes FOUR operands (string, index, count, insert), so a
+# two-argument mapping compiles and then fails at runtime inside the splice.
+# They need a walker rewrite into substring arithmetic, not a profile line.
+
+# Hashtable surface. `@{…}` walks to `ExprKind::Object`, so these are the shared
+# dict primitives — the same ones Python's dict methods bind.
+# Both spellings: the lookup that reaches these is the CANONICALIZED name, so a
+# `case_sensitive = false` profile needs the folded key present — measured on
+# `Contains`, where only the lowercase spelling bound.
+ContainsKey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
+containskey   = { emit = "common:dict.has",            min_args = 1, max_args = 1 }
+ContainsValue = { emit = "common:collections.contains", min_args = 1, max_args = 1 }
+containsvalue = { emit = "common:collections.contains", min_args = 1, max_args = 1 }
+Remove        = { emit = "common:dict.delete",         min_args = 1, max_args = 1 }
+remove        = { emit = "common:dict.delete",         min_args = 1, max_args = 1 }
+GetEnumerator = { emit = "common:dict.items",          min_args = 0, max_args = 0 }
+getenumerator = { emit = "common:dict.items",          min_args = 0, max_args = 0 }
+Keys          = { emit = "common:dict.keys",           min_args = 0, max_args = 0 }
+keys          = { emit = "common:dict.keys",           min_args = 0, max_args = 0 }
+Values        = { emit = "common:dict.values",         min_args = 0, max_args = 0 }
+values        = { emit = "common:dict.values",         min_args = 0, max_args = 0 }
 
 # Collection surface.
 Add           = { emit = "common:collections.push",    min_args = 1, max_args = 255 }
@@ -93,10 +115,21 @@ Reverse       = { emit = "common:collections.reverse", min_args = 0, max_args = 
 Sort          = { emit = "common:collections.sorted",  min_args = 0, max_args = 1 }
 Join          = { emit = "common:collections.join",    min_args = 0, max_args = 1 }
 
-# `Contains` and `IndexOf` are shared spellings across strings and collections;
-# the receiver decides at runtime, so route through the polymorphic path.
-Contains      = { emit = "invoke:Contains",            min_args = 1, max_args = 1 }
-IndexOf       = { emit = "invoke:IndexOf",             min_args = 1, max_args = 2 }
+# `Contains` and `IndexOf` are shared spellings across strings and collections.
+# `invoke:` here found nothing to invoke — `"abc".Contains("b")` answered false
+# and `IndexOf` answered undefined. The string primitives are the ones the tests
+# exercise; `[builtin_slots.array] contains` still covers the collection side of
+# `-contains` / `-in`.
+# MEASURED: a lowercase `contains` key here DOES bind `.Contains()` to the string
+# primitive (`"hello".Contains("ell")` flips false -> true), but it then also
+# beats `[builtin_slots.array] contains` for the `-contains` OPERATOR, which
+# starts calling `substring` on an array. One spelling, two receivers: the method
+# needs runtime dispatch, which means an emitter. The operator is the far more
+# common construct in this corpus, so the slot keeps the name and `.Contains()`
+# stays wrong — visibly, not silently.
+Contains      = { emit = "common:str_contains",        min_args = 1, max_args = 1 }
+IndexOf       = { emit = "common:str_index_of",        min_args = 1, max_args = 2 }
+LastIndexOf   = { emit = "common:str_last_index_of",   min_args = 1, max_args = 2 }
 
 [array_methods]
 # PowerShell's .ForEach() yields the results, so it maps rather than iterates.

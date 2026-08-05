@@ -222,7 +222,6 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lget(chunk, j_slot, line);
     lget(chunk, acc_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     emit_increment_slot(chunk, j_slot, line);
     chunk.emit_br(0, line);
@@ -235,7 +234,6 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lget(chunk, i_slot, line);
     lget(chunk, row_result_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_else(line);
 
     emit_numeric_zero(chunk, line);
@@ -271,7 +269,6 @@ pub fn emit_fortran_matmul(chunks: &mut [Chunk], current: usize, argc: u8, line:
     lget(chunk, i_slot, line);
     lget(chunk, acc_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
     emit_increment_slot(chunk, i_slot, line);

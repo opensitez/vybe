@@ -3259,7 +3259,6 @@ fn emit_ruby_time_utc(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 fn emit_time_set_const(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
     let key_idx = chunks[current].add_constant(Value::String(Arc::from(key)));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 fn emit_time_object_from_ms(
@@ -7647,7 +7646,6 @@ fn emit_ruby_exception_ancestors(chunk: &mut Chunk, ty: &'static str, line: u32)
     chunk.emit_array_new_fixed(0, chain.len() as u16, line);
     let key = chunk.add_constant(Value::String(Arc::from("__types")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_ruby_exception_backtrace_default(chunk: &mut Chunk, line: u32) {
@@ -7655,7 +7653,6 @@ fn emit_ruby_exception_backtrace_default(chunk: &mut Chunk, line: u32) {
     chunk.emit_array_new_fixed(0, 0, line);
     let key = chunk.add_constant(Value::String(Arc::from("backtrace")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_ruby_exception_object(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -7793,7 +7790,6 @@ fn emit_ruby_exception_set_backtrace(chunks: &mut [Chunk], current: usize, argc:
     chunks[current].emit_op_u16(Op::LOCAL_GET, backtrace_s, line);
     let key = chunks[current].add_constant(Value::String(Arc::from("backtrace")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, backtrace_s, line);
 }
 

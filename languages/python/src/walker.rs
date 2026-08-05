@@ -466,7 +466,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // The contract is declared in the profile's `[async]` section;
             // the compiler stamps it. A walker writes an override only for a
             // module whose contract differs from its language's.
-            scheduling: Default::default(),
         imports })
 }
 

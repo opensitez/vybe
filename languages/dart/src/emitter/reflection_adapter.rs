@@ -21,7 +21,6 @@ fn get_field(chunk: &mut Chunk, name: &str, line: u32) {
 fn set_field(chunk: &mut Chunk, name: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(name)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_string_field(chunk: &mut Chunk, name: &str, value: &str, line: u32) {

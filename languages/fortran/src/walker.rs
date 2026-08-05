@@ -156,7 +156,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name,
         language: Lang::Fortran,
         body,
-            scheduling: Default::default(),
         imports })
 }
 

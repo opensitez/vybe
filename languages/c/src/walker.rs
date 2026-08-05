@@ -49,12 +49,27 @@ pub fn parse(source: &str) -> Result<Module, String> {
     full_body.push(var_decl_stmt("__c_exit_status", int_lit(0)));
     full_body.extend(w.static_globals);
     full_body.extend(body);
+    if let Some((name, ns)) = w.header_violations.first() {
+        return Err(format!(
+            "call to undeclared function '{name}'; ISO C99 and later do not \
+             support implicit function declarations (namespace '{ns}' is not \
+             included)"
+        ));
+    }
+    let imports = w
+        .included_namespaces
+        .iter()
+        .map(|path| vybe_ast::Import {
+            kind: vybe_ast::ImportKind::Wildcard {
+                path: path.clone(),
+                alias: None },
+            span: vybe_ast::Span::default() })
+        .collect();
     Ok(Module {
         name: "main".to_string(),
         language: Lang::Unknown,
         body: full_body,
-            scheduling: Default::default(),
-        imports: Vec::new() })
+        imports })
 }
 
 #[derive(Default)]
@@ -71,6 +86,13 @@ struct Walker {
     /// UNNAMED bitfields, which exist only for layout (`:4` padding, `:0`
     /// unit break). Feeds sizeof's allocation-unit packing.
     struct_bitfield_seq: HashMap<String, Vec<(Option<String>, i64)>>,
+    /// Header namespaces this TU imported via `#include <...>`, in
+    /// encounter order — lowered to `Module.imports` (`libc.stdio`, `sdl`).
+    included_namespaces: Vec<String>,
+    /// Walker-lowered calls whose header was never included — reported as a
+    /// compile error at the end of the walk (clang's implicit-declaration
+    /// shape, naming the USER's function, not the lowering's helper).
+    header_violations: Vec<(String, String)>,
     /// Tags declared with the `union` keyword.
     union_tags: HashSet<String>,
     /// tag → shared-storage REGIONS. A union tag has one region holding all
@@ -1559,6 +1581,28 @@ fn contains_embedded_switch_label(pair: &Pair<Rule>) -> bool {
 }
 
 impl Walker {
+    /// Record a gated walker-lowering: `name` requires `ns` to have been
+    /// `#include`d. Errors surface once, at the end of the walk.
+    fn require_header(&mut self, name: &str, ns: &str) {
+        if self.included_namespaces.iter().any(|p| p == ns) {
+            return;
+        }
+        // An explicit prototype counts as declared (see the proto-skip site).
+        let decl = format!("decl:{name}");
+        if self.included_namespaces.iter().any(|p| *p == decl) {
+            return;
+        }
+        if self
+            .header_violations
+            .iter()
+            .any(|(n, _)| n == name)
+        {
+            return;
+        }
+        self.header_violations
+            .push((name.to_string(), ns.to_string()));
+    }
+
     fn walk_top_item(&mut self, pair: Pair<Rule>, out: &mut Vec<Statement>) {
         match pair.as_rule() {
             Rule::preproc_directive => self.walk_preproc(pair, out),
@@ -1633,16 +1677,70 @@ impl Walker {
                         kind: VarDeclKind::Const }));
                 }
                 Rule::include_directive => {
-                    // Inject standard header constants as object macros
                     if let Some(target) = inner.into_inner().next() {
                         let header = target
                             .as_str()
                             .trim_matches(|c| c == '<' || c == '>' || c == '"');
+                        // `#include <stdio.h>` IS `import stdio` in C's
+                        // syntax: record it as a common-AST import of the
+                        // header's namespace subtree (`from libc.stdio
+                        // import *` — C's flat names are the wildcard).
+                        // The tree already mounts header-driven
+                        // (`libc.stdio.printf`), so the header name IS the
+                        // path segment. Resolution gating consumes these.
+                        if let Some(path) = header_namespace_path(header) {
+                            if !self.included_namespaces.contains(&path) {
+                                self.included_namespaces.push(path);
+                            }
+                        }
+                        // A header supplies its TYPES as well as its constants.
+                        // Without this, `typedef void *SDL_Surface` never
+                        // exists, so `SDL_Surface *dst` looks like an ordinary
+                        // pointer-to-something parameter and gets carray-wrapped
+                        // — the callee then receives `{__ref_kind:"carray", …}`
+                        // where the opaque handle belongs, which is why drawing
+                        // worked inline but produced a canvas named "[object]"
+                        // the moment the surface crossed a function boundary.
+                        self.inject_header_opaque_handles(header);
+                        // Inject standard header constants as object macros
                         self.inject_header_constants(header, out);
                     }
                 }
                 _ => {} // other_directive, conditionals: ignored
             }
+        }
+    }
+
+    /// Register the OPAQUE HANDLE types a system header declares.
+    ///
+    /// In real C these are `typedef struct SDL_Window SDL_Window;` — a name
+    /// for something whose layout the caller never sees, passed and returned
+    /// by pointer. What matters here is only that they are NOT array-backed,
+    /// so a `SDL_Surface *` parameter must be left alone rather than decayed
+    /// into a carray. `is_carray_compatible_pointer_param` already consults
+    /// `typedef_void_pointer_aliases`; this is what puts the names there when
+    /// the declaration comes from a system header instead of user source.
+    fn inject_header_opaque_handles(&mut self, header: &str) {
+        let base = header
+            .rsplit('/')
+            .next()
+            .unwrap_or(header)
+            .trim_end_matches(".h");
+        let handles: &[&str] = match base {
+            "SDL" | "SDL_video" | "SDL_render" | "SDL_surface" => &[
+                "SDL_Window",
+                "SDL_Surface",
+                "SDL_Texture",
+                "SDL_Renderer",
+                "SDL_GLContext",
+                "SDL_Cursor",
+                "SDL_PixelFormat",
+                "SDL_Palette",
+                "SDL_RWops",
+            ],
+            _ => &[] };
+        for handle in handles {
+            self.typedef_void_pointer_aliases.insert((*handle).to_string());
         }
     }
 
@@ -1902,6 +2000,12 @@ impl Walker {
                 ("SDLK_RETURN", 13),
                 ("SDLK_ESCAPE", 27),
                 ("SDLK_SPACE", 32),
+                ("SDLK_PLUS", 43),
+                ("SDLK_ASTERISK", 42),
+                ("SDLK_SLASH", 47),
+                ("SDLK_PERIOD", 46),
+                ("SDLK_COMMA", 44),
+                ("SDLK_SEMICOLON", 59),
                 ("SDLK_MINUS", 45),
                 ("SDLK_EQUALS", 61),
                 ("SDLK_DELETE", 127),
@@ -2185,6 +2289,12 @@ impl Walker {
                             ))),
                         );
                     }
+                    // The function's scope ENDS here — a file-scope `static`
+                    // in a LATER file of a multi-source build must not be
+                    // mangled as this function's static local (stale
+                    // `current_function` turned util.c's `static int calls`
+                    // into `__static_main_calls` when main.c came first).
+                    self.current_function.clear();
                     for param in scoped_char_params {
                         self.char_pointers.remove(&param);
                     }
@@ -2675,9 +2785,17 @@ impl Walker {
                         {
                             is_pointer_decl = true;
                         }
-                        // Detect function-pointer or prototype declarator: has param_suffix
+                        // Detect function-pointer or prototype declarator: has
+                        // param_suffix. A PROTOTYPE has parens but never the
+                        // `(*name)` shape — checking "starts with *" instead
+                        // misclassified `void f(struct St *s);` (the params'
+                        // `*` made it a pointer decl, skipping the skip, so a
+                        // null `var f` clobbered the real function: "null is
+                        // not callable" on every cross-TU call through a
+                        // header prototype) and `int *g(void);` (pointer
+                        // RETURN read as non-proto).
                         is_function_proto =
-                            p.as_str().contains('(') && !p.as_str().starts_with('*'); // not a function-pointer type
+                            p.as_str().contains('(') && !p.as_str().contains("(*");
                         is_function_pointer_decl =
                             declarator_text.contains("(*") && declarator_text.contains(")(");
                         let (n, bounds) = self.declarator_name_and_bounds(p);
@@ -2825,12 +2943,32 @@ impl Walker {
                 }
             }
             if type_text.split_whitespace().any(|w| w == "extern") && init.is_none() {
+                // `extern int f(...);` is as much a declaration as a bare
+                // prototype — record it for the namespace gate.
+                if is_function_proto && !name.is_empty() {
+                    let decl = format!("decl:{name}");
+                    if !self.included_namespaces.contains(&decl) {
+                        self.included_namespaces.push(decl);
+                    }
+                }
                 continue;
             }
             // Skip function prototypes: `int foo(int x);` has no init and is
             // a function-like declarator. Emitting `var foo;` would shadow the
-            // actual function definition.
-            if is_function_proto && init.is_none() && !is_pointer_decl {
+            // actual function definition. (Function-POINTER variables are
+            // excluded above by their `(*name)` shape, so no is_pointer_decl
+            // guard — the params' own `*`s must not defeat the skip.)
+            if is_function_proto && init.is_none() {
+                // An explicit prototype IS a declaration — C's alternative to
+                // the header, and clang accepts it. Record it as a
+                // single-symbol import so the namespace gate honors it
+                // (declaring = importing one name).
+                if !name.is_empty() {
+                    let decl = format!("decl:{name}");
+                    if !self.included_namespaces.contains(&decl) {
+                        self.included_namespaces.push(decl);
+                    }
+                }
                 continue;
             }
             let normalized_type_text = normalized_c_type_name(&type_text);
@@ -3567,7 +3705,11 @@ impl Walker {
             interfaces: Vec::new(),
             members,
             visibility: Visibility::Public,
-            decorators: Vec::new() })
+            decorators: Vec::new(),
+            // A C `struct` is a VALUE type — assignment copies, and so does
+            // passing or returning one by value. Equality stays Identity: C has
+            // no `==` on structs at all (comparison is an explicit `memcmp`).
+            record: RecordPolicy { storage: RecordStorage::Value, ..Default::default() } })
     }
 
     /// Zero value for a struct field given its (array-suffixed) type:
@@ -5454,6 +5596,16 @@ impl Walker {
             Rule::for_statement => out.push(self.walk_for(inner)),
             Rule::return_statement => {
                 let val = inner.into_inner().next().map(|e| self.walk_expression(e));
+                // `return s[i];` — a char read RETURNED is its integer value
+                // (C promotes); left as a one-char string it Number()s to
+                // NaN at the first arithmetic in the caller.
+                let val = val.map(|v| {
+                    if self.is_char_index_read(&v) {
+                        self.char_index_read_to_code(v)
+                    } else {
+                        v
+                    }
+                });
                 out.push(stmt(StmtKind::Return(val)));
             }
             Rule::break_statement => out.push(stmt(StmtKind::Break(BreakTarget::Implicit))),
@@ -5956,6 +6108,16 @@ impl Walker {
             Rule::for_statement => out.push(self.walk_for(inner)),
             Rule::return_statement => {
                 let val = inner.into_inner().next().map(|e| self.walk_expression(e));
+                // `return s[i];` — a char read RETURNED is its integer value
+                // (C promotes); left as a one-char string it Number()s to
+                // NaN at the first arithmetic in the caller.
+                let val = val.map(|v| {
+                    if self.is_char_index_read(&v) {
+                        self.char_index_read_to_code(v)
+                    } else {
+                        v
+                    }
+                });
                 out.push(stmt(StmtKind::Return(val)));
             }
             Rule::break_statement => out.push(stmt(StmtKind::Break(BreakTarget::Implicit))),
@@ -8311,6 +8473,13 @@ impl Walker {
             || self.is_char_carray_deref_expr(object)
             || matches!(&object.kind, ExprKind::Ident(name)
                 if self.char_pointers.contains(name) || self.is_char_array_var(name))
+            // `TABLE[i][j]` where TABLE is an array of C strings
+            // (`const char *TABLE[N]`): the inner index yields a string,
+            // the outer one a char.
+            || matches!(&object.kind, ExprKind::Index { object: inner, .. }
+                if matches!(&inner.kind, ExprKind::Ident(name)
+                    if self.var_types.get(name.as_str()).is_some_and(
+                        |ty| ty.contains("char") && ty.contains('*'))))
     }
 
     fn is_char_carray_deref_expr(&self, value: &Expression) -> bool {
@@ -10190,6 +10359,7 @@ impl Walker {
                     return builtin_overflow_expr(op, left, right, out);
                 }
                 "printf" | "wprintf" => {
+                    self.require_header("printf", "libc.stdio");
                     let mut inner_args = args;
                     if inner_args.is_empty() {
                         return expr(ExprKind::Lit(Literal::Null));
@@ -10255,6 +10425,7 @@ impl Walker {
                     return stdio_adapter::printf_to_c_fputs(fmt, rest);
                 }
                 "puts" => {
+                    self.require_header("puts", "libc.stdio");
                     if let Some(mut arg) = args.into_iter().next() {
                         let is_carray_arg = is_carray_object(&arg.value)
                             || matches!(&arg.value.kind, ExprKind::Ident(n) if self.carray_ptr_vars.contains(n));
@@ -10295,6 +10466,7 @@ impl Walker {
                     return expr(ExprKind::Lit(Literal::Null));
                 }
                 "fprintf" => {
+                    self.require_header("fprintf", "libc.stdio");
                     let mut inner_args = args;
                     if inner_args.len() < 2 {
                         return expr(ExprKind::Lit(Literal::Null));
@@ -10450,6 +10622,7 @@ impl Walker {
                     return call_expr(ident("__c_fputc_h"), vec![ch, file]);
                 }
                 "putchar" => {
+                    self.require_header("putchar", "libc.stdio");
                     if let Some(a) = args.into_iter().next() {
                         return call_expr(ident("__c_fputc_h"), vec![a.value, int_lit(1)]);
                     }
@@ -16839,6 +17012,27 @@ fn literal_signed_int_value(value: &Expression) -> Option<i64> {
 
 /// Wrap a value to a bitfield of `width` bits: `v & ((1<<width)-1)`, then for a
 /// signed bitfield sign-extend (`>= 1<<(width-1)` → subtract `1<<width`).
+/// Map a header name to its namespace-tree path: SDL headers mount under
+/// the `sdl` root; everything else is `libc.<basename>` — the same
+/// header-driven mount rule the tree registrar uses, so `#include
+/// <stdio.h>` activates exactly the subtree holding `libc.stdio.printf`.
+fn header_namespace_path(header: &str) -> Option<String> {
+    let base = header
+        .rsplit('/')
+        .next()
+        .unwrap_or(header)
+        .trim_end_matches(".h");
+    if base.is_empty() {
+        return None;
+    }
+    if base == "SDL" || base.starts_with("SDL_") {
+        // SDL builtins emit under `libc.sdl.*` (adapter lives in
+        // platforms/libc) — activate the path the emits actually use.
+        return Some("libc.sdl".to_string());
+    }
+    Some(format!("libc.{}", base.to_ascii_lowercase()))
+}
+
 /// Parse the null-pointer offsetof idiom `&(((struct S*)0)->m)` into its
 /// `("struct S", "m")` parts. Returns None for anything not of that shape.
 fn offsetof_idiom_parts(text: &str) -> Option<(String, String)> {

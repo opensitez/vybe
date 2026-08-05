@@ -55,7 +55,6 @@ const COMPONENTS: &[(&str, &str)] = &[
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
     let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_get(chunk: &mut Chunk, key: &str, line: u32) {

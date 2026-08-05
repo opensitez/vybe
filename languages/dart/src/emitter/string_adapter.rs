@@ -52,7 +52,6 @@ fn emit_string_field(chunk: &mut Chunk, key: &str, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
     let key = string_key(chunk, key);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn stamp_runtime_type(
@@ -131,7 +130,6 @@ fn emit_dart_sb_append_value(chunks: &mut [Chunk], current: usize, value_slot: u
     emit_dart_value_to_string(chunk, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
@@ -204,11 +202,9 @@ pub fn emit_dart_sb_new(chunks: &mut [Chunk], current: usize, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_string_const("", line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(true, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Dart `buf.write(value)` — append stringified value, return receiver.
@@ -276,7 +272,6 @@ pub fn emit_dart_sb_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_string_const("", line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
@@ -690,7 +685,6 @@ pub fn emit_dart_stream_error(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_bool_const(true, line);
     let marker_key = string_key(&mut chunks[current], "__dart_stream_error");
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, marker_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     emit_set_string_field_from_slot(&mut chunks[current], stream_slot, "error", error_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, stream_slot, line);
 }
@@ -713,7 +707,6 @@ fn emit_set_bool_field(chunk: &mut Chunk, obj_slot: u16, key: &str, value: bool,
     chunk.emit_bool_const(value, line);
     let key = string_key(chunk, key);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 pub fn emit_dart_stream_listen(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -907,12 +900,10 @@ pub fn emit_dart_stopwatch_new(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_bool_const(true, line);
     let marker_key = string_key(chunk, STOPWATCH_MARKER_KEY);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, marker_key, line);
-    chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_bool_const(false, line);
     let running_key = string_key(chunk, STOPWATCH_RUNNING_KEY);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_dart_stopwatch_set_running(chunks: &mut [Chunk], current: usize, running: bool, line: u32) {
@@ -922,7 +913,6 @@ fn emit_dart_stopwatch_set_running(chunks: &mut [Chunk], current: usize, running
     chunks[current].emit_bool_const(running, line);
     let running_key = string_key(&mut chunks[current], STOPWATCH_RUNNING_KEY);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -1531,7 +1521,6 @@ fn emit_set_string_field_from_slot(
     chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
     let key = string_key(chunk, key);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_mark_set_top(chunk: &mut Chunk, line: u32) {
@@ -1539,7 +1528,6 @@ fn emit_mark_set_top(chunk: &mut Chunk, line: u32) {
     chunk.emit_bool_const(true, line);
     let key = string_key(chunk, SET_MARKER_KEY);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_slot_is_set(chunk: &mut Chunk, slot: u16, line: u32) {
@@ -1587,7 +1575,6 @@ pub fn emit_dart_sorted_map_new(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_bool_const(true, line);
     let key = string_key(chunk, SORTED_MAP_MARKER_KEY);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 pub fn emit_dart_set_new(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1840,7 +1827,6 @@ pub fn emit_dart_map_from_entries(chunks: &mut [Chunk], current: usize, line: u3
     chunks[current].emit_op_u16(Op::LOCAL_GET, order_slot, line);
     let order_key = string_key(&mut chunks[current], MAP_ORDER_KEY);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, order_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
 }
 
@@ -1984,7 +1970,6 @@ fn emit_restore_cached_hash_if_any(
     chunks[current].emit_op_u16(Op::LOCAL_GET, cached_hash_slot, line);
     let field_key = string_key(&mut chunks[current], "__dart_identity_hash");
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, field_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
 }
 
@@ -2878,7 +2863,6 @@ fn emit_dart_cached_array_hash(chunks: &mut [Chunk], current: usize, value_slot:
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     let field_key = string_key(&mut chunks[current], "__dart_identity_hash");
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, field_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_end(line);
 }
@@ -2932,7 +2916,6 @@ fn emit_dart_identity_hash(chunks: &mut [Chunk], current: usize, value_slot: u16
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
     let field_key = string_key(&mut chunks[current], "__dart_identity_hash");
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, field_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
     chunks[current].emit_end(line);
 }

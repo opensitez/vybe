@@ -33,7 +33,6 @@ const ITEMSIZES: &[(&str, i32)] = &[
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
     let k = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// The typecode's item size, resolved from the code held in `tc`. The typecode

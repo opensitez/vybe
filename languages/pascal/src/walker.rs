@@ -505,7 +505,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name,
         language: Lang::Pascal,
         body,
-            scheduling: Default::default(),
         imports })
 }
 
@@ -22466,6 +22465,15 @@ fn pascal_prelude_needs(
                 "EFOpenError",
                 "ERangeError",
                 "Assert",
+                // `div` and `mod` are here because `__pascal_safe_idiv` — which
+                // every integer division is rewritten into — RAISES
+                // `EDivByZero`. Without this the helper is synthesized while the
+                // class it throws is not, and `10 div 0` died with
+                // "undefined is not callable" instead of the exception. The
+                // corpus never caught it: the harness preamble carries
+                // `uses SysUtils`, which turns this gate on anyway.
+                "div",
+                "mod",
             ],
         );
     let except_state = pascal_source_mentions_any_ident(source, &["ExceptObject", "ExceptAddr"]);
@@ -34038,10 +34046,13 @@ fn walk_class_const_decl(pair: Pair<Rule>) -> Result<ClassMember, String> {
 
 fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statement, String> {
     let mut members = Vec::new();
+    let mut variant = None;
 
     for p in pair.into_inner() {
         if p.as_rule() == Rule::record_body {
-            members = walk_record_body_members(p)?;
+            let (m, v) = walk_record_body_members(p)?;
+            members = m;
+            variant = v;
         }
     }
     Ok(Statement::with_span(
@@ -34050,7 +34061,24 @@ fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statemen
             interfaces: Vec::new(),
             members,
             visibility: Visibility::Public,
-            decorators: vec![] },
+            decorators: vec![],
+            // A Pascal `record` is a VALUE type: `b := a` copies. That is what
+            // `lower_struct_copy_assignments` hand-rolls today, for assignment
+            // only — the shared lowering will read this instead and cover
+            // argument passing and return as well.
+            //
+            // Equality stays Identity: Delphi gives a record no `=` unless the
+            // program overloads `class operator Equal`, so there is nothing to
+            // declare here.
+            //
+            // `variant` carries the case part. The members are still flattened
+            // exactly as before, so behaviour is unchanged — but the overlap is
+            // no longer thrown away.
+            record: RecordPolicy {
+                storage: RecordStorage::Value,
+                variant,
+                ..Default::default()
+            } },
         span,
     ))
 }
@@ -34062,7 +34090,10 @@ fn walk_record_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<S
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::type_ref => target = type_ref_to_string(&p),
-            Rule::record_body => members = walk_record_body_members(p)?,
+            // A record HELPER declares no storage of its own — it attaches
+            // members to an existing type — so any variant part it parsed is
+            // dropped rather than carried onto the helper's own decl.
+            Rule::record_body => members = walk_record_body_members(p)?.0,
             _ => {}
         }
     }
@@ -34073,17 +34104,29 @@ fn walk_record_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<S
             interfaces: vec![format!("{}{}", PASCAL_HELPER_TARGET_PREFIX, target)],
             members,
             visibility: Visibility::Public,
-            decorators: vec![] },
+            decorators: vec![],
+            record: RecordPolicy::default() },
         span,
     ))
 }
 
-fn walk_record_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+/// Record body members, plus the variant part if the record declared one.
+///
+/// The members are exactly what they were; the `Option<VariantPart>` is the
+/// overlap that flattening used to discard.
+fn walk_record_body_members(
+    pair: Pair<Rule>,
+) -> Result<(Vec<ClassMember>, Option<VariantPart>), String> {
     let mut members = Vec::new();
+    let mut variant = None;
     for m in pair.into_inner() {
         match m.as_rule() {
             Rule::field_decl => members.extend(walk_field_decl_members(m)?),
-            Rule::variant_part => members.extend(walk_variant_part_members(m)?),
+            Rule::variant_part => {
+                let (flattened, part) = walk_variant_part_members(m)?;
+                members.extend(flattened);
+                variant = Some(part);
+            }
             Rule::class_property_decl => members.push(walk_class_property_decl(m)?),
             Rule::record_method_sig => members.push(walk_record_method_sig(m)?),
             Rule::record_class_method => members.push(walk_record_class_method(m)?),
@@ -34091,7 +34134,7 @@ fn walk_record_body_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String
             _ => {}
         }
     }
-    Ok(members)
+    Ok((members, variant))
 }
 
 // ── Interface type ─────────────────────────────────────────────────────────
@@ -34292,24 +34335,56 @@ fn variant_field_member(name: String, type_hint: Option<String>) -> ClassMember 
         array_bounds: None }
 }
 
-fn walk_variant_part_members(pair: Pair<Rule>) -> Result<Vec<ClassMember>, String> {
+/// Flatten a variant part into sibling fields — AND record what the overlap
+/// actually was.
+///
+/// The flattening is unchanged, so nothing downstream moves. What is new is the
+/// returned `VariantPart`: `case tag: T of 1: (a: Integer); 2: (b: Real)` is
+/// OVERLAPPING storage, and flattening it into two independent fields silently
+/// loses that. Capturing it here means the information survives to the shared
+/// lowering instead of having to be re-parsed later. See
+/// `recordprimitiveplan.md` — this is the same feature as a C `union` and a
+/// COBOL `REDEFINES`.
+fn walk_variant_part_members(pair: Pair<Rule>) -> Result<(Vec<ClassMember>, VariantPart), String> {
     let mut members = Vec::new();
+    let mut variant = VariantPart::default();
 
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::variant_selector => {
                 if let Some((name, type_hint)) = walk_variant_selector(p) {
+                    variant.tag = Some(name.clone());
                     members.push(variant_field_member(name, Some(type_hint)));
                 }
             }
             Rule::variant_arm => {
-                members.extend(walk_variant_arm_members(p)?);
+                let labels = walk_variant_arm_labels(&p);
+                let arm_members = walk_variant_arm_members(p)?;
+                variant.arms.push(VariantArm { labels, members: arm_members.clone() });
+                members.extend(arm_members);
             }
             _ => {}
         }
     }
 
-    Ok(members)
+    Ok((members, variant))
+}
+
+/// The constant labels selecting one arm — `1, 3: (…)`. Empty for an untagged
+/// overlap, which is what a C `union` and a COBOL `REDEFINES` normalize to.
+fn walk_variant_arm_labels(pair: &Pair<Rule>) -> Vec<Expression> {
+    let mut labels = Vec::new();
+    for p in pair.clone().into_inner() {
+        // Everything before the field list is a selector constant; the field
+        // list itself is the arm's storage.
+        if p.as_rule() == Rule::variant_field_list {
+            break;
+        }
+        if let Ok(expr) = walk_expression(p) {
+            labels.push(expr);
+        }
+    }
+    labels
 }
 
 fn walk_variant_selector(pair: Pair<Rule>) -> Option<(String, String)> {

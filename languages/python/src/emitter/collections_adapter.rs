@@ -15,7 +15,6 @@ fn emit_throw_python_exception(chunk: &mut Chunk, exc_name: &str, message: &str,
     chunk.emit_string_const("", line);
     let stack_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("stack")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, stack_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
@@ -875,7 +874,6 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_bool_const(true, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, started_key, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     call_import(chunks, current, "ecma:value", "isGeneratorDone", 1, line);
@@ -894,7 +892,6 @@ pub fn emit_gen_send(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     let value_key =
         chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from("value")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -937,7 +934,6 @@ pub fn emit_gen_close(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         std::sync::Arc::from("__py_gen_closed"),
     ));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, closed_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
     chunks[current].emit_struct_new(0, 0, line);
     core_wasm::dup(&mut chunks[current], line);
@@ -975,7 +971,6 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, it, line);
     chunks[current].emit_bool_const(true, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, started_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     let has_more = chunks[current].local_count;
     chunks[current].alloc_scratch(1);
     let value = chunks[current].local_count;
@@ -1005,7 +1000,6 @@ pub fn emit_pynext(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let value_key = chunks[current]
             .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("value")));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
-        chunks[current].emit_op(Op::DROP, line);
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // unreachable (throw diverges)
     }
@@ -1752,12 +1746,10 @@ pub fn emit_py_minmax(chunks: &mut [Chunk], current: usize, argc: u8, is_max: bo
             std::sync::Arc::from("__name__"),
         ));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
-        chunks[current].emit_op(Op::DROP, line);
         let class_key = chunks[current].add_constant(vybe_runtime::Value::String(
             std::sync::Arc::from("__class__"),
         ));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, class_key, line);
-        chunks[current].emit_op(Op::DROP, line);
         vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
@@ -1857,7 +1849,6 @@ pub fn emit_frozenset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     c.emit_string_const("Set", line);
     let tk = c.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__type")));
     c.emit_struct_field_op(Op::STRUCT_SET, 0, tk, line);
-    c.emit_op(Op::DROP, line);
     // Stamp `__frozenset = true` so repr renders `frozenset({...})`.
     c.emit_dup(line);
     core_wasm::bool_const(c, line, true);
@@ -1865,7 +1856,6 @@ pub fn emit_frozenset(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         "__frozenset",
     )));
     c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    c.emit_op(Op::DROP, line);
 }
 
 /// Set predicate methods (`issubset`/`issuperset`/`isdisjoint`) compose the

@@ -86,7 +86,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::CSharp,
         body,
             // Declared in the profile's `[async]` section; see python's note.
-            scheduling: Default::default(),
         imports };
     rewrite_using_imports(&mut module);
     normalize_task_surface(&mut module);
@@ -1378,6 +1377,11 @@ fn rewrite_explicit_interface_accesses_in_expr(
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_explicit_interface_accesses_in_expr(child, conflicted);
+            }
+        }
+        ExprKind::Chan(op) => {
             for child in op.children_mut() {
                 rewrite_explicit_interface_accesses_in_expr(child, conflicted);
             }
@@ -4511,6 +4515,11 @@ fn rewrite_using_imports_in_expr(
                 rewrite_using_imports_in_expr(child, aliases, static_paths);
             }
         }
+        ExprKind::Chan(op) => {
+            for child in op.children_mut() {
+                rewrite_using_imports_in_expr(child, aliases, static_paths);
+            }
+        }
         ExprKind::Binary { left, right, .. } | ExprKind::NullCoalesce { left, right } => {
             rewrite_using_imports_in_expr(left, aliases, static_paths);
             rewrite_using_imports_in_expr(right, aliases, static_paths);
@@ -5148,6 +5157,11 @@ fn rewrite_extension_calls_in_expr(
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_extension_calls_in_expr(child, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::Chan(op) => {
             for child in op.children_mut() {
                 rewrite_extension_calls_in_expr(child, extension_methods, extension_containers);
             }
@@ -9978,7 +9992,24 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
         interfaces,
         members,
         visibility: Visibility::Public,
-        decorators: decorators.to_vec() })
+        decorators: decorators.to_vec(),
+        // A C# `struct` is a VALUE type with VALUE equality. Measured against
+        // `dotnet` rather than assumed: `a.Equals(b)` on two structs holding the
+        // same field is True (`ValueType.Equals` is field-wise), and so is
+        // `==` on a `record` and on a `record struct`.
+        //
+        // `equality` describes whether value-equality compares FIELDS — not
+        // which syntax reaches it. `==` needs an explicit overload on a plain
+        // struct while `.Equals` does not; that mapping is the language's, and
+        // the policy is the same either way.
+        //
+        // `record` and `record struct` go through `walk_record_decl`, which
+        // returns a ClassDecl — so they carry no policy yet. See the plan.
+        record: RecordPolicy {
+            storage: RecordStorage::Value,
+            equality: RecordEquality::Structural,
+            ..Default::default()
+        } })
 }
 
 // ── Interface ───────────────────────────────────────────────────────────────
@@ -10571,7 +10602,18 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
         parents,
         interfaces: Vec::new(),
         members,
-        modifiers: record_mods,
+        modifiers: ClassModifiers {
+            // A C# `record` has REFERENCE storage with VALUE equality —
+            // measured: `new R(1) == new R(1)` is True while the object is
+            // still heap-allocated and inherits. A `record struct` is the same
+            // equality with Value storage; it reaches here too, via
+            // `record_struct_declaration`.
+            record: RecordPolicy {
+                equality: RecordEquality::Structural,
+                ..Default::default()
+            },
+            ..record_mods
+        },
         decorators: decorators.to_vec() })
 }
 

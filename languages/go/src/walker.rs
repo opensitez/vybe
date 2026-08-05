@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_ast::*;
 // Channels are normalized into COMMON AST shapes — the walker builds AST,
 // not bytecode. The emit side lives in the compiler.
-use vybe_ast::channels;
+use vybe_ast::{ChanOp, SelectArm};
 use vybe_compiler::primitives::generics as common_generics;
 use vybe_compiler::primitives::reflection;
 
@@ -171,7 +171,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: package_name,
         language: Lang::Go,
         body,
-            scheduling: Default::default(),
         imports }))
 }
 
@@ -8658,7 +8657,8 @@ fn normalize_go_statement(
             interfaces,
             members,
             visibility,
-            decorators } => {
+            decorators,
+            record } => {
             let normalized_members = members
                 .iter()
                 .map(|member| match member {
@@ -8694,7 +8694,11 @@ fn normalize_go_statement(
                 interfaces: interfaces.clone(),
                 members: normalized_members,
                 visibility: *visibility,
-                decorators: decorators.clone() })]
+                decorators: decorators.clone(),
+                // Carried, never re-defaulted: this arm rebuilds the decl, and
+                // resetting the policy here would silently drop whatever the
+                // walker declared.
+                record: record.clone() })]
         }
         _ => vec![stmt.clone()] }
 }
@@ -9366,8 +9370,16 @@ fn normalize_go_expr(
                 {
                     if go_is_channel_type(&type_name) {
                         let capacity = next_args.get(1).map(|arg| arg.value.clone());
+                        // The walker is the only one who knows the element
+                        // type; the zero value rides on the node so a
+                        // closed-channel receive can produce it anywhere.
+                        let zero = go_channel_element_type(&type_name)
+                            .map(|elem| go_zero_value_for_type(&elem, env))
+                            .unwrap_or_else(Expression::null);
                         return Expression::new(ExprKind::Cast {
-                            expr: Box::new(channels::channel_new_expr(capacity)),
+                            expr: Box::new(Expression::new(ExprKind::Chan(ChanOp::New {
+                                capacity: capacity.map(Box::new),
+                                zero: Box::new(zero) }))),
                             type_name });
                     }
                     if go_is_slice_type(&type_name) {
@@ -9486,7 +9498,7 @@ fn normalize_go_expr(
                     .as_deref()
                     .is_some_and(go_is_channel_type)
                 {
-                    return channels::channel_len_expr(next_args[0].value.clone());
+                    return chan_len(next_args[0].value.clone());
                 }
             }
 
@@ -9495,7 +9507,9 @@ fn normalize_go_expr(
                     .as_deref()
                     .is_some_and(go_is_channel_type)
                 {
-                    return channels::channel_cap_expr(next_args[0].value.clone());
+                    return Expression::new(ExprKind::Chan(ChanOp::Cap(Box::new(
+                        next_args[0].value.clone(),
+                    ))));
                 }
                 if let Some(cap_expr) = go_expr_capacity_hint(&next_args[0].value, env) {
                     return cap_expr;
@@ -9522,7 +9536,9 @@ fn normalize_go_expr(
                     .as_deref()
                     .is_some_and(go_is_channel_type)
                 {
-                    return channels::channel_close_expr(next_args[0].value.clone());
+                    return Expression::new(ExprKind::Chan(ChanOp::Close(Box::new(
+                        next_args[0].value.clone(),
+                    ))));
                 }
             }
 
@@ -9934,16 +9950,14 @@ fn lower_go_channel_range(
             declarations: vec![VarDeclarator {
                 pattern: BindingPattern::Ident(value_name.to_string()),
                 type_hint: Some(elem_type.into()),
-                init: Some(channels::channel_receive_expr(Expression::ident(
-                    &iter_name,
-                ))),
+                init: Some(chan_recv(Expression::ident(&iter_name))),
                 array_bounds: None,
                 with_events: false }],
             kind: VarDeclKind::Let }));
     } else {
-        loop_body.push(Statement::new(StmtKind::Expr(
-            channels::channel_receive_expr(Expression::ident(&iter_name)),
-        )));
+        loop_body.push(Statement::new(StmtKind::Expr(chan_recv(Expression::ident(
+            &iter_name,
+        )))));
     }
     loop_body.extend(normalize_go_block(body, env, signatures, state));
     loop_body.push(Statement::new(StmtKind::Assign {
@@ -9956,7 +9970,7 @@ fn lower_go_channel_range(
     let for_stmt = Statement::new(StmtKind::While {
         cond: Expression::new(ExprKind::Binary {
             op: BinOp::Gt,
-            left: Box::new(channels::channel_len_expr(Expression::ident(&iter_name))),
+            left: Box::new(chan_len(Expression::ident(&iter_name))),
             right: Box::new(Expression::int(0)) }),
         body: loop_body,
         else_body: None });
@@ -16510,31 +16524,12 @@ fn go_normalize_channel_receive_tuple_expr(
     signatures: &HashMap<String, GoFunctionSignature>,
     state: &mut GoNormalizeState,
 ) -> Option<Expression> {
-    let ExprKind::Call { callee, args, .. } = &expr.kind else {
+    let ExprKind::Chan(ChanOp::Recv(ch)) = &expr.kind else {
         return None;
     };
-    if go_expr_call_name(callee).as_deref() != Some("__vybe_channel_receive") || args.len() != 1 {
-        return None;
-    }
-    let channel = normalize_go_expr(&args[0].value, env, signatures, state);
-    let elem_type = go_expr_type_hint(&args[0].value, env, signatures)
-        .and_then(|type_name| go_channel_element_type(&type_name))
-        .unwrap_or_else(|| "any".to_string());
+    let channel = normalize_go_expr(ch, env, signatures, state);
     let _ = state;
-    let ok_expr = Expression::new(ExprKind::Binary {
-        op: BinOp::Gt,
-        left: Box::new(channels::channel_len_expr(channel.clone())),
-        right: Box::new(Expression::int(0)) });
-    Some(Expression::new(ExprKind::Ternary {
-        cond: Box::new(ok_expr),
-        then: Box::new(Expression::new(ExprKind::Tuple(vec![
-            channels::channel_receive_expr(channel),
-            Expression::bool(true),
-        ]))),
-        else_: Box::new(Expression::new(ExprKind::Tuple(vec![
-            go_zero_value_for_type(&elem_type, env),
-            Expression::bool(false),
-        ]))) }))
+    Some(chan_recv_ok(channel))
 }
 
 fn go_map_has_expr(object: Expression, index: Expression) -> Expression {
@@ -17806,7 +17801,11 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         interfaces: Vec::new(),
         members: vec![ClassMember::Method(Box::new(method_stmt))],
         visibility: Visibility::Public,
-        decorators: Vec::new() }))
+        decorators: Vec::new(),
+        // NOT a user declaration — a synthetic carrier holding one method for a
+        // receiver, merged into the real `type X struct` later. The policy is
+        // declared THERE; stating one here would give the merge two answers.
+        record: RecordPolicy::default() }))
 }
 
 fn walk_signature(pair: Pair<Rule>) -> Result<GoSignatureInfo, String> {
@@ -18392,7 +18391,15 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
         interfaces: Vec::new(),
         members,
         visibility: Visibility::Public,
-        decorators: Vec::new() }))
+        decorators: Vec::new(),
+        // `type X struct` — the real declaration. A Go struct is a VALUE type
+        // (assignment, argument passing and return all copy) and the spec makes
+        // `==` on a comparable struct field-wise, so both axes are declared.
+        record: RecordPolicy {
+            storage: RecordStorage::Value,
+            equality: RecordEquality::Structural,
+            ..Default::default()
+        } }))
 }
 
 fn walk_interface_type(name: String, pair: Pair<Rule>) -> Result<Statement, String> {
@@ -18548,10 +18555,9 @@ fn walk_send_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if exprs.len() == 2 {
-        Ok(StmtKind::Expr(channels::channel_send_expr(
-            exprs.remove(0),
-            exprs.remove(0),
-        )))
+        Ok(StmtKind::Expr(Expression::new(ExprKind::Chan(ChanOp::Send {
+            channel: Box::new(exprs.remove(0)),
+            value: Box::new(exprs.remove(0)) }))))
     } else {
         Ok(StmtKind::Empty)
     }
@@ -19151,7 +19157,7 @@ fn fresh_go_parse_temp(prefix: &str) -> String {
 }
 
 fn walk_select(pair: Pair<Rule>) -> Result<StmtKind, String> {
-    let mut arms: Vec<(Expression, Vec<Statement>)> = Vec::new();
+    let mut arms: Vec<(ChanOp, Vec<Statement>)> = Vec::new();
     let mut default_body = None;
 
     for inner in pair.into_inner() {
@@ -19181,53 +19187,41 @@ fn walk_select(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
-    let mut arm_iter = arms.into_iter();
-    if let Some((cond, then_body)) = arm_iter.next() {
-        Ok(StmtKind::If {
-            cond,
-            then_body,
-            elifs: arm_iter.collect(),
-            else_body: default_body })
-    } else {
-        Ok(StmtKind::Block(default_body.unwrap_or_default()))
+    if arms.is_empty() {
+        return Ok(StmtKind::Block(default_body.unwrap_or_default()));
     }
+    Ok(StmtKind::Select {
+        arms: arms
+            .into_iter()
+            .map(|(comm, body)| SelectArm { comm, body })
+            .collect(),
+        default: default_body })
 }
 
-fn go_select_receive_channel(expr: &Expression) -> Option<Expression> {
-    if let ExprKind::Call { callee, args, .. } = &expr.kind {
-        if matches!(&callee.kind, ExprKind::Ident(name) if name == "__vybe_channel_receive") {
-            return args.first().map(|arg| arg.value.clone());
-        }
-    }
-    None
+fn chan_recv(ch: Expression) -> Expression {
+    Expression::new(ExprKind::Chan(ChanOp::Recv(Box::new(ch))))
 }
 
-fn go_select_ready_cond(channel: Expression, is_send: bool) -> Expression {
-    let left = channels::channel_len_expr(channel.clone());
-    let right = if is_send {
-        channels::channel_cap_expr(channel)
-    } else {
-        Expression::int(0)
-    };
+fn chan_recv_ok(ch: Expression) -> Expression {
+    Expression::new(ExprKind::Chan(ChanOp::RecvOk(Box::new(ch))))
+}
 
-    Expression::new(ExprKind::Binary {
-        op: if is_send { BinOp::Lt } else { BinOp::Gt },
-        left: Box::new(left),
-        right: Box::new(right) })
+fn chan_len(ch: Expression) -> Expression {
+    Expression::new(ExprKind::Chan(ChanOp::Len(Box::new(ch))))
 }
 
 fn walk_select_case_clause(
     pair: Pair<Rule>,
-) -> Result<Option<(Expression, Vec<Statement>)>, String> {
+) -> Result<Option<(ChanOp, Vec<Statement>)>, String> {
     let mut prefix = Vec::new();
     let mut body = Vec::new();
-    let mut cond = None;
+    let mut comm = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::select_comm_clause => {
-                let (comm_cond, mut comm_prefix) = walk_select_comm_clause(inner)?;
-                cond = Some(comm_cond);
+                let (clause_comm, mut comm_prefix) = walk_select_comm_clause(inner)?;
+                comm = clause_comm;
                 prefix.append(&mut comm_prefix);
             }
             Rule::statement_list => body.extend(walk_statement_list(inner)?),
@@ -19236,7 +19230,7 @@ fn walk_select_case_clause(
     }
 
     prefix.extend(body);
-    Ok(cond.map(|cond| (cond, prefix)))
+    Ok(comm.map(|comm| (comm, prefix)))
 }
 
 fn walk_select_default_clause(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
@@ -19248,8 +19242,8 @@ fn walk_select_default_clause(pair: Pair<Rule>) -> Result<Vec<Statement>, String
     Ok(Vec::new())
 }
 
-fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Expression, Vec<Statement>), String> {
-    let mut cond = None;
+fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Option<ChanOp>, Vec<Statement>), String> {
+    let mut comm = None;
     let mut stmts = Vec::new();
 
     for inner in pair.into_inner() {
@@ -19265,10 +19259,12 @@ fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Expression, Vec<Statemen
                     }
                 }
                 if exprs.len() == 2 {
-                    cond = Some(go_select_ready_cond(exprs[0].clone(), true));
-                    stmts.push(Statement::new(StmtKind::Expr(channels::channel_send_expr(
-                        exprs.remove(0),
-                        exprs.remove(0),
+                    let op = ChanOp::Send {
+                        channel: Box::new(exprs.remove(0)),
+                        value: Box::new(exprs.remove(0)) };
+                    comm = Some(op.clone());
+                    stmts.push(Statement::new(StmtKind::Expr(Expression::new(
+                        ExprKind::Chan(op),
                     ))));
                 }
             }
@@ -19292,11 +19288,24 @@ fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Expression, Vec<Statemen
                 }
 
                 if let Some(expr) = recv_expr {
-                    if let Some(channel) = go_select_receive_channel(&expr) {
-                        cond = Some(go_select_ready_cond(channel, false));
+                    // `<-ch` walked to `Chan(Recv(ch))`; the READINESS test
+                    // reuses the same op, and two-name bindings upgrade the
+                    // performing expression to `RecvOk` (value, ok).
+                    if let ExprKind::Chan(ChanOp::Recv(ch)) = &expr.kind {
+                        comm = Some(ChanOp::Recv(ch.clone()));
                     }
+                    let two_names = names.len() == 2;
+                    let perform = if two_names {
+                        if let ExprKind::Chan(ChanOp::Recv(ch)) = &expr.kind {
+                            chan_recv_ok((**ch).clone())
+                        } else {
+                            expr
+                        }
+                    } else {
+                        expr
+                    };
                     if names.is_empty() {
-                        stmts.push(Statement::new(StmtKind::Expr(expr)));
+                        stmts.push(Statement::new(StmtKind::Expr(perform)));
                     } else if is_assign {
                         let targets = names
                             .into_iter()
@@ -19308,16 +19317,17 @@ fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Expression, Vec<Statemen
                                 }
                             })
                             .collect::<Vec<_>>();
-                        let value = if targets.len() == 1 {
-                            expr
+                        let wrap_tuple = targets.len() > 1;
+                        let targets = if wrap_tuple {
+                            vec![Expression::new(ExprKind::Tuple(targets))]
                         } else {
-                            Expression::new(ExprKind::Tuple(vec![expr, Expression::bool(true)]))
+                            targets
                         };
                         stmts.push(Statement::new(StmtKind::Assign {
-                            targets: vec![Expression::new(ExprKind::Tuple(targets))],
-                            value, by_ref: false }));
+                            targets,
+                            value: perform, by_ref: false }));
                     } else {
-                        stmts.push(go_short_var_decl_from_parts(names, expr));
+                        stmts.push(go_short_var_decl_from_parts(names, perform));
                     }
                 }
             }
@@ -19325,7 +19335,7 @@ fn walk_select_comm_clause(pair: Pair<Rule>) -> Result<(Expression, Vec<Statemen
         }
     }
 
-    Ok((cond.unwrap_or_else(|| Expression::bool(false)), stmts))
+    Ok((comm, stmts))
 }
 
 fn go_short_var_decl_from_parts(names: Vec<String>, value: Expression) -> Statement {
@@ -19343,10 +19353,10 @@ fn go_short_var_decl_from_parts(names: Vec<String>, value: Expression) -> Statem
                     })
                     .collect(),
             ),
-            init: Some(Expression::new(ExprKind::Tuple(vec![
-                value,
-                Expression::bool(true),
-            ]))),
+            // The value already produces the (v, ok) pair — `ChanOp::RecvOk`,
+            // whose ok is computed by the lowering (closed ⇒ false), not
+            // hardcoded true as the pre-vocabulary select did.
+            init: Some(value),
             type_hint: None,
             array_bounds: None,
             with_events: false }]
@@ -19718,9 +19728,7 @@ fn walk_unary_expression(pair: Pair<Rule>) -> Result<Expression, String> {
             "*" => UnaryOp::Deref,
             "&" => UnaryOp::AddrOf,
             "<-" => {
-                return Ok(channels::channel_receive_expr(
-                    operand.unwrap_or_else(Expression::null),
-                ));
+                return Ok(chan_recv(operand.unwrap_or_else(Expression::null)));
             }
             _ => UnaryOp::Pos };
         Ok(Expression::new(ExprKind::Unary {

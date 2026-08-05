@@ -140,7 +140,6 @@ fn emit_throw_exception(chunk: &mut Chunk, message: &str, line: u32) {
 fn struct_set(chunk: &mut Chunk, key: &str, line: u32) {
     let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_unpack_u32_at_offset(

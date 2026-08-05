@@ -59,7 +59,6 @@ fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Stash `argc` call arguments into consecutive scratch slots, arg0 at `base`.

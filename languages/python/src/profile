@@ -97,12 +97,6 @@ uses_normalize_class = true
 # BUILTINS — bare global function calls
 # ────────────────────────────────────────────────────────────────────────────
 
-[async]
-# asyncio: ONE ready queue drained FIFO per loop iteration (`call_soon`);
-# there is no microtask tier to drain to empty before the next task. The
-# ECMA two-tier default is not Python's contract — declared here so it is
-# never inherited by omission.
-queues = "single_ready_queue"
 
 [builtins]
 

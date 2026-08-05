@@ -44,7 +44,6 @@ fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, a
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {

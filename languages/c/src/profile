@@ -35,6 +35,10 @@ constructor_name = "constructor"
 case_sensitive = true
 string_indexing = "zero_based"
 entry_point = "main"
+# Headers ARE imports (`#include <stdio.h>` → `libc.stdio`): builtins under
+# these roots require the activating include, clang-style — implicit
+# declarations are compile errors.
+gated_namespace_roots = ["libc", "sdl"]
 dynamic_add = true
 uses_normalize_class = false
 # Route function/method resolution through the common namespace resolver

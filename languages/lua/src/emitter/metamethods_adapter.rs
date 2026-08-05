@@ -134,7 +134,6 @@ fn emit_lua_assoc_map(
         load(&mut chunks[current], assoc_slot, line);
         let key_idx = chunks[current].add_constant(Value::String(Arc::from("__lua_assoc")));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-        chunks[current].emit_op(Op::DROP, line);
         load(&mut chunks[current], assoc_slot, line);
     } else {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -398,11 +397,9 @@ fn emit_lua_tagged_handle(chunk: &mut Chunk, lua_type: &str, name: &str, line: u
     load(chunk, object, line);
     chunk.emit_string_const(lua_type, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunk.emit_op(Op::DROP, line);
     load(chunk, object, line);
     chunk.emit_string_const(name, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
-    chunk.emit_op(Op::DROP, line);
     load(chunk, object, line);
 }
 
@@ -436,15 +433,12 @@ pub fn emit_lua_coroutine_create(chunks: &mut Vec<Chunk>, current: usize, argc: 
     load(&mut chunks[current], co, line);
     chunks[current].emit_string_const("thread", line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     load(&mut chunks[current], co, line);
     chunks[current].emit_string_const("suspended", line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, state_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     load(&mut chunks[current], co, line);
     load(&mut chunks[current], func, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, fn_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     load(&mut chunks[current], co, line);
 }
 
@@ -459,7 +453,6 @@ fn emit_lua_set_object_string(
     load(chunk, object_slot, line);
     chunk.emit_string_const(value, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_lua_set_object_slot(
@@ -473,7 +466,6 @@ fn emit_lua_set_object_slot(
     load(chunk, object_slot, line);
     load(chunk, value_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_lua_set_object_bool(
@@ -487,7 +479,6 @@ fn emit_lua_set_object_bool(
     load(chunk, object_slot, line);
     chunk.emit_bool_const(value, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_lua_set_object_f64(chunk: &mut Chunk, object_slot: u16, key: &str, value: f64, line: u32) {
@@ -495,7 +486,6 @@ fn emit_lua_set_object_f64(chunk: &mut Chunk, object_slot: u16, key: &str, value
     load(chunk, object_slot, line);
     chunk.emit_f64_const(value, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_lua_select_has_multi_row_arg(
@@ -1483,11 +1473,9 @@ fn emit_lua_main_thread(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     load(&mut chunks[current], main_slot, line);
     chunks[current].emit_string_const("thread", line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     load(&mut chunks[current], main_slot, line);
     chunks[current].emit_string_const("running", line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, state_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     load(&mut chunks[current], main_slot, line);
     emit_lua_global_set(&mut chunks[current], "__lua_main_coroutine", line);
     chunks[current].emit_end(line);
@@ -1797,7 +1785,6 @@ fn emit_lua_set_metatable_for_value(
     load(&mut chunks[current], value_slot, line);
     load(&mut chunks[current], mt_slot, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, mt_key, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -2972,7 +2959,6 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         load(&mut chunks[current], current_slot, line);
         load(&mut chunks[current], key_slot, line);
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, active_key, line);
-        chunks[current].emit_op(Op::DROP, line);
         load(&mut chunks[current], method_slot, line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         load(&mut chunks[current], current_slot, line);
@@ -2983,7 +2969,6 @@ pub fn emit_metamethod_newindex(chunks: &mut Vec<Chunk>, current: usize, argc: u
         load(&mut chunks[current], current_slot, line);
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, active_key, line);
-        chunks[current].emit_op(Op::DROP, line);
         i32_const(&mut chunks[current], 1, line);
         save(&mut chunks[current], done_slot, line);
         chunks[current].emit_else(line);

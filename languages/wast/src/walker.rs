@@ -799,7 +799,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::Unknown,
         body,
-            scheduling: Default::default(),
         imports: Vec::new() })
 }
 
@@ -1871,6 +1870,21 @@ fn walk_instr_as_stmts(
         _ => Err(format!("Unexpected instr rule: {:?}", inner.as_rule())) }
 }
 
+/// The WASM trap, as the shared compiler already spells it.
+///
+/// A zero-argument call named after a WASM instruction is resolved straight
+/// from the VM's own opcode table (`Op::from_flattened_name`) and emitted by
+/// `emit_builtin_opcode` — the same route every other raw instruction in this
+/// walker takes. `unreachable` is `Op::new(0x00, 0x00)`, declared in
+/// `core_ops.rs`, so no new mechanism, AST node or builtin is needed: this was
+/// the only front end that was not using the route it already had.
+fn trap_expr() -> Expression {
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("unreachable")),
+        args: Vec::new(),
+        optional: false })
+}
+
 fn walk_instr_as_expr(pair: Pair<Rule>, labels: &mut LabelStack) -> Result<Expression, String> {
     let span = to_span(&pair);
     let inner = pair.into_inner().next().ok_or("Empty instr")?;
@@ -2004,10 +2018,14 @@ fn walk_folded_instr_as_stmts(
         }
 
         // ── (unreachable) = WASM trap ─────────────────────────────────────
+        // A trap, NOT a throw. This was `StmtKind::Throw { expr: None }`, which
+        // is an exception: `(block $d (try_table (catch_all $d) unreachable))`
+        // swallowed it and the program exited 0. Per the spec a trap is outside
+        // the exception system and no handler can intercept it. `Op::UNREACHABLE`
+        // returns `Err` straight out of the interpreter loop and never consults
+        // the handler stack.
         "unreachable" => Ok(vec![Statement::with_span(
-            StmtKind::Throw {
-                expr: None,
-                cause: None },
+            StmtKind::Expr(trap_expr()),
             span,
         )]),
 
@@ -2645,9 +2663,17 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
         // ── nop ───────────────────────────────────────────────────────────
         "nop" => Ok(Expression::with_span(ExprKind::Lit(Literal::Null), span)),
 
-        // ── unreachable / return / br in expression context ───────────────
+        // ── unreachable in expression context ─────────────────────────────
+        // A folded `(unreachable)` used as a VALUE used to compile to
+        // `Expression::null()` — nothing at all. `(func $f (result i32)
+        // (unreachable))` returned null and the caller carried on to exit 0, so
+        // any wast test whose failure path was written that way passed
+        // unconditionally. It traps here exactly as in statement position.
+        "unreachable" => Ok(trap_expr()),
+
+        // ── return / br in expression context ─────────────────────────────
         // These are meaningful at statement level; here they produce null.
-        "unreachable" | "return" | "br" | "br_if" | "br_table" => Ok(Expression::null()),
+        "return" | "br" | "br_if" | "br_table" => Ok(Expression::null()),
 
         // ── call → Call(callee, args) ─────────────────────────────────────
         "call" => {
@@ -4625,13 +4651,23 @@ fn fold_instructions_seeded(
                     "nop" => {
                         // Nop does nothing, ignore
                     }
+                    // A trap, NOT a throw — see `trap_expr`. This is the LIVE
+                    // lowering: the `walk_*_instr_as_stmts` family that also
+                    // spelled `unreachable` is dead code.
+                    //
+                    // Pushed onto the operand STACK as well as emitted, so a
+                    // folded `(unreachable)` in value position — `(func $f
+                    // (result i32) (unreachable))` — is the trap rather than the
+                    // `Expression::null()` it used to be. That null made the
+                    // function return normally and the caller exit 0, so any
+                    // wast test whose failure path was written that way passed
+                    // unconditionally.
                     "unreachable" => {
                         statements.push(Statement::with_span(
-                            StmtKind::Throw {
-                                expr: None,
-                                cause: None },
+                            StmtKind::Expr(trap_expr()),
                             span,
                         ));
+                        stack.push(trap_expr());
                     }
                     "return" => {
                         let n = CURRENT_FN_RESULTS.with(|c| *c.borrow());
@@ -5226,6 +5262,14 @@ fn get_instruction_push_count(name: &str) -> usize {
     // A `@@mem<N>` multi-memory selector suffix is not part of the op identity.
     let name = name.split_once("@@mem").map(|(b, _)| b).unwrap_or(name);
     match name {
+        // `unreachable` stays at 0 ON PURPOSE. It looks like it should push —
+        // WASM makes it polymorphic, satisfying any result type — but a 0 sends
+        // the folded form down the STATEMENT path, and `assign_last_n_exprs_to`
+        // rewrites a branch's trailing `Expr` statement into
+        // `__wat_res0 = <expr>`. That is what carries the trap into an
+        // `if (result i32)` branch. Moving it to 1 pushed it on the value stack
+        // instead, the branch body came out EMPTY, and the result temp kept its
+        // null initialiser — measured.
         "local.set" | "global.set" | "drop" | "br_if" | "br" | "unreachable" | "nop"
         | "i32.store" | "i64.store" | "f32.store" | "f64.store" | "i32.store8" | "i32.store16"
         | "i64.store8" | "i64.store16" | "i64.store32" | "struct.set"

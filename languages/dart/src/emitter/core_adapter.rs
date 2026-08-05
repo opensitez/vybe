@@ -13,7 +13,6 @@ fn key(chunk: &mut Chunk, name: &str) -> u16 {
 fn set_field(chunk: &mut Chunk, name: &str, line: u32) {
     let k = key(chunk, name);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn get_field(chunk: &mut Chunk, name: &str, line: u32) {

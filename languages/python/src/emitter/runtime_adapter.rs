@@ -47,14 +47,12 @@ pub fn emit_py_exception(
     let tuple_key = chunks[current]
         .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__tuple")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, tuple_key, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     let set_prop = |chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot: u16, line: u32| {
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
         let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-        chunk.emit_op(Op::DROP, line);
     };
 
     set_prop(&mut chunks[current], obj_slot, "args", args_slot, line);
@@ -68,7 +66,6 @@ pub fn emit_py_exception(
         let message_key = chunks[current]
             .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("message")));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, message_key, line);
-        chunks[current].emit_op(Op::DROP, line);
 
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         if argc > 1 {
@@ -79,14 +76,12 @@ pub fn emit_py_exception(
         let exceptions_key = chunks[current]
             .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("exceptions")));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, exceptions_key, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunks[current].emit_string_const("", line);
     let stack_key = chunks[current]
         .add_constant(vybe_runtime::Value::String(std::sync::Arc::from("stack")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, stack_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     if exc_name == "StopIteration" || exc_name == "SystemExit" {
         chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
         if argc > 0 {
@@ -98,7 +93,6 @@ pub fn emit_py_exception(
         let key = chunks[current]
             .add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key_name)));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
@@ -1352,7 +1346,6 @@ pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
             "__name__",
         )));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_else(line);
 
         // Shared class instances are also stamped with `__type`; use it when
@@ -1372,7 +1365,6 @@ pub fn emit_py_type(chunks: &mut [Chunk], current: usize, line: u32) {
             "__name__",
         )));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_name_key, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_else(line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, v, line);
@@ -1404,13 +1396,11 @@ pub fn emit_py_exception_instance(chunks: &mut [Chunk], current: usize, line: u3
         chunk.emit_op_u16(Op::LOCAL_GET, name, line);
         let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-        chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
     chunk.emit_string_const("", line);
     let stack_key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("stack")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, stack_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
 }
@@ -1508,7 +1498,6 @@ pub fn emit_py_exception_add_note(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, notes, line);
     let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from("__notes__")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 
@@ -1736,7 +1725,6 @@ fn emit_id_guarded(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, existing, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, id_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, existing, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, existing, line);
@@ -2040,7 +2028,6 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
             key,
         )));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-        chunks[current].emit_op(Op::DROP, line);
     };
     match start {
         Some(slot) => stamp(chunks, "__py_range_start", &move |c: &mut Chunk| {

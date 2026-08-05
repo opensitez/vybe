@@ -179,7 +179,6 @@ fn emit_walk(chunks: &mut [Chunk], current: usize, argc: u8, shape: Shape, line:
                 "name",
             )));
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
-            chunk.emit_op(Op::DROP, line);
             let push = chunk.add_import("ecma:array", "push");
             chunk.emit_call(push, 2, line);
             chunk.emit_op(Op::DROP, line);

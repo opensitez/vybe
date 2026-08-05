@@ -47,7 +47,6 @@ fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 
 fn set_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {
     let k = chunks[current].add_constant(vybe_runtime::Value::String(std::sync::Arc::from(key)));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    chunks[current].emit_op(Op::DROP, line);
 }
 
 fn get_field(chunks: &mut [Chunk], current: usize, key: &str, line: u32) {

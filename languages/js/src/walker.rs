@@ -90,7 +90,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::JavaScript,
         body,
-            scheduling: Default::default(),
         imports })
 }
 
@@ -351,6 +350,12 @@ fn validate_private_class_members(members: &[ClassMember]) -> Result<(), String>
 fn validate_private_expr(expr: &Expression) -> Result<(), String> {
     match &expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children() {
+                validate_private_expr(child)?;
+            }
+            Ok(())
+        }
+        ExprKind::Chan(op) => {
             for child in op.children() {
                 validate_private_expr(child)?;
             }
@@ -676,6 +681,7 @@ fn class_member_contains_await(member: &ClassMember) -> bool {
 fn expr_contains_await(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Async(op) => op.children().into_iter().any(expr_contains_await),
+        ExprKind::Chan(op) => op.children().into_iter().any(expr_contains_await),
         ExprKind::Await(_) => true,
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
@@ -1540,6 +1546,11 @@ fn rewrite_expression_keys(
 ) {
     match &mut expr.kind {
         ExprKind::Async(op) => {
+            for child in op.children_mut() {
+                rewrite_expression_keys(child, consts);
+            }
+        }
+        ExprKind::Chan(op) => {
             for child in op.children_mut() {
                 rewrite_expression_keys(child, consts);
             }

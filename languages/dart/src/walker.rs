@@ -1082,7 +1082,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Dart,
         body,
-            scheduling: Default::default(),
         imports })
 }
 
