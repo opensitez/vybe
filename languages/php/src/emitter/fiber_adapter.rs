@@ -84,19 +84,15 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunk.emit_op_u16(Op::LOCAL_TEE, fiber_slot, line); // [$fiber]
     chunk.emit_bool_const(true, line); // [$fiber, true]
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, started_key, line); // [true]
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, suspended_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, terminated_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(true, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
 
@@ -114,19 +110,15 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line); // [ret, fiber]
     chunk.emit_bool_const(false, line); // [ret, fiber, false]
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, suspended_key, line); // [ret, true]
-    chunk.emit_op(Op::DROP, line); // [ret]
     lget(chunk, fiber_slot, line); // [ret, fiber]
     chunk.emit_bool_const(true, line); // [ret, fiber, true]
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, terminated_key, line); // [ret, true]
-    chunk.emit_op(Op::DROP, line); // [ret]
     lget(chunk, fiber_slot, line); // [ret, fiber]
     lget(chunk, ret_slot, line); // [ret, fiber, ret]
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, return_key, line); // [ret, ret]
-    chunk.emit_op(Op::DROP, line); // [ret]
     chunk.emit_br(0, line);
 
     // Yield arm: VM jumps here from SUSPEND with [yielded_value].
@@ -137,19 +129,15 @@ pub fn emit_php_fiber_start(chunks: &mut [Chunk], current: usize, argc: u8, line
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(true, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, suspended_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, terminated_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, return_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.patch_block(block_p);
     chunk.stack_switch_handlers.insert(
@@ -187,11 +175,9 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
     chunk.emit_op_u16(Op::LOCAL_TEE, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, suspended_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(true, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     vybe_compiler::primitives::globals::emit_write(chunk, "__php_current_fiber", line);
     lget(chunk, fiber_slot, line);
@@ -205,15 +191,12 @@ pub fn emit_php_fiber_throw(chunks: &mut [Chunk], current: usize, argc: u8, line
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(false, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, running_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     chunk.emit_bool_const(true, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, suspended_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, fiber_slot, line);
     lget(chunk, ret_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, return_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// `$fiber->getReturn()` — return the fiber's return value. After the

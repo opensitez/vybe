@@ -155,7 +155,6 @@ fn build_iter_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_f64_const(0.0, line);
     let k = idx_key(&mut c);
     c.emit_struct_field_op(Op::STRUCT_SET, 0, k, line);
-    c.emit_op(Op::DROP, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
@@ -253,7 +252,6 @@ fn build_stream_fwrite_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     let buf = sconst(&mut c, "__buf");
     c.emit_struct_field_op(Op::STRUCT_SET, 0, buf, line);
-    c.emit_op(Op::DROP, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
@@ -470,7 +468,6 @@ fn build_map_attach_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     lget(&mut c, 2, line);
     let current = sconst(&mut c, "__spl_current");
     c.emit_struct_field_op(Op::STRUCT_SET, 0, current, line);
-    c.emit_op(Op::DROP, line);
     c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     c.emit_op(Op::RETURN, line);
     chunks.push(c);
@@ -511,7 +508,6 @@ fn build_map_rewind_method(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         lget(c, value_slot, line);
         let current = sconst(c, "__spl_current");
         c.emit_struct_field_op(Op::STRUCT_SET, 0, current, line);
-        c.emit_op(Op::DROP, line);
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         c.emit_op(Op::RETURN, line);
     }
@@ -732,7 +728,6 @@ pub fn emit_spl_objectstorage_new(
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-        chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
 }
@@ -982,7 +977,6 @@ fn finish_array_instance(
         chunk.emit(0, line); // 0 upvalues
         let mk = sconst(chunk, mname);
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1014,7 +1008,6 @@ fn finish_fixed_values_array_instance(
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1047,7 +1040,6 @@ fn finish_second_child_array_instance(
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1074,7 +1066,6 @@ fn finish_buffer_file_object(
     chunk.emit_string_const("", line);
     let buf = sconst(chunk, "__buf");
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf, line);
-    chunk.emit_op(Op::DROP, line);
 
     for (mname, midx) in binds {
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1082,7 +1073,6 @@ fn finish_buffer_file_object(
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1111,7 +1101,6 @@ fn finish_single_null_array_instance(
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1141,7 +1130,6 @@ fn finish_array_iterator_instance(
     chunk.emit_f64_const(0.0, line);
     let idx = sconst(chunk, "__idx");
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1149,7 +1137,6 @@ fn finish_array_iterator_instance(
     chunk.emit_op(Op::ARRAY_GET, line);
     let first = sconst(chunk, "__first");
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, first, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1157,7 +1144,6 @@ fn finish_array_iterator_instance(
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, first, line);
     let spl_current = sconst(chunk, "__spl_current");
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, spl_current, line);
-    chunk.emit_op(Op::DROP, line);
 
     for (mname, midx) in binds {
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1165,7 +1151,6 @@ fn finish_array_iterator_instance(
         chunk.emit(0, line);
         let mk = sconst(chunk, mname);
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, mk, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);

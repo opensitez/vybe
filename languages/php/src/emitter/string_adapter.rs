@@ -3426,7 +3426,6 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
         lget(chunk, copy_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, val_slot, line);
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line); // end null check
     };
     copy_magic(chunk, clone_key);

@@ -83,7 +83,6 @@ fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn dynamic_get_from_slots(chunk: &mut Chunk, obj_slot: u16, key_slot: u16, line: u32) {
@@ -103,7 +102,6 @@ fn dynamic_set_from_slots(
     lget(chunk, key_slot, line);
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_struct_from_slot(chunk: &mut Chunk, obj_slot: u16, key: &str, value_slot: u16, line: u32) {
@@ -1786,7 +1784,6 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     }
     let weak_k = chunk.add_constant(Value::String(Arc::from("__weak")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, weak_k, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Bind get method
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
@@ -1794,7 +1791,6 @@ pub fn emit_weak_ref_create(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
     chunk.emit(0, line);
     let get_k = chunk.add_constant(Value::String(Arc::from("get")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, get_k, line);
-    chunk.emit_op(Op::DROP, line);
 
     // Return the struct
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);

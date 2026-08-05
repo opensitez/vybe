@@ -351,7 +351,6 @@ pub fn emit_refl_class(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
         chunk.emit_op_u16(Op::LOCAL_GET, parent_ref_slot, line);
         let pref_k = sconst(chunk, "__parent_ref");
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, pref_k, line);
-        chunk.emit_op(Op::DROP, line);
     }
     chunk.emit_end(line);
 

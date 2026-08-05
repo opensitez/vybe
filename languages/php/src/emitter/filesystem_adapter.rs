@@ -551,25 +551,21 @@ pub fn emit_pathinfo(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     lget(chunk, dirname_slot, line);
     let dirname_key = chunk.add_constant(Value::String(Arc::from("dirname")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, dirname_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     lget(chunk, basename_slot, line);
     let basename_key = chunk.add_constant(Value::String(Arc::from("basename")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, basename_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     lget(chunk, extension_slot, line);
     let extension_key = chunk.add_constant(Value::String(Arc::from("extension")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, extension_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     lget(chunk, filename_slot, line);
     let filename_key = chunk.add_constant(Value::String(Arc::from("filename")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, filename_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// PHP `file($path)` — read whole file, split on `"\n"`, return
@@ -840,19 +836,16 @@ pub fn emit_dir(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     push_str(chunk, "Directory", line);
     let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     lget(chunk, entries_slot, line);
     let entries_key = chunk.add_constant(Value::String(Arc::from("__entries")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, entries_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_dup(line);
     push_const(chunk, Value::F64(0.0), line);
     let index_key = chunk.add_constant(Value::String(Arc::from("__index")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, index_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// PHP `Directory->read()` — pulls the next entry name from
@@ -897,7 +890,6 @@ pub fn emit_dir_read(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32)
     push_const(chunk, Value::F64(1.0), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, index_key, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, entry_slot, line);
 
     chunk.emit_else(line);
@@ -917,7 +909,6 @@ pub fn emit_dir_close(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));

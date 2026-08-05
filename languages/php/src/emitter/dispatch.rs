@@ -1401,6 +1401,19 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 chunks, current, argc, line,
             )
         }
+        "php.mysqli_stmt_bind_param" => {
+            crate::emitter::mysqli_adapter::emit_php_mysqli_stmt_bind_param(
+                chunks, current, argc, line,
+            )
+        }
+        "php.pdo_in_transaction" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_in_transaction(chunks, current, argc, line)
+        }
+        "php.pdo_statement_set_fetch_mode" => {
+            crate::emitter::pdo_adapter::emit_php_pdo_statement_set_fetch_mode(
+                chunks, current, argc, line,
+            )
+        }
         "php.pdo_statement_param_count" => {
             crate::emitter::pdo_adapter::emit_php_pdo_statement_param_count(
                 chunks, current, argc, line,

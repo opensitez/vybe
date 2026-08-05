@@ -4969,7 +4969,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::PHP,
         body,
-            scheduling: Default::default(),
         imports })
 }
 
@@ -15571,16 +15570,23 @@ fn apply_postfix(
                         "ERRMODE_SILENT" => Some(0),
                         "ERRMODE_WARNING" => Some(1),
                         "ERRMODE_EXCEPTION" => Some(2),
+                        "FETCH_LAZY" => Some(1),
                         "FETCH_ASSOC" => Some(2),
                         "FETCH_NUM" => Some(3),
                         "FETCH_BOTH" => Some(4),
                         "FETCH_OBJ" => Some(5),
+                        "FETCH_BOUND" => Some(6),
                         "FETCH_COLUMN" => Some(7),
                         "FETCH_CLASS" => Some(8),
                         "FETCH_INTO" => Some(9),
                         "FETCH_FUNC" => Some(10),
+                        "FETCH_NAMED" => Some(11),
                         "FETCH_KEY_PAIR" => Some(12),
                         "FETCH_GROUP" => Some(65_536),
+                        "FETCH_UNIQUE" => Some(196_608),
+                        "FETCH_CLASSTYPE" => Some(262_144),
+                        "FETCH_SERIALIZE" => Some(524_288),
+                        "FETCH_PROPS_LATE" => Some(1_048_576),
                         _ => None };
                     if let Some(v) = val {
                         return Ok(Expression::with_span(

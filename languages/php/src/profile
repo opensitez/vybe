@@ -994,14 +994,18 @@ setAttribute     = { emit = "common:php.pdo_set_attribute",      min_args = 2, m
 beginTransaction = { emit = "common:php.pdo_begin_transaction",  min_args = 0, max_args = 0 }
 commit           = { emit = "common:php.pdo_commit",             min_args = 0, max_args = 0 }
 rollBack         = { emit = "common:php.pdo_rollback",           min_args = 0, max_args = 0 }
+inTransaction    = { emit = "common:php.pdo_in_transaction",     min_args = 0, max_args = 0 }
 execute          = { emit = "common:php.pdo_statement_execute",  min_args = 0, max_args = 1 }
 bindParam        = { emit = "common:php.pdo_statement_bind_param", min_args = 2, max_args = 5 }
 bindValue        = { emit = "common:php.pdo_statement_bind_value", min_args = 2, max_args = 4 }
 bindColumn       = { emit = "common:php.pdo_statement_bind_column", min_args = 2, max_args = 5 }
-fetch            = { emit = "common:php.pdo_statement_fetch",    min_args = 0, max_args = 1 }
-fetchAll         = { emit = "common:php.pdo_statement_fetch_all", min_args = 0, max_args = 1 }
+fetch            = { emit = "common:php.pdo_statement_fetch",    min_args = 0, max_args = 3 }
+# `fetchAll($mode, $classOrCallback, $ctorArgs)` — capping at 1 silently threw
+# away FETCH_FUNC's callback and FETCH_CLASS's class name.
+fetchAll         = { emit = "common:php.pdo_statement_fetch_all", min_args = 0, max_args = 3 }
 fetchColumn      = { emit = "common:php.pdo_statement_fetch_column", min_args = 0, max_args = 1 }
-fetchObject      = { emit = "common:php.pdo_statement_fetch_object", min_args = 0, max_args = 1 }
+fetchObject      = { emit = "common:php.pdo_statement_fetch_object", min_args = 0, max_args = 2 }
+setFetchMode     = { emit = "common:php.pdo_statement_set_fetch_mode", min_args = 1, max_args = 3 }
 rowCount         = { emit = "common:php.pdo_statement_row_count",  min_args = 0, max_args = 0 }
 columnCount      = { emit = "common:php.pdo_statement_column_count", min_args = 0, max_args = 0 }
 paramCount       = { emit = "common:php.pdo_statement_param_count", min_args = 0, max_args = 0 }
@@ -1013,7 +1017,7 @@ lastInsertId     = { emit = "common:php.pdo_last_insert_id",      min_args = 0, 
 attr_get         = { emit = "common:php.mysqli_stmt_attr_get",    min_args = 1, max_args = 1 }
 
 # ── mysqli_stmt OO methods (thin over the shared wasi:sql db_adapter) ──
-bind_param       = { emit = "common:php.mysqli_stmt_true",       min_args = 1, max_args = 255 }
+bind_param       = { emit = "common:php.mysqli_stmt_bind_param", min_args = 1, max_args = 255 }
 bind_result      = { emit = "common:php.mysqli_stmt_true",       min_args = 1, max_args = 255 }
 store_result     = { emit = "common:php.mysqli_stmt_true",       min_args = 0, max_args = 0 }
 free_result      = { emit = "common:php.mysqli_stmt_true",       min_args = 0, max_args = 0 }
@@ -1086,16 +1090,26 @@ reduce   = "__array_reduce"
 "PDO.PARAM_STR"        = 2
 "PDO.PARAM_BOOL"       = 5
 "PDO.PARAM_NULL"       = 0
+"PDO.FETCH_LAZY"        = 1
 "PDO.FETCH_ASSOC"       = 2
 "PDO.FETCH_NUM"         = 3
+"PDO.FETCH_BOTH"        = 4
 "PDO.FETCH_OBJ"         = 5
 "PDO.FETCH_BOUND"       = 6
 "PDO.FETCH_COLUMN"      = 7
 "PDO.FETCH_CLASS"       = 8
 "PDO.FETCH_INTO"        = 9
 "PDO.FETCH_FUNC"        = 10
+"PDO.FETCH_NAMED"       = 11
 "PDO.FETCH_KEY_PAIR"    = 12
+# The modifier bits are OR-ed onto a base mode; an undefined class constant
+# resolves to a falsy value rather than raising, so a missing one here silently
+# turns `FETCH_CLASS|FETCH_PROPS_LATE` into a plain `FETCH_CLASS`.
 "PDO.FETCH_GROUP"       = 65536
+"PDO.FETCH_UNIQUE"      = 196608
+"PDO.FETCH_CLASSTYPE"   = 262144
+"PDO.FETCH_SERIALIZE"   = 524288
+"PDO.FETCH_PROPS_LATE"  = 1048576
 "NumberFormatter.DECIMAL" = 1
 "NumberFormatter.CURRENCY" = 2
 "NumberFormatter.PERCENT" = 3

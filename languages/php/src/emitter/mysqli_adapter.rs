@@ -61,7 +61,6 @@ fn struct_get_key(chunk: &mut Chunk, key: &str, line: u32) {
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn global_set_key(chunk: &mut Chunk, key: &str, line: u32) {
@@ -1062,6 +1061,62 @@ fn emit_stmt_sentinel(chunks: &mut [Chunk], current: usize, argc: u8, line: u32,
 /// `send_long_data`/`data_seek` → `true` (no-op stubs).
 pub fn emit_mysqli_stmt_true(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     emit_stmt_sentinel(chunks, current, argc, line, true);
+}
+
+/// `$stmt->bind_param("sid", $a, $b, $c)`.
+///
+/// This was a SENTINEL that dropped every argument and answered `true`, so a
+/// mysqli prepared statement never bound anything and executed with its `?`
+/// placeholders intact. Store the values positionally under `__bound_params`,
+/// which is the same key the shared `pdo_statement_execute` path reads — so
+/// substitution, php's string cast, and NULL inlining all come for free.
+///
+/// The leading type string (`"sid"`) is accepted and ignored: the parameter
+/// channel `wasi:sql` specifies is `list<string>`, so the driver re-parses the
+/// literal anyway and a per-arg type would have nowhere to go.
+///
+/// php binds by REFERENCE and re-reads each variable at `execute()`. This
+/// captures by value, which is right for the bind-then-execute shape; a
+/// rebind-and-re-execute loop still needs the wider `&$v` support.
+pub fn emit_php_mysqli_stmt_bind_param(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) {
+    let value_count = argc.saturating_sub(2) as usize;
+    let chunk = &mut chunks[current];
+
+    // Args arrive with the LAST value on top, so pop into reversed order.
+    let mut value_slots = Vec::with_capacity(value_count);
+    for _ in 0..value_count {
+        let slot = alloc_local(chunk);
+        lset(chunk, slot, line);
+        value_slots.push(slot);
+    }
+    let types_slot = alloc_local(chunk);
+    lset(chunk, types_slot, line);
+    let stmt_slot = alloc_local(chunk);
+    lset(chunk, stmt_slot, line);
+
+    collections::emit_array_new(chunks, current, 0, line);
+    let arr_slot = alloc_local(&mut chunks[current]);
+    let chunk = &mut chunks[current];
+    lset(chunk, arr_slot, line);
+
+    for slot in value_slots.iter().rev() {
+        let chunk = &mut chunks[current];
+        lget(chunk, arr_slot, line);
+        lget(chunk, *slot, line);
+        collections::emit_push(chunks, current, line);
+        chunks[current].emit_op(Op::DROP, line);
+    }
+
+    let chunk = &mut chunks[current];
+    lget(chunk, stmt_slot, line);
+    lget(chunk, arr_slot, line);
+    struct_set_key(chunk, "__bound_params", line);
+    push_const(chunk, Value::Bool(true), line);
 }
 
 /// `$stmt->get_warnings`/`more_results`/`next_result` → `false`.

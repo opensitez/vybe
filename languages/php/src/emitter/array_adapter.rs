@@ -52,7 +52,6 @@ fn call_import(
 fn struct_set_key(chunk: &mut Chunk, key: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(key)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 const PHP_JSON_LAST_ERROR: &str = "__php_json_last_error";
@@ -972,7 +971,7 @@ pub fn emit_php_array_values(chunks: &mut [Chunk], current: usize, argc: u8, lin
 /// Leaves the normalized key on the stack. Shared by `__php_offset__` (which
 /// reaches it once the receiver is known not to be a string) and `__php_key__`
 /// (an array-literal key, which has no receiver to test).
-fn emit_php_array_key(chunks: &mut [Chunk], current: usize, key_slot: u16, line: u32) {
+pub(crate) fn emit_php_array_key(chunks: &mut [Chunk], current: usize, key_slot: u16, line: u32) {
     let test_str = chunks[0].add_import("wasm:js-string", "test");
     let str_eq = chunks[0].add_import("wasm:js-string", "equals");
     let test_num = chunks[0].add_import("wasm:js-number", "test");
@@ -1276,7 +1275,6 @@ pub fn emit_array_fill(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     lget(chunk, key_slot, line);
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
     lget(chunk, i_slot, line);
@@ -1777,7 +1775,6 @@ pub fn emit_php_json_decode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     push_str(chunk, "n", line);
     push_str(chunk, "12345678901234567890", line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
 
@@ -1972,7 +1969,6 @@ pub fn emit_array_map(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     lget(chunk, key_slot, line);
     lget(chunk, mapped_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
 
     lget(chunk, i_slot, line);
@@ -2095,7 +2091,6 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lget(chunk, key_slot, line);
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
 
     lget(chunk, i_slot, line);
@@ -2262,7 +2257,6 @@ pub fn emit_array_walk_recursive(chunks: &mut [Chunk], current: usize, argc: u8,
     lget(chunk, write_key_slot, line);
     lget(chunk, result_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
     let _ = chunk;
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
@@ -2632,6 +2626,7 @@ pub fn emit_array_combine(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op(Op::ARRAY_SET, line);
 
+
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
@@ -2686,7 +2681,6 @@ pub fn emit_array_fill_keys(chunks: &mut [Chunk], current: usize, _argc: u8, lin
     emit_php_array_key_from_slot(chunk, key_slot, line);
     lget(chunk, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -2779,7 +2773,6 @@ pub fn emit_array_flip(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     lget(chunk, nk_slot, line);
     lget(chunk, k_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -2849,6 +2842,7 @@ fn emit_array_diff_or_intersect(chunks: &mut [Chunk], current: usize, intersect:
     lget(chunk, key_slot, line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_op(Op::ARRAY_SET, line);
+
 
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -2987,7 +2981,6 @@ pub fn emit_array_count_values(chunks: &mut [Chunk], current: usize, _argc: u8, 
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
@@ -3127,7 +3120,6 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
             chunk.emit_op(Op::ARRAY_GET, line);
             lget(chunk, value_slot, line);
             chunk.emit_op(Op::ARRAY_SET, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_end(line);
         }
     }
@@ -3270,7 +3262,6 @@ pub fn emit_array_diff_key(chunks: &mut [Chunk], current: usize, _argc: u8, line
         lget(chunk, k_slot, line);
         lget(chunk, av_slot, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
 
         lget(chunk, i_slot, line);
@@ -3357,7 +3348,6 @@ pub fn emit_array_diff_assoc(chunks: &mut [Chunk], current: usize, _argc: u8, li
         lget(chunk, k_slot, line);
         lget(chunk, av_slot, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
 
         lget(chunk, i_slot, line);
@@ -3443,7 +3433,6 @@ pub fn emit_array_intersect_assoc(chunks: &mut [Chunk], current: usize, _argc: u
         lget(chunk, k_slot, line);
         lget(chunk, av_slot, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
 
         lget(chunk, i_slot, line);
@@ -3517,7 +3506,6 @@ pub fn emit_array_intersect_key(chunks: &mut [Chunk], current: usize, _argc: u8,
         lget(chunk, k_slot, line);
         chunk.emit_op(Op::ARRAY_GET, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
 
         lget(chunk, i_slot, line);
@@ -3587,7 +3575,6 @@ pub fn emit_array_replace(chunks: &mut [Chunk], current: usize, _argc: u8, line:
             lget(chunk, k_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
             chunk.emit_op(Op::ARRAY_SET, line);
-            chunk.emit_op(Op::DROP, line);
 
             lget(chunk, i_slot, line);
             push_const(chunk, Value::F64(1.0), line);
@@ -3659,7 +3646,6 @@ fn emit_copy_object_entries(
             lget(chunk, key_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
             chunk.emit_op(Op::ARRAY_SET, line);
-            chunk.emit_op(Op::DROP, line);
 
             lget(chunk, i_slot, line);
             push_const(chunk, Value::F64(1.0), line);
@@ -3914,7 +3900,6 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
             lget(chunk, key_slot, line);
             lget(chunk, entry_value_slot, line);
             chunk.emit_op(Op::ARRAY_SET, line);
-            chunk.emit_op(Op::DROP, line);
         }
 
         {
@@ -3942,13 +3927,11 @@ pub fn emit_iterator_to_array(chunks: &mut [Chunk], current: usize, argc: u8, li
         push_const(chunk, Value::Bool(true), line);
         let done_k = chunk.add_constant(Value::String(std::sync::Arc::from("__php_gen_done")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, iter_slot, line);
         lget(chunk, value_slot, line);
         let ret_k = chunk.add_constant(Value::String(std::sync::Arc::from("__php_gen_return")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ret_k, line);
-        chunk.emit_op(Op::DROP, line);
     }
     lget(&mut chunks[current], out_slot, line);
 
@@ -4146,13 +4129,11 @@ fn emit_generator_advance_from_slot(
         lget(chunk, value_slot, line);
         let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
         let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, moved_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         push_const(chunk, Value::Bool(true), line);
 
@@ -4162,25 +4143,21 @@ fn emit_generator_advance_from_slot(
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
         let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
         let ret_k = chunk.add_constant(Value::String(Arc::from("__php_gen_return")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ret_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
         let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, moved_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         push_const(chunk, Value::Bool(false), line);
 
@@ -4237,7 +4214,6 @@ pub fn emit_generator_next(chunks: &mut [Chunk], current: usize, _argc: u8, line
         push_const(chunk, Value::Bool(false), line);
         let keep_k = chunk.add_constant(Value::String(Arc::from("__php_gen_keep_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, keep_k, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
 
         lget(chunk, gen_slot, line);
@@ -4274,18 +4250,15 @@ pub fn emit_generator_next(chunks: &mut [Chunk], current: usize, _argc: u8, line
         lget(chunk, first_current_slot, line);
         let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
-        chunk.emit_op(Op::DROP, line);
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
         let keep_k = chunk.add_constant(Value::String(Arc::from("__php_gen_keep_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, keep_k, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_else(line);
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(false), line);
         let keep_k = chunk.add_constant(Value::String(Arc::from("__php_gen_keep_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, keep_k, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -4340,19 +4313,16 @@ pub fn emit_generator_send(chunks: &mut [Chunk], current: usize, _argc: u8, line
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
         let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
         let ret_k = chunk.add_constant(Value::String(Arc::from("__php_gen_return")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ret_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         push_const(chunk, Value::Bool(false), line);
 
@@ -4362,13 +4332,11 @@ pub fn emit_generator_send(chunks: &mut [Chunk], current: usize, _argc: u8, line
         lget(chunk, value_slot, line);
         let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
         let moved_k = chunk.add_constant(Value::String(Arc::from("__php_gen_moved")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, moved_k, line);
-        chunk.emit_op(Op::DROP, line);
     }
     emit_generator_yield_value_from_slot(chunks, current, value_slot, line);
     {
@@ -4426,19 +4394,16 @@ pub fn emit_generator_throw(chunks: &mut [Chunk], current: usize, _argc: u8, lin
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         push_const(chunk, Value::Bool(true), line);
         let done_k = chunk.add_constant(Value::String(Arc::from("__php_gen_done")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, done_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, gen_slot, line);
         lget(chunk, value_slot, line);
         let ret_k = chunk.add_constant(Value::String(Arc::from("__php_gen_return")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ret_k, line);
-        chunk.emit_op(Op::DROP, line);
 
         push_const(chunk, Value::Bool(false), line);
 
@@ -4448,7 +4413,6 @@ pub fn emit_generator_throw(chunks: &mut [Chunk], current: usize, _argc: u8, lin
         lget(chunk, value_slot, line);
         let current_k = chunk.add_constant(Value::String(Arc::from("__php_gen_current")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, current_k, line);
-        chunk.emit_op(Op::DROP, line);
     }
     emit_generator_yield_value_from_slot(chunks, current, value_slot, line);
     {
@@ -4684,14 +4648,12 @@ pub fn emit_array_replace_recursive(chunks: &mut [Chunk], current: usize, _argc:
         lget(chunk, key_slot, line);
         lget(chunk, merged_slot, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
 
         chunk.emit_else(line);
         lget(chunk, out_slot, line);
         lget(chunk, key_slot, line);
         lget(chunk, over_val_slot, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
 
         lget(chunk, i_slot, line);
@@ -4771,7 +4733,6 @@ pub fn emit_array_merge_recursive(chunks: &mut Vec<Chunk>, current: usize, _argc
     {
         let chunk = &mut chunks[current];
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
         lget(chunk, i_slot, line);
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
@@ -4864,7 +4825,6 @@ pub fn emit_array_change_key_case(chunks: &mut [Chunk], current: usize, argc: u8
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::ARRAY_GET, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
         lget(chunk, i_slot, line);
         push_const(chunk, Value::F64(1.0), line);
         chunk.emit_op(Op::F64_ADD, line);
@@ -5198,7 +5158,6 @@ fn emit_array_uassoc_impl(
         lget(chunk, akey_slot, line);
         lget(chunk, aval_slot, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_end(line);
         lget(chunk, i_slot, line);
         push_const(chunk, Value::F64(1.0), line);
@@ -5449,7 +5408,6 @@ fn emit_assoc_sort_impl(
     lget(chunk, best_slot, line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     // sorted_keys.push(keys[best])
     lget(chunk, sorted_keys_slot, line);
@@ -5541,7 +5499,6 @@ fn emit_assoc_sort_impl(
     lget(chunk, i_slot, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
     lget(chunk, i_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(Op::F64_ADD, line);
@@ -5712,7 +5669,6 @@ pub fn emit_php_array_merge(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         push_const(c, Value::F64(1.0), line);
         c.emit_op(Op::ARRAY_GET, line);
         c.emit_op(Op::ARRAY_SET, line);
-        c.emit_op(Op::DROP, line);
         // idx++
         lget(c, idx_slot, line);
         push_const(c, Value::F64(1.0), line);
@@ -5726,7 +5682,6 @@ pub fn emit_php_array_merge(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         push_const(c, Value::F64(1.0), line);
         c.emit_op(Op::ARRAY_GET, line);
         c.emit_op(Op::ARRAY_SET, line);
-        c.emit_op(Op::DROP, line);
         c.emit_end(line);
         lget(c, j_slot, line);
         push_const(c, Value::F64(1.0), line);
@@ -5879,7 +5834,6 @@ pub fn emit_php_array_unique(chunks: &mut Vec<Chunk>, current: usize, argc: u8, 
         c.emit_op(Op::ARRAY_GET, line); // key
         lget(c, seen_key_slot, line); // PHP string-comparison value
         c.emit_op(Op::ARRAY_SET, line);
-        c.emit_op(Op::DROP, line);
         lget(c, seen_slot, line);
         lget(c, seen_key_slot, line);
         push_const(c, Value::Bool(true), line);
@@ -6021,7 +5975,6 @@ pub fn emit_php_array_union(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         push_const(c, Value::F64(1.0), line);
         c.emit_op(Op::ARRAY_GET, line);
         c.emit_op(Op::ARRAY_SET, line);
-        c.emit_op(Op::DROP, line);
         lget(c, i_slot, line);
         push_const(c, Value::F64(1.0), line);
         c.emit_op(Op::F64_ADD, line);
@@ -6076,7 +6029,6 @@ pub fn emit_php_array_union(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         push_const(c, Value::F64(1.0), line);
         c.emit_op(Op::ARRAY_GET, line);
         c.emit_op(Op::ARRAY_SET, line);
-        c.emit_op(Op::DROP, line);
         c.emit_end(line);
         lget(c, i_slot, line);
         push_const(c, Value::F64(1.0), line);
@@ -6185,7 +6137,6 @@ pub fn emit_php_array_reverse(chunks: &mut [Chunk], current: usize, argc: u8, li
         push_const(c, Value::F64(1.0), line);
         c.emit_op(Op::ARRAY_GET, line);
         c.emit_op(Op::ARRAY_SET, line);
-        c.emit_op(Op::DROP, line);
         c.emit_else(line);
         // Array push: out.push(entry[1])
         lget(c, out_slot, line);
@@ -6425,7 +6376,6 @@ pub fn emit_php_array_slice(chunks: &mut [Chunk], current: usize, argc: u8, line
         push_const(c, Value::F64(1.0), line);
         c.emit_op(Op::ARRAY_GET, line);
         c.emit_op(Op::ARRAY_SET, line);
-        c.emit_op(Op::DROP, line);
         lget(c, preserve_slot, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
         c.emit_if(line);
