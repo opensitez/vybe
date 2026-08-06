@@ -308,6 +308,26 @@ impl VM {
                     e.message.starts_with("__jspi__:") && self.cur_fiber_id != entry_fiber_id;
                 if !foreign_suspension {
                     self.async_floors.pop();
+                    // §27.7.5.1 AsyncFunctionStart: an abrupt completion of
+                    // the async BODY rejects the result promise — it must not
+                    // unwind into the caller as a raw throw (the caller's
+                    // await rethrows the reason AT the await site, where the
+                    // caller's try/catch can see it). Only a genuine thrown
+                    // value qualifies; internal VM faults (no
+                    // last_exception) still propagate.
+                    if !e.message.starts_with("__jspi__:") {
+                        if let Some(exc) = self.last_exception.take() {
+                            self.frames.truncate(floor);
+                            let live = self.frames.len();
+                            self.exception_handlers.retain(|h| h.frame_depth <= live);
+                            self.stack.truncate(call_base);
+                            let id = self.event_loop.borrow_mut().next_promise_id();
+                            let p = Self::make_pending_promise(id);
+                            self.settle_promise_via_host(&p, "rejected", exc);
+                            self.push(p)?;
+                            return Ok(());
+                        }
+                    }
                 }
                 Err(e)
             }

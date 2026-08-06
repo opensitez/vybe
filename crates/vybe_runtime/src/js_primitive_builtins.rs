@@ -28,6 +28,27 @@ pub fn register(vm: &mut VM) {
     register_undefined(vm);
     register_symbol(vm);
     register_bigint(vm);
+    register_threads(vm);
+}
+
+// ── wasm:threads ──────────────────────────────────────────────────────
+//
+// Scheduler observability for the channel runtime's all-asleep deadlock
+// detection (Go: "all goroutines are asleep - deadlock!"). The wait32
+// OPCODE stays spec-shaped; the panic lives in helper bytecode, which
+// needs this one bit of runtime truth to decide it.
+
+fn register_threads(vm: &mut VM) {
+    // all_parked() -> i32 — 1 if every OTHER live VM thread is currently
+    // blocked inside memory.atomic.wait32. Racy by nature: helper bytecode
+    // requires several consecutive true readings before panicking.
+    vm.register_host_fn(
+        "wasm:threads",
+        "all_parked",
+        Box::new(|ctx: &mut HostContext, _args: &[Value]| {
+            Value::I32(if ctx.all_other_threads_parked() { 1 } else { 0 })
+        }),
+    );
 }
 
 // ── wasm:js-number ────────────────────────────────────────────────────

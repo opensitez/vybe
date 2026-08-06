@@ -388,7 +388,7 @@ mod tests {
         let _g = LOCK.lock().unwrap();
         clear_registry_for_tests();
         let mut statics = Subtree::new();
-        statics.insert("writeline".into(), host_fn("wasi:logging/logging", "log"));
+        statics.insert("writeline".into(), host_fn("web:console", "log"));
         register_namespace_tree(
             "dotnet",
             namespace(vec![(

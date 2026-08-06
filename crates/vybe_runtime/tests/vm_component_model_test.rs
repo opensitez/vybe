@@ -14,14 +14,11 @@ fn canon_lift_stamps_type_id() {
 
     // Create a plain object (type_id = 0)
     let _name_c = chunk.add_constant(Value::String(Arc::from("name")));
-    let val_c = chunk.add_constant(Value::String(Arc::from("Rex")));
-    chunk.emit_op_u16(Op::CONST, val_c, 0);
+    chunk.emit_string_const("Rex", 0);
     chunk.emit_array_new_fixed(0, 1, 0);
 
     // canon_lift with Animal type
     chunk.emit_op_u16(Op::CANON_LIFT, tid as u16, 0);
-
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
@@ -192,9 +189,7 @@ fn esm_and_component_linker_share_canonical_host_subinterface_aliases() {
     let mut script = Chunk::new("<script>");
     script.local_count = 0;
     let import_idx = script.add_import("node:util/types", "isArray");
-    script.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
-    script.emit(0, 0);
-    script.emit_op(Op::HALT, 0);
+    script.emit_call(import_idx, 0, 0);
 
     let vm_result = vm
         .run(vec![script.clone()])

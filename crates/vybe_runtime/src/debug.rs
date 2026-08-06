@@ -60,8 +60,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
             // a *slot* index, not the constant pool, so they are excluded.
             let references_constant = matches!(
                 op,
-                Op::CONST
-                    | Op::GLOBAL_GET
+                Op::GLOBAL_GET
                     | Op::GLOBAL_SET
                     | Op::STRUCT_GET
                     | Op::STRUCT_GET_S

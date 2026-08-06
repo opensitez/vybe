@@ -15,7 +15,6 @@ fn global_init_literal() {
     // Read the global
     let name = chunk.add_constant(Value::String(Arc::from("PI")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!((result.as_f64() - 3.14159).abs() < 1e-10);
@@ -39,7 +38,6 @@ fn global_init_add() {
 
     let name = chunk.add_constant(Value::String(Arc::from("OFFSET")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 150);
@@ -63,7 +61,6 @@ fn global_init_mul() {
 
     let name = chunk.add_constant(Value::String(Arc::from("TABLE")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 1024);
@@ -94,7 +91,6 @@ fn global_init_chain() {
 
     let name = chunk.add_constant(Value::String(Arc::from("C")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 40);
@@ -108,7 +104,6 @@ fn global_init_missing_global_get_yields_null() {
 
     let name = chunk.add_constant(Value::String(Arc::from("MISSING_REF")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Null));
@@ -128,7 +123,6 @@ fn global_init_i64_arithmetic_wraps() {
 
     let name = chunk.add_constant(Value::String(Arc::from("I64_WRAP")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i64(), i64::MIN);
@@ -148,7 +142,6 @@ fn global_init_f64_arithmetic_preserves_float_type() {
 
     let name = chunk.add_constant(Value::String(Arc::from("F64_PRODUCT")));
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 3.0);

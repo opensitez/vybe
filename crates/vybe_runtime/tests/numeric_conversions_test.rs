@@ -19,16 +19,13 @@ fn run_err(emit: impl FnOnce(&mut Chunk)) -> String {
 }
 
 fn push_i32(c: &mut Chunk, v: i32) {
-    let k = c.add_constant(Value::I32(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i32_const(v, 0);
 }
 fn push_i64(c: &mut Chunk, v: i64) {
-    let k = c.add_constant(Value::I64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i64_const(v, 0);
 }
 fn push_f64(c: &mut Chunk, v: f64) {
-    let k = c.add_constant(Value::F64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_f64_const(v, 0);
 }
 
 // ── i32.wrap_i64 (0xA7) ───────────────────────────────────────────────────

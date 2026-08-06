@@ -1,6 +1,9 @@
 //! I/O compilation — WASI-compatible print, input, file operations.
 //!
-//! Print uses `wasi:logging/logging.log` (WASI logging proposal).
+//! Print uses `web:console.log` (WHATWG Console Standard — `log(...data)`
+//! is VARIADIC BY SPEC; each datum rendered, space-joined). The strict
+//! `wasi:logging/logging.log(level, context, message)` remains for code
+//! calling the WASI interface explicitly.
 //! Input uses `wasi:cli/stdin.get-stdin` + `[method]input-stream.blocking-read`.
 //! File I/O uses `wasi:filesystem/*` imports.
 //!
@@ -17,11 +20,10 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 /// Emit print/log. Stack: [arg1, ..., argN] → []
-/// Routes to wasi:logging/logging.log. Flexible arity:
-///   1 arg → host treats as (info, "", message)
-///   N args → host joins them (info, "", joined)
+/// Routes to `web:console.log` — WHATWG `log(...data)`, variadic by spec
+/// (the host renders each datum and joins with a single space).
 pub fn emit_print(chunk: &mut Chunk, arg_count: u8, line: u32) {
-    let idx = chunk.add_import("wasi:logging/logging", "log");
+    let idx = chunk.add_import("web:console", "log");
     chunk.emit_call(idx, arg_count, line);
 }
 
@@ -72,11 +74,12 @@ pub fn emit_write_stdout_with_imports(
     chunk.emit_op(Op::STREAM_DROP_RD, line);
 }
 
-/// Emit print to stderr (warn/error level). Stack: [message] → []
+/// Emit print to stderr. Stack: [message] → []
+/// WHATWG `console.error(...data)` — the stderr stream of the same
+/// console surface.
 pub fn emit_print_error(chunk: &mut Chunk, line: u32) {
-    chunk.emit_string_const("error", line);
-    let idx = chunk.add_import("wasi:logging/logging", "log");
-    chunk.emit_call(idx, 2, line); // (level, message)
+    let idx = chunk.add_import("web:console", "error");
+    chunk.emit_call(idx, 1, line);
 }
 
 /// Emit readline. Stack: [] → [string]

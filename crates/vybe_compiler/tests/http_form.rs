@@ -16,8 +16,7 @@ fn parse(body: &str) -> Value {
     register_platforms(&mut vm, &Capabilities::all());
 
     let mut chunks = vec![Chunk::new("<http-form-test>")];
-    let constant = chunks[0].add_constant(Value::String(std::sync::Arc::from(body)));
-    chunks[0].emit_op_u16(Op::CONST, constant, 0);
+    chunks[0].emit_string_const(body, 0);
     assert!(dispatch::emit_common(
         "http_form.parse_urlencoded",
         &mut chunks,
@@ -111,10 +110,8 @@ fn parse_multipart(body: &str, content_type: &str) -> Value {
     register_platforms(&mut vm, &Capabilities::all());
 
     let mut chunks = vec![Chunk::new("<http-form-test>")];
-    let body_const = chunks[0].add_constant(Value::String(std::sync::Arc::from(body)));
-    chunks[0].emit_op_u16(Op::CONST, body_const, 0);
-    let ct_const = chunks[0].add_constant(Value::String(std::sync::Arc::from(content_type)));
-    chunks[0].emit_op_u16(Op::CONST, ct_const, 0);
+    chunks[0].emit_string_const(body, 0);
+    chunks[0].emit_string_const(content_type, 0);
     assert!(dispatch::emit_common(
         "http_form.parse_multipart",
         &mut chunks,

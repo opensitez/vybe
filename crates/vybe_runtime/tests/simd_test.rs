@@ -17,16 +17,13 @@ fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
 }
 
 fn push_i32(c: &mut Chunk, v: i32) {
-    let k = c.add_constant(Value::I32(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i32_const(v, 0);
 }
 fn push_i64(c: &mut Chunk, v: i64) {
-    let k = c.add_constant(Value::I64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i64_const(v, 0);
 }
 fn push_f64(c: &mut Chunk, v: f64) {
-    let k = c.add_constant(Value::F64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_f64_const(v, 0);
 }
 
 fn emit_leb_u64(c: &mut Chunk, mut value: u64) {
@@ -2080,8 +2077,7 @@ fn mk_i64x2(v: i64) -> [u8; 16] {
 fn i64x2_splat_extract_replace() {
     let k = c_const_i64(7i64);
     let r_splat = as_v128(run(|c| {
-        let k = c.add_constant(Value::I64(7));
-        c.emit_op_u16(Op::CONST, k, 0);
+        c.emit_i64_const(7, 0);
         c.emit_op(Op::I64X2_SPLAT, 0);
     }));
     assert_eq!(i64_lanes(&r_splat), [7, 7]);
@@ -2095,8 +2091,7 @@ fn i64x2_splat_extract_replace() {
 
     let r_replace = as_v128(run(|c| {
         emit_v128_const(c, [0; 16]);
-        let k = c.add_constant(Value::I64(55));
-        c.emit_op_u16(Op::CONST, k, 0);
+        c.emit_i64_const(55, 0);
         c.emit_op(Op::I64X2_REPLACE_LANE, 0);
         c.emit(0u8, 0);
     }));
@@ -3220,8 +3215,7 @@ fn v128_store64_lane() {
     let r = as_v128(mem_run(
         |_| {},
         |c| {
-            let k = c.add_constant(Value::I64(99));
-            c.emit_op_u16(Op::CONST, k, 0);
+            c.emit_i64_const(99, 0);
             c.emit_op(Op::I64X2_SPLAT, 0);
             push_i32(c, 0);
             c.emit_op(Op::V128_STORE64_LANE, 0);

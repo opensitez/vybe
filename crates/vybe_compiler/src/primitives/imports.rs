@@ -32,7 +32,9 @@ pub fn resolve_common_import(name: &str) -> Option<CommonImport> {
     match name.to_lowercase().as_str() {
         // ── I/O ──────────────────────────────────────────────────────────
         "print" | "puts" | "echo" | "display" | "writeline" | "write" => {
-            Some(CommonImport::Host("wasi:logging/logging", "log"))
+            // WHATWG console — variadic BY SPEC (`log(...data)`), unlike
+            // wasi:logging's strict (level, context, message).
+            Some(CommonImport::Host("web:console", "log"))
         }
 
         "readline" | "input" | "gets" | "prompt" => {
@@ -126,7 +128,7 @@ mod tests {
         for name in &["print", "puts", "echo", "DISPLAY", "WriteLine"] {
             assert_eq!(
                 host(resolve_common_import(name)),
-                Some(("wasi:logging/logging", "log")),
+                Some(("web:console", "log")),
                 "failed for {}",
                 name
             );

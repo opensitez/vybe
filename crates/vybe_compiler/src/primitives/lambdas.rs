@@ -278,6 +278,8 @@ impl Compiler {
         // A parameter is a declared binding like any other — narrow it here,
         // AFTER defaults, so it holds the value it actually ends up with.
         self.emit_param_type_bindings(params)?;
+        // An alias parameter is handed a reference — mark it, do not wrap it.
+        self.bind_alias_params(params);
         // Snapshot __js_this as a local BEFORE shared env creation so inner
         // arrows can capture it via the shared env / upvalue chain.
         if self.profile.ambient_this_binding && self.scopes.len() > 1 {

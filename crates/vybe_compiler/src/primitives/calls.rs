@@ -375,7 +375,10 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
         ExprKind::New { class, .. } => {
             terminal_type_name(class).map(|name| compiler.resolve_source_type_alias(&name))
         }
-        ExprKind::Index { object, .. } if compiler.profile.namespaces.use_dotnet => {
+        // Element type of an indexed receiver. Every step is language-blind and
+        // answers `None` when nothing is known, so there was nothing for a
+        // family check to decide.
+        ExprKind::Index { object, .. } => {
             resolve_receiver_type_hint(compiler, object)
                 .as_deref()
                 .and_then(array_element_type_hint)
@@ -476,9 +479,18 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
         }
         // An array literal receiver (`new[]{1,2,3}.Where(...)`, `{1,2}.Sum()`)
         // is an `IEnumerable<T>` in .NET, so LINQ resolves against the shared
-        // surface. Gated on `use_dotnet` so non-.NET languages (Ruby `.select`,
-        // JS array HOFs) keep their own array-method semantics.
-        ExprKind::Array(_) if compiler.profile.namespaces.use_dotnet => {
+        // surface. The test is whether the language's OWN registered tree
+        // declares that type — `component_classes_linq` registers it under the
+        // dotnet scope, and a jvm/flutter/plib scope does not, so this answers
+        // exactly where the `use_dotnet` family check used to and nowhere else.
+        // Ruby `.select` and JS array HOFs keep their own semantics because
+        // their profiles declare no `type_scopes` at all.
+        ExprKind::Array(_)
+            if vybe_runtime::namespaces::is_registered_type(
+                &compiler.profile.namespaces.type_scopes,
+                "IEnumerable",
+            ) =>
+        {
             Some("IEnumerable".to_string())
         }
         _ => None }
@@ -1378,6 +1390,11 @@ impl Compiler {
     fn compile_ref_aware_call_arg(&mut self, arg: &Argument, mode: PassBy) -> Result<(), String> {
         match mode {
             PassBy::Out => self.compile_out_call_arg(arg)?,
+            // The argument IS the reference. `compile_address_of_expr` resolves
+            // every place kind — a name to a cell, `$a[i]`/`$o->p` to a
+            // `(base, key)` carray — so the callee mutates the caller's storage
+            // directly and there is nothing to write back.
+            PassBy::Alias => self.compile_address_of_expr(&arg.value)?,
             PassBy::Ref | PassBy::Const if self.profile.args_pass_by_reference => {
                 self.compile_expr(&arg.value)?;
             }
@@ -1389,10 +1406,18 @@ impl Compiler {
     }
 
     fn mode_needs_ref_aware_call_handling(&self, mode: PassBy) -> bool {
-        matches!(mode, PassBy::Ref | PassBy::Out)
+        matches!(mode, PassBy::Ref | PassBy::Out | PassBy::Alias)
             || (self.profile.args_pass_by_reference && matches!(mode, PassBy::Const))
     }
 
+    /// Whether the copy-in/copy-out pack must write this argument back.
+    ///
+    /// `Alias` is deliberately absent: it was never copied, so there is nothing
+    /// to write back, and running the pack for it would clobber the caller's
+    /// storage with a stale value. The four sites that inline
+    /// `matches!(mode, PassBy::Ref | PassBy::Out)` instead of calling this
+    /// exclude `Alias` for the same reason and by the same shape — which is why
+    /// adding a VARIANT was safer here than changing what `Ref` means.
     fn mode_needs_call_writeback(&self, mode: PassBy) -> bool {
         matches!(mode, PassBy::Ref | PassBy::Out)
     }
@@ -3438,7 +3463,7 @@ impl Compiler {
         if let ExprKind::Ident(name) = &callee.kind {
             if name == "__debug_dump" {
                 let stringify_idx = self.import("ecma:json", "stringify");
-                let log_idx = self.import("wasi:logging/logging", "log");
+                let log_idx = self.import("web:console", "log");
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
                     self.emit_host_call(stringify_idx, 1);
@@ -3473,12 +3498,15 @@ impl Compiler {
         // ── Typed static-field receiver: counts.ContainsKey(...) ─────
         // Static fields can carry type hints too. Resolve them here so
         // class-level typed state uses the same shared .NET surface as
-        // locals with type annotations. .NET-shaped profiles ONLY —
-        // ungated, this hijacked typed receivers in other languages
-        // (the "dotnet adapter leaked into compiler core" disease).
+        // locals with type annotations.
+        //
+        // No language gate: the OWNER of `Items` has to be an
+        // `ObservableCollection`, and that answer comes from the namespace
+        // tree, already scoped by `type_scopes`. No other tree declares that
+        // type, so this arm is unreachable for every other language — the
+        // flag was restating what the lookup already decided.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
-            if self.profile.namespaces.use_dotnet
-                && field.eq_ignore_ascii_case("Add")
+            if field.eq_ignore_ascii_case("Add")
                 && arg_exprs.len() == 1
                 && matches!(&object.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Items"))
                 && self
@@ -3501,11 +3529,19 @@ impl Compiler {
                 }
             }
 
-            let class_name = if self.profile.namespaces.use_dotnet {
-                resolve_receiver_type_hint(self, object)
-            } else {
-                None
-            };
+            // `resolve_receiver_type_hint` names no language — it reads locals,
+            // scope types, global hints, static fields and type aliases — and
+            // the only consumer below is `lookup_type_instance_target`, which is
+            // already scoped by `type_scopes` and answers `None` for a language
+            // that declares none (`find_type_node` iterates the scope list, so
+            // an empty list finds nothing).
+            //
+            // The gate therefore decided who was ALLOWED TO ASK the tree, not
+            // what the tree answered — residue from before the namespace
+            // migration. Removing it is a no-op for the languages with no
+            // `type_scopes`, and lets jvm/flutter/plib receivers resolve
+            // instance methods against THEIR OWN registered surface.
+            let class_name = resolve_receiver_type_hint(self, object);
             if self.profile.namespaces.use_dotnet
                 && field.eq_ignore_ascii_case("Reverse")
                 && arg_exprs.len() == 2
@@ -3802,7 +3838,7 @@ impl Compiler {
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
                 }
                 self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
+                if args.len() == 1 && !args[0].spread {
                     if self
                         .resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
                         .is_some_and(|overload| overload.signature.has_rest)
@@ -4277,7 +4313,7 @@ impl Compiler {
                         }
                     }
 
-                    if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
+                    if args.len() == 1 && !args[0].spread {
                         if self
                             .resolve_static_method_overload_for_type(
                                 &class_canon,
@@ -4626,14 +4662,29 @@ impl Compiler {
                                     && members[members.len() - 2] == "controls"
                                     && members[members.len() - 1] == "add"
                                 {
+                                    // `parent.Controls.Add(child)` IS
+                                    // `parent.appendChild(child)`. A control
+                                    // is an element now, and `createElement`
+                                    // leaves it DETACHED — it has no parent
+                                    // and renders nothing until something
+                                    // inserts it. Routing this to the old
+                                    // `vybe:gui` collection left every control
+                                    // unparented, which is why a form opened
+                                    // with nothing on it.
                                     let line = self.line;
-                                    let add_idx =
-                                        self.import("vybe:gui", common::gui::HOST_FN_ADD_CHILD);
+                                    let doc_idx = self.import(
+                                        common::gui::DOCUMENT_MODULE,
+                                        common::gui::HOST_FN_ACTIVE_DOCUMENT,
+                                    );
+                                    self.chunk().emit_call(doc_idx, 0, line);
                                     self.emit_var_get(&local);
                                     for a in &arg_exprs {
                                         self.compile_expr(a)?;
                                     }
-                                    common::gui::emit_add_child(self.chunk(), add_idx, line);
+                                    let append_idx =
+                                        self.import(common::gui::DOM_MODULE, "appendChild");
+                                    self.emit_host_call(append_idx, 2 + arg_exprs.len() as u8);
+                                    self.emit(Op::DROP);
                                     return Ok(());
                                 }
                                 // Intercept Thread/Task methods → WASM stack switching opcodes.
@@ -5134,7 +5185,7 @@ impl Compiler {
                         }
                     }
 
-                    if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
+                    if args.len() == 1 && !args[0].spread {
                         if self
                             .resolve_static_method_overload_for_type(&canon, field, &arg_exprs)
                             .is_some_and(|overload| overload.signature.has_rest)
@@ -5343,9 +5394,11 @@ impl Compiler {
             // class ⇒ dynamic" gate, so `Button.Show` / inherited control
             // members resolve to `vybe:gui` host calls instead of needing an
             // emitted thunk. Returns `None` on a user override → dynamic.
+            // `namespace_tree_instance_method_owner` is scoped by `type_scopes`
+            // and finds nothing for a language declaring none, so the filter
+                // only decided who was allowed to consult the tree.
             let framework_method_owner = class_name
                 .as_deref()
-                .filter(|_| self.profile.namespaces.use_dotnet)
                 .and_then(|cn| {
                     self.namespace_tree_instance_method_owner(cn, field, arg_exprs.len() as u8)
                 });
@@ -5361,8 +5414,13 @@ impl Compiler {
                     Some(Self::normalize_type_hint(cn))
                 }
                 Some(_) => None,
-                None if self.profile.namespaces.use_dotnet
-                    && !self.direct_receiver_has_own_pending_method(object, field)
+                // Same structural test as the array-literal arm in
+                // `resolve_receiver_type_hint`: the surface exists if the
+                // language's registered tree declares `IEnumerable`.
+                None if vybe_runtime::namespaces::is_registered_type(
+                    &self.profile.namespaces.type_scopes,
+                    "IEnumerable",
+                ) && !self.direct_receiver_has_own_pending_method(object, field)
                     && (is_dotnet_linq_method_name(field)
                         || !self.defined_class_methods.contains(&self.canon(field)))
                     && (is_dotnet_linq_method_name(field)
@@ -5787,8 +5845,21 @@ impl Compiler {
                         self.chunk().emit_else(split_line);
                         // Object receiver: the bind-dispatch fast path's own
                         // shape — fetch the method off the instance, call it
-                        // with its bound receiver as arg0 (methods stamp
-                        // `__vybe_method_receiver` at attach).
+                        // with a receiver as arg0. The stamp
+                        // (`__vybe_method_receiver`, set at attach) is read as
+                        // a FLAG only: a method function object is SHARED by
+                        // every instance of the class and each construction
+                        // re-stamps it, so on a two-instance class the stamp
+                        // holds whichever instance was built last —
+                        // `r1.toString()` answered r2's fields. An explicit
+                        // member call has its receiver in the syntax, so a
+                        // stamped (real) method is called with THAT object; a
+                        // null stamp (a fn-valued property holding a plain
+                        // lambda) keeps the no-receiver call, which
+                        // `emit_call_ref_with_arg_slots` derives from the
+                        // slot's null. Receiver-less invocations (bare refs,
+                        // `obj::method` values) don't come through here and
+                        // keep the stamp as their dispatch mechanism.
                         let field_name =
                             self.js_member_storage_name_for_receiver(object, field);
                         let prop = self.str_const(&field_name);
@@ -5802,6 +5873,16 @@ impl Compiler {
                         let receiver_slot =
                             self.define_local("__shadowed_value_bound_recv");
                         self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                        {
+                            let line = self.line;
+                            self.emit_u16(Op::LOCAL_GET, receiver_slot);
+                            self.chunk().emit_op(Op::REF_IS_NULL, line);
+                            self.chunk().emit_op(Op::I32_EQZ, line);
+                            self.chunk().emit_if(line);
+                            self.emit_u16(Op::LOCAL_GET, obj_tmp);
+                            self.emit_u16(Op::LOCAL_SET, receiver_slot);
+                            self.chunk().emit_end(line);
+                        }
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                         for (index, arg) in arg_exprs.iter().enumerate() {
                             self.compile_expr(arg)?;
@@ -5823,8 +5904,11 @@ impl Compiler {
             } else if array_only_value_method_for_non_array {
                 // Array-only value methods like `.entries()` must not steal
                 // Map/Set receivers away from runtime method dispatch.
-            } else if self.profile.namespaces.use_dotnet
-                && vybe_runtime::namespaces::scope_declares_member_arity(
+            // `runtime_collection_scope` IS the gate: `scope_declares_member_arity`
+            // answers false on an empty scope, and only a language that declares
+            // that scope has one. The `use_dotnet` conjunct that used to lead
+            // here could not change the outcome.
+            } else if vybe_runtime::namespaces::scope_declares_member_arity(
                     &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                     field,
                     arg_exprs.len() as u8,
@@ -7734,8 +7818,8 @@ impl Compiler {
             }
 
             if let Some(result_slot) = buffered_generator_end {
-                if self.profile.namespaces.use_dotnet
-                    && arg_exprs.is_empty()
+                // Gated by the declared scope alone — see the note above.
+                if arg_exprs.is_empty()
                     && field.eq_ignore_ascii_case("sort")
                     && vybe_runtime::namespaces::scope_declares_member_arity(
                         &scope_segments(&self.profile.namespaces.runtime_collection_scope),
@@ -7780,7 +7864,7 @@ impl Compiler {
                 if resolves_to_static_container_method(self, object, field) {
                     // Dead php static direct-bind removed — see the note on the
                     // instance arm above. Never fired across 1200 php files.
-                    if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
+                    if args.len() == 1 && !args[0].spread {
                         let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
                         if self
                             .resolve_static_method_overload_for_type(
@@ -7926,8 +8010,7 @@ impl Compiler {
                 } else {
                     None
                 };
-                if self.profile.namespaces.use_dotnet
-                    && arg_exprs.is_empty()
+                if arg_exprs.is_empty()
                     && field.eq_ignore_ascii_case("Count")
                 {
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
@@ -8136,8 +8219,8 @@ impl Compiler {
                 return Ok(());
             }
 
-            if self.profile.namespaces.use_dotnet
-                && arg_exprs.is_empty()
+            // Gated by the declared scope alone — see the note above.
+            if arg_exprs.is_empty()
                 && field.eq_ignore_ascii_case("sort")
                 && vybe_runtime::namespaces::scope_declares_member_arity(
                     &scope_segments(&self.profile.namespaces.runtime_collection_scope),
@@ -8298,7 +8381,7 @@ impl Compiler {
                 // this one, declines the bind for a VIRTUAL method — which php
                 // methods are, so binding the DECLARED type's chunk here would have
                 // been wrong for any override.
-                if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread {
+                if args.len() == 1 && !args[0].spread {
                     let class_canon = self.canon(&self.flatten_member_chain(object).join("."));
                     if self
                         .resolve_static_method_overload_for_type(&class_canon, field, &arg_exprs)
@@ -8423,8 +8506,7 @@ impl Compiler {
             } else {
                 None
             };
-            if self.profile.namespaces.use_dotnet
-                && arg_exprs.is_empty()
+            if arg_exprs.is_empty()
                 && field.eq_ignore_ascii_case("Count")
             {
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
@@ -9004,7 +9086,7 @@ impl Compiler {
                             }
                         }
 
-                        if self.profile.namespaces.use_dotnet && args.len() == 1 && !args[0].spread
+                        if args.len() == 1 && !args[0].spread
                         {
                             if self
                                 .resolve_static_method_overload_for_type(
@@ -9227,7 +9309,8 @@ impl Compiler {
                 // already escape via `current_member_is_static`.
                 let is_known_class = self.defined_classes.contains(&self.canon(name));
                 if !is_local && !is_known_func && !is_known_class {
-                    if self.profile.namespaces.use_dotnet {
+                    // Tree lookup, already scoped by `type_scopes`.
+                    {
                         if let Some(current_class) = self.current_class.clone() {
                             if let Some(owner) = self.namespace_tree_instance_method_owner(
                                 &current_class,

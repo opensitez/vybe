@@ -693,6 +693,12 @@ impl Compiler {
     /// value it actually ends up with.
     pub(super) fn emit_param_type_bindings(&mut self, params: &[Param]) -> Result<(), String> {
         for p in params {
+            // An alias parameter's slot holds a REFERENCE, not the value, so
+            // narrowing it to a declared width would coerce the reference object
+            // itself. The value it points at is narrowed where it lives.
+            if p.pass_by == PassBy::Alias {
+                continue;
+            }
             let Some(hint) = p.type_hint.clone() else {
                 continue;
             };

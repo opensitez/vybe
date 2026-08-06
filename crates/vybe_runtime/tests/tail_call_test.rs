@@ -18,9 +18,8 @@ fn return_call_ref_delivers_callee_result() {
     double_fn.arity = 1;
     double_fn.local_count = 1;
     {
-        let two = double_fn.add_constant(Value::I32(2));
         double_fn.emit_op_u16(opcode::Op::LOCAL_GET, 0, 0);
-        double_fn.emit_op_u16(opcode::Op::CONST, two, 0);
+        double_fn.emit_i32_const(2, 0);
         double_fn.emit_op(opcode::Op::I32_MUL, 0);
         double_fn.emit_op(opcode::Op::RETURN, 0);
     }
@@ -33,9 +32,8 @@ fn return_call_ref_delivers_callee_result() {
         init: ConstExpr::RefFunc(1) });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__double")));
-        let arg = main.add_constant(Value::I32(21));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0); // push func ref
-        main.emit_op_u16(opcode::Op::CONST, arg, 0); // push arg 21
+        main.emit_i32_const(21, 0); // push arg 21
         main.emit_op_u8(opcode::Op::RETURN_CALL_REF, 1, 0); // tail-call, argc=1
     }
 
@@ -46,8 +44,7 @@ fn return_call_ref_delivers_callee_result() {
 #[test]
 fn return_call_ref_non_function_traps() {
     let mut main = Chunk::new("<main>");
-    let not_func = main.add_constant(Value::I32(123));
-    main.emit_op_u16(opcode::Op::CONST, not_func, 0);
+    main.emit_i32_const(123, 0);
     main.emit_op_u8(opcode::Op::RETURN_CALL_REF, 0, 0);
 
     let err = VM::new().run(vec![main]).unwrap_err().to_string();
@@ -63,9 +60,8 @@ fn return_call_delivers_callee_result() {
     add_one.arity = 1;
     add_one.local_count = 1;
     {
-        let one = add_one.add_constant(Value::I32(1));
         add_one.emit_op_u16(opcode::Op::LOCAL_GET, 0, 0);
-        add_one.emit_op_u16(opcode::Op::CONST, one, 0);
+        add_one.emit_i32_const(1, 0);
         add_one.emit_op(opcode::Op::I32_ADD, 0);
         add_one.emit_op(opcode::Op::RETURN, 0);
     }
@@ -78,9 +74,8 @@ fn return_call_delivers_callee_result() {
         init: ConstExpr::RefFunc(1) });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__add_one")));
-        let arg = main.add_constant(Value::I32(41));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
-        main.emit_op_u16(opcode::Op::CONST, arg, 0);
+        main.emit_i32_const(41, 0);
         main.emit_op_u8(opcode::Op::RETURN_CALL, 1, 0);
     }
 
@@ -92,8 +87,7 @@ fn return_call_delivers_callee_result() {
 fn return_call_non_function_traps() {
     let mut main = Chunk::new("<main>");
     main.local_count = 1;
-    let not_func = main.add_constant(Value::I32(7));
-    main.emit_op_u16(opcode::Op::CONST, not_func, 0);
+    main.emit_i32_const(7, 0);
     main.emit_op_u8(opcode::Op::RETURN_CALL, 0, 0);
 
     let err = VM::new().run(vec![main]).unwrap_err().to_string();
@@ -114,9 +108,8 @@ fn return_call_indirect_via_function_table() {
     triple_fn.result_arity = 1;
     triple_fn.local_count = 1;
     {
-        let three = triple_fn.add_constant(Value::I32(3));
         triple_fn.emit_op_u16(opcode::Op::LOCAL_GET, 0, 0);
-        triple_fn.emit_op_u16(opcode::Op::CONST, three, 0);
+        triple_fn.emit_i32_const(3, 0);
         triple_fn.emit_op(opcode::Op::I32_MUL, 0);
         triple_fn.emit_op(opcode::Op::RETURN, 0);
     }
@@ -129,16 +122,13 @@ fn return_call_indirect_via_function_table() {
     let mut main = Chunk::new("<main>");
     main.local_count = 0;
     {
-        let arg = main.add_constant(Value::I32(14));
-
         // Populate WASM table 0 slot 0 with the funcref, exactly as the spec
         // value model prescribes: `ref.func` yields a value, `table.set` stores
         // it, `return_call_indirect` dispatches through the table. The
         // `__table_idx` on the func object indexes `func_table`, a *different*
         // space from `wasm_tables` — `(return_)call_indirect` resolves only
         // against `wasm_tables`.
-        let zero = main.add_constant(Value::I32(0));
-        main.emit_op_u16(opcode::Op::CONST, zero, 0); // table slot
+        main.emit_i32_const(0, 0); // table slot
         main.emit_op_u16(opcode::Op::REF_FUNC, 1, 0);
         main.emit(0u8, 0); // upvalue_count = 0
         main.emit_op_u8(opcode::Op::TABLE_SET, 0, 0);
@@ -146,8 +136,8 @@ fn return_call_indirect_via_function_table() {
         // Spec `return_call_indirect`: `[args… i32]` — the table index is on
         // TOP of the stack, above the args. Push the argument first, then the
         // table index.
-        main.emit_op_u16(opcode::Op::CONST, arg, 0);
-        main.emit_op_u16(opcode::Op::CONST, zero, 0);
+        main.emit_i32_const(14, 0);
+        main.emit_i32_const(0, 0);
 
         // Stack: [arg_14, table_idx_f64] — table index on top (spec).
         // `return_call_indirect` is U8_U8_U8: argc, tableidx, expected_results.
@@ -168,8 +158,7 @@ fn return_call_indirect_via_function_table() {
 fn return_call_indirect_oob_table_index_traps() {
     let mut main = Chunk::new("<main>");
     main.local_count = 1;
-    let table_idx = main.add_constant(Value::I32(99));
-    main.emit_op_u16(opcode::Op::CONST, table_idx, 0);
+    main.emit_i32_const(99, 0);
     main.emit_op_u8(opcode::Op::RETURN_CALL_INDIRECT, 0, 0);
     main.emit(0u8, 0); // tableidx 0
     main.emit(1u8, 0); // expected_results
@@ -189,8 +178,6 @@ fn return_call_chain_does_not_overflow() {
     countdown.local_count = 1;
     {
         let fn_name = countdown.add_constant(Value::String(Arc::from("__countdown")));
-        let zero = countdown.add_constant(Value::I32(0));
-        let one = countdown.add_constant(Value::I32(1));
 
         countdown.global_inits.push(GlobalInit {
             name: "__countdown".to_string(),
@@ -198,18 +185,18 @@ fn return_call_chain_does_not_overflow() {
 
         // if n == 0, return 0
         countdown.emit_op_u16(opcode::Op::LOCAL_GET, 0, 0);
-        countdown.emit_op_u16(opcode::Op::CONST, zero, 0);
+        countdown.emit_i32_const(0, 0);
         countdown.emit_op(opcode::Op::I32_EQ, 0);
         countdown.emit_op(opcode::Op::IF, 0);
         countdown.emit(0x40, 0); // block type void
-        countdown.emit_op_u16(opcode::Op::CONST, zero, 0);
+        countdown.emit_i32_const(0, 0);
         countdown.emit_op(opcode::Op::RETURN, 0);
         countdown.emit_op(opcode::Op::END, 0);
 
         // else: tail-call countdown(n-1)
         countdown.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
         countdown.emit_op_u16(opcode::Op::LOCAL_GET, 0, 0);
-        countdown.emit_op_u16(opcode::Op::CONST, one, 0);
+        countdown.emit_i32_const(1, 0);
         countdown.emit_op(opcode::Op::I32_SUB, 0);
         countdown.emit_op_u8(opcode::Op::RETURN_CALL_REF, 1, 0);
     }
@@ -221,9 +208,8 @@ fn return_call_chain_does_not_overflow() {
         init: ConstExpr::RefFunc(1) });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__countdown")));
-        let n = main.add_constant(Value::I32(10_000));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
-        main.emit_op_u16(opcode::Op::CONST, n, 0);
+        main.emit_i32_const(10_000, 0);
         main.emit_op_u8(opcode::Op::RETURN_CALL_REF, 1, 0);
     }
 

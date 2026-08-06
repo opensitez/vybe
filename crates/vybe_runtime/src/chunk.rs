@@ -812,9 +812,11 @@ impl Chunk {
             .max(self.scratch_high_water);
     }
 
-    /// Emit CALL_IMPORT: [op, import_idx_hi, import_idx_lo, argc].
+    /// Emit spec `call`: [op, funcidx_hi, funcidx_lo, argc]. The funcidx is
+    /// chunk-scoped (this chunk's import table); argc is VM-internal — the
+    /// .wasm writer drops it and serializes `0x10` + LEB(funcidx).
     pub fn emit_call(&mut self, import_idx: u16, argc: u8, line: u32) {
-        self.emit_op(Op::CALL_IMPORT, line);
+        self.emit_op(Op::CALL, line);
         self.emit((import_idx >> 8) as u8, line);
         self.emit((import_idx & 0xff) as u8, line);
         self.emit(argc, line);

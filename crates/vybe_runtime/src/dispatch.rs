@@ -81,6 +81,116 @@ impl VM {
         func_val
     }
 
+    /// `wasi:threads`.`thread-spawn(start_arg) -> tid` — the VM is the
+    /// embedder-side implementation of the wasi-threads import (as wasmtime
+    /// is). `start_arg` points at `{fn_table_index: i32, status_word: i32}`
+    /// in shared linear memory (the wasi-libc `pthread_create` pattern).
+    /// The child invokes the module's `__wasi_thread_start` chunk with
+    /// `(tid, start_arg)`; that dispatcher runs `table[fn_table_index]`
+    /// and stamps + notifies the status word. There is NO thread opcode —
+    /// this import is the entire surface.
+    pub(crate) fn wasi_thread_spawn(&mut self, start_arg: i32) -> Result<i32, VMError> {
+        let fn_idx = self.memory.atomic_load_i32(start_arg as usize) as usize;
+        let status_addr = start_arg as usize + 4;
+        // The start function travels through funcref table 0 (spec object);
+        // close Open upvalues against the SPAWNING stack before it crosses —
+        // the child VM has a fresh stack (wasi-threads has no shared stack).
+        let function = {
+            let val = self
+                .wasm_tables
+                .first()
+                .and_then(|t| t.get(fn_idx))
+                .cloned()
+                .ok_or_else(|| {
+                    VMError::new("wasi:threads/thread-spawn: start_arg names no table entry")
+                })?;
+            match &val {
+                Value::Object(obj) => {
+                    let o = obj.lock().unwrap();
+                    match &o.kind {
+                        ObjectKind::Function(f) => {
+                            for uv in &f.upvalues {
+                                let mut u = uv.lock().unwrap();
+                                if let crate::value::UpvalueLocation::Open(slot) = u.location {
+                                    let v =
+                                        self.stack.get(slot).cloned().unwrap_or(Value::Null);
+                                    u.location = crate::value::UpvalueLocation::Closed(v);
+                                }
+                            }
+                            f.clone()
+                        }
+                        _ => {
+                            return Err(VMError::new(
+                                "wasi:threads/thread-spawn: table entry is not a function",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(VMError::new(
+                        "wasi:threads/thread-spawn: table entry is not a function",
+                    ));
+                }
+            }
+        };
+
+        let tid = self.next_thread_id;
+        self.next_thread_id += 1;
+
+        let child_chunks = self.chunks.clone();
+        let child_memory = self.memory.clone();
+        let child_host_fns = self.host_fns.clone();
+        let child_host_registry = self.host_registry.clone();
+        let child_import_table = self.import_table.clone();
+        let child_globals = self.globals.clone();
+        let child_type_registry = self.type_registry.clone();
+        let child_func_table = self.func_table.clone();
+        let child_wasm_tables = self.wasm_tables.clone();
+        let child_case_aliases = self.case_aliases.clone();
+        // Register BEFORE the thread runs so a waiter never observes `live`
+        // short (all-asleep deadlock detection).
+        child_memory.thread_started();
+
+        let handle = std::thread::spawn(move || {
+            let mut child_vm = VM::new();
+            child_vm.chunks = child_chunks;
+            child_vm.memory = child_memory;
+            child_vm.host_fns = child_host_fns;
+            child_vm.host_registry = child_host_registry;
+            child_vm.import_table = child_import_table;
+            child_vm.globals = child_globals;
+            child_vm.type_registry = child_type_registry;
+            child_vm.func_table = child_func_table;
+            child_vm.wasm_tables = child_wasm_tables;
+            child_vm.case_aliases = child_case_aliases;
+            // record[+8] = user_arg → the start function's slot-0 parameter
+            // (arity-0 closures leave it in an unread slot, harmless — the
+            // same contract the old opcode documented).
+            let user_arg = child_vm.memory.atomic_load_i32(start_arg as usize + 8);
+            child_vm.stack.push(Value::I32(user_arg));
+            let result = child_vm
+                .call_function(&function, 1)
+                .and_then(|_| child_vm.execute());
+            let ok = match result {
+                Ok(_) => true,
+                Err(e) => {
+                    eprintln!("[thread {}] error: {}", tid, e.message);
+                    false
+                }
+            };
+            // Thread-exit contract (embedder side, like wasi-threads hosts):
+            // stamp the status word — 1 done, 2 faulted — and wake joiners.
+            child_vm
+                .memory
+                .atomic_store_i32(status_addr, if ok { 1 } else { 2 });
+            child_vm.memory.notify(status_addr, i32::MAX);
+            child_vm.memory.thread_exited();
+            if ok { vec![0u8] } else { vec![1u8] }
+        });
+        self.thread_handles.insert(tid, handle);
+        Ok(tid)
+    }
+
     pub(crate) fn resolve_gc_rtt(&self, type_imm: usize) -> usize {
         if type_imm == 0 {
             return 0;
@@ -769,9 +879,11 @@ impl VM {
                 .unwrap_or(-1)
         };
         if let Some(handle) = self.thread_handles.remove(&tid) {
+            self.memory.mark_parked();
             let success = match handle.join() {
                 Ok(result) => result.first().copied().unwrap_or(1) == 0,
                 Err(_) => false };
+            self.memory.unmark_parked();
             let mut task = task_obj.lock().unwrap();
             task.properties
                 .insert("iscompleted".into(), Value::Bool(true));
@@ -1042,7 +1154,7 @@ impl VM {
         let entry_fiber_id = self.cur_fiber_id;
         let mut dbg_last_op: Option<Op> = None; // TEMP diagnostics (VYBE_DEBUG_AC)
         loop {
-            if self.frames.is_empty() && std::env::var("VYBE_DEBUG_AC").is_ok() {
+            if self.dbg_ac && self.frames.is_empty() {
                 eprintln!(
                     "[AC-DEBUG] loop-top EMPTY frames: last_op={:?} last_import={:?} stack_len={} ac_len={} fiber={} floors={:?}",
                     dbg_last_op,
@@ -1095,7 +1207,9 @@ impl VM {
                     )));
                 }
             };
-            dbg_last_op = Some(op);
+            if self.dbg_ac {
+                dbg_last_op = Some(op);
+            }
 
             // ── Instrumentation (step debugger + execution trace) ────────
             // Single hot-path gate: false in normal runs. `opcode_start` is the
@@ -1138,35 +1252,11 @@ impl VM {
             }
 
             match op {
-                _ if op == Op::HALT => {
-                    if self.frames.len() <= 1 {
-                        // Top-level halt: terminate execution
-                        self.close_upvalues(0);
-                        return Ok(if self.stack.is_empty() {
-                            Value::Null
-                        } else {
-                            self.pop()
-                        });
-                    } else {
-                        // Nested halt (e.g. script chunk called via bootstrap):
-                        // act like return — pop frame and return null
-                        let base = self.frame().base;
-                        self.close_upvalues(base);
-                        self.frames.pop();
-                        self.stack.truncate(base);
-                        self.push(Value::Null)?;
-                    }
-                }
                 _ if op == Op::UNREACHABLE => {
                     return Err(VMError::new("trap: unreachable executed"));
                 }
                 _ if op == Op::NOP => { /* no-op */ }
 
-                _ if op == Op::CONST => {
-                    let idx = self.read_u16();
-                    let val = self.get_constant(idx);
-                    self.push(val)?;
-                }
                 _ if op == Op::DROP => {
                     if self.stack.len() > self.stack_floor() {
                         self.pop();
@@ -1312,7 +1402,9 @@ impl VM {
                                 .map(|v| v.as_f64() as i32)
                                 .unwrap_or(-1);
                             if let Some(handle) = self.thread_handles.remove(&tid) {
+                                self.memory.mark_parked();
                                 let _ = handle.join();
+                                self.memory.unmark_parked();
                                 // Task object was updated by child thread
                             }
                         }
@@ -2318,10 +2410,9 @@ impl VM {
                 }
 
                 // -- Functions --
-                _ if op == Op::CALL => {
-                    let argc = self.read_byte() as usize;
-                    self.call_value(argc)?;
-                }
+                // The old callee-on-stack `Op::CALL` arm (byte-identical to
+                // CALL_REF) is deleted; spec `call` (0x00 0x10) is being
+                // redefined as a static import call — see callimportretirement.md.
                 _ if op == Op::CALL_REF => {
                     // Direct call through a function reference — same as call
                     // but the func ref is already on the stack (no table lookup).
@@ -2368,7 +2459,7 @@ impl VM {
                     // Mark the cont Done and transfer control back to the
                     // caller of RESUME/GEN_NEXT rather than exiting the VM.
                     if self.frames.is_empty() {
-                        if std::env::var("VYBE_DEBUG_AC").is_ok() {
+                        if self.dbg_ac {
                             eprintln!(
                                 "[AC-DEBUG] empty-frames RETURN: chunk={} ip={} min_depth={} ac_len={} fiber={} stack_len={}",
                                 self.chunks[frame_chunk].name,
@@ -2487,7 +2578,12 @@ impl VM {
                 }
 
                 // -- Host functions --
-                _ if op == Op::CALL_IMPORT => {
+                // Spec `call` (0x00 0x10): u16 chunk-scoped import index +
+                // VM-internal u8 argc. Resolution goes through the frame
+                // chunk's import table, falling back to the linked module
+                // table. (The retired 0xFF CALL_IMPORT alias carried the
+                // identical immediates and body.)
+                _ if op == Op::CALL => {
                     let import_idx = self.read_u16() as usize;
                     let argc = self.read_byte() as usize;
                     let chunk_index = self.frame().chunk_index;
@@ -2511,7 +2607,7 @@ impl VM {
                             let args: Vec<Value> = self.stack[base..].to_vec();
                             self.stack.truncate(base);
 
-                            if std::env::var("VYBE_DEBUG_AC").is_ok() {
+                            if self.dbg_ac {
                                 self.dbg_last_import = self
                                     .host_registry
                                     .iter()
@@ -2530,8 +2626,8 @@ impl VM {
 
                             // A host fn (wasi:cli/exit) requested clean run
                             // termination: unwind every frame and hand control
-                            // back to the embedder — like Op::HALT's top-frame
-                            // case, but without a process exit.
+                            // back to the embedder — like the end-of-code
+                            // top-frame path, but without a process exit.
                             if self.pending_exit {
                                 self.pending_exit = false;
                                 self.close_upvalues(0);
@@ -2586,6 +2682,23 @@ impl VM {
                             let eager =
                                 matches!(target, ImportTarget::JspiSuspendEager);
                             self.do_await(val, eager)?;
+                        }
+                        ImportTarget::JspiYield => {
+                            for _ in 0..argc {
+                                self.pop();
+                            }
+                            // One full ready-queue turn: whole-fiber save +
+                            // back-of-queue requeue (never synchronous).
+                            return Err(self.tick_top_level_await(Value::Null, false));
+                        }
+                        ImportTarget::WasiThreadSpawn => {
+                            // wasi-threads `thread-spawn(start_arg) -> tid`.
+                            for _ in 1..argc {
+                                self.pop();
+                            }
+                            let start_arg = self.pop().as_i32();
+                            let tid = self.wasi_thread_spawn(start_arg)?;
+                            self.push(Value::I32(tid))?;
                         }
                         ImportTarget::StringConst(ref s) => {
                             for _ in 0..argc {
@@ -4389,12 +4502,14 @@ impl VM {
                     if self.dropped_data.contains(&data_idx) {
                         return Err(VMError::new("memory.init: data segment dropped"));
                     }
-                    let count = self.pop().as_i32().max(0) as usize;
-                    let src = self.pop().as_i32().max(0) as usize;
-                    let dst = self.pop().as_i32().max(0) as usize;
-                    if count == 0 {
-                        continue;
-                    }
+                    // Spec: operands are UNSIGNED (i32 as u32; dst is the
+                    // memory's index type). Clamping negatives to 0 silently
+                    // succeeded where the spec requires an OOB trap, and a
+                    // zero count must still bounds-check both ends.
+                    let is64 = self.mem_is_64(memidx);
+                    let count = self.pop().as_i32() as u32 as usize;
+                    let src = self.pop().as_i32() as u32 as usize;
+                    let dst = self.pop_mem_index(is64);
                     let data = self
                         .data_segments
                         .get(data_idx as usize)
@@ -4402,8 +4517,15 @@ impl VM {
                     if src.saturating_add(count) > data.len() {
                         return Err(VMError::new("trap: memory.init source out of bounds"));
                     }
-                    let bytes = data[src..src + count].to_vec();
-                    self.write_memory_bytes(memidx, dst, &bytes)?;
+                    if dst.saturating_add(count) > self.mem_len(memidx) {
+                        return Err(VMError::new(
+                            "trap: memory.init destination out of bounds",
+                        ));
+                    }
+                    if count > 0 {
+                        let bytes = data[src..src + count].to_vec();
+                        self.write_memory_bytes(memidx, dst, &bytes)?;
+                    }
                 }
                 // ── reference-types: table operations ─────────────────
                 // Each op reads a `u8 table_idx` operand per spec. Tables
@@ -5184,198 +5306,11 @@ impl VM {
                 }
 
                 // -- wasi-threads: real OS thread spawning --
-                _ if op == Op::THREAD_SPAWN => {
-                    // [start_arg, func_ref] → [task_object]
-                    //
-                    // Matches the wasi-threads `thread.spawn(start_arg) -> i32`
-                    // signature: pops a single i32-shaped start argument
-                    // alongside the function ref and forwards it to the
-                    // spawned function as its slot-0 parameter. This is how
-                    // closure-free closure capture works in wasi-threads —
-                    // a `Task.Delay(ms)` lowering can push `[ms, worker_fn,
-                    // THREAD_SPAWN]` and the worker reads ms from slot 0
-                    // without ever needing parent-stack upvalues.
-                    //
-                    // Value is now Arc-based (Send+Sync), so chunks and host_fns
-                    // can be shared directly — no serialization needed.
-                    let func_val = self.pop();
-                    let start_arg = self.pop();
-
-                    let function = match &func_val {
-                        Value::Object(obj) => {
-                            let o = obj.lock().unwrap();
-                            match &o.kind {
-                                ObjectKind::Function(f) => Some(f.clone()),
-                                _ => None }
-                        }
-                        _ => None };
-
-                    if let Some(func) = function {
-                        // A closure crossing the thread boundary must CARRY
-                        // its environment: an Open upvalue indexes the
-                        // SPAWNING stack, which the child VM doesn't have —
-                        // every goroutine capture read back Null (measured).
-                        // Close them against the parent stack now, exactly
-                        // as `save_fiber` does for callbacks that escape
-                        // their frame. wasi-threads has no shared stack;
-                        // materializing the environment is the contract.
-                        // (Objects/channels stay SHARED — the closed value
-                        // is the Arc; only scalar rebinding diverges.)
-                        for uv in &func.upvalues {
-                            let mut u = uv.lock().unwrap();
-                            if let crate::value::UpvalueLocation::Open(slot) = u.location {
-                                let val =
-                                    self.stack.get(slot).cloned().unwrap_or(Value::Null);
-                                u.location = crate::value::UpvalueLocation::Closed(val);
-                            }
-                        }
-                        let tid = self.next_thread_id;
-                        self.next_thread_id += 1;
-
-                        // Create task object FIRST so child can write result to it
-                        let mut obj = Object::new();
-                        obj.properties
-                            .insert("__type".into(), Value::String(Arc::from("Task")));
-                        obj.properties.insert("__thread_id".into(), Value::I32(tid));
-                        obj.properties
-                            .insert("iscompleted".into(), Value::Bool(false));
-                        obj.properties.insert("isalive".into(), Value::Bool(true));
-                        obj.properties.insert("result".into(), Value::Null);
-                        obj.properties
-                            .insert("status".into(), Value::String(Arc::from("Running")));
-                        let task_obj = crate::heap::alloc(obj);
-                        let task_for_child = task_obj.clone();
-
-                        // Share directly — Value is Send+Sync now
-                        let child_chunks = self.chunks.clone();
-                        let child_memory = self.memory.clone();
-                        let child_host_fns = self.host_fns.clone();
-                        let child_host_registry = self.host_registry.clone();
-                        let child_import_table = self.import_table.clone();
-                        let child_globals = self.globals.clone();
-                        let child_type_registry = self.type_registry.clone();
-                        let child_func_table = self.func_table.clone();
-                        let child_wasm_tables = self.wasm_tables.clone();
-                        let child_case_aliases = self.case_aliases.clone();
-
-                        let handle = std::thread::spawn(move || {
-                            let mut child_vm = VM::new();
-                            child_vm.chunks = child_chunks;
-                            child_vm.memory = child_memory;
-                            child_vm.host_fns = child_host_fns;
-                            child_vm.host_registry = child_host_registry;
-                            child_vm.import_table = child_import_table;
-                            child_vm.globals = child_globals;
-                            child_vm.type_registry = child_type_registry;
-                            child_vm.func_table = child_func_table;
-                            child_vm.wasm_tables = child_wasm_tables;
-                            child_vm.case_aliases = child_case_aliases;
-
-                            // Push the start_arg onto the child VM's stack so
-                            // call_function lays it out at slot 0 of the spawned
-                            // function's frame (per wasi-threads spec). For
-                            // arity-0 worker fns the value sits in an unread
-                            // slot and is harmless; for arity-1 workers (e.g.
-                            // the Task.Delay sleep worker) it's the start_arg.
-                            // Direct push — child VM stack is fresh, can't
-                            // overflow.
-                            child_vm.stack.push(start_arg);
-                            let result = match child_vm
-                                .call_function(&func, 1)
-                                .and_then(|_| child_vm.execute())
-                            {
-                                Ok(val) => {
-                                    // Store return value in the shared task object
-                                    let mut t = task_for_child.lock().unwrap();
-                                    t.properties.insert("result".into(), val.clone());
-                                    t.properties.insert("iscompleted".into(), Value::Bool(true));
-                                    t.properties.insert("isalive".into(), Value::Bool(false));
-                                    t.properties.insert("hasexited".into(), Value::Bool(true));
-                                    t.properties.insert("exitcode".into(), Value::I32(0));
-                                    t.properties.insert(
-                                        "status".into(),
-                                        Value::String(Arc::from("RanToCompletion")),
-                                    );
-                                    vec![0u8]
-                                }
-                                Err(e) => {
-                                    let thrown = child_vm.last_exception.take().unwrap_or_else(|| {
-                                        Value::String(Arc::from(e.message.as_str()))
-                                    });
-                                    let mut t = task_for_child.lock().unwrap();
-                                    t.properties.insert("exception".into(), thrown);
-                                    t.properties.insert("iscompleted".into(), Value::Bool(true));
-                                    t.properties.insert("isalive".into(), Value::Bool(false));
-                                    t.properties.insert("hasexited".into(), Value::Bool(true));
-                                    t.properties.insert("exitcode".into(), Value::I32(-1));
-                                    t.properties.insert(
-                                        "status".into(),
-                                        Value::String(Arc::from("Faulted")),
-                                    );
-                                    eprintln!("[thread {}] error: {}", tid, e.message);
-                                    vec![1u8]
-                                }
-                            };
-                            result
-                        });
-
-                        self.thread_handles.insert(tid, handle);
-                        self.push(Value::Object(task_obj))?;
-                    } else {
-                        self.push(Value::Null)?;
-                    }
-                }
-                _ if op == Op::THREAD_JOIN => {
-                    // [task_object] → [status: i32]
-                    // Wait for a thread to complete. Accepts either a task object
-                    // (with __thread_id) or a raw i32 thread ID.
-                    let task_val = self.pop();
-                    let tid = match &task_val {
-                        Value::Object(obj) => {
-                            let o = obj.lock().unwrap();
-                            o.properties
-                                .get("__thread_id")
-                                .map(|v| v.as_f64() as i32)
-                                .unwrap_or(-1)
-                        }
-                        Value::I32(n) => *n,
-                        _ => task_val.as_f64() as i32 };
-
-                    if let Some(handle) = self.thread_handles.remove(&tid) {
-                        let success = match handle.join() {
-                            Ok(result) => result.first().copied().unwrap_or(1) == 0,
-                            Err(_) => false };
-                        // Update the task object properties
-                        if let Value::Object(obj) = &task_val {
-                            let mut o = obj.lock().unwrap();
-                            o.properties.insert("iscompleted".into(), Value::Bool(true));
-                            o.properties.insert("isalive".into(), Value::Bool(false));
-                            o.properties.insert("hasexited".into(), Value::Bool(true));
-                            o.properties.insert(
-                                "exitcode".into(),
-                                Value::I32(if success { 0 } else { -1 }),
-                            );
-                            o.properties.insert(
-                                "status".into(),
-                                Value::String(Arc::from(if success {
-                                    "RanToCompletion"
-                                } else {
-                                    "Faulted"
-                                })),
-                            );
-                        }
-                        self.push(Value::I32(if success { 0 } else { -1 }))?;
-                    } else {
-                        self.push(Value::I32(-1))?;
-                    }
-                }
-
-                // -- Extended Const Expressions --
-
-                // -- Typed Continuations --
-
-                // ── SIMD (128-bit vectors) ────────────────────────────────────
-                // Memory
+                // THREAD_SPAWN / THREAD_JOIN opcodes RETIRED 2026-08-06:
+                // spawning is the `wasi:threads/thread-spawn` IMPORT
+                // (ImportTarget::WasiThreadSpawn — the VM is the embedder
+                // implementation), and join is helper BYTECODE futex-waiting
+                // the task's status word. No thread opcodes exist.
                 _ if op == Op::V128_LOAD => {
                     let (memidx, addr) = self.pop_simd_addr()?;
                     let mut b = [0u8; 16];

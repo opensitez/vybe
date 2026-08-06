@@ -19,7 +19,6 @@ fn global_init_reffunc_creates_function_object() {
     });
     let name_c = script.add_constant(Value::String(Arc::from("__fn")));
     script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
-    script.emit_op(opcode::Op::HALT, 0);
 
     let mut func_chunk = Chunk::new("f");
     func_chunk.arity = 0;
@@ -45,11 +44,9 @@ fn call_ref_invokes_referenced_function() {
         init: ConstExpr::RefFunc(1),
     });
     let name_c = script.add_constant(Value::String(Arc::from("__identity")));
-    let arg_c = script.add_constant(Value::I32(7));
     script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
-    script.emit_op_u16(opcode::Op::CONST, arg_c, 0);
+    script.emit_i32_const(7, 0);
     script.emit_op_u8(opcode::Op::CALL_REF, 1, 0);
-    script.emit_op(opcode::Op::HALT, 0);
 
     let mut identity = Chunk::new("identity");
     identity.arity = 1;
@@ -75,7 +72,6 @@ fn ref_func_opcode_registers_in_func_table() {
 
     // STRUCT_GET __table_idx — should be a non-negative integer
     script.emit_struct_field_op(opcode::Op::STRUCT_GET, 0, tidx_key, 0);
-    script.emit_op(opcode::Op::HALT, 0);
 
     let mut func_chunk = Chunk::new("g");
     func_chunk.arity = 0;
@@ -95,13 +91,10 @@ fn call_ref_with_multiple_args() {
         init: ConstExpr::RefFunc(1),
     });
     let name_c = script.add_constant(Value::String(Arc::from("__add")));
-    let a_c = script.add_constant(Value::I32(10));
-    let b_c = script.add_constant(Value::I32(32));
     script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
-    script.emit_op_u16(opcode::Op::CONST, a_c, 0);
-    script.emit_op_u16(opcode::Op::CONST, b_c, 0);
+    script.emit_i32_const(10, 0);
+    script.emit_i32_const(32, 0);
     script.emit_op_u8(opcode::Op::CALL_REF, 2, 0);
-    script.emit_op(opcode::Op::HALT, 0);
 
     let mut add_fn = Chunk::new("add");
     add_fn.arity = 2;
@@ -119,10 +112,8 @@ fn call_ref_with_multiple_args() {
 fn call_ref_non_function_traps() {
     let mut vm = VM::new();
     let mut script = Chunk::new("<script>");
-    let k = script.add_constant(Value::I32(123));
-    script.emit_op_u16(opcode::Op::CONST, k, 0);
+    script.emit_i32_const(123, 0);
     script.emit_op_u8(opcode::Op::CALL_REF, 0, 0);
-    script.emit_op(opcode::Op::HALT, 0);
 
     let err = vm.run(vec![script]).unwrap_err().to_string();
     assert!(err.contains("call") || err.contains("function"));

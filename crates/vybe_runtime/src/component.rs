@@ -358,7 +358,7 @@ impl Linker {
                         let group = ((code[ip] as u16) << 8) | code[ip + 1] as u16;
                         let sub = ((code[ip + 2] as u16) << 8) | code[ip + 3] as u16;
                         if let Some(op) = crate::opcode::Op::decode(group, sub) {
-                            if op == crate::opcode::Op::CALL_IMPORT {
+                            if op == crate::opcode::Op::CALL {
                                 // Remap import index: operand u16 is at ip+4..ip+5
                                 if ip + 5 < code.len() {
                                     let old_idx =

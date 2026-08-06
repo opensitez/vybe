@@ -39,9 +39,13 @@
 //!            handler group via the `is_try` label (replaces retired TRY_END)
 //! ```
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use vybe_runtime::value::Object;
 use vybe_runtime::{Chunk, Op, VM, Value};
+
+/// Unique names for test-argument globals, so reused VMs never collide.
+static TEST_GLOBAL_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 const KIND_CATCH: u8 = 0;
 const KIND_CATCH_REF: u8 = 1;
@@ -79,8 +83,7 @@ fn emit_throw(c: &mut Chunk, tag: u16) {
 }
 
 fn push_str(c: &mut Chunk, s: &str) {
-    let k = c.add_constant(Value::String(Arc::from(s)));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_string_const(s, 0);
 }
 
 fn ret(c: &mut Chunk) {
@@ -162,11 +165,13 @@ fn catch_ignores_payload_stamps_tag_identity_only() {
     );
     obj.properties
         .insert("message".into(), Value::String(Arc::from("stamped")));
-    let payload = c.add_constant(Value::Object(Arc::new(Mutex::new(obj))));
+    let payload = Value::Object(Arc::new(Mutex::new(obj)));
+    let payload_global = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
 
     let outer = emit_try_table(&mut c, &[(KIND_CATCH, t_type_error)]);
     let inner = emit_try_table(&mut c, &[(KIND_CATCH, t_exception)]);
-    c.emit_op_u16(Op::CONST, payload, 0);
+    let payload_ci = c.intern_string_constant(&payload_global);
+    c.emit_op_u16(Op::GLOBAL_GET, payload_ci, 0);
     emit_throw(&mut c, t_type_error);
     push_str(&mut c, "not-thrown");
     ret(&mut c);
@@ -180,7 +185,12 @@ fn catch_ignores_payload_stamps_tag_identity_only() {
     push_str(&mut c, "outer-caught-by-identity");
     ret(&mut c);
 
-    let v = run(c).expect("outer typed clause catches by identity");
+    let mut vm = VM::new();
+    vm.globals.insert(payload_global, payload);
+    let v = vm
+        .run(vec![c])
+        .map_err(|e| e.to_string())
+        .expect("outer typed clause catches by identity");
     assert_eq!(s(&v), "outer-caught-by-identity");
 }
 

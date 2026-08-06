@@ -648,48 +648,140 @@ impl Compiler {
         }
     }
 
+    /// Does `name` denote a reference here?
+    ///
+    /// Two stores, because there are two questions. A LOCAL or parameter is a
+    /// per-binding fact and lives on the binding, so scope resolution answers it
+    /// and shadowing is free — a local that shadows an outer reference correctly
+    /// reports `false`, and a `global $g` that IS the outer binding correctly
+    /// falls through to the global store, because `open_names` routes it there.
+    ///
+    /// A promoted GLOBAL is a module-wide fact and lives in one module-wide set.
+    ///
+    /// These used to be one `HashMap<chunk_idx, HashSet<name>>`. That could not
+    /// express either question: a name marked in ANY chunk leaked into every
+    /// other chunk through a module-wide fallback, and the guard bolted on to
+    /// stop that ("this chunk has a local of that name → not a cell") could not
+    /// tell a shadowing local from the binding itself.
     pub(super) fn binding_uses_pointer_cell(&self, name: &str) -> bool {
-        let key = self.pointer_binding_key(name);
-        if self
-            .pointer_cell_bindings
-            .get(&self.current)
-            .is_some_and(|bindings| bindings.contains(&key))
-        {
-            return true;
-        }
-        // The map is keyed by chunk, and the module-wide fallback below exists
-        // for a name this chunk does NOT bind itself — a closure body reading a
-        // cell created in its enclosing chunk, or a promoted global.
-        //
-        // A name this chunk DOES bind (parameter or local) shadows every
-        // same-named binding elsewhere, so the fallback must not answer for it.
-        // Without this, Go's `c.Bump()` promoting `main`'s local `c` to a cell
-        // made every other chunk with a parameter named `c` — such as the
-        // receiver of `func (c Counter) Peek() int { return c.n }` — read
-        // through a cell that isn't there, yielding `undefined`.
-        if self.resolve_named_local_slot(name).is_some() {
-            return false;
-        }
-        self.pointer_cell_bindings
-            .values()
-            .any(|bindings| bindings.contains(&key))
+        self.pointer_cell_binding_fact(name, true)
     }
 
-    pub(super) fn mark_pointer_cell_binding(&mut self, name: &str) {
+    /// Has a wrap ALREADY happened for this binding?
+    ///
+    /// What a PROMOTION site must ask. [`Self::binding_uses_pointer_cell`] also
+    /// answers `true` for the module-wide pre-pass, which is a "readers must
+    /// deref" hint about a wrap that may still be AHEAD in this forward pass —
+    /// so a promotion that consults it concludes the work is done, skips the
+    /// wrap, and hands out the unwrapped slot. The callee is then aliased to
+    /// nothing: its reads see a plain value and its writes land nowhere the
+    /// caller can see.
+    ///
+    /// The same confusion already cost `promote_global_binding_to_pointer_cell`
+    /// (§10e.1); the local promotion kept asking the wrong question because the
+    /// hint set was, until call sites began declaring by-reference arguments,
+    /// almost always empty for php.
+    pub(super) fn binding_already_pointer_cell(&self, name: &str) -> bool {
+        self.pointer_cell_binding_fact(name, false)
+    }
+
+    fn pointer_cell_binding_fact(&self, name: &str, include_pending: bool) -> bool {
+        // `global $g` / `nonlocal x` names the OUTER binding. Any local record
+        // for it aliases that binding rather than shadowing it, so its
+        // properties must be read from where the binding lives — otherwise a
+        // promoted global is read RAW inside the one function that declared its
+        // intent to use it, and the cell object reaches arithmetic.
+        // Both spellings: `ScopeDecl` writes `open_names` through
+        // `self.canon(name)` unconditionally, while `pointer_binding_key` canons
+        // only when the language folds case — php variables are case-SENSITIVE,
+        // so for php the two diverge and asking with either one alone misses.
+        let declared_open = self.scope().declared_open(name)
+            || self.scope().declared_open(&self.canon(name));
+        if !declared_open {
+            if let Some(holds) = self.scope().holds_reference(name) {
+                return holds;
+            }
+        }
         let key = self.pointer_binding_key(name);
-        self.pointer_cell_bindings
-            .entry(self.current)
-            .or_default()
-            .insert(key);
+        // Either a wrap that already happened, or — for a READER only — the
+        // module-wide pre-pass saying one WILL happen later in this
+        // compilation. The second is what makes
+        // `function r(){ global $g; echo $g; }` — emitted before
+        // `$g = 1; w($g);` promotes `$g` — deref correctly: whether a global is
+        // a cell is a whole-module property being decided in a forward pass.
+        self.promoted_global_cells.contains(&key)
+            || (include_pending && self.module_addr_taken_globals.contains(&key))
+    }
+
+    /// Record that `name` denotes a reference.
+    ///
+    /// Routed by RESOLUTION, not by the caller: if the name is a local or
+    /// parameter of this scope the flag goes on that binding; otherwise it is a
+    /// promoted global and goes in the module-wide set. Call sites still pass a
+    /// name, so none of them had to change — the store is chosen where the
+    /// answer is actually known.
+    ///
+    /// The Go case the old chunk-keyed map needed a special guard for now falls
+    /// out for free: `main`'s local `c` promoted to a cell sets the flag on
+    /// `main`'s binding, and the receiver `c` of `func (c Counter) Peek()` is a
+    /// DIFFERENT binding whose flag was never set.
+    pub(super) fn mark_pointer_cell_binding(&mut self, name: &str) {
+        // A binding at MODULE scope is the global every other chunk sees, so the
+        // fact is recorded in BOTH stores — it is genuinely both. Only an inner
+        // scope's binding is private enough to live on the binding alone.
+        //
+        // Without this, `$g = 1; w($g);` at module scope promotes `$g` as a
+        // script-scope LOCAL (that arm wins), module scope derefs it correctly,
+        // and a `global $g;` in some other function — which reaches the same
+        // storage as a GLOBAL — finds the global store empty and reads the cell
+        // object raw.
+        let at_module_scope = self.scopes.len() <= 1;
+        let bound_locally = self
+            .scopes
+            .last_mut()
+            .is_some_and(|s| s.set_holds_reference(name));
+        if !bound_locally || at_module_scope {
+            self.mark_promoted_global_cell(name);
+        }
+    }
+
+    /// Record that the MODULE-LEVEL binding for `name` holds a cell.
+    ///
+    /// For callers that already know the storage is global. Both the canon here
+    /// and in `binding_uses_pointer_cell` must match what `ScopeDecl` writes
+    /// into `open_names`, which is `self.canon(name)`.
+    pub(super) fn mark_promoted_global_cell(&mut self, name: &str) {
+        let key = self.pointer_binding_key(name);
+        self.promoted_global_cells.insert(key);
     }
 
     pub(super) fn resolve_named_local_slot(&self, name: &str) -> Option<u16> {
         self.scope().resolve(name)
     }
 
+    /// Bind every [`PassBy::Alias`] parameter to the reference it was handed.
+    ///
+    /// MARK, never promote: the caller already passed a reference
+    /// (`compile_ref_aware_call_arg`), so the slot holds one on entry.
+    /// `promote_local_binding_to_pointer_cell` would wrap it in a SECOND cell —
+    /// a reference to a reference — and every read would then deref one level
+    /// short. Marking alone is what makes reads auto-deref and writes store
+    /// through to the caller's storage.
+    ///
+    /// This is the parameter half of aliasing. Without it the argument arrives
+    /// as a reference and the body treats it as an ordinary value, which reads
+    /// back the cell OBJECT rather than what it points at.
+    pub(super) fn bind_alias_params(&mut self, params: &[Param]) {
+        for p in params {
+            if p.pass_by == PassBy::Alias {
+                self.mark_pointer_cell_binding(&p.name);
+            }
+        }
+    }
+
     pub(super) fn promote_local_binding_to_pointer_cell(&mut self, name: &str) -> Option<u16> {
         let slot = self.resolve_named_local_slot(name)?;
-        if !self.binding_uses_pointer_cell(name) {
+        if !self.binding_already_pointer_cell(name) {
             crate::primitives::references::emit_cell_new_from_local(
                 &mut self.chunks,
                 self.current,
@@ -702,15 +794,49 @@ impl Compiler {
         Some(slot)
     }
 
-    pub(super) fn promote_global_binding_to_pointer_cell(&mut self, name: &str) -> bool {
+    /// The module-global key a VARIABLE is stored under.
+    ///
+    /// Must match `emit_var_get`/`emit_var_set` exactly. A language may mangle
+    /// it — php stores `$c` as `__php_var_c` so a global `$foo` cannot collide
+    /// with a function `foo` — so reading `canon` here looks up a key that was
+    /// never written. That divergence is what `globals.rs` exists to prevent,
+    /// and it made `promote_global_binding_to_pointer_cell` refuse every php
+    /// global: `$d = &$c` then fell through to a fresh DETACHED cell and
+    /// aliasing silently degraded to a copy at module scope.
+    pub(super) fn variable_global_binding_key(&self, name: &str) -> String {
         let canon_name = self.canon(name);
-        if !self.profile.globals_may_be_undeclared && !self.defined_globals.contains(&canon_name) {
-            return false;
-        }
+        self.variable_global_key(name, &canon_name)
+    }
 
-        if !self.binding_uses_pointer_cell(name) {
+    /// Promote a module global to a pointer cell. Taking the address of a NAME
+    /// means the name denotes storage, so this always succeeds.
+    ///
+    /// It used to refuse unless `profile.globals_may_be_undeclared` (set by c
+    /// alone) or the name was already in `defined_globals` — a per-language
+    /// switch in shared code whose failure mode was the worst available one:
+    /// returning `false` dropped the caller into
+    /// `emit_wrap_top_of_stack_in_pointer_cell`, a fresh DETACHED cell, so
+    /// aliasing degraded to a silent COPY instead of raising anything. A place
+    /// resolves or errors; it never quietly becomes a copy.
+    ///
+    /// Promoting a name that has no value yet is correct, not a fallback: the
+    /// cell is created from whatever the global currently holds, which is what
+    /// php's reference auto-vivification (`$r = &$undefined`) already means, and
+    /// what c's `globals_may_be_undeclared` was granting itself as a special
+    /// case.
+    pub(super) fn promote_global_binding_to_pointer_cell(&mut self, name: &str) -> bool {
+        let global_key = self.variable_global_binding_key(name);
+        // The real-promotion set ONLY, never `binding_uses_pointer_cell`: that
+        // also answers `true` for the module-wide address-taken PRE-PASS, which
+        // is a "readers must deref" hint, not a record that the wrap happened.
+        // Consulting it here made promotion skip itself — readers deref a global
+        // that was never wrapped.
+        let already_promoted = self
+            .promoted_global_cells
+            .contains(&self.pointer_binding_key(name));
+        if !already_promoted {
             let value_slot = self.define_local("__ref_global_value");
-            self.emit_global_read(&canon_name);
+            self.emit_global_read(&global_key);
             self.emit_u16(Op::LOCAL_SET, value_slot);
             crate::primitives::references::emit_cell_new(
                 &mut self.chunks,
@@ -718,8 +844,14 @@ impl Compiler {
                 value_slot,
                 self.line,
             );
-            self.emit_global_write(&canon_name);
-            self.mark_pointer_cell_binding(name);
+            self.emit_global_write(&global_key);
+            // The GLOBAL store, not the routing helper: this site just promoted
+            // a global and knows it. Routing by resolution would put the flag on
+            // whatever local happens to share the name in the CURRENT scope —
+            // at module scope that is the script scope's own binding — and then
+            // a `global $g;` in some other function finds the global store empty
+            // and reads the cell object raw.
+            self.mark_promoted_global_cell(name);
         }
 
         true
@@ -839,6 +971,126 @@ impl Compiler {
         self.chunk().emit_end(obj_line);
     }
 
+    /// Store `value_slot` THROUGH the reference in `ptr_slot`. Consumes
+    /// nothing off the stack and leaves nothing on it.
+    ///
+    /// The mirror of `emit_autoderef_pointer_cell`: same shapes, same order,
+    /// same passthrough for a non-reference. Every write to a name bound to a
+    /// reference goes through here, so a `carray` binding stores into its
+    /// container instead of growing a dead `__value` field on the reference
+    /// object — which is what a cell-only store did, silently.
+    pub(super) fn emit_store_through_pointer(&mut self, ptr_slot: u16, value_slot: u16) {
+        self.emit_u16(Op::LOCAL_GET, ptr_slot);
+        inst!(self, recipes::is_object);
+        let line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        let kind_key = self.str_const("__ref_kind");
+
+        self.emit_u16(Op::LOCAL_GET, ptr_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.emit_const(Value::String(Arc::from("cell")));
+        {
+            let line = self.line;
+            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        }
+        let line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        self.emit_u16(Op::LOCAL_GET, ptr_slot);
+        crate::primitives::references::emit_cell_store(
+            &mut self.chunks,
+            self.current,
+            value_slot,
+            self.line,
+        );
+        self.emit(Op::DROP);
+
+        let line = self.line;
+        self.chunk().emit_else(line);
+
+        self.emit_u16(Op::LOCAL_GET, ptr_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.emit_const(Value::String(Arc::from("carray")));
+        {
+            let line = self.line;
+            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        }
+        let line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        let base_key = self.str_const("__base");
+        let idx_key = self.str_const("__idx");
+        let base_slot = self.define_local("__ref_store_carray_base");
+        let idx_slot = self.define_local("__ref_store_carray_idx");
+
+        self.emit_u16(Op::LOCAL_GET, ptr_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, base_key);
+        self.emit_u16(Op::LOCAL_SET, base_slot);
+
+        self.emit_u16(Op::LOCAL_GET, ptr_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx_key);
+        self.emit_u16(Op::LOCAL_SET, idx_slot);
+
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        inst!(self, recipes::is_object);
+        let line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
+        self.emit_const(Value::String(Arc::from("cell")));
+        {
+            let line = self.line;
+            crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+        }
+        let line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if(line);
+
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        crate::primitives::references::emit_cell_store(
+            &mut self.chunks,
+            self.current,
+            value_slot,
+            self.line,
+        );
+        self.emit(Op::DROP);
+
+        let line = self.line;
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        common::collections::emit_set(&mut self.chunks, self.current, self.line);
+        self.emit(Op::DROP);
+        self.chunk().emit_end(line);
+
+        let line = self.line;
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, base_slot);
+        self.emit_u16(Op::LOCAL_GET, idx_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        common::collections::emit_set(&mut self.chunks, self.current, self.line);
+        self.emit(Op::DROP);
+        self.chunk().emit_end(line);
+
+        let line = self.line;
+        self.chunk().emit_else(line);
+        self.chunk().emit_end(line);
+
+        let line = self.line;
+        self.chunk().emit_end(line);
+
+        let line = self.line;
+        self.chunk().emit_else(line);
+        self.chunk().emit_end(line);
+    }
+
     pub(super) fn compile_address_of_expr(&mut self, expr: &Expression) -> Result<(), String> {
         match &expr.kind {
             ExprKind::Ident(name) => {
@@ -851,8 +1103,14 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, slot);
                     return Ok(());
                 }
-                if self.promote_global_binding_to_pointer_cell(name) {
-                    self.emit_global_read(&canon_name);
+                // A NAME denotes storage, so the global arm always resolves —
+                // the Ident case never reaches the rvalue wrap below.
+                self.promote_global_binding_to_pointer_cell(name);
+                {
+                    // Same key the promotion wrote — see
+                    // `variable_global_binding_key`.
+                    let global_key = self.variable_global_binding_key(name);
+                    self.emit_global_read(&global_key);
                     return Ok(());
                 }
             }
@@ -862,12 +1120,74 @@ impl Compiler {
                 self.compile_expr(expr)?;
                 return Ok(());
             }
+            // `&a[i]` denotes the SLOT, so it resolves like a name does. Falling
+            // through to the rvalue wrap below would read the element and box the
+            // COPY — a detached cell, aliasing degraded to a silent copy.
+            ExprKind::Index { object, index, .. } => {
+                self.compile_index_reference(object, index)?;
+                return Ok(());
+            }
+            // Same rule as `Index`, and it must live HERE as well as in the
+            // `RefOf` arm: fixing only one spelling makes a binding's aliasing
+            // depend on which node the walker happened to build (§2). php emits
+            // `Unary{AddrOf, Member}` for `&$o->p`.
+            ExprKind::Member { object, field, .. } => {
+                self.compile_member_reference(object, field)?;
+                return Ok(());
+            }
             _ => {}
         }
 
         self.compile_expr(expr)?;
         self.emit_wrap_top_of_stack_in_pointer_cell();
         Ok(())
+    }
+
+    /// `&container[key]` → `{__ref_kind:"carray", __base, __idx}`.
+    ///
+    /// The base is the container VALUE, so the reference aliases whatever the
+    /// variable holds rather than a copy of it. Nothing here is per-container:
+    /// `emit_autoderef_pointer_cell` and the `RefLoad` store arm both already
+    /// route a carray through the VM's polymorphic indexed access, which
+    /// dispatches on the base's `ObjectKind` at runtime.
+    pub(super) fn compile_index_reference(
+        &mut self,
+        object: &Expression,
+        index: &Expression,
+    ) -> Result<(), String> {
+        self.compile_expr(object)?;
+        let base_slot = self.define_local("__ref_index_base");
+        self.emit_u16(Op::LOCAL_SET, base_slot);
+
+        self.compile_expr(index)?;
+        let key_slot = self.define_local("__ref_index_key");
+        self.emit_u16(Op::LOCAL_SET, key_slot);
+
+        crate::primitives::references::emit_carray_new(
+            &mut self.chunks,
+            self.current,
+            base_slot,
+            key_slot,
+            self.line,
+        );
+        Ok(())
+    }
+
+    /// `&obj.field` → the same `{__base, __idx}` as `&obj[key]`, with the field
+    /// name as the key.
+    ///
+    /// A member IS an indexed access with a constant string key: an instance is
+    /// a `STRUCT_NEW` object, and both `Op::ARRAY_GET` and `Op::ARRAY_SET` fall
+    /// through to that object's property bag for a non-numeric key — the very
+    /// bag a name-keyed `STRUCT_GET` reads. So the reference reads and writes
+    /// the same storage the plain member access does, and there is no third
+    /// pointer kind for members.
+    pub(super) fn compile_member_reference(
+        &mut self,
+        object: &Expression,
+        field: &str,
+    ) -> Result<(), String> {
+        self.compile_index_reference(object, &Expression::string(field))
     }
 
     pub(super) fn compile_deref_expr(&mut self, expr: &Expression) -> Result<(), String> {

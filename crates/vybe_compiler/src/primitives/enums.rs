@@ -356,11 +356,11 @@ impl Compiler {
             return Ok(());
         }
 
-        if !self.profile.namespaces.use_dotnet {
-            self.compile_expr(expr)?;
-            return Ok(());
-        }
-
+        // No language gate: every caller already reached here BECAUSE the tree
+        // resolved the call to `dotnet.console_writeline` / `dotnet.console_write`
+        // (builtins.rs, lambdas.rs ×2, calls.rs all test the emit name first).
+        // The flag could therefore never be false here — it re-asked a question
+        // the resolver had already answered.
         self.compile_expr(expr)?;
         let value_slot = self.define_local("__dotnet_console_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);

@@ -259,11 +259,15 @@ opcode_category! {
     [0x0D] br_if => U32Leb, "br_if";
     [0x0E] br_table => BrTable, "br_table";
     [0x0F] r#return => None, "return";
-    // A single `u8` argc. The VM's `call` is DYNAMIC — `call_value` takes the
-    // callee off the stack, so there is no function-index immediate to carry,
-    // and every emitter writes exactly one byte (`emit_op_u8`). Declaring it
-    // `U16_U8` made every operand_format-driven walk skip two bytes too many.
-    [0x10] call => U8, "call";
+    // Spec `call funcidx` — a STATIC call. VM-internal immediates are
+    // `u16 funcidx` + `u8 argc` (the argc byte is VM-internal, exactly like
+    // the retired CALL_IMPORT's; the .wasm writer drops it and emits
+    // `0x10` + LEB(funcidx)). Internally funcidx is chunk-scoped: it names
+    // an entry in the frame chunk's import table — nothing emits local-
+    // function indices here; those go through REF_FUNC + CALL_REF. The old
+    // dynamic callee-on-stack `call` (byte-identical to `call_ref`) is
+    // retired; see callimportretirement.md.
+    [0x10] call => U16_U8, "call";
     [0x11] call_indirect => U8_U8_U8, "call_indirect";
     [0x12] return_call => U8, "return_call";
     [0x13] return_call_indirect => U8_U8_U8, "return_call_indirect";

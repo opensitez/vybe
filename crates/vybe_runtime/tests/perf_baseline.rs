@@ -54,16 +54,14 @@ const LOOP_COUNTER_SLOT: u16 = 7;
 fn emit_structured_counter_loop(chunk: &mut Chunk, mut body: impl FnMut(&mut Chunk)) {
     chunk.local_count = chunk.local_count.max(LOOP_COUNTER_SLOT + 1);
 
-    let iter_const = chunk.add_constant(Value::I32(ITERATIONS as i32));
-    chunk.emit_op_u16(Op::CONST, iter_const, 0);
+    chunk.emit_i32_const(ITERATIONS as i32, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, LOOP_COUNTER_SLOT, 0);
 
     let outer = chunk.emit_block(0);
     let (lp, _loop_start) = chunk.emit_loop_s(0);
     body(chunk);
     chunk.emit_op_u16(Op::LOCAL_GET, LOOP_COUNTER_SLOT, 0);
-    let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, one, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::I32_SUB, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, LOOP_COUNTER_SLOT, 0);
     chunk.emit_br_if(0, 0);
@@ -97,10 +95,8 @@ fn capture_pre_migration_baseline() {
 
         emit_structured_counter_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
-            let v = c.add_constant(Value::I32(42));
-            c.emit_op_u16(Op::CONST, v, 0);
-            c.emit_op_u16(Op::CALL_IMPORT, push_idx, 0);
-            c.emit(2u8, 0);
+            c.emit_i32_const(42, 0);
+            c.emit_call(push_idx, 2u8, 0);
             c.emit_op(Op::DROP, 0);
         });
     });
@@ -108,8 +104,7 @@ fn capture_pre_migration_baseline() {
 
     let get_read = run_and_time("array.get (pre-populated)", |chunk| {
         // Pre-populate with one element
-        let v = chunk.add_constant(Value::I32(7));
-        chunk.emit_op_u16(Op::CONST, v, 0);
+        chunk.emit_i32_const(7, 0);
         chunk.emit_array_new_fixed(0, 1, 0);
         let arr_slot = 0;
         chunk.local_count = chunk.local_count.max(1);
@@ -117,8 +112,7 @@ fn capture_pre_migration_baseline() {
 
         emit_structured_counter_loop(chunk, |c| {
             c.emit_op_u16(Op::LOCAL_GET, arr_slot, 0);
-            let zero = c.add_constant(Value::I32(0));
-            c.emit_op_u16(Op::CONST, zero, 0);
+            c.emit_i32_const(0, 0);
             c.emit_op(Op::ARRAY_GET, 0);
             c.emit_op(Op::DROP, 0);
         });
@@ -136,8 +130,7 @@ fn capture_pre_migration_baseline() {
 
         // Stamp a field once
         chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, 0);
-        let v = chunk.add_constant(Value::I32(99));
-        chunk.emit_op_u16(Op::CONST, v, 0);
+        chunk.emit_i32_const(99, 0);
         let field_name = chunk.add_constant(Value::String("x".into()));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, field_name, 0);
         chunk.emit_op(Op::DROP, 0);

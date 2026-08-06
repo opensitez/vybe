@@ -1369,6 +1369,5 @@ pub fn emit_join_iterable(chunks: &mut [Chunk], current: usize, line: u32) {
 /// it through that chunk's own table.
 fn call_host(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
     let idx = chunk.add_import(module, name);
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(idx, argc, line);
 }

@@ -8,8 +8,12 @@
 //! - Cross-language instanceof using __type and __types properties
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_runtime::value::Object;
 use vybe_runtime::{Chunk, Method, Op, TypeDef, VM, Value};
+
+/// Unique names for test-argument globals, so reused VMs never collide.
+static TEST_GLOBAL_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 /// Declare `name` as this module's type 1 so a `ref.test` can carry an INDEX.
 /// When the registry already knows the name — a host type, or one another
@@ -265,8 +269,10 @@ fn test_ref_test_opcode_with_type_string() {
     let mut chunk = Chunk::new("<test>");
     // Push a Button object (using __type property)
     let obj = make_typed_object("Button");
-    let const_idx = chunk.add_constant(obj);
-    chunk.emit_op_u16(Op::CONST, const_idx, 0);
+    let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    vm.globals.insert(name.clone(), obj);
+    let ci = chunk.intern_string_constant(&name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     // ref_test with "control" type name
     declare_type(&mut chunk, "control");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
@@ -293,8 +299,10 @@ fn test_ref_test_opcode_with_type_id() {
     // Build chunk with a typed object (type_id set)
     let mut chunk = Chunk::new("<test>");
     let obj = make_typed_object_with_id(button_id, "Button");
-    let const_idx = chunk.add_constant(obj);
-    chunk.emit_op_u16(Op::CONST, const_idx, 0);
+    let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    vm.globals.insert(name.clone(), obj);
+    let ci = chunk.intern_string_constant(&name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     declare_type(&mut chunk, "control");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -323,8 +331,10 @@ fn test_ref_test_opcode_negative() {
     // A List is NOT a Button
     let mut chunk = Chunk::new("<test>");
     let obj = make_typed_object("List");
-    let const_idx = chunk.add_constant(obj);
-    chunk.emit_op_u16(Op::CONST, const_idx, 0);
+    let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    vm.globals.insert(name.clone(), obj);
+    let ci = chunk.intern_string_constant(&name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     declare_type(&mut chunk, "button");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -356,8 +366,13 @@ fn test_ref_test_with_js_types_array() {
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Dog")));
 
-    let const_idx = chunk.add_constant(Value::Object(Arc::new(std::sync::Mutex::new(obj))));
-    chunk.emit_op_u16(Op::CONST, const_idx, 0);
+    let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    vm.globals.insert(
+        name.clone(),
+        Value::Object(Arc::new(std::sync::Mutex::new(obj))),
+    );
+    let ci = chunk.intern_string_constant(&name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     declare_type(&mut chunk, "animal");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -376,8 +391,7 @@ fn test_ref_test_primitives() {
 
     // String is "string"
     let mut chunk = Chunk::new("<test>");
-    let str_idx = chunk.add_constant(Value::String(Arc::from("hello")));
-    chunk.emit_op_u16(Op::CONST, str_idx, 0);
+    chunk.emit_string_const("hello", 0);
     declare_type(&mut chunk, "string");
     chunk.emit_ref_type_op(Op::REF_TEST, TYPE_ONE, 0);
     chunk.emit_op(Op::RETURN, 0);

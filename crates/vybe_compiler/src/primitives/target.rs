@@ -85,6 +85,7 @@ impl Target {
                 "wasi:cli/exit".into(),
                 "wasi:cli/environment".into(),
                 "wasi:logging/logging".into(),
+                "web:console".into(),
                 "wasi:filesystem".into(),
                 // WASI 0.3 HTTP interfaces (`wasi:http` alone is the
                 // *package* name, not an importable interface).
@@ -134,6 +135,7 @@ impl Target {
                 "wasi:cli/exit".into(),
                 "wasi:cli/environment".into(),
                 "wasi:logging/logging".into(),
+                "web:console".into(),
                 "wasi:filesystem".into(),
                 // WASI 0.3 HTTP interfaces (`wasi:http` alone is the
                 // *package* name, not an importable interface).

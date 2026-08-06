@@ -800,8 +800,11 @@ impl Compiler {
                 let is_local = self.scope().resolve(name).is_some()
                     || self.has_static_local_binding(name);
 
+                // The owner of `Items` has to be an `ObservableCollection`, and
+                // that is the namespace tree's answer, already scoped by
+                // `type_scopes` — no other tree declares the type, so no
+                // language gate can change who reaches here.
                 if !is_local
-                    && self.profile.namespaces.use_dotnet
                     && name.eq_ignore_ascii_case("Items")
                     && self
                         .current_class
@@ -1084,9 +1087,9 @@ impl Compiler {
                 // Pow → BigInt fast path, then canonical stdlib path.
                 if *op == BinOp::Pow {
                     let line = self.line;
-                    if self.profile.has_ecma_bigint
-                        && self.infer_expr_type_hint(left).as_deref() == Some("bigint")
-                        && self.infer_expr_type_hint(right).as_deref() == Some("bigint")
+                    if self.bigint_semantics()
+                        && self.hint_is_bigint(self.infer_expr_type_hint(left).as_deref())
+                        && self.hint_is_bigint(self.infer_expr_type_hint(right).as_deref())
                     {
                         let idx = self.import("ecma:bigint", "pow");
                         self.compile_expr(left)?;
@@ -1290,11 +1293,11 @@ impl Compiler {
                 // These already exist and return Value::BigInt / Value::Bool.
                 // `infer_expr_type_hint` returns "bigint" for BigInt literals
                 // and for variables initialised with BigInt values.
-                if self.profile.has_ecma_bigint {
+                if self.bigint_semantics() {
                     let left_hint = self.infer_expr_type_hint(left);
                     let right_hint = self.infer_expr_type_hint(right);
-                    let left_is_bigint = left_hint.as_deref() == Some("bigint");
-                    let right_is_bigint = right_hint.as_deref() == Some("bigint");
+                    let left_is_bigint = self.hint_is_bigint(left_hint.as_deref());
+                    let right_is_bigint = self.hint_is_bigint(right_hint.as_deref());
                     // The other operand is "known non-BigInt" only when its
                     // type was inferred to something concrete that isn't
                     // bigint. An *unknown* hint (e.g. a reassigned parameter
@@ -1349,6 +1352,53 @@ impl Compiler {
                             _ => None };
                         if let Some(name) = arith_fn {
                             if other_known_non_bigint {
+                                // A language that DECLARES integer spellings
+                                // as bigint widens its own mixes (Kotlin
+                                // `1L + 2` is Long, `1L + 2.0` is Double):
+                                // with a floating partner the BIGINT side
+                                // demotes through `Number`; otherwise the
+                                // number side promotes through the ecma
+                                // constructor and the op stays exact.
+                                if self.bigint_widens_mixes() {
+                                    let other_hint = if left_is_bigint {
+                                        right_hint.as_deref()
+                                    } else {
+                                        left_hint.as_deref()
+                                    };
+                                    let other_is_float = other_hint.is_some_and(|h| {
+                                        vybe_ast::builtin_types::classify_with(
+                                            &self.profile.builtin_type_spellings,
+                                            h,
+                                        ) == Some(
+                                            vybe_ast::builtin_slots::BuiltinType::Double,
+                                        )
+                                    });
+                                    if other_is_float {
+                                        let number = self.import("ecma:number", "Number");
+                                        self.compile_expr(left)?;
+                                        if left_is_bigint {
+                                            self.emit_host_call(number, 1);
+                                        }
+                                        self.compile_expr(right)?;
+                                        if right_is_bigint {
+                                            self.emit_host_call(number, 1);
+                                        }
+                                        self.compile_binop(op);
+                                        return Ok(());
+                                    }
+                                    let ctor = self.import("ecma:bigint", "BigInt");
+                                    let idx = self.import("ecma:bigint", name);
+                                    self.compile_expr(left)?;
+                                    if !left_is_bigint {
+                                        self.emit_host_call(ctor, 1);
+                                    }
+                                    self.compile_expr(right)?;
+                                    if !right_is_bigint {
+                                        self.emit_host_call(ctor, 1);
+                                    }
+                                    self.emit_host_call(idx, 2);
+                                    return Ok(());
+                                }
                                 // §21.2.1.1: arithmetic between BigInt and a
                                 // KNOWN non-BigInt throws TypeError.
                                 self.emit_const(Value::String(Arc::from(
@@ -1504,8 +1554,8 @@ impl Compiler {
                         match op {
                             UnaryOp::Neg => {
                                 let l = self.line;
-                                if self.profile.has_ecma_bigint
-                                    && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
+                                if self.bigint_semantics()
+                                    && self.hint_is_bigint(self.infer_expr_type_hint(inner).as_deref())
                                 {
                                     let idx = self.import("ecma:bigint", "neg");
                                     self.emit_host_call(idx, 1);
@@ -1526,8 +1576,8 @@ impl Compiler {
                                 // BigInt is the one primitive exception: unary
                                 // plus throws, while explicit Number(1n) still
                                 // converts.
-                                if self.profile.has_ecma_bigint
-                                    && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
+                                if self.bigint_semantics()
+                                    && self.hint_is_bigint(self.infer_expr_type_hint(inner).as_deref())
                                 {
                                     self.emit_const(Value::String(Arc::from(
                                         "Cannot convert a BigInt value to a number",
@@ -1569,11 +1619,44 @@ impl Compiler {
                             }
                             UnaryOp::BitNot => {
                                 let l = self.line;
-                                if self.profile.has_ecma_bigint
-                                    && self.infer_expr_type_hint(inner).as_deref() == Some("bigint")
-                                {
-                                    let idx = self.import("ecma:bigint", "not");
-                                    self.emit_host_call(idx, 1);
+                                // ECMA §13.5.6: `~` dispatches on ToNumeric — a
+                                // BigInt operand takes the `(bigint, not)` slot
+                                // row, anything else ToInt32. The spelling lives
+                                // in the slot table (language first, platform
+                                // default second), not here.
+                                let bigint_not = self
+                                    .bigint_semantics()
+                                    .then(|| {
+                                        self.builtin_type_slot_target(
+                                            vybe_ast::builtin_slots::BuiltinType::BigInt,
+                                            vybe_ast::ProtocolSlot::Not,
+                                        )
+                                    })
+                                    .flatten()
+                                    .map(str::to_string);
+                                if let Some(target) = bigint_not {
+                                    if self.hint_is_bigint(
+                                        self.infer_expr_type_hint(inner).as_deref(),
+                                    ) {
+                                        // Statically known BigInt.
+                                        self.emit_slot_target(&target, 1, l, "bigint not");
+                                    } else {
+                                        // Unknown operand: runtime ToNumeric
+                                        // dispatch, the same shape as the
+                                        // `emit_dyn_*` family.
+                                        let slot = self.chunk().alloc_scratch(1);
+                                        self.emit_u16(Op::LOCAL_SET, slot);
+                                        let test_bi = self.import("wasm:js-bigint", "test");
+                                        self.emit_u16(Op::LOCAL_GET, slot);
+                                        self.emit_host_call(test_bi, 1);
+                                        self.chunk().emit_if_value(l);
+                                        self.emit_u16(Op::LOCAL_GET, slot);
+                                        self.emit_slot_target(&target, 1, l, "bigint not");
+                                        self.chunk().emit_else(l);
+                                        self.emit_u16(Op::LOCAL_GET, slot);
+                                        common::expressions::emit_i32_not(self.chunk(), l);
+                                        self.chunk().emit_end(l);
+                                    }
                                 } else if self.uses_rich_operators() {
                                     self.emit_rich_unary(
                                         vybe_ast::ProtocolSlot::Not,
@@ -1610,25 +1693,14 @@ impl Compiler {
                 PlaceExpr::Deref(expr) => {
                     self.compile_expr(expr)?;
                 }
-                PlaceExpr::Member {
-                    object,
-                    field,
-                    null_safe } => {
-                    self.compile_expr(&Expression::new(ExprKind::Member {
-                        object: object.clone(),
-                        field: field.clone(),
-                        null_safe: *null_safe }))?;
-                    self.emit_wrap_top_of_stack_in_pointer_cell();
+                PlaceExpr::Member { object, field, .. } => {
+                    self.compile_member_reference(object, field)?;
                 }
-                PlaceExpr::Index {
-                    object,
-                    index,
-                    null_safe } => {
-                    self.compile_expr(&Expression::new(ExprKind::Index {
-                        object: object.clone(),
-                        index: index.clone(),
-                        null_safe: *null_safe }))?;
-                    self.emit_wrap_top_of_stack_in_pointer_cell();
+                // A PLACE must never reach the rvalue wrap — see
+                // `compile_index_reference`. Both spellings of "address of an
+                // element" resolve through the one site.
+                PlaceExpr::Index { object, index, .. } => {
+                    self.compile_index_reference(object, index)?;
                 }
             },
 
@@ -1753,7 +1825,13 @@ impl Compiler {
                     self.chunk().emit_end(line);
                     return Ok(());
                 }
-                if self.profile.namespaces.use_dotnet {
+                // The COMMON resolver, asked without a language gate. It walks
+                // the profile's own declared namespace surface
+                // (`host_namespace_aliases`, `host_package_roots`, the shared
+                // tree scoped by `type_scopes`), so a profile that declares none
+                // resolves nothing and this falls straight through. The gate
+                // decided who was allowed to ask, never what came back.
+                {
                     let parts = self.flatten_member_chain(expr);
                     if let Some(super::resolver::Resolution::ResolvedPrefix { target, suffix }) =
                         self.resolve_profile_namespace_chain(&parts)
@@ -2240,7 +2318,12 @@ impl Compiler {
                     }
                 }
 
-                if self.profile.namespaces.use_dotnet {
+                // Dotted-name constants and the common namespace resolver, asked
+                // without a language gate: `lookup_constant` reads the PROFILE's
+                // own constant table and `resolve_profile_namespace_chain` the
+                // profile's own namespace surface. A profile declaring neither
+                // gets `None` from both and falls through unchanged.
+                {
                     let parts = self.flatten_member_chain(expr);
                     if !parts.is_empty() {
                         let const_key = parts.join(".");
@@ -2622,16 +2705,17 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let receiver_type_hint = if self.profile.namespaces.use_dotnet {
+                // ONE receiver-typing path for every language. The two branches
+                // were the same mechanism at different strengths — the gated
+                // one is a strict superset (`resolve_receiver_type_hint` starts
+                // from `lookup_var_type_hint` for an `Ident` and adds scope
+                // types, global hints, static fields and type aliases, then
+                // falls back to `infer_expr_type_hint` exactly as the other
+                // branch did). Neither names a language; the flag only decided
+                // who got the better answer.
+                let receiver_type_hint =
                     crate::primitives::calls::resolve_receiver_type_hint(self, object)
-                        .or_else(|| self.infer_expr_type_hint(object))
-                } else {
-                    match &object.kind {
-                        ExprKind::Ident(name) => {
-                            self.lookup_var_type_hint(name).map(str::to_string)
-                        }
-                        _ => self.infer_expr_type_hint(object) }
-                };
+                        .or_else(|| self.infer_expr_type_hint(object));
                 if self.profile.member_invokes_parameterless_method && !*null_safe {
                     if let Some(class_name) = receiver_type_hint.as_deref().and_then(|type_hint| {
                         self.resolve_pending_class_name_for_type_hint(type_hint)
@@ -2679,7 +2763,11 @@ impl Compiler {
                     .as_deref()
                     .is_some_and(|type_hint| type_hint.trim().ends_with('?'));
 
-                let receiver_array_rank = if self.profile.namespaces.use_dotnet && field == "Rank" {
+                // `Rank` plus an array-shaped hint IS the signal — the parse
+                // below needs `[` … `]` in the type hint, which only an array
+                // type produces. The family check added nothing the field name
+                // and the hint did not already say.
+                let receiver_array_rank = if field == "Rank" {
                     let inferred = receiver_type_hint.as_deref().and_then(|type_hint| {
                         let normalized = Self::normalize_type_hint(type_hint);
                         let start = normalized.find('[')?;
@@ -2692,7 +2780,12 @@ impl Compiler {
                     None
                 };
 
-                if self.profile.namespaces.use_dotnet && receiver_is_nullable {
+                // `HasValue`/`Value` on a receiver whose DECLARED type is
+                // nullable. `receiver_is_nullable` is read off the type hint the
+                // shared AST carries, and both member names are matched
+                // case-sensitively, so this is the nullable-wrapper protocol
+                // rather than any one language's spelling of it.
+                if receiver_is_nullable {
                     match field.as_str() {
                         "HasValue" => {
                             self.compile_expr(object)?;
@@ -2716,11 +2809,30 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let receiver_is_collection_like = if self.profile.namespaces.use_dotnet
-                    && (field.eq_ignore_ascii_case("Length") || field.eq_ignore_ascii_case("Count"))
+                // The receiver has a size member if the language's OWN
+                // registered tree says the type declares one. That replaces the
+                // family check; the spelling list below is still consulted for
+                // the shapes no type node covers (arrays, strings).
+                let receiver_is_collection_like = if field.eq_ignore_ascii_case("Length")
+                    || field.eq_ignore_ascii_case("Count")
                 {
                     let unknown_receiver_default = field.eq_ignore_ascii_case("Length");
+                    let type_scopes = &self.profile.namespaces.type_scopes;
                     let is_collection_like_type = |type_hint: &str| {
+                        // The tree is the authority: a registered type that
+                        // declares `Count` IS a collection, whichever platform
+                        // registered it. This is what retires the hardcoded
+                        // .NET name list that used to live here — a
+                        // per-language table inside a twelve-language crate.
+                        if vybe_runtime::namespaces::lookup_type_instance_member(
+                            type_scopes,
+                            type_hint,
+                            "Count",
+                        )
+                        .is_some()
+                        {
+                            return true;
+                        }
                         let normalized = Self::normalize_type_hint(type_hint);
                         let generic_start = normalized
                             .find('<')
@@ -2802,8 +2914,9 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let is_csharp_len_accessor = self.profile.namespaces.use_dotnet
-                    && (field.eq_ignore_ascii_case("Length")
+                // Gated by the RECEIVER being collection-like, which the tree
+                // now answers — not by which family compiled the file.
+                let is_csharp_len_accessor = (field.eq_ignore_ascii_case("Length")
                         || field.eq_ignore_ascii_case("Count"))
                     && receiver_is_collection_like
                     && !matches!(
@@ -2811,9 +2924,7 @@ impl Compiler {
                         ExprKind::Ident(name)
                             if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
                     );
-                let is_csharp_runtime_count_accessor = self.profile.namespaces.use_dotnet
-                    && self.profile.namespaces.use_dotnet
-                    && field == "Count"
+                let is_csharp_runtime_count_accessor = field == "Count"
                     && !is_csharp_len_accessor
                     && !*null_safe
                     && !matches!(
@@ -2822,9 +2933,9 @@ impl Compiler {
                         if name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
                     );
 
-                if self.profile.namespaces.use_dotnet
-                    && self.profile.namespaces.use_dotnet
-                    && field == "Count"
+                // The type hint names the set types exactly; the family check
+                // decided nothing the hint did not.
+                if field == "Count"
                     && receiver_type_hint
                         .as_deref()
                         .map(|type_hint| {
@@ -2853,8 +2964,10 @@ impl Compiler {
                     }
                 }
 
-                let is_dotnet_observable_count = self.profile.namespaces.use_dotnet
-                    && field == "Count"
+                // The type-hint test below already names the type exactly, and
+                // resolves it through the tree — nothing left for a family
+                // check to decide.
+                let is_dotnet_observable_count = field == "Count"
                     && receiver_type_hint
                         .as_deref()
                         .map(|type_hint| {
@@ -2888,8 +3001,7 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_common("dotnet.observable_collection_count", 1, self.line);
                     return Ok(());
-                } else if self.profile.namespaces.use_dotnet
-                    && field == "Items"
+                } else if field == "Items"
                     && receiver_type_hint
                         .as_deref()
                         .map(|type_hint| {
@@ -2985,10 +3097,10 @@ impl Compiler {
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, canonical_idx);
                     self.emit_u16(Op::LOCAL_SET, value_slot);
 
-                    if self.profile.namespaces.use_dotnet
-                        && self.profile.namespaces.use_dotnet
-                        && field.as_str() != field_name
-                    {
+                    // `field_name` is the name resolution settled on; a
+                    // difference from the source spelling is the signal, and it
+                    // is data, not a language family.
+                    if field.as_str() != field_name {
                         self.emit_u16(Op::LOCAL_GET, value_slot);
                         fn_call!(self, "wasm:js-undefined", "test", 1);
                         let line = self.line;
@@ -3068,7 +3180,10 @@ impl Compiler {
                     return Ok(());
                 }
 
-                let static_field_owner = if self.profile.namespaces.use_dotnet {
+                // `reflection_type_metadata` is a registry lookup that names no
+                // language and answers `None` for a type nothing registered, so
+                // the gate only decided who was allowed to ask.
+                let static_field_owner = {
                     receiver_type_hint.as_deref().and_then(|type_hint| {
                         let trimmed_type_hint = type_hint.trim().trim_end_matches("()").trim();
                         let metadata_type_hint = self
@@ -3094,8 +3209,6 @@ impl Compiler {
                                 }
                             })
                     })
-                } else {
-                    None
                 };
 
                 // Late-bound member read: try the instance field, fall back to
@@ -3162,10 +3275,10 @@ impl Compiler {
                     let field_name = self
                         .field_storage_name_for_receiver(object, field)
                         .unwrap_or_else(|| self.canon(field));
-                    if self.profile.namespaces.use_dotnet
-                        && self.profile.namespaces.use_dotnet
-                        && field.as_str() != field_name
-                    {
+                    // `field_name` is the name resolution settled on; a
+                    // difference from the source spelling is the signal, and it
+                    // is data, not a language family.
+                    if field.as_str() != field_name {
                         let obj_slot = self.define_local("__dotnet_member_obj");
                         self.emit_u16(Op::LOCAL_SET, obj_slot);
 
@@ -3653,8 +3766,7 @@ impl Compiler {
                     self.chunk().emit_end(lookup_line);
                     self.chunk().emit_end(line);
                 } else if self.profile.namespaces.use_dotnet {
-                    if self.profile.namespaces.use_dotnet
-                        && self
+                    if self
                             .infer_expr_type_hint(object)
                             .as_deref()
                             .map(Self::normalize_type_hint)
@@ -4317,9 +4429,12 @@ impl Compiler {
                     // whether they overlap with .NET BCL types (Timer is both
                     // a GUI control and a System.Threading.Timer — the GUI
                     // form takes priority because we're in `New X()` syntax).
-                    let dotnet_ctor_registered = self.profile.namespaces.use_dotnet
-                        && (self.defined_globals.contains(bare_str)
-                            || self.defined_globals.contains(&bare_str.to_lowercase()));
+                    // A user global spelling a control name shadows the control
+                    // factory — the same rule `is_framework_control_parent`
+                    // already applies for a user CLASS. That is a fact about
+                    // the program, not about which language family compiled it.
+                    let dotnet_ctor_registered = self.defined_globals.contains(bare_str)
+                        || self.defined_globals.contains(&bare_str.to_lowercase());
                     let canonical = common::gui::canonical_control_name(bare_str);
                     if !canonical.is_empty() && !dotnet_ctor_registered {
                         for a in args {
@@ -4577,14 +4692,22 @@ impl Compiler {
                 self.compile_expr(value)?;
                 inst!(self, core_wasm::dup);
                 self.compile_assign_target_valued(target, Some(value))?;
-                // PHP reference assignment: mark target as pointer-cell
-                // AFTER the first store so subsequent writes use cell_store.
+                // Reference assignment: mark the target as a pointer-cell
+                // binding AFTER the first store, so subsequent writes go
+                // THROUGH the reference instead of overwriting the name.
+                //
+                // Both spellings of "make a reference" count. `RefOf` and
+                // `Unary{AddrOf}` are the same concept (§2 of `referenceplan.md`)
+                // and matching only one made the binding's aliasing depend on
+                // which node the walker happened to build — a name bound to a
+                // reference silently stayed a plain value.
                 if matches!(
                     &value.kind,
-                    ExprKind::Unary {
-                        op: UnaryOp::AddrOf,
-                        ..
-                    }
+                    ExprKind::RefOf(_)
+                        | ExprKind::Unary {
+                            op: UnaryOp::AddrOf,
+                            ..
+                        }
                 ) {
                     if let ExprKind::Ident(name) = &target.kind {
                         self.mark_pointer_cell_binding(name);
@@ -4916,31 +5039,27 @@ impl Compiler {
             // Each key is set via struct_set AND appended to __keys so that
             // Object.keys/values/entries (which read __keys) return the
             // right answer.
+            // An ordered, `Value`-keyed literal. Build `[[k, v], …]` then
+            // `Map.fromEntries` — keeps key types and insertion order.
+            //
+            // No profile consulted: the NODE says it is a Map. The branch that
+            // used to live inside `ExprKind::Object` asked
+            // `profile.dict_literals_as_map`, so the same node compiled to two
+            // different runtime shapes depending on which language emitted it —
+            // and a primitive holding one could not tell which it had.
+            ExprKind::Map(entries) => {
+                for (key, value) in entries {
+                    self.compile_expr(key)?;
+                    self.compile_expr(value)?;
+                    self.emit_array_new_fixed(0, 2);
+                }
+                self.emit_array_new_fixed(0, entries.len() as u16);
+                let idx = self.import("ecma:map", "fromEntries");
+                self.emit_host_call(idx, 1);
+            }
+
             ExprKind::Object(props) => {
                 let line = self.line;
-                // Dict literal → Map when the profile opts in AND the literal is
-                // plain key/value pairs. A Map keeps non-string key types
-                // (`{1: 'a'}` stays int) and insertion order — Python dicts.
-                if self.profile.dict_literals_as_map
-                    && props
-                        .iter()
-                        .all(|p| matches!(p, ObjectProperty::KeyValue { .. }))
-                {
-                    // Build `[[k, v], …]` then `Map.fromEntries` — keeps key
-                    // types and insertion order.
-                    let n = props.len();
-                    for prop in props {
-                        if let ObjectProperty::KeyValue { key, value } = prop {
-                            self.compile_expr(key)?;
-                            self.compile_expr(value)?;
-                            self.emit_array_new_fixed(0, 2);
-                        }
-                    }
-                    self.emit_array_new_fixed(0, n as u16);
-                    let idx = self.import("ecma:map", "fromEntries");
-                    self.emit_host_call(idx, 1);
-                    return Ok(());
-                }
                 common::dict::emit_new(&mut self.chunks, self.current, line);
                 for prop in props {
                     match prop {
@@ -5638,9 +5757,17 @@ impl Compiler {
                                             Self::normalize_type_hint(&hint) == "char"
                                         });
                                 if is_char_like {
-                                    inst!(self, core_wasm::i32_const, 0);
+                                    // Widening a `char` reads its UTF-16 code
+                                    // point — `(int)'A'` is 65. This used to
+                                    // push a literal ZERO and stringify it,
+                                    // never evaluating the operand at all, so
+                                    // every dotnet language answered `0`. The
+                                    // conversion belongs to the dotnet adapter
+                                    // (`Convert.ToChar` already lives there as
+                                    // its inverse), not to this arm.
+                                    self.compile_expr(inner)?;
                                     let line = self.line;
-                                    common::strings::emit_to_string(self.chunk(), line);
+                                    self.emit_common("dotnet.char_code", 1, line);
                                     return Ok(());
                                 }
                                 self.compile_expr(inner)?;
@@ -6426,7 +6553,14 @@ impl Compiler {
                 let is_set = *kind == ComprehensionKind::Set;
                 // Dict comprehension builds a Map (same as a dict literal) so
                 // non-string keys keep their type — Python dict === PHP array.
-                let dict_as_map = is_dict && self.profile.dict_literals_as_map;
+                //
+                // `ComprehensionKind::Dict` already SAYS this is a dict; the
+                // profile flag it used to be ANDed with was a per-language veto
+                // over information the AST had already declared. `is_dict`
+                // alone is the condition, and the `else if is_dict` arm below
+                // is now dead — kept only until a language declares a dict
+                // comprehension that genuinely wants object semantics.
+                let dict_as_map = is_dict;
 
                 // Build the accumulator: dict → Map/Object, set/list/gen → Array
                 if dict_as_map {
@@ -6822,7 +6956,7 @@ impl Compiler {
                     interfaces,
                     members,
                     &crate::ast::ClassModifiers::default(),
-                    false,
+                    vybe_ast::ValueSemantics::default(),
                 )?;
                 if let Some(saved) = saved_expr_js_this {
                     self.restore_js_this(saved);
@@ -7139,10 +7273,11 @@ impl Compiler {
         left: &Expression,
         right: &Expression,
     ) -> Result<bool, String> {
-        if !self.profile.namespaces.use_dotnet {
-            return Ok(false);
-        }
-
+        // No language gate: the operands must share a declared type whose class
+        // declares `op_Addition`/`op_Equality`/… — the CLR's mangled operator
+        // spellings. A class only carries those names if a frontend emitted
+        // them, so a language that does not speak them resolves nothing here
+        // and the caller falls through to the ordinary binary path.
         let left_type = self.infer_expr_type_hint(left);
         let right_type = self.infer_expr_type_hint(right);
         let (Some(left_type), Some(right_type)) = (left_type, right_type) else {
@@ -7953,7 +8088,11 @@ pub fn emit_rich_compare_locals(
     chunk.emit_else(line);
 
     // Not found: try compare-style methods like C# CompareTo / Ruby <=>.
-    let done = chunk.emit_block(line);
+    // The block CARRIES the comparison result (one value on every path):
+    // the `br 1` below targets it, and a branch to a void block would
+    // discard the value it just computed — the outer consumer then read
+    // whatever sat beneath it on the stack (measured: Null into an `if`).
+    let done = chunk.emit_block_typed(line, 1);
     for method_name in ["compare", "CompareTo", "compareTo", "__cmp__", "<=>"] {
         let method_key = chunk.add_constant(Value::String(Arc::from(method_name)));
         chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);

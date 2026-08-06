@@ -105,7 +105,40 @@ impl Compiler {
     /// else by Number 1. Profiles without BigInt keep the plain number
     /// path byte-for-byte.
     pub(crate) fn emit_step_by_one(&mut self, add: bool) {
-        if self.profile.has_ecma_bigint {
+        let line = self.line;
+        // The language's OWN string step, if it declares one —
+        // `[builtin_slots.string] inc/dec`, PHP's alphanumeric increment
+        // ("a"++ is "b"). LANGUAGE table only: ECMA has no string step
+        // (§13.4 is ToNumeric), so there is no platform default and the
+        // runtime string test below only exists when a binding says so.
+        let string_step = self
+            .profile
+            .builtin_slots
+            .get(
+                vybe_ast::builtin_slots::BuiltinType::String,
+                if add {
+                    vybe_ast::ProtocolSlot::Inc
+                } else {
+                    vybe_ast::ProtocolSlot::Dec
+                },
+            )
+            .map(str::to_string);
+        if let Some(target) = string_step {
+            let slot = self.define_local("__step_v");
+            self.emit_u16(Op::LOCAL_SET, slot);
+            let test_str = self.import("wasm:js-string", "test");
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.emit_host_call(test_str, 1);
+            self.chunk().emit_if_value(line);
+            self.emit_u16(Op::LOCAL_GET, slot);
+            self.emit_slot_target(&target, 1, line, "string step");
+            self.chunk().emit_else(line);
+            self.emit_u16(Op::LOCAL_GET, slot);
+            common::bigint::emit_step(self.chunk(), add, line);
+            self.chunk().emit_end(line);
+            return;
+        }
+        if self.bigint_semantics() {
             let slot = self.define_local("__step_v");
             self.emit_u16(Op::LOCAL_SET, slot);
             let test_bi = self.import("wasm:js-bigint", "test");
@@ -730,10 +763,47 @@ impl Compiler {
                 } else {
                     {
                         let line = self.line;
+                        // Value equality, as DECLARED. Both sides carrying the
+                        // `__value_eq` stamp means two languages independently
+                        // said their `==` compares fields — so compare fields,
+                        // whoever allocated the objects. This is the read side
+                        // of the policy; Dart and dotnet each had a private
+                        // reader of the same stamp, which is what made a record
+                        // lose its equality the moment it crossed a boundary.
+                        let right_slot = self.define_local("__veq_rhs");
+                        let left_slot = self.define_local("__veq_lhs");
+                        self.emit_u16(Op::LOCAL_SET, right_slot);
+                        self.emit_u16(Op::LOCAL_SET, left_slot);
+                        crate::primitives::records::emit_is_value_eq(
+                            self.chunk(),
+                            left_slot,
+                            line,
+                        );
+                        crate::primitives::records::emit_is_value_eq(
+                            self.chunk(),
+                            right_slot,
+                            line,
+                        );
+                        self.chunk().emit_op(Op::I32_AND, line);
+                        self.chunk().emit_if(line);
+                        crate::primitives::records::emit_value_fields_equal(
+                            &mut self.chunks,
+                            self.current,
+                            left_slot,
+                            right_slot,
+                            line,
+                        );
+                        if !self.profile.materialize_bool_results {
+                            crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                        }
+                        self.chunk().emit_else(line);
+                        self.emit_u16(Op::LOCAL_GET, left_slot);
+                        self.emit_u16(Op::LOCAL_GET, right_slot);
                         crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
                         if self.profile.materialize_bool_results {
                             crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                         }
+                        self.chunk().emit_end(line);
                     };
                 }
             }

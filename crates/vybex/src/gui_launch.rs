@@ -1307,7 +1307,7 @@ mod tests {
         let mut vm = VM::new();
         let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         vm.register_host_fn(
-            "wasi:logging/logging",
+            "web:console",
             "log",
             Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
         );
@@ -1323,7 +1323,7 @@ mod tests {
         let mut vm = VM::new();
         let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         vm.register_host_fn(
-            "wasi:logging/logging",
+            "web:console",
             "log",
             Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
         );

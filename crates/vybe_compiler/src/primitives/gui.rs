@@ -433,6 +433,16 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         ) }
 }
 
+/// The event type an `on<type>` role registers, if it is one.
+///
+/// A ROLE, exactly like the property roles: every language spells its handler
+/// slot `OnClick` / `onClick` / `Click`, and each lowers to the one DOM event
+/// type. Nothing here is per-language and nothing is enumerated — HTML's own
+/// convention is that an event handler IDL attribute is `on` + the type.
+fn event_role_type(role: &str) -> Option<&str> {
+    role.strip_prefix("on").filter(|type_name| !type_name.is_empty())
+}
+
 impl Compiler {
     /// Lower `gui.prop_get.<role>` — stack in `[control]`, out `[value]`.
     pub fn emit_gui_property_get(&mut self, role: &str, line: u32) {
@@ -450,10 +460,56 @@ impl Compiler {
             None => 2 };
         let idx = self.import(module, func);
         self.emit_host_call(idx, argc);
+        // The DOM answers in the DOM's own terms; the role's value type is
+        // what the caller asked for. Both conversions below are the exact
+        // inverse of what `emit_gui_property_set` writes, so a round trip is
+        // an identity — which is what `readback=` in the repros checks.
+        match role {
+            // `getAttribute` is null when ABSENT and "" when present, and
+            // `disabled`/`hidden` are the INVERSE of the role. Absent means
+            // enabled/visible, so the answer is "was it absent", as a real
+            // boolean rather than the attribute's own text.
+            "enabled" | "visible" => {
+                self.emit(Op::REF_IS_NULL);
+                self.chunk().emit_if_value(line);
+                self.emit_const(Value::Bool(true));
+                self.chunk().emit_else(line);
+                self.emit_const(Value::Bool(false));
+                self.chunk().emit_end(line);
+            }
+            // CSS geometry is TEXT with units (`"10px"`) — that is the spec,
+            // and `vybe_widgets` is right to store it that way. A control's
+            // `Left` is a number, so parse the unit back off here.
+            "left" | "top" | "width" | "height" => {
+                let parse_float = self.import("ecma:number", "parseFloat");
+                self.emit_host_call(parse_float, 1);
+            }
+            _ => {}
+        }
     }
 
     /// Lower `gui.prop_set.<role>` — stack in `[control, value]`, out `[_]`.
     pub fn emit_gui_property_set(&mut self, role: &str, line: u32) {
+        // `OnClick := handler` IS `addEventListener("click", handler)`. HTML
+        // spells the same thing as an `on<type>` IDL attribute, so the role
+        // needs no translation table — the event type is whatever follows
+        // `on`, and `addEventListener` takes any type string, which is what
+        // lets `OnTimer` and `OnCreate` register alongside `click` without
+        // inventing anything.
+        if let Some(event_type) = event_role_type(role) {
+            let value = self.define_local("__gui_event_handler");
+            let ctrl = self.define_local("__gui_event_target");
+            self.emit_u16(Op::LOCAL_SET, value);
+            self.emit_u16(Op::LOCAL_SET, ctrl);
+            let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.emit_u16(Op::LOCAL_GET, ctrl);
+            emit_string_const(self.chunk(), event_type, line);
+            self.emit_u16(Op::LOCAL_GET, value);
+            let idx = self.import(DOM_MODULE, "addEventListener");
+            self.emit_host_call(idx, 4);
+            return;
+        }
         let (module, func, key) = property_op(role, true);
         let value = self.define_local("__gui_prop_value");
         let ctrl = self.define_local("__gui_prop_ctrl");
@@ -557,6 +613,34 @@ pub fn registered_control_element(
 }
 
 impl Compiler {
+    /// The element a type IS, following a user class up to the control it
+    /// derives from.
+    ///
+    /// `class TForm1 = class(TForm)` IS a form: a subclass of a control is a
+    /// control, the same way `is_framework_control_parent` already treats the
+    /// parent. Asking the registry alone answered None for every user-declared
+    /// form, so `Self.OnCreate := handler` — a property write on the form
+    /// itself — missed the DOM path that its own buttons took.
+    pub fn control_element_for_type(&self, type_name: &str) -> Option<ControlElement> {
+        if let Some(element) =
+            registered_control_element(&self.profile.namespaces.type_scopes, type_name)
+        {
+            return Some(element);
+        }
+        // Walk the declared parents. Bounded by the chain itself, and a cycle
+        // in it would already have broken construction long before here.
+        let mut current = self.pending_class_parent(type_name);
+        while let Some(parent) = current {
+            if let Some(element) =
+                registered_control_element(&self.profile.namespaces.type_scopes, &parent)
+            {
+                return Some(element);
+            }
+            current = self.pending_class_parent(&parent);
+        }
+        None
+    }
+
     /// `control.<prop> = value` → the DOM.
     ///
     /// Property NAMES arrive already normalised by the frontend (Pascal's
@@ -579,43 +663,16 @@ impl Compiler {
         let value_tmp = self.define_local("__ctrl_prop_value");
         self.emit_u16(Op::LOCAL_SET, value_tmp);
 
+        // ONE role→DOM mapping, not two. This used to carry its own copy of
+        // the `property_op` match, and the copies drifted the moment a role
+        // was added to one of them: `OnClick` reached the DOM as an
+        // `setAttribute("onclick", <closure>)` — a stringified function on an
+        // attribute — because only the other path had learned that an
+        // `on<type>` role registers a listener.
         let prop = prop.to_ascii_lowercase();
-        let (module, func, key): (&str, &str, Option<&str>) = match prop.as_str() {
-            "text" | "caption" => (DOM_MODULE, "setTextContent", None),
-            "value" => (DOCUMENT_MODULE, "setValue", None),
-            "checked" | "ischecked" => (DOCUMENT_MODULE, "setChecked", None),
-            // `Name` is handled below: it sets BOTH `id` and `name`.
-            "name" => (DOM_MODULE, "setAttribute", Some("id")),
-            // Boolean content attributes, INVERTED: `Enabled := False` must
-            // ADD `disabled`, `Enabled := True` must REMOVE it. `setAttribute`
-            // either way would disable a control when you enabled it.
-            // `toggleAttribute(name, force)` is the DOM's own add-or-remove.
-            "enabled" => (DOM_MODULE, "toggleAttribute", Some("disabled")),
-            "visible" => (DOM_MODULE, "toggleAttribute", Some("hidden")),
-            "left" | "top" | "width" | "height" => (CSSOM_MODULE, "setStyleProperty", Some("")),
-            _ => (DOM_MODULE, "setAttribute", Some("")) };
-
-        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
-        self.chunk().emit_call(doc_idx, 0, line);
         self.compile_expr(object)?;
-        let argc = match key {
-            Some(k) => {
-                let name = if k.is_empty() { prop.as_str() } else { k };
-                emit_string_const(self.chunk(), name, line);
-                self.emit_u16(Op::LOCAL_GET, value_tmp);
-                // `disabled`/`hidden` are the OPPOSITE of `Enabled`/`Visible`.
-                if matches!(prop.as_str(), "enabled" | "visible") {
-                    self.emit(Op::I32_EQZ);
-                }
-                4
-            }
-            None => {
-                self.emit_u16(Op::LOCAL_GET, value_tmp);
-                3
-            }
-        };
-        let idx = self.import(module, func);
-        self.emit_host_call(idx, argc);
+        self.emit_u16(Op::LOCAL_GET, value_tmp);
+        self.emit_gui_property_set(&prop, line);
         self.emit(Op::DROP);
 
         // A designer `Name` is BOTH of HTML's two identifiers, which are not
@@ -696,6 +753,16 @@ impl Compiler {
         }
         let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
         self.chunk().emit_call(doc_idx, 0, line);
+        // A document has exactly ONE body and you cannot create another —
+        // `createElement("body")` is legal but yields a detached second body
+        // that renders nothing. A form IS the document's body, so take it.
+        // (It also showed up as an extra entry everywhere controls are
+        // enumerated: a two-control form reported three.)
+        if element.tag == "body" {
+            let body_idx = self.import(DOCUMENT_MODULE, "body");
+            self.chunk().emit_call(body_idx, 1, line);
+            return;
+        }
         emit_string_const(self.chunk(), &element.tag, line);
         emit_string_const(self.chunk(), &element.input_type, line);
         let create_idx = self.import(DOM_MODULE, HOST_FN_CREATE_ELEMENT);

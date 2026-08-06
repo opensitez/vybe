@@ -7,8 +7,83 @@
 use super::*;
 
 impl Compiler {
+    /// The policy in force here — the module's declaration, plus whatever the
+    /// code up to this point has declared. Never empty.
+    pub(crate) fn directives(&self) -> &vybe_ast::Directives {
+        self.directives
+            .last()
+            .expect("directive stack always has the module frame")
+    }
+
+    /// Does this body declare anything? A frame is pushed only when it does,
+    /// so a body that states no policy costs a linear scan and nothing else.
+    /// Shallow on purpose: a nested block runs its own scan.
+    pub(crate) fn stmts_have_directive(stmts: &[Statement]) -> bool {
+        stmts
+            .iter()
+            .any(|s| matches!(s.kind, StmtKind::Directive { .. }))
+    }
+
+    pub(crate) fn push_directive_frame(&mut self) {
+        let inherited = self.directives().clone();
+        self.directives.push(inherited);
+    }
+
+    pub(crate) fn pop_directive_frame(&mut self) {
+        self.directives.pop();
+    }
+
+    /// `Block` changes the innermost frame, so the enclosing block's policy is
+    /// restored on exit — JS `"use strict"` in a function body. `Module`
+    /// writes through EVERY frame, so it outlives the block it appeared in —
+    /// Pascal's `{$R+}` switched on halfway down a procedure stays on.
+    pub(crate) fn apply_directive(
+        &mut self,
+        set: &vybe_ast::Directives,
+        scope: vybe_ast::DirectiveScope,
+    ) {
+        match scope {
+            vybe_ast::DirectiveScope::Block => {
+                if let Some(top) = self.directives.last_mut() {
+                    top.overlay(set);
+                }
+            }
+            vybe_ast::DirectiveScope::Module => {
+                for frame in &mut self.directives {
+                    frame.overlay(set);
+                }
+            }
+        }
+    }
+
     pub(super) fn compile_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
         self.line = stmt.span.start_line;
+        if std::env::var("VYBE_DBG_CTRL").is_ok() {
+            let what = match &stmt.kind {
+                StmtKind::Assign { targets, .. } => format!(
+                    "Assign targets={:?}",
+                    targets
+                        .iter()
+                        .map(|t| match &t.kind {
+                            ExprKind::Ident(n) => format!("Ident({n})"),
+                            ExprKind::Member { object, field, .. } => format!(
+                                "Member({}.{field})",
+                                match &object.kind {
+                                    ExprKind::Ident(n) => n.clone(),
+                                    other => format!("{other:?}").chars().take(24).collect(),
+                                }
+                            ),
+                            other => format!("{other:?}").chars().take(32).collect::<String>(),
+                        })
+                        .collect::<Vec<_>>()
+                ),
+                StmtKind::Expr(e) => {
+                    format!("Expr({})", format!("{:?}", e.kind).chars().take(60).collect::<String>())
+                }
+                other => format!("{other:?}").chars().take(40).collect::<String>(),
+            };
+            eprintln!("[stmt] line={} class={:?} {}", self.line, self.current_class, what);
+        }
         // Runtime-prelude boundary marker: a frontend that prepends a prelude
         // (e.g. JS) injects a `__vybe_user_code_start__` string-expression right
         // before the user's own code. Record the current bytecode offset on the
@@ -26,6 +101,12 @@ impl Compiler {
         match &stmt.kind {
             StmtKind::Select { arms, default } => {
                 self.emit_select(arms, default.as_deref())?;
+            }
+
+            // ── Declared policy ─────────────────────────────────────────
+            // Emits no code: it changes how the statements after it compile.
+            StmtKind::Directive { set, scope } => {
+                self.apply_directive(set, *scope);
             }
             // ── Expression statement ────────────────────────────────────
             StmtKind::Expr(expr) => {
@@ -185,8 +266,15 @@ impl Compiler {
                 if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(stmts) {
                     self.in_strict = true;
                 }
+                let framed = Self::stmts_have_directive(stmts);
+                if framed {
+                    self.push_directive_frame();
+                }
                 for s in stmts {
                     self.compile_stmt(s)?;
+                }
+                if framed {
+                    self.pop_directive_frame();
                 }
                 self.in_strict = saved_strict;
                 if make_scope {
@@ -352,6 +440,60 @@ impl Compiler {
                     // once true. php builds `$b = &$a` as ExprKind::Assign, not
                     // StmtKind::Assign, and that path already marks the pointer
                     // cell with no language check.
+                    // VALUE SEMANTICS. If the value on the stack is an instance
+                    // whose declaration said `b = a` hands back an independent
+                    // value, copy it here — once, before any target takes it.
+                    //
+                    // Shared, and driven by the INSTANCE stamp, because that is
+                    // the only thing that survives a language boundary: Pascal's
+                    // own copy pass keys on Pascal's declarations and cannot see
+                    // a Go struct or a COBOL group, so a foreign record silently
+                    // aliases. See `recordprimitiveplan.md`.
+                    //
+                    // Skipped entirely when the compiler can already see the
+                    // value is not an instance — a literal, an arithmetic
+                    // result, a comparison. Those are most assignments in every
+                    // corpus, and the check is pure cost there.
+                    if crate::primitives::records::may_be_value_instance(value) {
+                        let line = self.line;
+                        let value_slot = self.define_local("__assign_value");
+                        self.emit_u16(Op::LOCAL_SET, value_slot);
+                        if self.expr_is_declared_value_type(value) {
+                            // Static type says value type: copy unconditionally,
+                            // no stamp read. This is the case a stamp cannot
+                            // answer — a default-initialised record never ran a
+                            // constructor, so it carries no stamp.
+                            //
+                            // When the type is not just KNOWN to be a value type
+                            // but NAMEABLE, copy it the way argument passing
+                            // already does: field by field, allocating through
+                            // the same rtt, recursing into fields that are
+                            // themselves value types. The generic alternative
+                            // walks an object's own keys, which cannot preserve
+                            // type identity — it has nothing to allocate the
+                            // copy AS — and cannot tell a nested record from a
+                            // nested reference. Both paths deep-copy; only this
+                            // one keeps the copy the same type as its source.
+                            match self.expr_user_value_type_name(value) {
+                                Some(type_name) => {
+                                    self.emit_u16(Op::LOCAL_GET, value_slot);
+                                    self.emit_user_value_type_clone_from_stack(&type_name);
+                                }
+                                None => crate::primitives::records::emit_value_copy(
+                                    &mut self.chunks,
+                                    self.current,
+                                    value_slot,
+                                    line,
+                                ) }
+                        } else {
+                            crate::primitives::records::emit_value_copy_if_needed(
+                                &mut self.chunks,
+                                self.current,
+                                value_slot,
+                                line,
+                            );
+                        }
+                    }
                     for (i, target) in targets.iter().enumerate() {
                         if i < targets.len() - 1 {
                             inst!(self, core_wasm::dup);
@@ -1297,8 +1439,15 @@ impl Compiler {
                 if self.profile.ecma_strict_mode && Self::stmts_have_use_strict_directive(body) {
                     self.in_strict = true;
                 }
+                let try_framed = Self::stmts_have_directive(body);
+                if try_framed {
+                    self.push_directive_frame();
+                }
                 for s in body {
                     self.compile_stmt(s)?;
+                }
+                if try_framed {
+                    self.pop_directive_frame();
                 }
                 self.in_strict = saved_try_strict;
                 common::errors::emit_try_end(&mut self.chunks[self.current], line);
@@ -1752,7 +1901,19 @@ impl Compiler {
                     interfaces,
                     members,
                     modifiers,
-                    self.profile.user_types_are_value_types,
+                    // Storage keeps the profile's whole-language answer
+                    // (`user_types_are_value_types`) OR whatever this
+                    // declaration said; equality comes from the declaration
+                    // alone. They are separate axes — see
+                    // `recordprimitiveplan.md`.
+                    vybe_ast::ValueSemantics {
+                        storage: if self.profile.user_types_are_value_types {
+                            vybe_ast::ValueStorage::Value
+                        } else {
+                            modifiers.semantics.storage
+                        },
+                        ..modifiers.semantics.clone()
+                    },
                 )?;
             }
 
@@ -1826,7 +1987,7 @@ impl Compiler {
             // by legacy compile_class anyway), same normalize → emit
             // path. Treated as a parent-less class by the walker's
             // normalize_class for the active language.
-            StmtKind::StructDecl { name, members, .. } => {
+            StmtKind::StructDecl { name, members, semantics, .. } => {
                 let cn = self.canon(name);
                 self.defined_globals.insert(cn.clone());
                 self.defined_classes.insert(cn.clone());
@@ -1839,7 +2000,14 @@ impl Compiler {
                     &[],
                     members,
                     &crate::ast::ClassModifiers::default(),
-                    true,
+                    // Was a hardcoded `true` meaning "a StructDecl is a value
+                    // type". Storage still says Value for every struct; the
+                    // difference is that equality now comes from what the
+                    // language declared rather than riding the same bool.
+                    vybe_ast::ValueSemantics {
+                        storage: vybe_ast::ValueStorage::Value,
+                        ..semantics.clone()
+                    },
                 )?;
             }
 
@@ -3086,7 +3254,7 @@ impl Compiler {
             // ── Echo (PHP/debug print) ──────────────────────────────────
             StmtKind::Echo(exprs) => {
                 let line = self.line;
-                let log_idx = self.import("wasi:logging/logging", "log");
+                let log_idx = self.import("web:console", "log");
                 if self.profile.echo_concatenates_operands {
                     if exprs.is_empty() {
                         self.emit_const(Value::String(Arc::from("")));
@@ -3522,7 +3690,7 @@ impl Compiler {
             interfaces,
             &members,
             &ClassModifiers::default(),
-            false,
+            vybe_ast::ValueSemantics::default(),
         )
     }
 
@@ -4048,31 +4216,32 @@ impl Compiler {
                     .clone()
                     .or_else(|| init_type_hint.clone());
 
-                // VB often spells dynamically-created controls as `As Object`
-                // even though the initializer is a concrete dotnet wrapper such
-                // as `Window.Forms.Button()`. Keep that concrete wrapper type so
-                // later lowering (`AddHandler`, instance method dispatch, etc.)
-                // stays on the same WinForms adapter path as designer forms.
-                if self.profile.namespaces.use_dotnet {
-                    let declared_is_object = declared_type_hint
-                        .as_deref()
-                        .map(|type_hint| self.resolve_source_type_alias(type_hint))
-                        .map(|type_hint| {
-                            matches!(
-                                Self::normalize_type_hint(&type_hint).as_str(),
-                                "object" | "system.object"
-                            )
-                        })
-                        .unwrap_or(false);
-                    if declared_is_object {
-                        if let Some(init_type_hint) = init_type_hint.as_deref() {
-                            let resolved_init = self.resolve_source_type_alias(init_type_hint);
-                            if self
-                                .resolve_pending_class_name_for_type_hint(&resolved_init)
-                                .is_some()
-                            {
-                                inferred_type_hint = Some(resolved_init);
-                            }
+                // A variable DECLARED as the top type but INITIALIZED from a
+                // known class keeps the class. VB spells dynamically-created
+                // controls `As Object` even when the initializer is a concrete
+                // `Window.Forms.Button()`, so later lowering (`AddHandler`,
+                // instance dispatch) needs the concrete type — but nothing here
+                // is VB: it is ordinary refinement of a widened declaration, and
+                // the refined type only ever comes from `pending_classes`, i.e.
+                // a class this very program declared.
+                let declared_is_object = declared_type_hint
+                    .as_deref()
+                    .map(|type_hint| self.resolve_source_type_alias(type_hint))
+                    .map(|type_hint| {
+                        matches!(
+                            Self::normalize_type_hint(&type_hint).as_str(),
+                            "object" | "system.object"
+                        )
+                    })
+                    .unwrap_or(false);
+                if declared_is_object {
+                    if let Some(init_type_hint) = init_type_hint.as_deref() {
+                        let resolved_init = self.resolve_source_type_alias(init_type_hint);
+                        if self
+                            .resolve_pending_class_name_for_type_hint(&resolved_init)
+                            .is_some()
+                        {
+                            inferred_type_hint = Some(resolved_init);
                         }
                     }
                 }
@@ -4720,13 +4889,28 @@ impl Compiler {
                 // instance. Checked FIRST because every later path assumes an
                 // object with a method table, and an element has none — that
                 // lookup is what resolved to `undefined` for every Pascal form.
+                if std::env::var("VYBE_DBG_CTRL").is_ok() {
+                    let hint = self.infer_expr_type_hint(object);
+                    eprintln!(
+                        "[ctrl] set .{} class={:?} hint={:?} elem={:?} implicit_self={} current_class={:?}",
+                        field,
+                        self.current_class,
+                        hint,
+                        hint.as_deref().map(Self::normalize_type_hint).and_then(|c| {
+                            common::gui::registered_control_element(
+                                &self.profile.namespaces.type_scopes,
+                                &c,
+                            )
+                            .map(|e| e.tag.to_string())
+                        }),
+                        self.current_class_implicit_self,
+                        self.current_class,
+                    );
+                }
                 if let Some(type_hint) = self.infer_expr_type_hint(object) {
                     let class_name = Self::normalize_type_hint(&type_hint);
-                    if common::gui::registered_control_element(
-                        &self.profile.namespaces.type_scopes,
-                        &class_name,
-                    )
-                    .is_some()
+                    if self.control_element_for_type(&class_name).is_some()
+                        && !self.is_declared_instance_field(&class_name, field)
                     {
                         let line = self.line;
                         self.emit_control_property_set(object, &class_name, field, line)?;
@@ -4782,12 +4966,9 @@ impl Compiler {
                 if !self.expr_user_value_type_name(object).is_some() {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
                         let class_name = Self::normalize_type_hint(&type_hint);
-                        if common::gui::registered_control_element(
-                            &self.profile.namespaces.type_scopes,
-                            &class_name,
-                        )
-                        .is_some()
-                        {
+                        if self.control_element_for_type(&class_name).is_some()
+                        && !self.is_declared_instance_field(&class_name, field)
+                    {
                             let line = self.line;
                             self.emit_control_property_set(object, &class_name, field, line)?;
                             return Ok(());
@@ -5127,116 +5308,12 @@ impl Compiler {
                 self.compile_expr(expr)?;
                 let ptr_slot = self.define_local("__ref_store_ptr");
                 self.emit_u16(Op::LOCAL_SET, ptr_slot);
-
-                self.emit_u16(Op::LOCAL_GET, ptr_slot);
-                inst!(self, recipes::is_object);
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if(line);
-
-                let kind_key = self.str_const("__ref_kind");
-
-                self.emit_u16(Op::LOCAL_GET, ptr_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
-                self.emit_const(Value::String(Arc::from("cell")));
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                }
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if(line);
-
-                self.emit_u16(Op::LOCAL_GET, ptr_slot);
-                crate::primitives::references::emit_cell_store(
-                    &mut self.chunks,
-                    self.current,
-                    value_slot,
-                    self.line,
-                );
-                self.emit(Op::DROP);
-
-                let line = self.line;
-                self.chunk().emit_else(line);
-
-                self.emit_u16(Op::LOCAL_GET, ptr_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
-                self.emit_const(Value::String(Arc::from("carray")));
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                }
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if(line);
-
-                let base_key = self.str_const("__base");
-                let idx_key = self.str_const("__idx");
-                let base_slot = self.define_local("__ref_store_carray_base");
-                let idx_slot = self.define_local("__ref_store_carray_idx");
-
-                self.emit_u16(Op::LOCAL_GET, ptr_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, base_key);
-                self.emit_u16(Op::LOCAL_SET, base_slot);
-
-                self.emit_u16(Op::LOCAL_GET, ptr_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, idx_key);
-                self.emit_u16(Op::LOCAL_SET, idx_slot);
-
-                self.emit_u16(Op::LOCAL_GET, base_slot);
-                inst!(self, recipes::is_object);
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if(line);
-
-                self.emit_u16(Op::LOCAL_GET, base_slot);
-                self.emit_struct_field_op(Op::STRUCT_GET, 0, kind_key);
-                self.emit_const(Value::String(Arc::from("cell")));
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                }
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                self.chunk().emit_if(line);
-
-                self.emit_u16(Op::LOCAL_GET, base_slot);
-                crate::primitives::references::emit_cell_store(
-                    &mut self.chunks,
-                    self.current,
-                    value_slot,
-                    self.line,
-                );
-                self.emit(Op::DROP);
-
-                let line = self.line;
-                self.chunk().emit_else(line);
-                self.emit_u16(Op::LOCAL_GET, base_slot);
-                self.emit_u16(Op::LOCAL_GET, idx_slot);
-                self.emit_u16(Op::LOCAL_GET, value_slot);
-                common::collections::emit_set(&mut self.chunks, self.current, self.line);
-                self.emit(Op::DROP);
-                self.chunk().emit_end(line);
-
-                let line = self.line;
-                self.chunk().emit_else(line);
-                self.emit_u16(Op::LOCAL_GET, base_slot);
-                self.emit_u16(Op::LOCAL_GET, idx_slot);
-                self.emit_u16(Op::LOCAL_GET, value_slot);
-                common::collections::emit_set(&mut self.chunks, self.current, self.line);
-                self.emit(Op::DROP);
-                self.chunk().emit_end(line);
-
-                let line = self.line;
-                self.chunk().emit_else(line);
-                self.chunk().emit_end(line);
-
-                let line = self.line;
-                self.chunk().emit_end(line);
-
-                let line = self.line;
-                self.chunk().emit_else(line);
-                self.chunk().emit_end(line);
+                // ONE store, shared with every write through a pointer-cell
+                // binding (`bindings.rs`). This arm used to carry its own copy
+                // of the dispatch; `bindings.rs` carried a cell-only store, and
+                // the two disagreeing is what made a carray binding silently
+                // write `__value` onto the reference object.
+                self.emit_store_through_pointer(ptr_slot, value_slot);
             }
             ExprKind::Index { object, index, .. } => {
                 // `_G[k] = v` / `globals()[k] = v` — write through the global
@@ -5701,44 +5778,48 @@ impl Compiler {
                         self.chunk().emit_call(set_idx, 3, line);
                     }
                     self.emit(Op::DROP);
+                // Two stores whose index-write is NOT the generic one, selected
+                // by the receiver's own declared type. Both were nested inside a
+                // language gate; the type name is the whole signal, so they are
+                // arms of the chain now — a `StringBuilder` receiver writes
+                // through `sb_index_set` whoever spelled it. Placed after the
+                // `ecma_object_literals` arm so the .NET order is byte-identical
+                // to what the nesting produced.
+                } else if self
+                    .infer_expr_type_hint(object)
+                    .as_deref()
+                    .map(Self::normalize_type_hint)
+                    .is_some_and(|type_hint| {
+                        type_hint
+                            .rsplit('.')
+                            .next()
+                            .is_some_and(|name| name.eq_ignore_ascii_case("ObservableCollection"))
+                    })
+                {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, index)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_common("dotnet.observable_collection_set_index", 3, line);
+                    self.emit(Op::DROP);
+                    return Ok(());
+                } else if self
+                    .infer_expr_type_hint(object)
+                    .as_deref()
+                    .map(Self::normalize_type_hint)
+                    .is_some_and(|type_hint| {
+                        type_hint
+                            .rsplit('.')
+                            .next()
+                            .is_some_and(|name| name.eq_ignore_ascii_case("StringBuilder"))
+                    })
+                {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, index)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_common("dotnet.sb_index_set", 3, line);
+                    self.emit(Op::DROP);
+                    return Ok(());
                 } else if self.profile.namespaces.use_dotnet {
-                    if self
-                        .infer_expr_type_hint(object)
-                        .as_deref()
-                        .map(Self::normalize_type_hint)
-                        .is_some_and(|type_hint| {
-                            type_hint.rsplit('.').next().is_some_and(|name| {
-                                name.eq_ignore_ascii_case("ObservableCollection")
-                            })
-                        })
-                    {
-                        self.compile_expr(object)?;
-                        self.compile_collection_key(object, index)?;
-                        self.emit_u16(Op::LOCAL_GET, tmp);
-                        self.emit_common("dotnet.observable_collection_set_index", 3, line);
-                        self.emit(Op::DROP);
-                        return Ok(());
-                    }
-                    if self.profile.namespaces.use_dotnet
-                        && self
-                            .infer_expr_type_hint(object)
-                            .as_deref()
-                            .map(Self::normalize_type_hint)
-                            .is_some_and(|type_hint| {
-                                type_hint
-                                    .rsplit('.')
-                                    .next()
-                                    .is_some_and(|name| name.eq_ignore_ascii_case("StringBuilder"))
-                            })
-                    {
-                        self.compile_expr(object)?;
-                        self.compile_collection_key(object, index)?;
-                        self.emit_u16(Op::LOCAL_GET, tmp);
-                        self.emit_common("dotnet.sb_index_set", 3, line);
-                        self.emit(Op::DROP);
-                        return Ok(());
-                    }
-
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     let obj_tmp = self.define_local("__index_set_obj");

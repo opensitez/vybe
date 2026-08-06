@@ -10,6 +10,7 @@
 //! This matches real WASM engines (V8, SpiderMonkey).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Default)]
@@ -66,7 +67,18 @@ pub struct SharedMemory {
     /// Wait/notify infrastructure: maps memory addresses to condvars.
     /// When a thread calls wait32(addr), it blocks on the condvar for that addr.
     /// When another thread calls notify(addr), it signals the condvar.
-    waiters: Arc<Mutex<HashMap<usize, Arc<WaitEntry>>>> }
+    waiters: Arc<Mutex<HashMap<usize, Arc<WaitEntry>>>>,
+    /// Scheduler bookkeeping for all-threads-asleep detection (Go's
+    /// "all goroutines are asleep - deadlock!"): VM threads sharing this
+    /// memory (main counts as 1; THREAD_SPAWN increments, thread exit
+    /// decrements)…
+    live_threads: Arc<AtomicI32>,
+    /// …and how many of them are currently BLOCKED inside `wait32`. A
+    /// waker-less program has `parked == live - 1` from every awake
+    /// waiter's point of view; the deadlock panic itself stays in helper
+    /// BYTECODE (observed via the `wasm:threads.all_parked` intrinsic) —
+    /// the wait32 opcode remains spec-shaped.
+    parked: Arc<AtomicI32> }
 
 impl Clone for SharedMemory {
     fn clone(&self) -> Self {
@@ -74,7 +86,9 @@ impl Clone for SharedMemory {
         Self {
             buffer: Arc::clone(&self.buffer),
             max_pages: self.max_pages,
-            waiters: Arc::clone(&self.waiters) }
+            waiters: Arc::clone(&self.waiters),
+            live_threads: Arc::clone(&self.live_threads),
+            parked: Arc::clone(&self.parked) }
     }
 }
 
@@ -83,14 +97,48 @@ impl SharedMemory {
         Self {
             buffer: Arc::new(Mutex::new(vec![0u8; size])),
             max_pages: None,
-            waiters: Arc::new(Mutex::new(HashMap::new())) }
+            waiters: Arc::new(Mutex::new(HashMap::new())),
+            live_threads: Arc::new(AtomicI32::new(1)),
+            parked: Arc::new(AtomicI32::new(0)) }
     }
 
     pub fn from_vec(v: Vec<u8>) -> Self {
         Self {
             buffer: Arc::new(Mutex::new(v)),
             max_pages: None,
-            waiters: Arc::new(Mutex::new(HashMap::new())) }
+            waiters: Arc::new(Mutex::new(HashMap::new())),
+            live_threads: Arc::new(AtomicI32::new(1)),
+            parked: Arc::new(AtomicI32::new(0)) }
+    }
+
+    /// A VM thread sharing this memory was spawned (THREAD_SPAWN).
+    pub fn thread_started(&self) {
+        self.live_threads.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A spawned VM thread finished (its start function returned or threw).
+    pub fn thread_exited(&self) {
+        self.live_threads.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// From an AWAKE thread's point of view: is every OTHER live thread
+    /// blocked inside `wait32`? Three consecutive true observations 20ms
+    /// apart is the helper-bytecode deadlock criterion — a single reading
+    /// can race a thread that is between wait slices.
+    pub fn all_others_parked(&self) -> bool {
+        self.parked.load(Ordering::SeqCst) >= self.live_threads.load(Ordering::SeqCst) - 1
+    }
+
+    /// Mark the current thread parked OUTSIDE `wait32` — a thread blocked
+    /// in an OS-level join is asleep in Go's sense (it cannot wake a
+    /// channel waiter until something else runs). Pair with
+    /// [`Self::unmark_parked`].
+    pub fn mark_parked(&self) {
+        self.parked.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn unmark_parked(&self) {
+        self.parked.fetch_sub(1, Ordering::SeqCst);
     }
 
     pub fn set_max_pages(&mut self, max_pages: Option<usize>) {
@@ -449,6 +497,16 @@ impl SharedMemory {
 
         let mut state = entry.state.lock().unwrap();
         state.waiters += 1;
+        // Scheduler bookkeeping: this thread is parked until wait returns.
+        // The guard unparks on EVERY exit path (early returns included).
+        self.parked.fetch_add(1, Ordering::SeqCst);
+        struct Unpark<'a>(&'a AtomicI32);
+        impl Drop for Unpark<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let _unpark = Unpark(&self.parked);
         if timeout_ns < 0 {
             while state.notifications == 0 {
                 state = entry.condvar.wait(state).unwrap();
@@ -510,6 +568,16 @@ impl SharedMemory {
 
         let mut state = entry.state.lock().unwrap();
         state.waiters += 1;
+        // Scheduler bookkeeping: this thread is parked until wait returns.
+        // The guard unparks on EVERY exit path (early returns included).
+        self.parked.fetch_add(1, Ordering::SeqCst);
+        struct Unpark<'a>(&'a AtomicI32);
+        impl Drop for Unpark<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let _unpark = Unpark(&self.parked);
         if timeout_ns < 0 {
             while state.notifications == 0 {
                 state = entry.condvar.wait(state).unwrap();

@@ -38,7 +38,19 @@ pub fn render_into(
         font_system,
         swash_cache,
         scale };
-    g.form.render(&mut ctx);
+    // The window shows the DOCUMENT — `vybe_widgets` owns the tree and paints
+    // it. A control is `document.createElement(tag)`, so the document's form
+    // is the only one that has anything on it; `GuiState`'s own form is a
+    // second, empty instance nothing writes to any more, and rendering that
+    // one is why a form opened blank with every control present in the tree.
+    let document_painted = vybe_platform_web::engine_widgets::with_document(
+        vybe_platform_web::html::active_document(),
+        |document| document.render(&mut ctx),
+    )
+    .is_some();
+    if !document_painted {
+        g.form.render(&mut ctx);
+    }
     if !g.overlay_canvases.is_empty() {
         let overlays = std::mem::take(&mut g.overlay_canvases);
         g.form.render_overlays(&mut ctx, &overlays);

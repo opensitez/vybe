@@ -5,11 +5,15 @@
 //! (`documentation/httpserver.md` §4a), emitted once for PHP `$_COOKIE`/
 //! `setcookie`, Python `http.cookies`, Rack and ASP.NET alike.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_compiler::primitives::dispatch;
 use vybe_compiler::primitives::platforms::register_platforms;
 use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
+
+/// Unique names for test-argument globals, so reused VMs never collide.
+static TEST_GLOBAL_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 fn new_vm() -> VM {
     let mut vm = VM::new();
@@ -21,8 +25,7 @@ fn new_vm() -> VM {
 fn parse(header: &str) -> Value {
     let mut vm = new_vm();
     let mut chunks = vec![Chunk::new("<cookie-test>")];
-    let constant = chunks[0].add_constant(Value::String(std::sync::Arc::from(header)));
-    chunks[0].emit_op_u16(Op::CONST, constant, 0);
+    chunks[0].emit_string_const(header, 0);
     assert!(dispatch::emit_common(
         "http_cookie.parse",
         &mut chunks,
@@ -52,8 +55,24 @@ fn serialize(name: &str, value: &str, attrs: &[(&str, Value)]) -> String {
         for (key, attr) in attrs {
             chunks[0].emit_op_u16(Op::LOCAL_GET, map, 0);
             chunks[0].emit_string_const(key, 0);
-            let constant = chunks[0].add_constant(attr.clone());
-            chunks[0].emit_op_u16(Op::CONST, constant, 0);
+            match attr {
+                Value::I32(n) => chunks[0].emit_i32_const(*n, 0),
+                Value::I64(n) => chunks[0].emit_i64_const(*n, 0),
+                Value::F32(f) => chunks[0].emit_f32_const(*f, 0),
+                Value::F64(f) => chunks[0].emit_f64_const(*f, 0),
+                Value::Bool(b) => chunks[0].emit_bool_const(*b, 0),
+                Value::String(s) => chunks[0].emit_string_const(s, 0),
+                Value::Null => {
+                    chunks[0].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0)
+                }
+                other => {
+                    let name =
+                        format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+                    vm.globals.insert(name.clone(), other.clone());
+                    let ci = chunks[0].intern_string_constant(&name);
+                    chunks[0].emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                }
+            }
             vybe_compiler::primitives::collections::emit_set(&mut chunks, 0, 0);
             chunks[0].emit_op(Op::DROP, 0);
         }

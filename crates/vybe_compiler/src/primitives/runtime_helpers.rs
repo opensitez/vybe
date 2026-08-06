@@ -289,11 +289,11 @@ fn relocate_call_import_operands(chunk: &mut Chunk, remap: &[u16]) {
         };
         let operand_start = offset + 4;
         let next = operand_start + op.operand_format().size_in(&chunk.code, operand_start);
-        // Rewrite the import index for CALL_IMPORT specifically — other
+        // Rewrite the import index for spec `call` specifically — other
         // U16_U8 opcodes (if any) don't index into the imports table.
         // Vybe stores u16 operands BIG-endian (see `Chunk::read_u16` in
         // `vybe_runtime/src/chunk.rs:314`).
-        if op == Op::CALL_IMPORT {
+        if op == Op::CALL {
             let hi = chunk.code[operand_start] as u16;
             let lo = chunk.code[operand_start + 1] as u16;
             let poly_idx = (hi << 8) | lo;
@@ -341,6 +341,17 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
         (crate::primitives::channels::build_chan_close, "__stdlib_chan_close"),
         (crate::primitives::channels::build_chan_ready_recv, "__stdlib_chan_ready_recv"),
         (crate::primitives::channels::build_chan_ready_send, "__stdlib_chan_ready_send"),
+        (crate::primitives::channels::build_chan_wait_slice, "__stdlib_chan_wait_slice"),
+        (crate::primitives::channels::build_chan_try_send, "__stdlib_chan_try_send"),
+        (crate::primitives::channels::build_chan_try_recv, "__stdlib_chan_try_recv"),
+        (crate::primitives::channels::build_chan_try_peek, "__stdlib_chan_try_peek"),
+        (crate::primitives::channels::build_chan_drained, "__stdlib_chan_drained"),
+        (crate::primitives::channels::build_chan_closed, "__stdlib_chan_closed"),
+        (crate::primitives::channels::build_chan_recv_or_throw, "__stdlib_chan_recv_or_throw"),
+        (crate::primitives::channels::build_chan_wait_readable, "__stdlib_chan_wait_readable"),
+        (crate::primitives::channels::build_futex_alloc16, "__stdlib_futex_alloc16"),
+        (crate::primitives::channels::build_task_new, "__stdlib_task_new"),
+        (crate::primitives::channels::build_task_wait, "__stdlib_task_wait"),
     ] {
         chunks.push(build(imports));
         exports.push(name);
@@ -583,6 +594,21 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_chan_close" => crate::primitives::channels::build_chan_close(imports),
         "__stdlib_chan_ready_recv" => crate::primitives::channels::build_chan_ready_recv(imports),
         "__stdlib_chan_ready_send" => crate::primitives::channels::build_chan_ready_send(imports),
+        "__stdlib_chan_wait_slice" => crate::primitives::channels::build_chan_wait_slice(imports),
+        "__stdlib_chan_try_send" => crate::primitives::channels::build_chan_try_send(imports),
+        "__stdlib_chan_try_recv" => crate::primitives::channels::build_chan_try_recv(imports),
+        "__stdlib_chan_try_peek" => crate::primitives::channels::build_chan_try_peek(imports),
+        "__stdlib_chan_drained" => crate::primitives::channels::build_chan_drained(imports),
+        "__stdlib_chan_closed" => crate::primitives::channels::build_chan_closed(imports),
+        "__stdlib_chan_recv_or_throw" => {
+            crate::primitives::channels::build_chan_recv_or_throw(imports)
+        }
+        "__stdlib_chan_wait_readable" => {
+            crate::primitives::channels::build_chan_wait_readable(imports)
+        }
+        "__stdlib_futex_alloc16" => crate::primitives::channels::build_futex_alloc16(imports),
+        "__stdlib_task_new" => crate::primitives::channels::build_task_new(imports),
+        "__stdlib_task_wait" => crate::primitives::channels::build_task_wait(imports),
         "__stdlib_sort_in_place" => build_sort_in_place(imports),
         "__stdlib_sort_with_comparator" => build_sort_with_comparator(imports),
         "__stdlib_sort_by_key" => build_sort_by_key(imports),
@@ -2471,7 +2497,7 @@ fn build_pascal_writeln(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, 0, line);
     crate::primitives::ops::emit_dyn_add_into(imports, &mut c, line);
 
-    let log_idx = c.add_import("wasi:logging/logging", "log");
+    let log_idx = c.add_import("web:console", "log");
     c.emit_call(log_idx, 1, line);
     c.emit_op(Op::DROP, line);
 

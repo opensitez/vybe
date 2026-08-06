@@ -6,6 +6,40 @@
 use super::*;
 
 impl Compiler {
+    /// Is `field` a declared INSTANCE FIELD of this class (or an ancestor)?
+    ///
+    /// A control's field is not one of its properties. `TForm1` holding
+    /// `btn1: TButton` is a form AND has a field named `btn1`, so once a user
+    /// class was recognised as a control, `Self.btn1 := TButton.Create(…)`
+    /// started lowering to `setAttribute("btn1", <element>)` — the control
+    /// stored as markup and the field left null. 14 tests went red on exactly
+    /// that.
+    pub(crate) fn is_declared_instance_field(&self, class_name: &str, field: &str) -> bool {
+        let canon_field = self.canon(field);
+        let mut current = Some(self.canon(class_name));
+        while let Some(name) = current {
+            let Some(pending) = self.pending_classes.get(&name) else {
+                return false;
+            };
+            if pending.instance_field_types.contains_key(&canon_field)
+                || pending.fields.iter().any(|f| self.canon(f) == canon_field)
+            {
+                return true;
+            }
+            current = pending.parent.as_ref().map(|parent| self.canon(parent));
+        }
+        false
+    }
+
+    /// The declared parent of a user class, by whatever spelling reaches here.
+    pub(crate) fn pending_class_parent(&self, class_name: &str) -> Option<String> {
+        let canon = self.canon(class_name);
+        self.pending_classes
+            .get(&canon)
+            .or_else(|| self.pending_classes.get(class_name))
+            .and_then(|pending| pending.parent.clone())
+    }
+
     pub(super) fn lookup_implicit_self_field_type_hint(&self, name: &str) -> Option<&str> {
         if !self.current_class_implicit_self {
             return None;
@@ -228,6 +262,29 @@ impl Compiler {
     pub(super) fn infer_expr_type_hint(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
+            // The type of `self` is the class being compiled. Without this the
+            // Member arm below has no receiver type for `self.field`, so a
+            // field's declared type was known at top level (`var lbl: TLabel`)
+            // and unknown one line into a method — the same expression taking
+            // two different paths.
+            // `self` is an ordinary BINDING, so its type is read off its slot
+            // like any other name — `compile_class` declares it where the
+            // class is known (see `define_local_typed(&self_kw, …)`).
+            //
+            // Reading the slot rather than asserting `current_class` is what
+            // makes this safe where `this` is dynamically rebound: JS's
+            // ambient-`this` local is loaded from `__js_this`, whose value is
+            // decided at CALL time, so that site declares no type and
+            // inference correctly answers None instead of naming the
+            // enclosing class.
+            //
+            // Measured neutral name-for-name over 164 class tests across
+            // csharp/java/vb/js/python, including the JS lexical-`this`
+            // categories.
+            ExprKind::This => {
+                let self_kw = self.profile.self_keyword.clone();
+                self.lookup_var_type_hint(&self_kw).map(str::to_string)
+            }
             ExprKind::Lit(Literal::Int(_)) => Some("int".into()),
             ExprKind::Lit(Literal::Float(_)) => Some("double".into()),
             ExprKind::Lit(Literal::BigInt(_)) => Some("bigint".into()),
@@ -303,7 +360,7 @@ impl Compiler {
                 // JS conversion builtins have a known result type — e.g.
                 // `BigInt(x)` is a BigInt, so `BigInt(a) % BigInt(b)` routes
                 // through the `ecma:bigint` ops instead of f64 arithmetic.
-                if self.profile.has_ecma_bigint {
+                if self.bigint_semantics() {
                     if let ExprKind::Ident(name) = &callee.kind {
                         match name.as_str() {
                             "BigInt" => return Some("bigint".into()),
@@ -445,8 +502,8 @@ impl Compiler {
                 // known Number throws at runtime). Inferring through chains
                 // like `(a * b) % c` keeps every step on the bigint path even
                 // when intermediate results have no other type evidence.
-                let left_bigint = self.infer_expr_type_hint(left).as_deref() == Some("bigint");
-                let right_bigint = self.infer_expr_type_hint(right).as_deref() == Some("bigint");
+                let left_bigint = self.hint_is_bigint(self.infer_expr_type_hint(left).as_deref());
+                let right_bigint = self.hint_is_bigint(self.infer_expr_type_hint(right).as_deref());
                 if left_bigint || right_bigint {
                     Some("bigint".into())
                 } else {
@@ -469,8 +526,21 @@ impl Compiler {
             _ => None }
     }
 
-    pub(super) fn user_value_type_name_from_hint(&self, type_hint: &str) -> Option<String> {
-        let resolved = self.resolve_source_type_alias(type_hint);
+    /// Does this spelling denote a type STORED BY VALUE, or one that merely
+    /// refers to one?
+    ///
+    /// `^TNode`, `*Point`, `[]Point`, `map[string]Point`, `chan Point` and
+    /// `func(Point)` all name a value type without storing it, so copying the
+    /// owner must not copy through them. The test has to survive alias
+    /// resolution: Pascal's `type PNode = ^TNode` resolves to the pointee, and
+    /// treating the result as a stored value deep-copies a pointer field —
+    /// which is exactly what `test_pointers_advanced::typed_pointer_in_record_field`
+    /// catches.
+    ///
+    /// Shared by the declaration-pass resolution and by the emit-time lookup so
+    /// the two cannot drift; it is the only spelling-level judgement either of
+    /// them makes.
+    pub(super) fn type_hint_stores_by_value(resolved: &str) -> Option<&str> {
         let trimmed = resolved.trim().trim_end_matches('?').trim();
         if trimmed.starts_with('*')
             || trimmed.starts_with('^')
@@ -481,6 +551,12 @@ impl Compiler {
         {
             return None;
         }
+        Some(trimmed)
+    }
+
+    pub(super) fn user_value_type_name_from_hint(&self, type_hint: &str) -> Option<String> {
+        let resolved = self.resolve_source_type_alias(type_hint);
+        let trimmed = Self::type_hint_stores_by_value(&resolved)?;
 
         if let Some(class_name) = self.resolve_pending_class_name_for_type_hint(type_hint) {
             if self
@@ -659,6 +735,35 @@ impl Compiler {
             _ => self
                 .infer_expr_type_hint(expr)
                 .and_then(|type_hint| self.user_value_type_name_from_hint(&type_hint)) }
+    }
+
+    /// Does this expression's STATIC type name a declared value type — one
+    /// whose language said `b = a` hands back an independent value?
+    ///
+    /// The `__value_copy` instance stamp is what carries the semantics across a
+    /// language boundary, but it is only written where an instance is
+    /// CONSTRUCTED. Pascal's `var a, b: TR` default-initialises its records
+    /// from a synthesized literal and never runs a constructor, so nothing
+    /// stamps them — which is why Go's `P{X: 1}` and C#'s `new S()` gained
+    /// value semantics from the shared path and Pascal's declaration form did
+    /// not.
+    ///
+    /// So the static type answers it when it can, and the stamp answers it when
+    /// the type is unknown — a value that arrived from another language.
+    pub(super) fn expr_is_declared_value_type(&self, expr: &Expression) -> bool {
+        let Some(hint) = self.infer_expr_type_hint(expr) else {
+            return false;
+        };
+        // `normalized_classes` is keyed by the CANONICAL name the declaration
+        // pass inserted (`link.rs`), so ask through `canon` — a raw or
+        // normalized spelling misses, silently, and the copy never happens.
+        let bare = hint.split('<').next().unwrap_or(&hint).trim().to_string();
+        let canon = self.canon(&bare);
+        self.normalized_classes
+            .get(&canon)
+            .or_else(|| self.normalized_classes.get(&bare))
+            .or_else(|| self.normalized_classes.get(&Self::normalize_type_hint(&hint)))
+            .is_some_and(|nc| nc.is_value_type)
     }
 
     pub(super) fn expr_is_array_like(&self, expr: &Expression) -> bool {
@@ -917,16 +1022,43 @@ impl Compiler {
     }
 
     pub(super) fn emit_user_value_type_clone_from_stack(&mut self, type_name: &str) {
-        let Some((fields, instance_member_names)) =
+        let mut in_progress = Vec::new();
+        self.emit_user_value_type_clone_inner(type_name, &mut in_progress);
+    }
+
+    /// A field whose own declared type is a value type has to be copied too,
+    /// otherwise `b := a` hands back an outer copy pointing at the SAME inner
+    /// record — `b.I.V := 99` then mutates `a.I.V`. Three lines of Pascal
+    /// demonstrate it, and the flat case passed for a long time while this one
+    /// silently aliased.
+    ///
+    /// The recursion is at COMPILE time, driven by the declared field type, so
+    /// no instance stamp is involved and the copy keeps its rtt at every level.
+    /// That matters because the runtime alternative cannot: a generic walk over
+    /// an object's own keys has nothing to allocate the copy *as*, so it
+    /// produces a shape-alike that has lost its type identity.
+    ///
+    /// `in_progress` breaks a declaration cycle. A record cannot contain itself
+    /// BY VALUE in any language that has records — the size would be infinite —
+    /// but a malformed or mutually-recursive declaration must not expand
+    /// forever at compile time, and inlining is what makes that a hang rather
+    /// than a stack overflow at runtime.
+    fn emit_user_value_type_clone_inner(&mut self, type_name: &str, in_progress: &mut Vec<String>) {
+        if in_progress.iter().any(|n| n == type_name) {
+            return;
+        }
+        let Some((fields, instance_member_names, field_value_types)) =
             self.pending_classes.get(type_name).map(|pending| {
                 (
                     pending.fields.clone(),
                     pending.instance_member_names.clone(),
+                    pending.instance_field_value_types.clone(),
                 )
             })
         else {
             return;
         };
+        in_progress.push(type_name.to_string());
 
         let source_slot = self.define_local("__value_type_src");
         self.emit_u16(Op::LOCAL_SET, source_slot);
@@ -948,10 +1080,16 @@ impl Compiler {
         // through `struct.new_default $T` like every other instance. The type
         // is already registered by the time a value-type copy is emitted, so
         // its 1-based table index is just its position.
+        // `type_name` arrives CANONICAL (it came from a `pending_classes` key)
+        // while `types` holds the name as DECLARED, so an exact compare misses
+        // for every case-folding language and silently yields slot 0 — a clone
+        // with the wrong rtt, which is the one thing this path exists to get
+        // right. Fold through `canon` rather than an ASCII compare, so the
+        // language's own case policy decides.
         let type_slot = self.chunks[0]
             .types
             .iter()
-            .position(|t| t.name == type_name)
+            .position(|t| t.name == type_name || self.canon(&t.name) == type_name)
             .map(|i| i as u16 + 1)
             .unwrap_or(0);
         crate::primitives::classes::emit_new_typed_object(
@@ -964,15 +1102,31 @@ impl Compiler {
 
         for member_name in fields.iter().chain(instance_member_names.iter()) {
             let member_key = self.str_const(member_name);
-            self.emit_u16(Op::LOCAL_GET, clone_slot);
+            // Resolved in the declaration pass, keyed by the same storage name
+            // this loop iterates. Nothing is derived from a spelling here — a
+            // method member simply has no entry.
+            let nested = field_value_types.get(member_name).cloned();
+
             self.emit_u16(Op::LOCAL_GET, source_slot);
             self.emit_struct_field_op(Op::STRUCT_GET, 0, member_key);
+            if let Some(nested_type) = nested {
+                self.emit_user_value_type_clone_inner(&nested_type, in_progress);
+            }
+            // Sink the field value before pushing the destination. The nested
+            // clone emits its own `if`/`else` blocks and local traffic, and
+            // leaving `clone_slot` on the stack underneath them is the dirty-
+            // stack shape that already cost a day on `CALL_REF` in `clone.rs`.
+            let field_slot = self.define_local("__value_field_copy");
+            self.emit_u16(Op::LOCAL_SET, field_slot);
+            self.emit_u16(Op::LOCAL_GET, clone_slot);
+            self.emit_u16(Op::LOCAL_GET, field_slot);
             self.emit_struct_field_op(Op::STRUCT_SET, 0, member_key);
         }
 
         self.emit_u16(Op::LOCAL_GET, clone_slot);
         self.chunk().emit_end(line);
         self.chunk().emit_end(line);
+        in_progress.pop();
     }
 
     pub(super) fn expr_is_known_string_receiver(&self, expr: &Expression) -> bool {

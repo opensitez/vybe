@@ -4,21 +4,49 @@
 //! Covers: wasm:js-{number, boolean, undefined, symbol, bigint}
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_runtime::{Chunk, Op, VM, Value};
+
+/// Unique names for test-argument globals, so reused VMs never collide.
+static TEST_GLOBAL_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// Emit a spec const for `v` when a const emitter exists; otherwise route the
+/// value through a VM global (`global.get` of a unique imported name) and
+/// return the pending `(name, value)` binding for the VM that runs the chunk.
+fn push_arg(chunk: &mut Chunk, v: Value) -> Option<(String, Value)> {
+    match v {
+        Value::I32(n) => chunk.emit_i32_const(n, 0),
+        Value::I64(n) => chunk.emit_i64_const(n, 0),
+        Value::F32(f) => chunk.emit_f32_const(f, 0),
+        Value::F64(f) => chunk.emit_f64_const(f, 0),
+        Value::Bool(b) => chunk.emit_bool_const(b, 0),
+        Value::String(s) => chunk.emit_string_const(&s, 0),
+        Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0),
+        other => {
+            let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+            let ci = chunk.intern_string_constant(&name);
+            chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+            return Some((name, other));
+        }
+    }
+    None
+}
 
 fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<test>");
     let import_idx = chunk.add_import(module, name);
     let argc = args.len() as u8;
+    let mut pending = Vec::new();
     for v in args {
-        let k = chunk.add_constant(v);
-        chunk.emit_op_u16(Op::CONST, k, 0);
+        pending.extend(push_arg(&mut chunk, v));
     }
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
-    chunk.emit(argc, 0);
+    chunk.emit_call(import_idx, argc, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vybe_runtime::js_builtins::register(&mut vm);
+    for (name, value) in pending {
+        vm.globals.insert(name, value);
+    }
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
@@ -26,15 +54,17 @@ fn call_import_expect_trap(module: &str, name: &str, args: Vec<Value>) {
     let mut chunk = Chunk::new("<test>");
     let import_idx = chunk.add_import(module, name);
     let argc = args.len() as u8;
+    let mut pending = Vec::new();
     for v in args {
-        let k = chunk.add_constant(v);
-        chunk.emit_op_u16(Op::CONST, k, 0);
+        pending.extend(push_arg(&mut chunk, v));
     }
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
-    chunk.emit(argc, 0);
+    chunk.emit_call(import_idx, argc, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vybe_runtime::js_builtins::register(&mut vm);
+    for (name, value) in pending {
+        vm.globals.insert(name, value);
+    }
     assert!(vm.run(vec![chunk]).is_err(), "{module}.{name} should trap");
 }
 

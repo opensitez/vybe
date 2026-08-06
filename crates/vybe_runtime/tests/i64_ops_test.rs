@@ -12,8 +12,7 @@ fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
 }
 
 fn push(c: &mut Chunk, v: i64) {
-    let k = c.add_constant(Value::I64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i64_const(v, 0);
 }
 
 // ── i64.const ────────────────────────────────────────────────────────────
@@ -501,8 +500,7 @@ fn run_err(emit: impl FnOnce(&mut Chunk)) -> String {
 }
 
 fn push_i64(c: &mut Chunk, v: i64) {
-    let k = c.add_constant(Value::I64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i64_const(v, 0);
 }
 
 #[test]

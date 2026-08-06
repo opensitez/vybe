@@ -46,7 +46,7 @@ fn run_with_recorder(chunks: Vec<vybe_runtime::Chunk>) -> (Vec<String>, String) 
     let out = output.clone();
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();

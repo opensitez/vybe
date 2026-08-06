@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use vybe_compiler::primitives::runtime_helpers::build_runtime_helpers;
 /// Tests for the runtime helpers — pure bytecode implementations that run on any runtime.
 use vybe_runtime::{Chunk, Op, VM, Value};
@@ -24,12 +23,9 @@ fn helper_reversed() {
     let rev_idx = helpers.get("__stdlib_reversed").unwrap() + 1;
 
     // reversed([1, 2, 3]) → [3, 2, 1]
-    let v1 = script.add_constant(Value::I32(1));
-    let v2 = script.add_constant(Value::I32(2));
-    let v3 = script.add_constant(Value::I32(3));
-    script.emit_op_u16(Op::CONST, v1, 0);
-    script.emit_op_u16(Op::CONST, v2, 0);
-    script.emit_op_u16(Op::CONST, v3, 0);
+    script.emit_i32_const(1, 0);
+    script.emit_i32_const(2, 0);
+    script.emit_i32_const(3, 0);
     script.emit_array_new_fixed(0, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
@@ -41,7 +37,6 @@ fn helper_reversed() {
     // Get first element — should be 3
     script.emit_i32_const(0, 0);
     script.emit_op(Op::ARRAY_GET, 0);
-    script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(
@@ -61,12 +56,9 @@ fn helper_sorted() {
     let sort_idx = helpers.get("__stdlib_sorted").unwrap() + 1;
 
     // sorted([3, 1, 2]) → [1, 2, 3]
-    let v3 = script.add_constant(Value::I32(3));
-    let v1 = script.add_constant(Value::I32(1));
-    let v2 = script.add_constant(Value::I32(2));
-    script.emit_op_u16(Op::CONST, v3, 0);
-    script.emit_op_u16(Op::CONST, v1, 0);
-    script.emit_op_u16(Op::CONST, v2, 0);
+    script.emit_i32_const(3, 0);
+    script.emit_i32_const(1, 0);
+    script.emit_i32_const(2, 0);
     script.emit_array_new_fixed(0, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
@@ -78,7 +70,6 @@ fn helper_sorted() {
     // First element should be 1 (smallest)
     script.emit_i32_const(0, 0);
     script.emit_op(Op::ARRAY_GET, 0);
-    script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(
@@ -96,10 +87,8 @@ fn helper_sorted_preserves_original() {
     let sort_idx = helpers.get("__stdlib_sorted").unwrap() + 1;
 
     // sorted should not mutate the original
-    let v3 = script.add_constant(Value::I32(3));
-    let v1 = script.add_constant(Value::I32(1));
-    script.emit_op_u16(Op::CONST, v3, 0);
-    script.emit_op_u16(Op::CONST, v1, 0);
+    script.emit_i32_const(3, 0);
+    script.emit_i32_const(1, 0);
     script.emit_array_new_fixed(0, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
@@ -114,7 +103,6 @@ fn helper_sorted_preserves_original() {
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
     script.emit_i32_const(0, 0);
     script.emit_op(Op::ARRAY_GET, 0);
-    script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(result.as_i32(), 3, "original array should be unchanged");
@@ -129,12 +117,9 @@ fn helper_min() {
     let helpers = build_runtime_helpers(&mut script);
     let min_idx = helpers.get("__stdlib_min").unwrap() + 1;
 
-    let v5 = script.add_constant(Value::I32(5));
-    let v2 = script.add_constant(Value::I32(2));
-    let v8 = script.add_constant(Value::I32(8));
-    script.emit_op_u16(Op::CONST, v5, 0);
-    script.emit_op_u16(Op::CONST, v2, 0);
-    script.emit_op_u16(Op::CONST, v8, 0);
+    script.emit_i32_const(5, 0);
+    script.emit_i32_const(2, 0);
+    script.emit_i32_const(8, 0);
     script.emit_array_new_fixed(0, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
@@ -142,7 +127,6 @@ fn helper_min() {
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
     script.emit_op_u8(Op::CALL_REF, 1, 0);
-    script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(result.as_i32(), 2);
@@ -155,12 +139,9 @@ fn helper_max() {
     let helpers = build_runtime_helpers(&mut script);
     let max_idx = helpers.get("__stdlib_max").unwrap() + 1;
 
-    let v5 = script.add_constant(Value::I32(5));
-    let v2 = script.add_constant(Value::I32(2));
-    let v8 = script.add_constant(Value::I32(8));
-    script.emit_op_u16(Op::CONST, v5, 0);
-    script.emit_op_u16(Op::CONST, v2, 0);
-    script.emit_op_u16(Op::CONST, v8, 0);
+    script.emit_i32_const(5, 0);
+    script.emit_i32_const(2, 0);
+    script.emit_i32_const(8, 0);
     script.emit_array_new_fixed(0, 3, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
@@ -168,7 +149,6 @@ fn helper_max() {
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
     script.emit_op_u8(Op::CALL_REF, 1, 0);
-    script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(result.as_i32(), 8);
@@ -186,12 +166,9 @@ fn helper_pow() {
     // 2^10 = 1024
     script.emit_op_u16(Op::REF_FUNC, pow_idx as u16, 0);
     script.emit(0, 0);
-    let base = script.add_constant(Value::F64(2.0));
-    let exp = script.add_constant(Value::I32(10));
-    script.emit_op_u16(Op::CONST, base, 0);
-    script.emit_op_u16(Op::CONST, exp, 0);
+    script.emit_f64_const(2.0, 0);
+    script.emit_i32_const(10, 0);
     script.emit_op_u8(Op::CALL_REF, 2, 0);
-    script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(result.as_f64() as i32, 1024);
@@ -207,10 +184,8 @@ fn helper_enumerate() {
     let enum_idx = helpers.get("__stdlib_enumerate").unwrap() + 1;
 
     // enumerate(["a", "b"]) → [[0,"a"], [1,"b"]]
-    let va = script.add_constant(Value::String(Arc::from("a")));
-    let vb = script.add_constant(Value::String(Arc::from("b")));
-    script.emit_op_u16(Op::CONST, va, 0);
-    script.emit_op_u16(Op::CONST, vb, 0);
+    script.emit_string_const("a", 0);
+    script.emit_string_const("b", 0);
     script.emit_array_new_fixed(0, 2, 0);
     script.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
@@ -221,7 +196,6 @@ fn helper_enumerate() {
 
     // Result length should be 2
     script.emit_op(Op::ARRAY_LENGTH, 0);
-    script.emit_op(Op::HALT, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(result.as_i32(), 2);

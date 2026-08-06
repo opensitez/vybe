@@ -26,16 +26,13 @@ fn import_resolution_basic() {
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "test".into(),
         name: "add".into() });
-    let a = chunk.add_constant(Value::F64(3.0));
-    let b = chunk.add_constant(Value::F64(4.0));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
-    // call_import: u16 import_idx + u8 argc
-    chunk.emit_op(Op::CALL_IMPORT, 0);
+    chunk.emit_f64_const(3.0, 0);
+    chunk.emit_f64_const(4.0, 0);
+    // spec `call`, raw-encoded: u16 import_idx + u8 argc
+    chunk.emit_op(Op::CALL, 0);
     chunk.emit(0, 0);
     chunk.emit(0, 0); // import_idx = 0
     chunk.emit(2, 0); // argc = 2
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 7.0);
@@ -49,7 +46,6 @@ fn import_unresolved_errors_gracefully() {
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "missing".into(),
         name: "func".into() });
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]);
     assert!(result.is_err());
@@ -84,13 +80,11 @@ fn import_multiple_modules_correct_dispatch() {
         name: "len".into() });
 
     // Call str.len("hello") — should be import 1, not 0
-    let s = chunk.add_constant(Value::String(Arc::from("hello")));
-    chunk.emit_op_u16(Op::CONST, s, 0);
-    chunk.emit_op(Op::CALL_IMPORT, 0);
+    chunk.emit_string_const("hello", 0);
+    chunk.emit_op(Op::CALL, 0);
     chunk.emit(0, 0);
     chunk.emit(1, 0); // import_idx = 1 (str.len)
     chunk.emit(1, 0); // argc = 1
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 5.0);
@@ -123,24 +117,19 @@ fn import_same_module_different_functions() {
         module: "math".into(),
         name: "mul".into() });
 
-    let v3 = chunk.add_constant(Value::F64(3.0));
-    let v4 = chunk.add_constant(Value::F64(4.0));
-    let v10 = chunk.add_constant(Value::F64(10.0));
-
     // add(3, 4) = 7
-    chunk.emit_op_u16(Op::CONST, v3, 0);
-    chunk.emit_op_u16(Op::CONST, v4, 0);
-    chunk.emit_op(Op::CALL_IMPORT, 0);
+    chunk.emit_f64_const(3.0, 0);
+    chunk.emit_f64_const(4.0, 0);
+    chunk.emit_op(Op::CALL, 0);
     chunk.emit(0, 0);
     chunk.emit(0, 0); // import 0 = add
     chunk.emit(2, 0);
     // mul(7, 10) = 70
-    chunk.emit_op_u16(Op::CONST, v10, 0);
-    chunk.emit_op(Op::CALL_IMPORT, 0);
+    chunk.emit_f64_const(10.0, 0);
+    chunk.emit_op(Op::CALL, 0);
     chunk.emit(0, 0);
     chunk.emit(1, 0); // import 1 = mul
     chunk.emit(2, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 70.0);
@@ -157,7 +146,6 @@ fn global_get_missing_returns_undefined() {
     chunk.local_count = 1;
     let idx = chunk.add_constant(Value::String(Arc::from("nonexistent")));
     chunk.emit_op_u16(Op::GLOBAL_GET, idx, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert!(matches!(result, Value::Undefined));
 }
@@ -168,11 +156,9 @@ fn global_set_then_get_roundtrip() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     let name = chunk.add_constant(Value::String(Arc::from("x")));
-    let val = chunk.add_constant(Value::F64(42.0));
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_f64_const(42.0, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
     chunk.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 42.0);
 }
@@ -183,11 +169,9 @@ fn globals_persist_after_run() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     let name = chunk.add_constant(Value::String(Arc::from("saved")));
-    let val = chunk.add_constant(Value::F64(99.0));
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_f64_const(99.0, 0);
     chunk.emit_op_u16(Op::GLOBAL_SET, name, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op(Op::HALT, 0);
     vm.run(vec![chunk]).unwrap();
     assert_eq!(vm.globals.get("saved").unwrap().as_f64(), 99.0);
 }
@@ -199,11 +183,9 @@ fn globals_persist_across_multiple_runs() {
     let mut c1 = Chunk::new("<script>");
     c1.local_count = 1;
     let n1 = c1.add_constant(Value::String(Arc::from("x")));
-    let v1 = c1.add_constant(Value::F64(10.0));
-    c1.emit_op_u16(Op::CONST, v1, 0);
+    c1.emit_f64_const(10.0, 0);
     c1.emit_op_u16(Op::GLOBAL_SET, n1, 0);
     c1.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    c1.emit_op(Op::HALT, 0);
     vm.run(vec![c1]).unwrap();
 
     // Run 2: read x
@@ -211,7 +193,6 @@ fn globals_persist_across_multiple_runs() {
     c2.local_count = 1;
     let n2 = c2.add_constant(Value::String(Arc::from("x")));
     c2.emit_op_u16(Op::GLOBAL_GET, n2, 0);
-    c2.emit_op(Op::HALT, 0);
     let result = vm.run(vec![c2]).unwrap();
     assert_eq!(result.as_f64(), 10.0);
 }
@@ -228,14 +209,12 @@ fn struct_set_pushes_nothing_and_writes_field() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     let prop = chunk.add_constant(Value::String(Arc::from("x")));
-    let val = chunk.add_constant(Value::F64(42.0));
     chunk.emit_struct_new(0, 0, 0);
     chunk.emit_op_u16(Op::LOCAL_TEE, 0, 0);
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_f64_const(42.0, 0);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, prop, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, prop, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 42.0);
 }
@@ -248,7 +227,6 @@ fn struct_get_missing_returns_null() {
     let prop = chunk.add_constant(Value::String(Arc::from("missing")));
     chunk.emit_struct_new(0, 0, 0);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, prop, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     // Missing struct field returns Undefined (JS property-lookup semantics)
     assert!(matches!(result, Value::Undefined));
@@ -263,11 +241,9 @@ fn local_set_peeks_not_pops() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 2;
-    let val = chunk.add_constant(Value::F64(99.0));
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_f64_const(99.0, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     // Value should still be on stack (peek semantics)
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 99.0);
 }
@@ -290,10 +266,8 @@ fn call_fewer_args_pads_null() {
     main.local_count = 1;
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    let arg = main.add_constant(Value::F64(10.0));
-    main.emit_op_u16(Op::CONST, arg, 0);
-    main.emit_op_u8(Op::CALL, 1, 0); // only 1 arg
-    main.emit_op(Op::HALT, 0);
+    main.emit_f64_const(10.0, 0);
+    main.emit_op_u8(Op::CALL_REF, 1, 0); // only 1 arg
 
     let result = vm.run(vec![main, f]).unwrap();
     assert!(matches!(result, Value::Null | Value::Undefined)); // 3rd arg padded with Undefined
@@ -310,8 +284,7 @@ fn invoke_function_defined_in_run() {
     f.arity = 1;
     f.local_count = 1; // slot 0 = arg (WASM convention)
     f.emit_op_u16(Op::LOCAL_GET, 0, 0); // arg is at slot 0
-    let two = f.add_constant(Value::F64(2.0));
-    f.emit_op_u16(Op::CONST, two, 0);
+    f.emit_f64_const(2.0, 0);
     f.emit_op(Op::F64_MUL, 0);
     f.emit_op(Op::RETURN, 0);
 
@@ -322,7 +295,6 @@ fn invoke_function_defined_in_run() {
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, name, 0);
     main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    main.emit_op(Op::HALT, 0);
 
     vm.run(vec![main, f]).unwrap();
     let func = vm.globals.get("double").cloned().unwrap();
@@ -357,9 +329,8 @@ fn invoke_multiple_times_globals_accumulate() {
     f.arity = 0;
     f.local_count = 0;
     let name = f.add_constant(Value::String(Arc::from("n")));
-    let one = f.add_constant(Value::F64(1.0));
     f.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    f.emit_op_u16(Op::CONST, one, 0);
+    f.emit_f64_const(1.0, 0);
     f.emit_op(Op::F64_ADD, 0);
     f.emit_op_u16(Op::GLOBAL_SET, name, 0);
     f.emit_op(Op::RETURN, 0);
@@ -368,14 +339,12 @@ fn invoke_multiple_times_globals_accumulate() {
     main.local_count = 1;
     let n = main.add_constant(Value::String(Arc::from("n")));
     let fn_name = main.add_constant(Value::String(Arc::from("inc")));
-    let zero = main.add_constant(Value::F64(0.0));
-    main.emit_op_u16(Op::CONST, zero, 0);
+    main.emit_f64_const(0.0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, n, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_op_u16(Op::GLOBAL_SET, fn_name, 0);
     main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    main.emit_op(Op::HALT, 0);
 
     vm.run(vec![main, f]).unwrap();
     let inc = vm.globals.get("inc").cloned().unwrap();
@@ -397,10 +366,9 @@ fn method_on_object_via_struct_get_call() {
     method.arity = 1;
     method.local_count = 1; // slot 0 = this (WASM convention)
     let x = method.add_constant(Value::String(Arc::from("x")));
-    let one = method.add_constant(Value::F64(1.0));
     method.emit_op_u16(Op::LOCAL_GET, 0, 0); // this is at slot 0
     method.emit_struct_field_op(Op::STRUCT_GET, 0, x, 0);
-    method.emit_op_u16(Op::CONST, one, 0);
+    method.emit_f64_const(1.0, 0);
     method.emit_op(Op::F64_ADD, 0);
     method.emit_op(Op::RETURN, 0);
 
@@ -408,14 +376,13 @@ fn method_on_object_via_struct_get_call() {
     main.local_count = 2;
     let x2 = main.add_constant(Value::String(Arc::from("x")));
     let gx = main.add_constant(Value::String(Arc::from("getX")));
-    let ten = main.add_constant(Value::F64(10.0));
 
     // obj = {}
     main.emit_struct_new(0, 0, 0);
     main.emit_op_u16(Op::LOCAL_SET, 1, 0);
     // obj.x = 10
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    main.emit_op_u16(Op::CONST, ten, 0);
+    main.emit_f64_const(10.0, 0);
     main.emit_struct_field_op(Op::STRUCT_SET, 0, x2, 0);
     main.emit_op(Op::DROP, 0);
     // obj.getX = method
@@ -428,8 +395,7 @@ fn method_on_object_via_struct_get_call() {
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     main.emit_struct_field_op(Op::STRUCT_GET, 0, gx, 0);
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    main.emit_op_u8(Op::CALL, 1, 0);
-    main.emit_op(Op::HALT, 0);
+    main.emit_op_u8(Op::CALL_REF, 1, 0);
 
     let result = vm.run(vec![main, method]).unwrap();
     assert_eq!(result.as_f64(), 11.0);
@@ -467,10 +433,8 @@ fn extended_opcode_executes() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let s = chunk.add_constant(Value::I32(5));
-    chunk.emit_op_u16(Op::CONST, s, 0);
+    chunk.emit_i32_const(5, 0);
     chunk.emit_dup(0); // 0xFF extended opcode
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 5);
 }
@@ -491,11 +455,10 @@ fn host_fn_registered_before_run() {
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "b".into(),
         name: "f3".into() });
-    chunk.emit_op(Op::CALL_IMPORT, 0);
+    chunk.emit_op(Op::CALL, 0);
     chunk.emit(0, 0);
     chunk.emit(0, 0);
     chunk.emit(0, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_f64(), 3.0);
@@ -510,10 +473,8 @@ fn call_value_number_errors() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let n = chunk.add_constant(Value::F64(42.0));
-    chunk.emit_op_u16(Op::CONST, n, 0);
-    chunk.emit_op_u8(Op::CALL, 0, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_f64_const(42.0, 0);
+    chunk.emit_op_u8(Op::CALL_REF, 0, 0);
     let result = vm.run(vec![chunk]);
     assert!(result.is_err());
     assert!(format!("{}", result.unwrap_err()).contains("not callable"));
@@ -525,8 +486,7 @@ fn call_value_null_errors() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op_u8(Op::CALL, 0, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_op_u8(Op::CALL_REF, 0, 0);
     let result = vm.run(vec![chunk]);
     assert!(result.is_err());
 }

@@ -86,11 +86,10 @@ impl Compiler {
         if let Some(slot) = self.scope().resolve(name) {
             self.emit_u16(Op::LOCAL_GET, slot);
             if self.binding_uses_pointer_cell(name) {
-                crate::primitives::references::emit_cell_load(
-                    &mut self.chunks,
-                    self.current,
-                    self.line,
-                );
+                // Not `emit_cell_load` — a binding can hold EITHER reference
+                // shape (`&$x` gives a cell, `&$a[1]` gives a carray) and the
+                // cell-only load read `__value` off a carray, i.e. undefined.
+                self.emit_autoderef_pointer_cell();
             }
             return;
         }
@@ -351,11 +350,8 @@ impl Compiler {
         }
         self.emit_global_read(&global_key);
         if self.binding_uses_pointer_cell(name) {
-            crate::primitives::references::emit_cell_load(
-                &mut self.chunks,
-                self.current,
-                self.line,
-            );
+            // Either reference shape — see the local arm above.
+            self.emit_autoderef_pointer_cell();
         }
     }
 
@@ -549,14 +545,16 @@ impl Compiler {
             if self.binding_uses_pointer_cell(name) {
                 let value_slot = self.define_local("__ref_cell_set_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
-                self.emit_u16(Op::LOCAL_GET, slot);
-                crate::primitives::references::emit_cell_store(
-                    &mut self.chunks,
-                    self.current,
-                    value_slot,
-                    self.line,
-                );
-                self.emit(Op::DROP);
+                // Same rule as the global arm below: the pre-pass may be
+                // answering for a wrap that is still ahead, and the first write
+                // must CREATE the cell rather than store through a missing one.
+                if !self.binding_already_pointer_cell(name) {
+                    self.promote_local_binding_to_pointer_cell(name);
+                }
+                // Shape-polymorphic, matching the load above: a cell-only store
+                // wrote `__value` onto a carray, growing a dead field while the
+                // container it referenced was never touched.
+                self.emit_store_through_pointer(slot, value_slot);
             } else if let Some((args_slot, index)) = self.js_arguments_alias_for_name(name) {
                 let value_slot = self.define_local("__js_arguments_alias_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
@@ -680,14 +678,24 @@ impl Compiler {
         if self.binding_uses_pointer_cell(name) {
             let value_slot = self.define_local("__ref_global_set_value");
             self.emit_u16(Op::LOCAL_SET, value_slot);
+            // The module-wide pre-pass answers `true` before any wrap has
+            // happened, and at module scope the FIRST write is what gives the
+            // global its value — `$a = 1;` ahead of the `inc($a)` that promotes
+            // it. Storing through a cell that does not exist yet drops the
+            // value silently, and every later read of the alias sees undefined.
+            //
+            // Creating it here IS the "promote once, at declaration time" the
+            // pre-pass exists to schedule; the promotion marks itself, so the
+            // wrap still happens exactly once. Emitted with the value already
+            // off the stack, because the promotion emits code of its own.
+            if !self.binding_already_pointer_cell(name) {
+                self.promote_global_binding_to_pointer_cell(name);
+            }
+            let ptr_slot = self.define_local("__ref_global_set_ptr");
             self.emit_global_read(&global_key);
-            crate::primitives::references::emit_cell_store(
-                &mut self.chunks,
-                self.current,
-                value_slot,
-                self.line,
-            );
-            self.emit(Op::DROP);
+            self.emit_u16(Op::LOCAL_SET, ptr_slot);
+            // Either reference shape — see the local arm above.
+            self.emit_store_through_pointer(ptr_slot, value_slot);
             return;
         }
         self.emit_global_write(&global_key);

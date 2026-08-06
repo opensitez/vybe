@@ -503,7 +503,7 @@ mod tests {
         let out = Arc::clone(&output);
         crate::cli::register_plugins(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
         vm.register_host_fn(
-            "wasi:logging/logging",
+            "web:console",
             "log",
             Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
                 let line = args

@@ -116,6 +116,16 @@ impl Compiler {
                 );
                 self.emit_host_call(idx, 1);
             }
+            // One full ready-queue turn — `jspi.yield` requeues the fiber
+            // at the BACK, behind every queued job. Distinct from await:
+            // yield never continues synchronously.
+            AsyncOp::Yield => {
+                let idx = self.import(
+                    crate::primitives::functions::JSPI_SUSPEND_MODULE,
+                    "yield",
+                );
+                self.emit_host_call(idx, 0);
+            }
             // The sync↔async boundary. Same JSPI suspend `await` lowers to —
             // in a fiber, "drive the loop until settled" IS suspending this
             // fiber and letting the scheduler run; the fiber resumes with the

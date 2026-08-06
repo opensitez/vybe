@@ -12,7 +12,21 @@ pub struct Local {
     /// `emit_var_set` assignment path consults this — declaration init
     /// and direct loop-variable rebinds use `LOCAL_SET` directly, so
     /// they are unaffected.
-    pub is_const: bool }
+    pub is_const: bool,
+    /// This binding holds a REFERENCE (`{__ref_kind:"cell"}` or `"carray"`), not
+    /// a value: reads auto-deref and writes store through to whatever it points
+    /// at. Set for a `PassBy::Alias` parameter, for `$r = &$x`, and for a local
+    /// promoted by having its address taken.
+    ///
+    /// It lives on the BINDING for the same reason `is_const` does. It used to
+    /// be a `HashMap<chunk_idx, HashSet<name>>` beside the compiler, which asked
+    /// a name-keyed side table a question only the resolver can answer: a name
+    /// marked in ANY chunk leaked into every other chunk through a module-wide
+    /// fallback, and the guard added to stop that ("this chunk has a local of
+    /// that name → not a cell") could not tell a local that SHADOWS the name
+    /// from one that IS it — so php's `global $g` read a promoted global raw.
+    /// Resolution already knows the difference. Ask it.
+    pub holds_reference: bool }
 
 #[derive(Debug, Clone)]
 pub struct UpvalueDesc {
@@ -130,6 +144,17 @@ impl Scope {
         self.open_names.extend(names.iter().cloned());
     }
 
+    /// Was this name EXPLICITLY re-opened here (`global $g`, `nonlocal x`)?
+    ///
+    /// Distinct from [`Scope::is_open`], which is also true for every name under
+    /// [`ScopeResolution::Chain`]. The difference matters for per-binding
+    /// properties: a declared-open name IS the outer binding, so any local
+    /// record for it aliases rather than shadows, and its properties must be
+    /// read from where the binding actually lives.
+    pub fn declared_open(&self, name: &str) -> bool {
+        self.open_names.contains(name)
+    }
+
     pub fn define(&mut self, name: &str) -> u16 {
         self.define_typed(name, None)
     }
@@ -142,7 +167,8 @@ impl Scope {
             slot,
             is_captured: false,
             type_hint,
-            is_const: false });
+            is_const: false,
+            holds_reference: false });
         self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
         slot
@@ -161,7 +187,8 @@ impl Scope {
             slot,
             is_captured: false,
             type_hint,
-            is_const: false });
+            is_const: false,
+            holds_reference: false });
         self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
         slot
@@ -197,19 +224,59 @@ impl Scope {
     /// so a scope can hold both `Result` (pascal's `result_slot_name`) and a
     /// user's `result`, and one pass would return whichever sits later.
     pub fn resolve(&self, name: &str) -> Option<u16> {
-        for l in self.locals.iter().rev() {
-            if l.name == name {
-                return Some(l.slot);
-            }
+        self.resolve_local(name).map(|l| l.slot)
+    }
+
+    /// The binding `resolve` would pick — innermost first, then case-folded if
+    /// this scope folds. Every per-binding property is read through here, so it
+    /// can never disagree with the slot `resolve` returns.
+    fn resolve_local(&self, name: &str) -> Option<&Local> {
+        if let Some(l) = self.locals.iter().rev().find(|l| l.name == name) {
+            return Some(l);
         }
         if self.fold_case {
-            for l in self.locals.iter().rev() {
-                if l.name.eq_ignore_ascii_case(name) {
-                    return Some(l.slot);
-                }
-            }
+            return self
+                .locals
+                .iter()
+                .rev()
+                .find(|l| l.name.eq_ignore_ascii_case(name));
         }
         None
+    }
+
+    fn resolve_local_mut(&mut self, name: &str) -> Option<&mut Local> {
+        if self.locals.iter().rev().any(|l| l.name == name) {
+            return self.locals.iter_mut().rev().find(|l| l.name == name);
+        }
+        if self.fold_case {
+            return self
+                .locals
+                .iter_mut()
+                .rev()
+                .find(|l| l.name.eq_ignore_ascii_case(name));
+        }
+        None
+    }
+
+    /// Does this name denote a binding HERE that holds a reference?
+    ///
+    /// `None` means the name is not a local of this scope at all, so the caller
+    /// must look further out — that is the distinction a name-keyed side table
+    /// could not make, and the whole reason this lives on the binding.
+    pub fn holds_reference(&self, name: &str) -> Option<bool> {
+        self.resolve_local(name).map(|l| l.holds_reference)
+    }
+
+    /// Mark this scope's binding for `name` as holding a reference. Returns
+    /// `false` when the name is not a local here, so the caller can record it
+    /// as a promoted GLOBAL instead.
+    pub fn set_holds_reference(&mut self, name: &str) -> bool {
+        match self.resolve_local_mut(name) {
+            Some(l) => {
+                l.holds_reference = true;
+                true
+            }
+            None => false }
     }
 
     /// Case-EXACT, whatever the folding policy.

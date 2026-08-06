@@ -163,6 +163,14 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
         "common:dict.get_dynamic",
     );
 
+    // ── bigint ──────────────────────────────────────────────────────────
+    // ECMA-262 §6.1.6.2.2 BigInt::bitwiseNOT — one answer everywhere, so it
+    // is a platform row. `~`'s emitter READS this instead of carrying the
+    // spelling: §13.5.6 dispatches `~` on ToNumeric, and the BigInt leg of
+    // both the static and the runtime dispatch resolves here (language
+    // table first, this row second).
+    b.insert(BuiltinType::BigInt, ProtocolSlot::Not, "host:ecma:bigint:not");
+
     // ── bytes ───────────────────────────────────────────────────────────
     // Indexing a byte string yields the INTEGER byte in Python, Go and PHP 8
     // alike, which is what `at` returns for a `Uint8Array`. The out-of-range
@@ -545,6 +553,41 @@ impl Compiler {
         vybe_ast::builtin_types::classify_with(&self.profile.builtin_type_spellings, &hint)
     }
 
+    /// Whether `hint` names a BigInt — the inference's own `"bigint"` answer
+    /// (literals, the ecma constructor) or a spelling the language DECLARED
+    /// as one (`[builtin_types] bigint`, e.g. Kotlin's `Long`). The raw
+    /// string compares this replaces could not see declared spellings, so a
+    /// `Long`-typed variable read as "known non-BigInt" and §21.2.1.1 threw
+    /// on the language's own widening.
+    pub(crate) fn hint_is_bigint(&self, hint: Option<&str>) -> bool {
+        let Some(hint) = hint else { return false };
+        vybe_ast::builtin_types::classify_with(&self.profile.builtin_type_spellings, hint)
+            == Some(BuiltinType::BigInt)
+    }
+
+    /// Whether this language DECLARES integer spellings as bigint (Kotlin's
+    /// `Long`). Declaring one is declaring the mixing policy too: the
+    /// language's integers WIDEN into each other, so a BigInt×Number mix
+    /// converts instead of throwing — ECMA's §21.2.1.1 throw is about BigInt
+    /// being a DISTINCT user-visible type, which is exactly the case where no
+    /// spelling is declared.
+    pub(crate) fn bigint_widens_mixes(&self) -> bool {
+        self.profile
+            .builtin_type_spellings
+            .iter()
+            .any(|sp| sp.ty == BuiltinType::BigInt)
+    }
+
+    /// BigInt semantics are ON when something DECLARED can produce a BigInt
+    /// value — derived once per compile (`Compiler::bigint_enabled`): a
+    /// `[builtin_types] bigint` spelling, a builtin reaching the
+    /// `ecma:bigint` host, or a BigInt literal in the module. There is no
+    /// profile flag: with none of the three, no operand ever classifies
+    /// bigint and the routing this gates is unreachable anyway.
+    pub(crate) fn bigint_semantics(&self) -> bool {
+        self.bigint_enabled
+    }
+
     /// The emit target bound for `(static type of expr, slot)`, or `None` when
     /// the type is not a built-in or the pair is unbound.
     ///
@@ -556,6 +599,17 @@ impl Compiler {
         slot: ProtocolSlot,
     ) -> Option<&str> {
         let ty = self.builtin_type_of(expr)?;
+        self.builtin_type_slot_target(ty, slot)
+    }
+
+    /// Same resolution for a type known WITHOUT an expression — the runtime-
+    /// dispatch legs resolve the row for a type they only establish at run
+    /// time (e.g. `~`'s BigInt leg behind a `wasm:js-bigint test`).
+    pub(crate) fn builtin_type_slot_target(
+        &self,
+        ty: BuiltinType,
+        slot: ProtocolSlot,
+    ) -> Option<&str> {
         self.profile.builtin_slots.get_or(defaults(), ty, slot)
     }
 }

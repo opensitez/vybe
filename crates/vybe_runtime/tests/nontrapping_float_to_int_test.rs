@@ -12,8 +12,7 @@ fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
 }
 
 fn push(c: &mut Chunk, v: f64) {
-    let idx = c.add_constant(Value::F64(v));
-    c.emit_op_u16(Op::CONST, idx, 0);
+    c.emit_f64_const(v, 0);
 }
 
 // ── i32.trunc_sat_f32_s (0xFC 0x00) ──────────────────────────────────

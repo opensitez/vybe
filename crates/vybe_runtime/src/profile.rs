@@ -394,10 +394,6 @@ pub struct LanguageProfile {
     /// the `import.meta` object. JS-only today.
     pub supports_dynamic_import: bool,
 
-    /// The language has an ECMAScript `BigInt` type backed by the `ecma:bigint`
-    /// host surface, so arbitrary-precision operators (e.g. `**`) route there.
-    pub has_ecma_bigint: bool,
-
     /// The language honors ECMAScript strict mode — a top-level `"use strict"`
     /// prologue sets strict semantics (e.g. assignment to an undeclared global
     /// throws, §11.2.1). Off for languages with no strict-mode concept.
@@ -579,11 +575,11 @@ pub struct LanguageProfile {
     /// values path through `collections::emit_iter_natural`.
     pub for_in_object_yields_keys: bool,
 
-    /// Dict/hash literals (`{k: v}`) build a `Map` rather than an Ordinary
-    /// object, so non-string keys keep their type (`{1: 'a'}` stays `1`, not
-    /// `'1'`) and insertion order is preserved. Python dicts, Ruby hashes.
-    pub dict_literals_as_map: bool,
-
+    // REMOVED: `dict_literals_as_map`. It made `ExprKind::Object` compile to
+    // two different runtime shapes depending on which language emitted it, so a
+    // shared primitive holding one could not tell which it had without reading
+    // the front end's profile. The distinction is real, so it became a real
+    // node: `ExprKind::Map` (`vybe_ast`). Front ends declare it; nothing votes.
     /// Stamp Python-style introspection metadata (`__name__`, `__mro__`) on each
     /// class object, so `Cls.__name__`, `Cls.__mro__`, and `type(obj).__name__`
     /// resolve. Off by default; languages with this reflection surface opt in.
@@ -1215,19 +1211,24 @@ impl LanguageProfile {
 /// cache, so this is their main lever). Keyed by the source's (ptr, len),
 /// which is stable and unique for `&'static str`; cloning a `LanguageProfile`
 /// is far cheaper than re-parsing TOML + rebuilding its tables.
-/// Platform-registered namespace constants for `use_dotnet` profiles
-/// (name → value). The dotnet platform seeds these at startup (and, once it is
-/// a loadable module, at load time) so this generic parser never references the
-/// platform — the same inversion every future platform/language dylib uses.
-static DOTNET_NS_CONSTANTS: std::sync::OnceLock<Vec<(String, f64)>> = std::sync::OnceLock::new();
-
-/// Called once by the host/compiler with `dotnet::namespace_constant_mappings()`.
-pub fn register_dotnet_namespace_constants(mappings: Vec<(String, f64)>) {
-    let _ = DOTNET_NS_CONSTANTS.set(mappings);
-}
-
-fn dotnet_namespace_constants() -> &'static [(String, f64)] {
-    DOTNET_NS_CONSTANTS.get().map(Vec::as_slice).unwrap_or(&[])
+/// The namespace constants a profile inherits from the PLATFORMS it declares.
+///
+/// A platform registers its constants with the shared registry under its own
+/// name (`"dotnet"`, `"jvm"`, `"plib"`, …); a language declares the platform
+/// roots it resolves against in `type_scopes`. The intersection is what this
+/// profile inherits — so `CommandType.Text` reaches a language because that
+/// language said `type_scopes = ["dotnet"]`, not because a flag named a family.
+///
+/// This replaces a `OnceLock` that only ever held the dotnet platform's table
+/// and a `use_dotnet` gate that decided who got it. Every platform now works the
+/// same way, and nothing here names one.
+fn platform_namespace_constants_in_scope(type_scopes: &[String]) -> Vec<(&'static str, f64)> {
+    crate::registry::all_platforms()
+        .iter()
+        .filter(|p| type_scopes.iter().any(|s| s.eq_ignore_ascii_case(p.name)))
+        .filter_map(|p| p.namespace_constants)
+        .flat_map(|f| f().iter().copied())
+        .collect()
 }
 
 /// Turn an emit-target string into a [`BuiltinEmit`].
@@ -1644,10 +1645,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("supports_dynamic_import")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let has_ecma_bigint = compiler
-        .get("has_ecma_bigint")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let ecma_strict_mode = compiler
         .get("ecma_strict_mode")
         .and_then(|v| v.as_bool())
@@ -1796,10 +1793,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or(false);
     let for_in_object_yields_keys = compiler
         .get("for_in_object_yields_keys")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let dict_literals_as_map = compiler
-        .get("dict_literals_as_map")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let class_introspection_metadata = compiler
@@ -2271,12 +2264,13 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
             }
         }
     }
-    if namespaces.use_dotnet {
-        for (name, value) in dotnet_namespace_constants() {
-            namespace_constants
-                .entry(name.clone())
-                .or_insert(ConstantValue::Float(*value));
-        }
+    // Constants contributed by the platforms this profile declares. The
+    // profile's own declarations were inserted above and win — a language that
+    // spells a constant differently keeps its own value.
+    for (name, value) in platform_namespace_constants_in_scope(&namespaces.type_scopes) {
+        namespace_constants
+            .entry(name.to_string())
+            .or_insert(ConstantValue::Float(value));
     }
 
     // Ambient-import defaults declared via `[[esm_default]]` TOML
@@ -2472,7 +2466,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         has_undefined_value,
         supports_spread_arguments,
         supports_dynamic_import,
-        has_ecma_bigint,
         ecma_strict_mode,
         ecma_switch_strict_equality,
         ecma_lexical_declarations,
@@ -2509,7 +2502,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         materialize_bool_results,
         callable_objects,
         for_in_object_yields_keys,
-        dict_literals_as_map,
         class_introspection_metadata,
         class_member_metadata,
         class_multiple_inheritance,

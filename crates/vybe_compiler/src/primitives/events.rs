@@ -155,8 +155,13 @@ impl Compiler {
             return false;
         }
 
-        if self.profile.namespaces.use_dotnet
-            && self.is_known_gui_event_name(event)
+        // An `object`-declared receiver is a receiver whose type is UNKNOWN,
+        // not a receiver of a particular language. The deciding signal is the
+        // EVENT NAME being one the shared GUI surface declares — a control
+        // wired to `Click`/`TextChanged` is a control whoever spelled it. The
+        // language gate that used to lead here answered nothing this test
+        // does not.
+        if self.is_known_gui_event_name(event)
             && self
                 .event_receiver_type_hint(control)
                 .as_deref()

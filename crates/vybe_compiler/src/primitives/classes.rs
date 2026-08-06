@@ -404,8 +404,16 @@ impl Compiler {
         base_args: &[Expression],
         this_slot: u16,
     ) -> Result<bool, String> {
-        let canonical = common::gui::canonical_control_name(parent_name);
-        if canonical.is_empty() {
+        // Ask the REGISTRY first, exactly as `is_framework_control_parent`
+        // does — otherwise the two disagree. `canonical_control_name` is
+        // dotnet's name table and knows nothing of Delphi's `T` prefix, so
+        // `TForm` canonicalised to "" and this bailed: the derived
+        // constructor then never allocated `this`, every field write landed
+        // on null, and every field read came back `undefined`.
+        let registered =
+            common::gui::registered_control_element(&self.profile.namespaces.type_scopes, parent_name)
+                .is_some();
+        if !registered && common::gui::canonical_control_name(parent_name).is_empty() {
             return Ok(false);
         }
         for a in base_args {
@@ -433,6 +441,11 @@ impl Compiler {
         method_capture_name_map: &HashMap<usize, Vec<String>>,
         method_rest_fixed_counts: &HashMap<usize, u8>,
         is_value_type: bool,
+        // Does `==` compare FIELDS? Independent of `is_value_type`, which is
+        // STORAGE — a Pascal `record` copies and has no `==` at all, a Kotlin
+        // `data class` has value `==` and does not copy. One bool answered
+        // both and could only ever be right for one of them.
+        equality_is_structural: bool,
         should_stamp_form_identity: bool,
         body_stmts: &[Statement],
         user_body: &[Statement],
@@ -465,8 +478,11 @@ impl Compiler {
         // is nothing left to re-stamp. `__type` above is still written because
         // the string channel is what host-constructed objects use (184 stamps
         // across 59 files); see wasmregistryfix.md steps 3–4.
-        if is_value_type {
+        if equality_is_structural {
             crate::primitives::classes::emit_value_equality_stamp(self.chunk(), this_slot, line);
+        }
+        if is_value_type {
+            crate::primitives::classes::emit_value_storage_stamp(self.chunk(), this_slot, line);
         }
         if let Some(parent_name) = parent {
             let pname = self.canon(parent_name);
@@ -1030,6 +1046,13 @@ impl Compiler {
         if Self::stmts_have_use_strict_directive(body) {
             self.in_strict = true;
         }
+        // A `DirectiveScope::Block` declaration at the head of a function body
+        // is restored when the function ends; a `Module` one writes through
+        // this frame to the module's and survives.
+        let directive_frame = Self::stmts_have_directive(body);
+        if directive_frame {
+            self.push_directive_frame();
+        }
         self.js_arguments_bindings.push(None);
 
         let js_arguments_source_slot = if uses_js_arguments {
@@ -1205,6 +1228,8 @@ impl Compiler {
                 }
             }
         }
+        // An alias parameter is handed a reference — mark it, do not wrap it.
+        self.bind_alias_params(params);
 
         let generator_control_slot =
             is_generator.then(|| self.define_local("__generator_entry_control"));
@@ -1393,6 +1418,9 @@ impl Compiler {
         self.shared_env_slot = saved_shared_env_slot;
         self.shared_env_names = saved_shared_env_names;
         self.in_strict = saved_strict;
+        if directive_frame {
+            self.pop_directive_frame();
+        }
         self.current_result_slot = saved_rs;
         self.current_ref_out_params = saved_ref_out;
 
@@ -1910,6 +1938,25 @@ impl Compiler {
                 })
             })
             .collect();
+        // Keyed exactly like `instance_field_types` above, so a lookup that
+        // finds a field's type also finds whether that type is a value type.
+        let instance_field_value_types: HashMap<String, String> = class
+            .instance_fields
+            .iter()
+            .filter_map(|f| {
+                f.value_type.as_ref().map(|value_type| {
+                    (
+                        field_storage_names
+                            .get(&self.canon(&f.name))
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                self.js_member_storage_name_for_class(&class.name, &f.name)
+                            }),
+                        value_type.clone(),
+                    )
+                })
+            })
+            .collect();
         for member in &class.raw_extra_members {
             match member {
                 ClassMember::Event {
@@ -1973,6 +2020,7 @@ impl Compiler {
                     .map(|method| method.canonical_name.clone())
                     .collect(),
                 instance_field_types,
+                instance_field_value_types,
                 static_fields: static_member_names,
                 static_field_types: class
                     .static_fields
@@ -2310,7 +2358,15 @@ impl Compiler {
             );
 
             if has_receiver {
-                cc.define_local(&self_kw);
+                // The receiver's type is DECLARED on its slot, not asserted by
+                // a match arm: `self` is an ordinary binding, and the class it
+                // belongs to is known right here. Descriptive, never
+                // Converting — it documents the receiver, it must not coerce
+                // it.
+                cc.define_local_typed(
+                    &self_kw,
+                    Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
+                );
             }
             let js_arguments_source_slot = if uses_js_arguments {
                 Some(cc.define_local("__vybe_js_arguments_array"))
@@ -2800,7 +2856,10 @@ impl Compiler {
                 self.current = ci;
                 let saved_member_static = self.current_member_is_static;
                 self.current_member_is_static = prop_is_static;
-                self.define_local(&self_kw);
+                self.define_local_typed(
+                    &self_kw,
+                    Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
+                );
 
                 if getter.body.is_empty() {
                     // Auto-property getter: return backing field
@@ -2849,7 +2908,10 @@ impl Compiler {
                 self.current = ci;
                 let saved_member_static = self.current_member_is_static;
                 self.current_member_is_static = prop_is_static;
-                self.define_local(&self_kw);
+                self.define_local_typed(
+                    &self_kw,
+                    Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
+                );
                 let value_param_name = setter
                     .params
                     .first()
@@ -3112,7 +3174,10 @@ impl Compiler {
                     self.define_local(&format!("__implicit_arg_{}", i));
                 }
             }
-            self.define_local(&self_kw);
+            self.define_local_typed(
+                &self_kw,
+                Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
+            );
             let this_slot = user_arity as u16;
             if self.profile.ambient_this_binding {
                 self.emit_global_read("__js_this");
@@ -3462,8 +3527,22 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(name)));
                         let type_key = self.str_const("__type");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
-                        if class.is_value_type {
+                        // Storage and equality are INDEPENDENT axes. Gating the
+                        // EQUALITY stamp on `is_value_type` — which is storage —
+                        // is the conflation `emit_derived_ctor_stamps` already
+                        // removed; it survived on this path, so a Pascal
+                        // `record` claimed field-wise `=` (Delphi gives it none
+                        // without `class operator Equal`) and never claimed the
+                        // copy-on-assign it actually declares.
+                        if class.semantics.equality == vybe_ast::ValueEquality::Structural {
                             crate::primitives::classes::emit_value_equality_stamp(
+                                self.chunk(),
+                                this_slot,
+                                line,
+                            );
+                        }
+                        if class.is_value_type {
+                            crate::primitives::classes::emit_value_storage_stamp(
                                 self.chunk(),
                                 this_slot,
                                 line,
@@ -3630,6 +3709,8 @@ impl Compiler {
                                 &method_capture_name_map,
                                 &method_rest_fixed_counts,
                                 class.is_value_type,
+                                class.semantics.equality
+                                    == vybe_ast::ValueEquality::Structural,
                                 should_stamp_form_identity,
                                 body_stmts,
                                 user_body,
@@ -3655,6 +3736,8 @@ impl Compiler {
                                 &method_capture_name_map,
                                 &method_rest_fixed_counts,
                                 class.is_value_type,
+                                class.semantics.equality
+                                    == vybe_ast::ValueEquality::Structural,
                                 should_stamp_form_identity,
                                 body_stmts,
                                 user_body,
@@ -3673,8 +3756,21 @@ impl Compiler {
                         type_slot,
                         line,
                     );
-                    if class.is_value_type {
+                    // Same pair as the derived path: equality by the declared
+                    // equality, storage by the declared storage. Without the
+                    // second stamp an instance built on this path advertises no
+                    // value storage at all, so the cross-language copy — the
+                    // half a static type cannot answer — always bails and hands
+                    // the ORIGINAL back.
+                    if class.semantics.equality == vybe_ast::ValueEquality::Structural {
                         crate::primitives::classes::emit_value_equality_stamp(
+                            self.chunk(),
+                            this_slot,
+                            line,
+                        );
+                    }
+                    if class.is_value_type {
+                        crate::primitives::classes::emit_value_storage_stamp(
                             self.chunk(),
                             this_slot,
                             line,
@@ -5008,6 +5104,24 @@ pub fn emit_value_equality_stamp(chunk: &mut Chunk, this_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
     chunk.emit_bool_const(true, line);
     let key = chunk.add_constant(Value::String(Arc::from("__value_eq")));
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+}
+
+/// The STORAGE half of the same idea: mark an instance whose declaration said
+/// `b = a` hands back an independent value.
+///
+/// A separate stamp from `__value_eq` because the axes are independent — a
+/// Pascal `record` copies and has no `==` at all, a Kotlin `data class` has
+/// value `==` and aliases. Reading one to answer the other is exactly the
+/// conflation `is_value_type` was making.
+///
+/// On the INSTANCE so it survives a language boundary: Pascal's own copy pass
+/// keys on Pascal's declarations and cannot see a COBOL group or a Go struct,
+/// so a foreign value silently aliases today.
+pub fn emit_value_storage_stamp(chunk: &mut Chunk, this_slot: u16, line: u32) {
+    chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
+    chunk.emit_bool_const(true, line);
+    let key = chunk.add_constant(Value::String(Arc::from("__value_copy")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
 }
 

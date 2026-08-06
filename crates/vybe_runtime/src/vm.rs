@@ -73,7 +73,10 @@ pub struct HostContext<'a> {
     /// canon `stream<u8>` / `future<T>` i32 handle (CanonicalABI lowering)
     /// can resolve it to the EventLoop stream/future id.
     /// Null when no VM is attached (HostContext::empty()).
-    handle_table_slot: *const crate::handle_table::HandleTable }
+    handle_table_slot: *const crate::handle_table::HandleTable,
+    /// Raw pointer to the VM's shared memory, for the `wasm:threads`
+    /// scheduler intrinsics (`all_parked`). Null when no VM is attached.
+    shared_memory_slot: *const crate::shared_memory::SharedMemory }
 
 // SAFETY: HostContext is always created and used on the VM's owning thread.
 // The raw pointer to last_exception_slot is valid for the duration of the host
@@ -396,7 +399,19 @@ impl<'a> HostContext<'a> {
             exit_code_slot: std::ptr::null_mut(),
             globals_slot: std::ptr::null_mut(),
             stack_slot: std::ptr::null(),
-            handle_table_slot: std::ptr::null() }
+            handle_table_slot: std::ptr::null(),
+            shared_memory_slot: std::ptr::null() }
+    }
+
+    /// From an awake host-fn caller's view: is every OTHER VM thread parked
+    /// in `wait32`? False when no VM is attached.
+    pub fn all_other_threads_parked(&self) -> bool {
+        if self.shared_memory_slot.is_null() {
+            return false;
+        }
+        // SAFETY: set from &self.memory in make_host_context; the VM outlives
+        // the host call, same contract as the other slots.
+        unsafe { (*self.shared_memory_slot).all_others_parked() }
     }
 }
 
@@ -428,7 +443,22 @@ pub enum ImportTarget {
     /// `jspi.await_eager` — the eager-continuation await (`AsyncOp::AwaitEager`):
     /// settled antecedents continue synchronously, pending ones suspend. The
     /// instruction chose the semantics; the VM just implements both.
-    JspiSuspendEager }
+    JspiSuspendEager,
+    /// `jspi`.`yield` — one full turn of the ready queue: save the fiber
+    /// and requeue it at the BACK, so every already-queued job (Task.Run
+    /// bodies, reactions) runs first. C# `Task.Yield`, the polling tick of
+    /// the async channel surface. Distinct from `await`: yield NEVER
+    /// continues synchronously, even under eager-await semantics.
+    JspiYield,
+    /// `wasi:threads`.`thread-spawn` (wasi-threads proposal:
+    /// `thread-spawn(start_arg: i32) -> i32`, tid or negative error). The VM
+    /// implements the import natively — exactly as wasmtime does — spawning
+    /// an OS thread that invokes the module's `__wasi_thread_start` chunk
+    /// with `(tid, start_arg)`. `start_arg` points at a record in shared
+    /// linear memory: `{fn_table_index: i32, status_word: i32}` (the
+    /// wasi-libc pthread_create pattern). No thread OPCODE exists — this
+    /// import is the whole surface.
+    WasiThreadSpawn }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallFrame {
@@ -745,6 +775,13 @@ pub struct VM {
     /// Optional chunk-name filter for execution trace output.
     /// When set, only matching chunks emit trace lines.
     pub(crate) trace_chunk_filter: Option<String>,
+    /// `VYBE_DEBUG_AC=1`, read ONCE at construction. The dispatch loop's
+    /// AC diagnostics must never call `env::var` per instruction: `getenv`
+    /// takes libc's process-global lock, and an ungated read on every host
+    /// import call made a goroutine's empty counting loop ~1000x slower
+    /// under a concurrently polling main thread (measured via profiler
+    /// sample — all child time in `__findenv_locked`).
+    pub(crate) dbg_ac: bool,
     /// Attached step debugger (see `debugger.rs`). `None` in normal runs.
     pub(crate) debugger: Option<crate::debugger::Debugger>,
     /// Compiler-backed expression evaluator for the debugger. Installed by the
@@ -972,6 +1009,7 @@ impl VM {
             next_thread_id: 1,
             trace: std::env::var("VYBE_TRACE").map_or(false, |v| v == "1" || v == "true"),
             trace_chunk_filter: std::env::var("VYBE_TRACE_CHUNK").ok(),
+            dbg_ac: std::env::var("VYBE_DEBUG_AC").is_ok(),
             debugger: None,
             eval_hook: None,
             reload_hook: None,
@@ -1940,7 +1978,8 @@ impl VM {
             exit_code_slot: exit_code_ptr,
             globals_slot: globals_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
-            handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable }
+            handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable,
+            shared_memory_slot: &self.memory as *const crate::shared_memory::SharedMemory }
     }
 
     /// Close open upvalues in a lambda value that escapes the current stack frame.
@@ -2172,6 +2211,12 @@ impl VM {
                 ImportTarget::JspiSuspendEager => {
                     self.import_table.push(ImportTarget::JspiSuspendEager);
                 }
+                ImportTarget::WasiThreadSpawn => {
+                    self.import_table.push(ImportTarget::WasiThreadSpawn);
+                }
+                ImportTarget::JspiYield => {
+                    self.import_table.push(ImportTarget::JspiYield);
+                }
                 ImportTarget::StringConst(s) => {
                     self.import_table.push(ImportTarget::StringConst(s));
                 }
@@ -2256,6 +2301,13 @@ impl VM {
                     );
                 }
             }
+        }
+        // Embedder default: funcref table 0 always exists (spec modules
+        // declare their tables; our bundles use table 0 as the thread-start
+        // transport for `wasi:threads/thread-spawn`, per the wasi-libc
+        // `pthread_create` pattern).
+        if self.wasm_tables.is_empty() {
+            self.wasm_tables.push(Vec::new());
         }
         // Preserve globals / chunks / type registry across runs, but discard
         // per-execution state (stale frames/stack from a previous run would
@@ -2411,57 +2463,10 @@ impl VM {
         // (imports are added to chunks[0] by all compilers). For multi-module programs,
         // different modules may have different imports. We resolve the union.
         self.import_table.clear();
-        for (_i, import) in self.chunks[script_idx].imports.iter().enumerate() {
-            // 0. JSPI suspending import (`await`): handled by the VM itself.
-            if import.module == "jspi" && import.name == "await" {
-                self.import_table.push(ImportTarget::JspiSuspend);
-                continue;
-            }
-            if import.module == "jspi" && import.name == "await_eager" {
-                self.import_table.push(ImportTarget::JspiSuspendEager);
-                continue;
-            }
-            // 1. js-string-builtins: imported string constants
-            if import.module == "wasm:string-constants" {
-                self.import_table
-                    .push(ImportTarget::StringConst(Arc::from(import.name.as_str())));
-                continue;
-            }
-            // 2. Try host function registry (exact module:name match)
-            if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {
-                self.import_table.push(ImportTarget::Host(idx));
-                continue;
-            }
-            // 2. Wildcard module "*" — resolve from globals (cross-language or same-language)
-            if import.module == "*" {
-                // Check lowercase and original case
-                let candidates = [import.name.clone(), import.name.to_lowercase()];
-                let found = candidates
-                    .iter()
-                    .find(|g| self.globals.contains_key(g.as_str()));
-                if let Some(global_name) = found {
-                    self.import_table
-                        .push(ImportTarget::StdlibRedirect(global_name.clone()));
-                    continue;
-                }
-            }
-            // 3. Check for stdlib global
-            let candidates = [
-                format!("__vybe_{}", import.name),
-                format!("__vybe_{}", import.name.to_lowercase()),
-            ];
-            let found = candidates
-                .iter()
-                .find(|g| self.globals.contains_key(g.as_str()));
-            if let Some(global_name) = found {
-                self.import_table
-                    .push(ImportTarget::StdlibRedirect(global_name.clone()));
-            } else {
-                return Err(VMError::new(format!(
-                    "Unresolved import: \"{}\" \"{}\"",
-                    import.module, import.name
-                )));
-            }
+        let script_imports = self.chunks[script_idx].imports.clone();
+        for import in &script_imports {
+            let target = self.resolve_import_target(&import.module, &import.name)?;
+            self.import_table.push(target);
         }
 
         // Load type table from the script chunk (WASM GC type section).
@@ -2878,6 +2883,63 @@ impl VM {
         }
     }
 
+    /// THE import-resolution policy — the single copy. Every path that maps
+    /// an `(module, name)` import to an `ImportTarget` goes through here:
+    /// `run`'s link loop, per-chunk lazy resolution (`resolve_chunk_import`),
+    /// and the dynamic compiler service's `resolve_imports`.
+    ///
+    /// Order: VM-implemented imports (jspi, wasi:threads) → string constants
+    /// (the import name IS the value, per js-string-builtins) → host
+    /// functions through Module Records → `"*"` wildcard against globals →
+    /// `__vybe_<name>` stdlib redirect → loud error.
+    pub fn resolve_import_target(
+        &self,
+        module: &str,
+        name: &str,
+    ) -> Result<ImportTarget, VMError> {
+        if module == "jspi" && name == "await" {
+            return Ok(ImportTarget::JspiSuspend);
+        }
+        if module == "jspi" && name == "await_eager" {
+            return Ok(ImportTarget::JspiSuspendEager);
+        }
+        if module == "jspi" && name == "yield" {
+            return Ok(ImportTarget::JspiYield);
+        }
+        if module == "wasi:threads" && name == "thread-spawn" {
+            return Ok(ImportTarget::WasiThreadSpawn);
+        }
+        if module == "wasm:string-constants" {
+            return Ok(ImportTarget::StringConst(Arc::from(name)));
+        }
+        if let Some(idx) = self.resolve_host_function_index(module, name) {
+            return Ok(ImportTarget::Host(idx));
+        }
+        if module == "*" {
+            let candidates = [name.to_string(), name.to_lowercase()];
+            if let Some(global_name) = candidates
+                .iter()
+                .find(|g| self.globals.contains_key(g.as_str()))
+            {
+                return Ok(ImportTarget::StdlibRedirect(global_name.clone()));
+            }
+        }
+        let candidates = [
+            format!("__vybe_{}", name),
+            format!("__vybe_{}", name.to_lowercase()),
+        ];
+        if let Some(global_name) = candidates
+            .iter()
+            .find(|g| self.globals.contains_key(g.as_str()))
+        {
+            return Ok(ImportTarget::StdlibRedirect(global_name.clone()));
+        }
+        Err(VMError::new(format!(
+            "Unresolved import: \"{}\" \"{}\"",
+            module, name
+        )))
+    }
+
     pub(crate) fn resolve_chunk_import(
         &self,
         chunk_index: usize,
@@ -2890,51 +2952,8 @@ impl VM {
         else {
             return Ok(None);
         };
-
-        if import.module == "jspi" && import.name == "await" {
-            return Ok(Some(ImportTarget::JspiSuspend));
-        }
-        if import.module == "jspi" && import.name == "await_eager" {
-            return Ok(Some(ImportTarget::JspiSuspendEager));
-        }
-
-        // js-string-builtins: imported string constants (§ String constants).
-        // The import name IS the string value.
-        if import.module == "wasm:string-constants" {
-            return Ok(Some(ImportTarget::StringConst(Arc::from(
-                import.name.as_str(),
-            ))));
-        }
-
-        if let Some(idx) = self.resolve_host_function_index(&import.module, &import.name) {
-            return Ok(Some(ImportTarget::Host(idx)));
-        }
-
-        if import.module == "*" {
-            let candidates = [import.name.clone(), import.name.to_lowercase()];
-            if let Some(global_name) = candidates
-                .iter()
-                .find(|name| self.globals.contains_key(name.as_str()))
-            {
-                return Ok(Some(ImportTarget::StdlibRedirect(global_name.clone())));
-            }
-        }
-
-        let candidates = [
-            format!("__vybe_{}", import.name),
-            format!("__vybe_{}", import.name.to_lowercase()),
-        ];
-        if let Some(global_name) = candidates
-            .iter()
-            .find(|name| self.globals.contains_key(name.as_str()))
-        {
-            return Ok(Some(ImportTarget::StdlibRedirect(global_name.clone())));
-        }
-
-        Err(VMError::new(format!(
-            "Unresolved import: \"{}\" \"{}\"",
-            import.module, import.name
-        )))
+        self.resolve_import_target(&import.module, &import.name)
+            .map(Some)
     }
 
     pub(crate) fn constant_str(&self, index: u16) -> String {

@@ -159,6 +159,7 @@ impl Compiler {
                 instance_member_names: Vec::new(),
                 instance_pointer_method_names: Vec::new(),
                 instance_field_types: HashMap::new(),
+                instance_field_value_types: HashMap::new(),
                 static_fields: Vec::new(),
                 static_field_types: HashMap::new(),
                 static_method_names: Vec::new(),

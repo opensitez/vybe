@@ -20,9 +20,11 @@ pub mod addressable_storage;
 pub mod builtin_slots;
 pub mod bundle;
 pub mod codepoints;
+pub mod clone; // what it means to COPY a value — records, collections, arguments
 pub mod collections;
 pub mod csv;
 pub mod complex;
+pub mod bigint;
 pub mod convert;
 pub mod datetime;
 pub mod delegates;
@@ -117,6 +119,7 @@ mod operators;
 mod overloads;
 pub mod async_ops;
 pub mod prototypes;
+pub mod records;
 pub mod references;
 pub mod reflection;
 mod resolver;
@@ -187,6 +190,14 @@ struct PendingClass {
     /// Used when implicit-self resolution turns a bare field name into
     /// `this.<field>` so member access keeps the original receiver type.
     instance_field_types: HashMap<String, String>,
+    /// For each instance field that DECLARES a value type, the canonical name
+    /// of that type — keyed identically to `instance_field_types`.
+    ///
+    /// Carried from `NormalField::value_type`, resolved once in the declaration
+    /// pass. This is a copy of an answer, never a place the answer is computed:
+    /// deriving it here from `instance_field_types` would be the spelling match
+    /// that resolution exists to remove.
+    instance_field_value_types: HashMap<String, String>,
     /// Static field names (declared `static T name`). Looked up from
     /// inside instance methods so a bare `Name` resolves to
     /// `<ClassName>.Name` (struct_get on the class global) rather than
@@ -405,6 +416,14 @@ pub struct Compiler {
     /// segment offsets (`(offset (i32.add (global.get $g) (i32.const N)))`).
     pub(crate) global_const_values: std::collections::HashMap<String, i64>,
     in_strict: bool,
+    /// Declared policy in force, innermost last — never empty. Frame 0 is the
+    /// module's own declaration; a block pushes a frame only when its body
+    /// actually states something, so ordinary code pays nothing.
+    ///
+    /// A `DirectiveScope::Module` statement writes through EVERY frame, which
+    /// is what makes Pascal's `{$R+}` outlive the procedure it appeared in
+    /// while JS's `"use strict"` does not. See `vybe_ast::Directives`.
+    directives: Vec<vybe_ast::Directives>,
     /// True while compiling the operand of a `typeof`. `typeof undeclaredName`
     /// must evaluate to `"undefined"`, never throw — so the unresolvable-binding
     /// ReferenceError in `emit_var_get` is suppressed in this context.
@@ -514,7 +533,16 @@ pub struct Compiler {
     /// go through array.get/array.set so mutations are visible to closures.
     shared_env_slot: Option<u16>,
     shared_env_names: Vec<String>,
-    pointer_cell_bindings: HashMap<usize, HashSet<String>>,
+    /// Names promoted to a module-level pointer cell. A GLOBAL being a cell is
+    /// a module-wide fact; a local or parameter holding a reference is a
+    /// per-binding one and lives on `scope::Local::holds_reference`. One map
+    /// used to answer both — see `binding_uses_pointer_cell`.
+    promoted_global_cells: HashSet<String>,
+    /// Names taken by address ANYWHERE in the module, collected before any body
+    /// is compiled. A "readers must deref" hint, deliberately separate from
+    /// `promoted_global_cells`, which records that a wrap actually happened —
+    /// mixing them makes promotion see itself as already done and skip.
+    module_addr_taken_globals: HashSet<String>,
 
     /// Names of locals/params in the function currently being compiled whose
     /// address is taken somewhere in the body (`&v`). Populated by a pre-scan
@@ -616,6 +644,15 @@ pub struct Compiler {
     /// for runtime trap dispatch. Off → direct `STRUCT_GET` / `ARRAY_GET`
     /// (zero overhead for non-Proxy code paths).
     pub(crate) uses_proxy: bool,
+    /// BigInt values are POSSIBLE in this compile — derived at
+    /// `compile_with_imports` from the three declarations that can produce
+    /// one: a `[builtin_types] bigint` spelling (Kotlin `Long`), a builtin
+    /// whose emit target reaches the `ecma:bigint` host (JS's `BigInt`,
+    /// Java's BigInteger surface), or a `Literal::BigInt` anywhere in the
+    /// module (PHP's big literals, JS `1n`). Replaces the `has_ecma_bigint`
+    /// profile bool: off → the `++` path emits no runtime type test and the
+    /// bigint routing arms are skipped (they would be unreachable anyway).
+    pub(crate) bigint_enabled: bool,
     /// Read-only snapshot of `vm.modules` keyed by specifier. Lets the
     /// Linker resolve `import { X } from "node:http"` against Adapter
     /// modules (Phase 6) — walking the `Indirect` re-export chain to
@@ -799,7 +836,15 @@ fn collect_addr_taken_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             collect_addr_taken_in_expr(target, out);
             collect_addr_taken_in_expr(value, out);
         }
-        StmtKind::Block(stmts) => collect_addr_taken_idents(stmts, out),
+        // A namespace is not a scope for VARIABLES — php's `$n` under
+        // `namespace App;` is the same module global as at top level — so the
+        // scan must descend. Skipping it left every statement in a namespaced
+        // file invisible here, and the reader compiled before the promotion
+        // (the whole reason this pre-pass exists) went back to reading the cell
+        // raw.
+        StmtKind::Block(stmts) | StmtKind::NamespaceDecl { body: stmts, .. } => {
+            collect_addr_taken_idents(stmts, out)
+        }
         StmtKind::If {
             cond,
             then_body,
@@ -893,6 +938,17 @@ fn collect_addr_taken_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         ExprKind::Call { callee, args, .. } => {
             collect_addr_taken_in_expr(callee, out);
             for a in args {
+                // Address-taking is not always SPELLED at the call site: php
+                // writes `w($g)` and the `&` lives on the callee's PARAMETER,
+                // so no `AddrOf` node reaches this scan even though `$g`'s
+                // storage is aliased into the call. The walker resolves the
+                // signature and declares the fact on the argument, which makes
+                // it the same fact as `&$g` — so read it the same way.
+                if a.by_ref {
+                    if let ExprKind::Ident(name) = &a.value.kind {
+                        out.insert(name.clone());
+                    }
+                }
                 collect_addr_taken_in_expr(&a.value, out);
             }
         }
@@ -1300,6 +1356,8 @@ pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
         | ExprKind::Spread(expr)
         | ExprKind::TypeOf(expr)
         | ExprKind::Delete(expr) => expr_contains_this(expr),
+        ExprKind::Async(op) => op.children().into_iter().any(expr_contains_this),
+        ExprKind::Chan(op) => op.children().into_iter().any(expr_contains_this),
         ExprKind::Binary { left, right, .. }
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
@@ -1422,6 +1480,8 @@ fn expr_has_closure_with_this(expr: &Expression) -> bool {
         ExprKind::Unary { expr, .. } | ExprKind::Await(expr) | ExprKind::Spread(expr) => {
             expr_has_closure_with_this(expr)
         }
+        ExprKind::Async(op) => op.children().into_iter().any(expr_has_closure_with_this),
+        ExprKind::Chan(op) => op.children().into_iter().any(expr_has_closure_with_this),
         ExprKind::Binary { left, right, .. }
         | ExprKind::Assign {
             target: left,
@@ -1561,6 +1621,21 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
         }
         ExprKind::Await(inner) | ExprKind::Spread(inner) | ExprKind::Yield(Some(inner)) => {
             collect_closure_captured_in_expr(inner, out);
+        }
+        // The async/channel vocabularies carry expressions too — a goroutine
+        // body's `ch <- v` is `Chan(Send{Ident(ch)})`, and missing it here
+        // left `ch` out of the enclosing function's env array while the
+        // lambda still read it there (measured: every goroutine channel
+        // capture arrived undefined).
+        ExprKind::Async(op) => {
+            for child in op.children() {
+                collect_closure_captured_in_expr(child, out);
+            }
+        }
+        ExprKind::Chan(op) => {
+            for child in op.children() {
+                collect_closure_captured_in_expr(child, out);
+            }
         }
         ExprKind::New { class, args } => {
             collect_closure_captured_in_expr(class, out);
@@ -1779,6 +1854,16 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         }
         ExprKind::Await(inner) | ExprKind::Spread(inner) | ExprKind::Yield(Some(inner)) => {
             collect_all_idents_in_expr(inner, out);
+        }
+        ExprKind::Async(op) => {
+            for child in op.children() {
+                collect_all_idents_in_expr(child, out);
+            }
+        }
+        ExprKind::Chan(op) => {
+            for child in op.children() {
+                collect_all_idents_in_expr(child, out);
+            }
         }
         _ => {}
     }
@@ -2030,6 +2115,8 @@ fn expr_uses_js_arguments(expr: &Expression) -> bool {
         | ExprKind::TypeOf(expr)
         | ExprKind::Delete(expr)
         | ExprKind::Void(expr) => expr_uses_js_arguments(expr),
+        ExprKind::Async(op) => op.children().into_iter().any(expr_uses_js_arguments),
+        ExprKind::Chan(op) => op.children().into_iter().any(expr_uses_js_arguments),
         ExprKind::Yield(expr) => expr
             .as_ref()
             .is_some_and(|expr| expr_uses_js_arguments(expr)),
@@ -2170,6 +2257,7 @@ impl Compiler {
             const_globals: HashSet::new(),
             global_const_values: std::collections::HashMap::new(),
             in_strict: false,
+            directives: vec![vybe_ast::Directives::default()],
             in_typeof_operand: false,
             program_lexical_names: HashSet::new(),
             shared_global_slots: HashMap::new(),
@@ -2219,7 +2307,8 @@ impl Compiler {
             closure_env_names: Vec::new(),
             shared_env_slot: None,
             shared_env_names: Vec::new(),
-            pointer_cell_bindings: HashMap::new(),
+            promoted_global_cells: HashSet::new(),
+            module_addr_taken_globals: HashSet::new(),
             current_addr_taken_locals: HashSet::new(),
             current_closure_captured_locals: HashSet::new(),
 
@@ -2247,6 +2336,7 @@ impl Compiler {
             catch_depth: 0,
             active_async_try_depth: 0,
             uses_proxy: false,
+            bigint_enabled: false,
             js_arguments_bindings: Vec::new() }
     }
 
@@ -2439,7 +2529,27 @@ impl Compiler {
         for scope in &mut self.scopes {
             scope.fold_case = !self.case_sensitive;
         }
+        // This module's declared policy is in force from its first statement.
+        // Nothing carries over from a previously compiled module: each unit of
+        // a multi-language program is compiled on its own terms, so Pascal
+        // never inherits what PHP declared.
+        self.directives = vec![module.directives.clone()];
         self.current_module_imports = module.imports.clone();
+        // Whether a global holds a pointer cell is a WHOLE-MODULE property, but
+        // compilation is one forward pass: `function r(){ global $g; echo $g; }`
+        // is emitted before `$g = 1; w($g);` promotes `$g`, so the read would
+        // correctly see "not a cell" and emit no autoderef — and then read the
+        // cell object raw at runtime.
+        //
+        // Establish it up front, the same way `collect_addr_taken_idents`
+        // already establishes address-taken LOCALS before a body is compiled.
+        // Deliberately an OVER-approximation: a name taken by address anywhere
+        // marks the global too, even if that site was a local. That is safe
+        // because a local binding is consulted first (so it shadows correctly)
+        // and `emit_autoderef_pointer_cell` passes a non-reference through
+        // untouched — the cost of over-marking is one runtime shape check, and
+        // the cost of under-marking is a wrong answer.
+        collect_addr_taken_idents(&module.body, &mut self.module_addr_taken_globals);
         // Gated-namespace activation: every import path activates its
         // namespace for builtin resolution (C includes lower to these).
         let mut active = std::collections::HashSet::new();
@@ -2466,6 +2576,29 @@ impl Compiler {
                     if alias == "Proxy" && module == "ecma:proxy"
             )
         });
+        // Pre-scan: can this compile produce a BigInt VALUE at all? Three
+        // declarations can — a `[builtin_types] bigint` spelling, a builtin
+        // whose emit target reaches the `ecma:bigint` host, or a
+        // `Literal::BigInt` in the module itself (a walker only emits one
+        // when its language means it). Nothing declared → the bigint arms
+        // are unreachable and the `++` path emits no runtime type test.
+        self.bigint_enabled = self.bigint_widens_mixes()
+            || self.profile.builtins.values().any(|def| {
+                matches!(&def.emit,
+                    vybe_runtime::profile::BuiltinEmit::HostCall(module, _)
+                        if module == "ecma:bigint")
+            })
+            || {
+                let mut probe = module.body.clone();
+                probe.iter_mut().any(|stmt| {
+                    let mut found = false;
+                    stmt.walk_exprs_mut(&mut |e| {
+                        found |= matches!(e.kind, ExprKind::Lit(Literal::BigInt(_)));
+                    });
+                    found
+                })
+            };
+
         if binds_ecma_proxy {
             for stmt in &module.body {
                 if stmt_uses_proxy(stmt) {
@@ -2541,6 +2674,10 @@ impl Compiler {
         // order-dependence bug (flexclassplan.md §3a, §4c).
         self.record_platform_bases();
         self.apply_class_augmentations()?;
+        // Every declaration is known here — including the ones augmentation
+        // just contributed — so this is the earliest point a field's declared
+        // type can be resolved, and the only one where it need happen once.
+        self.resolve_field_value_types();
         self.predeclare_class_surfaces();
         self.predeclare_function_names(&merged_body);
         self.predeclare_interface_signatures_in_body(&merged_body);

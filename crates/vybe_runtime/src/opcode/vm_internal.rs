@@ -6,9 +6,14 @@ use super::Op;
 use super::opcode_category;
 
 impl Op {
-    // Constants & stack
-    pub const CONST: Op = Op::new(0xFF, 0x00);
-    pub const CALL_IMPORT: Op = Op::new(0xFF, 0x04);
+    // 0x00 RETIRED (`const`, the custom constant-pool load). All constants
+    // now emit spec instructions: i32.const/i64.const (signed LEB),
+    // f32.const/f64.const (raw LE bytes), strings via wasm:string-constants
+    // globals. Slot left vacant so stale bytecode fails decode loudly.
+    // 0x04 RETIRED (`call_import`). Host imports are called with spec `call`
+    // (0x00 0x10): u16 chunk-scoped import index + VM-internal u8 argc; the
+    // .wasm writer serializes `0x10` + LEB(funcidx). Slot vacant — stale
+    // bytecode fails decode loudly.
     // Branch variants
     // Immediate values
     // Type checks
@@ -19,7 +24,13 @@ impl Op {
     // so any legacy bytecode carrying it fails decode loudly.
     // Timers & spread
     // VM control
-    pub const HALT: Op = Op::new(0xFF, 0x23);
+    // 0x23 RETIRED (`halt`). A trailing halt is the dispatch loop's
+    // end-of-code path (the top frame returns top-of-stack); an early exit
+    // is spec `return`; process exits with a code go through `wasi:cli/exit`.
+    // The .wasm writer always lowered halt to `0x0F` (return) anyway. Slot
+    // vacant — stale bytecode fails decode loudly. With this, prefix 0xFF
+    // holds ZERO opcodes: the VM's instruction set is 100% WASM-spec
+    // encodings.
     // String builtins — all removed as dead custom opcodes (0x24-0x41 free).
     // String ops emit `wasm:js-string` import calls directly.
     // Array builtins (host imports in .wasm output)
@@ -79,26 +90,25 @@ impl Op {
     // All CM3 canon built-ins (stream/future/task/waitable/backpressure/context)
     // moved to canon.rs with real spec binary values on prefix 0xF0.
     // STREAM_CANCEL maps to canon stream.cancel-read (0xF0 0x11).
-    // FUTURE_AWAIT has no direct canon equivalent — it's VM-level future resolution.
 }
 
 opcode_category! {
-    // Constants & stack
-    [0x00] r#const => U16, "const";
-    [0x04] call_import => U16_U8, "call_import";
-    // Branch variants
-    [0x87] gen_next => None, "gen.next";
-    // CM3 / WASI 0.3 async — FUTURE_AWAIT only (no direct canon equivalent)
+    // ZERO rows remain: every 0xFF custom opcode is retired, so every 0xFF
+    // decode returns None and stale bytecode fails loudly. The invocation is
+    // kept so the retirement ledger below stays with the machinery it retires.
+    // 0x00 RETIRED (`const`) — spec const instructions replaced it.
+    // 0x04 RETIRED (`call_import`) — spec `call` (0x00 0x10) replaced it.
+    // 0x87 RETIRED (`gen.next`) — lowered to spec `resume` + `(on yield)`.
+    // Row deleted so `name()` returns None and stale bytecode fails decode
+    // loudly, as the retirement comments above promise.
     // 0x89–0x9C: moved to canon.rs (prefix 0xF0) with real spec binary values.
-    // Immediate values
-    // Type checks
     // 0x15–0x1E: RETIRED — DYN_* opcodes removed. Slots vacant so legacy
     // bytecode carrying them fails loudly instead of silently aliasing.
-    // Exception handling
-    [0x20] try_end => None, "try_end";
-    // Timers & spread
+    // 0x20 RETIRED (`try_end`) — a try_table closes with structural spec
+    // `end`. Row deleted; vacant.
     // VM control
-    [0x23] halt => None, "halt";
+    // 0x23 RETIRED (`halt`) — end-of-code path / spec `return` / wasi:cli
+    // exit replaced its three jobs.
     // String builtins — all removed as dead custom opcodes (string ops emit
     // wasm:js-string import calls directly).
     // 0x42–0x4A: RETIRED — ARRAY_* opcodes removed (Phase E). All callers
@@ -106,10 +116,10 @@ opcode_category! {
     // carrying them fails loudly rather than silently aliasing.
     // Stack-switching spec opcodes moved to core prefix 0xE0..=0xE6
     // (core_ops.rs). 0x4B..=0x4E retired/undefined.
-    // JSPI
-    [0x4F] promise_suspend => None, "promise.suspend";
-    // GC extensions
-    [0x50] set_type_id => None, "set_type_id";
+    // 0x4F RETIRED (`promise.suspend`) — lowered to spec `suspend` with
+    // AWAIT_SUSPEND_TAG. Row deleted; vacant.
+    // 0x50 RETIRED (`set_type_id`) — most-derived-allocates makes the rtt
+    // correct at `struct.new_default`. Row deleted; vacant.
     // 0x51 RETIRED (`null_none`) — folded into core `ref.null`'s heaptype
     // immediate. Deliberately vacant.
     // Weak references

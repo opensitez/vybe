@@ -72,14 +72,20 @@ impl Op {
     pub const I64_ATOMIC_RMW8_CMPXCHG_U: Op = Op::new(0xFE, 0x4C);
     pub const I64_ATOMIC_RMW16_CMPXCHG_U: Op = Op::new(0xFE, 0x4D);
     pub const I64_ATOMIC_RMW32_CMPXCHG_U: Op = Op::new(0xFE, 0x4E);
-    pub const THREAD_SPAWN: Op = Op::new(0xFE, 0x80);
-    pub const THREAD_JOIN: Op = Op::new(0xFE, 0x81);
+    // THREAD_SPAWN (0xFE 0x80) / THREAD_JOIN (0xFE 0x81) RETIRED 2026-08-06:
+    // spawning is the `wasi:threads/thread-spawn` IMPORT (the VM is the
+    // embedder implementation) and join is helper bytecode futex-waiting the
+    // task's status word — wasi-threads deliberately has no join primitive.
 }
 
 opcode_category! {
-    [0x00] memory_atomic_notify => None, "memory.atomic.notify";
-    [0x01] memory_atomic_wait32 => None, "memory.atomic.wait32";
-    [0x02] memory_atomic_wait64 => None, "memory.atomic.wait64";
+    // Spec: notify/wait carry a memarg exactly like every other atomic —
+    // and dispatch has always read one (`pop_atomic_addr`). These were
+    // declared `None`, which made every operand_format-driven walk lie
+    // about the instruction size.
+    [0x00] memory_atomic_notify => MemArg, "memory.atomic.notify";
+    [0x01] memory_atomic_wait32 => MemArg, "memory.atomic.wait32";
+    [0x02] memory_atomic_wait64 => MemArg, "memory.atomic.wait64";
     [0x03] atomic_fence => U8, "atomic.fence";
     [0x10] i32_atomic_load => MemArg, "i32.atomic.load";
     [0x11] i64_atomic_load => MemArg, "i64.atomic.load";
@@ -144,6 +150,8 @@ opcode_category! {
     [0x4C] i64_atomic_rmw8_cmpxchg_u => MemArg, "i64.atomic.rmw8.cmpxchg_u";
     [0x4D] i64_atomic_rmw16_cmpxchg_u => MemArg, "i64.atomic.rmw16.cmpxchg_u";
     [0x4E] i64_atomic_rmw32_cmpxchg_u => MemArg, "i64.atomic.rmw32.cmpxchg_u";
-    [0x80] thread_spawn => None, "thread.spawn";
-    [0x81] thread_join => None, "thread.join";
+    // 0x80/0x81 (`thread.spawn`/`thread.join`) DELETED — they were custom
+    // opcodes squatting on the spec 0xFE prefix. Spawning is the
+    // `wasi:threads/thread-spawn` import; join is futex helper bytecode.
+    // Rows removed so stale bytecode fails decode loudly.
 }

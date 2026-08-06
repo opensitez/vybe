@@ -1817,55 +1817,18 @@ fn is_shared_dynamic_global(name: &str, value: &Value) -> bool {
         _ => false }
 }
 
+/// Thin wrapper over the VM's single import-resolution policy
+/// (`VM::resolve_import_target`) — this used to be a third hand-rolled copy
+/// of the loop, drifted to a raw `host_registry` lookup that bypassed
+/// Module Record exports.
 fn resolve_imports(vm: &VM, imports: &[Import]) -> Result<Vec<ImportTarget>, String> {
-    let mut resolved = Vec::with_capacity(imports.len());
-    for import in imports {
-        if import.module == "jspi" && import.name == "await" {
-            resolved.push(ImportTarget::JspiSuspend);
-            continue;
-        }
-        if import.module == "jspi" && import.name == "await_eager" {
-            resolved.push(ImportTarget::JspiSuspendEager);
-            continue;
-        }
-        if import.module == "wasm:string-constants" {
-            resolved.push(ImportTarget::StringConst(std::sync::Arc::from(
-                import.name.as_str(),
-            )));
-            continue;
-        }
-        let key = (import.module.clone(), import.name.clone());
-        if let Some(&idx) = vm.host_registry.get(&key) {
-            resolved.push(ImportTarget::Host(idx));
-            continue;
-        }
-        if import.module == "*" {
-            let candidates = [import.name.clone(), import.name.to_lowercase()];
-            if let Some(global_name) = candidates
-                .iter()
-                .find(|name| vm.globals.contains_key(name.as_str()))
-            {
-                resolved.push(ImportTarget::StdlibRedirect(global_name.clone()));
-                continue;
-            }
-        }
-        let candidates = [
-            format!("__vybe_{}", import.name),
-            format!("__vybe_{}", import.name.to_lowercase()),
-        ];
-        if let Some(global_name) = candidates
-            .iter()
-            .find(|name| vm.globals.contains_key(name.as_str()))
-        {
-            resolved.push(ImportTarget::StdlibRedirect(global_name.clone()));
-            continue;
-        }
-        return Err(format!(
-            "Unresolved import: \"{}\" \"{}\"",
-            import.module, import.name
-        ));
-    }
-    Ok(resolved)
+    imports
+        .iter()
+        .map(|import| {
+            vm.resolve_import_target(&import.module, &import.name)
+                .map_err(|e| e.to_string())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2049,11 +2012,9 @@ mod tests {
         chunk.emit_string_const("a", 0);
         chunk.emit_string_const("b", 0);
         chunk.emit_string_const("return a + b;", 0);
-        chunk.emit_op_u16(vybe_runtime::opcode::Op::CALL_IMPORT, import_idx, 0);
-        chunk.emit(3, 0);
+        chunk.emit_call(import_idx, 3, 0);
         crate::primitives::globals::emit_write(&mut chunk, "__test_result", 0);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-        chunk.emit_op(vybe_runtime::opcode::Op::HALT, 0);
 
         {
             let mut runtime =
@@ -2113,7 +2074,7 @@ mod tests {
             .compile_and_run_path(&main_path)
             .expect("run php with dynamic include");
 
-        match vm.globals.get("$result") {
+        match vm.globals.get("__php_var_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
@@ -2155,7 +2116,7 @@ mod tests {
             .compile_and_run_path(&main_path)
             .expect("run nested php dynamic include");
 
-        match vm.globals.get("$result") {
+        match vm.globals.get("__php_var_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
@@ -2191,13 +2152,13 @@ mod tests {
             .compile_and_run_path(&main_path)
             .expect("run php with alternative syntax include");
 
-        match vm.globals.get("$result") {
+        match vm.globals.get("__php_var_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
             other => panic!("expected include $result global, got {other:?}") }
 
-        match vm.globals.get("$call_result") {
+        match vm.globals.get("__php_var_call_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
@@ -2238,7 +2199,7 @@ mod tests {
             .compile_and_run_path(&main_path)
             .expect("run php with entry-relative nested include");
 
-        match vm.globals.get("$result") {
+        match vm.globals.get("__php_var_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
@@ -2282,7 +2243,7 @@ mod tests {
 
         let mut vm = configured_vm();
         vm.register_host_fn(
-            "wasi:logging/logging",
+            "web:console",
             "log",
             Box::new(move |_ctx, args| {
                 let mut out = rendered_sink.lock().expect("lock rendered output");

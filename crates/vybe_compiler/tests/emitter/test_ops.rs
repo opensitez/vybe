@@ -4,9 +4,22 @@
 //! wasm:js-* host functions registered, and asserts the result.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use vybe_compiler::primitives::ops;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, VM, Value};
+
+/// Unique names for test-argument globals, so reused VMs never collide.
+static TEST_GLOBAL_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// Globals queued by `push` for values with no spec const emitter; `run`
+    /// drains them into the VM it creates before running the chunk. Each test
+    /// runs on its own thread, and `push` only executes inside `run`'s emit
+    /// closure, so queue and drain are sequential per test.
+    static PENDING_GLOBALS: std::cell::RefCell<Vec<(String, Value)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
 fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     let mut chunk = Chunk::new("<test>");
@@ -14,12 +27,30 @@ fn run(emit: impl FnOnce(&mut Chunk)) -> Value {
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vybe_compiler::primitives::platforms::register_platforms_all(&mut vm);
+    PENDING_GLOBALS.with(|p| {
+        for (name, value) in p.borrow_mut().drain(..) {
+            vm.globals.insert(name, value);
+        }
+    });
     vm.run(vec![chunk]).expect("VM run failed")
 }
 
 fn push(c: &mut Chunk, v: Value) {
-    let k = c.add_constant(v);
-    c.emit_op_u16(Op::CONST, k, 0);
+    match v {
+        Value::I32(n) => c.emit_i32_const(n, 0),
+        Value::I64(n) => c.emit_i64_const(n, 0),
+        Value::F32(f) => c.emit_f32_const(f, 0),
+        Value::F64(f) => c.emit_f64_const(f, 0),
+        Value::Bool(b) => c.emit_bool_const(b, 0),
+        Value::String(s) => c.emit_string_const(&s, 0),
+        Value::Null => c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0),
+        other => {
+            let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+            let ci = c.intern_string_constant(&name);
+            c.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+            PENDING_GLOBALS.with(|p| p.borrow_mut().push((name, other)));
+        }
+    }
 }
 
 // ── emit_dyn_to_bool ─────────────────────────────────────────────────

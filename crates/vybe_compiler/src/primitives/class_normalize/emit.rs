@@ -42,7 +42,7 @@ pub fn normalize_class_from_ast(
     interfaces: &[String],
     members: &[ClassMember],
     modifiers: &ClassModifiers,
-    is_value_type: bool,
+    semantics: vybe_ast::ValueSemantics,
 ) -> Result<NormalClass, String> {
     let mut nc = if compiler.profile.uses_normalize_class {
         normalize_for_profile(
@@ -57,7 +57,10 @@ pub fn normalize_class_from_ast(
     } else {
         normalize_from_ast_legacy(span.clone(), cname, parents, interfaces, members, modifiers)
     };
-    nc.is_value_type = is_value_type;
+    // `is_value_type` is STORAGE, its original meaning: does assignment copy.
+    // Equality is a separate axis and reads `nc.semantics.equality`.
+    nc.is_value_type = semantics.storage == vybe_ast::ValueStorage::Value;
+    nc.semantics = semantics;
     // Fill the fields that are a straight copy of this function's own
     // arguments. Every one of the twelve normalizers wrote these identically —
     // `parent: parents.first().cloned()`, `is_abstract: modifiers.is_abstract`,
@@ -101,7 +104,7 @@ pub fn emit_class_from_ast(
     interfaces: &[String],
     members: &[ClassMember],
     modifiers: &ClassModifiers,
-    is_value_type: bool,
+    semantics: vybe_ast::ValueSemantics,
 ) -> Result<(), String> {
     // Reuse the class normalized during the DECLARATION pass when it is
     // available. That copy has had its augmentations folded in (traits /
@@ -115,7 +118,10 @@ pub fn emit_class_from_ast(
             let mut nc = stored.clone();
             // These two are supplied by the caller at definition time; the
             // declaration pass has no way to know them.
-            nc.is_value_type = is_value_type;
+            // `is_value_type` is STORAGE, its original meaning: does assignment copy.
+    // Equality is a separate axis and reads `nc.semantics.equality`.
+    nc.is_value_type = semantics.storage == vybe_ast::ValueStorage::Value;
+    nc.semantics = semantics;
             nc.bases = parents.to_vec();
             nc
         }
@@ -127,7 +133,7 @@ pub fn emit_class_from_ast(
             interfaces,
             members,
             modifiers,
-            is_value_type,
+            semantics,
         )? };
     // Set centrally, like `bases`: every path lands here — the stored
     // declaration-pass copy and each per-language normalizer alike — so no
@@ -182,7 +188,8 @@ fn normalize_from_ast_legacy(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: access_from_visibility(modifiers.visibility),
-                    readonly: modifiers.is_readonly };
+                    readonly: modifiers.is_readonly,
+                    value_type: None };
                 if modifiers.is_shared {
                     static_fields.push(field);
                 } else {

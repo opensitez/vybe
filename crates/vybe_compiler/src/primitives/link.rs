@@ -130,7 +130,7 @@ impl Compiler {
 
                 let operand_start = ip + 4;
                 let operand_len = op.operand_format().size_in(code, operand_start);
-                if op == Op::CALL_IMPORT && operand_start + 1 < code.len() {
+                if op == Op::CALL && operand_start + 1 < code.len() {
                     let old_idx =
                         u16::from_be_bytes([code[operand_start], code[operand_start + 1]]);
                     let remapped = local_remap
@@ -268,7 +268,7 @@ impl Compiler {
                     let member = namespace_member_name(self, name, namespace);
                     self.defined_globals.insert(member.clone());
                     self.defined_classes.insert(member.clone());
-                    if let StmtKind::StructDecl { members, .. } = &stmt.kind {
+                    if let StmtKind::StructDecl { members, semantics, .. } = &stmt.kind {
                         self.predeclare_struct_surface(&member, members);
                         // Normalize structs in the DECLARATION pass too, not
                         // only classes. Without this a struct never enters
@@ -292,7 +292,12 @@ impl Compiler {
                                 &[],
                                 members,
                                 &vybe_ast::ClassModifiers::default(),
-                                true,
+                                // The DECLARED semantics, not "was this a
+                                // StructDecl" — which is what the hardcoded
+                                // `true`/`false` at these two call sites really
+                                // meant. Storage and equality are independent
+                                // axes and each reads its own field downstream.
+                                semantics.clone(),
                             )
                         {
                             for special in &nc.special_methods {
@@ -344,7 +349,7 @@ impl Compiler {
                                 class_interfaces,
                                 members,
                                 modifiers,
-                                false,
+                                modifiers.semantics.clone(),
                             )
                         {
                             // Index operators are read off the normalized
@@ -711,6 +716,67 @@ impl Compiler {
 
     /// Phase 3 of the declaration pass: register every class's member surface,
     /// now that augmentations have been folded in.
+    /// Bind each instance field to the value type it declares, once, now that
+    /// every declaration in the program is known.
+    ///
+    /// A normalizer cannot answer this: when a walker runs, the type a field
+    /// names may not have been walked yet, and a language crate can never see a
+    /// declaration that arrived from another language. The emitter must not
+    /// answer it either — that is one spelling match per emit site, against
+    /// whichever class table happens to be in scope, and a miss yields a silent
+    /// shallow copy instead of a diagnosable failure.
+    ///
+    /// `ValueSemantics::storage` is the declared policy. This is the single
+    /// place it gets bound to the fields that carry it, and it reads
+    /// `normalized_classes` — the same table `expr_is_declared_value_type`
+    /// consults, so the two cannot disagree. `pending_classes` is NOT usable
+    /// here: `predeclare_class_surface` seeds every entry `is_value_type:
+    /// false` and only `compile_normal_class` fills in the truth, much later.
+    pub(super) fn resolve_field_value_types(&mut self) {
+        let value_types: std::collections::HashSet<String> = self
+            .normalized_classes
+            .iter()
+            .filter(|(_, nc)| nc.semantics.storage == vybe_ast::ValueStorage::Value)
+            .map(|(key, _)| key.clone())
+            .collect();
+        if value_types.is_empty() {
+            return;
+        }
+        let names: Vec<String> = self.normalized_classes.keys().cloned().collect();
+        for name in names {
+            let resolved: Vec<Option<String>> = {
+                let Some(nc) = self.normalized_classes.get(&name) else {
+                    continue;
+                };
+                nc.instance_fields
+                    .iter()
+                    .map(|field| {
+                        // An ARRAY of records is not a record. It stores many,
+                        // and whether copying the owner copies the elements is
+                        // the array's own declared question, not this one.
+                        if field.array_bounds.is_some() {
+                            return None;
+                        }
+                        let hint = field.type_hint.as_deref()?;
+                        // A pointer / slice / map / channel spelling names a
+                        // value type without STORING one, and the test has to
+                        // happen AFTER alias resolution — a Pascal
+                        // `type PNode = ^TNode` resolves to the pointee, so the
+                        // canonical name of a pointer field is the record's own.
+                        let resolved = self.resolve_source_type_alias(hint);
+                        let bare = Self::type_hint_stores_by_value(&resolved)?;
+                        value_types.get(&self.canon(bare)).cloned()
+                    })
+                    .collect()
+            };
+            if let Some(nc) = self.normalized_classes.get_mut(&name) {
+                for (field, value_type) in nc.instance_fields.iter_mut().zip(resolved) {
+                    field.value_type = value_type;
+                }
+            }
+        }
+    }
+
     pub(super) fn predeclare_class_surfaces(&mut self) {
         let entries: Vec<(String, Vec<String>)> = self
             .normalized_classes
@@ -798,6 +864,7 @@ impl Compiler {
                 instance_member_names,
                 instance_pointer_method_names: Vec::new(),
                 instance_field_types: HashMap::new(),
+                instance_field_value_types: HashMap::new(),
                 static_fields: Vec::new(),
                 static_field_types: HashMap::new(),
                 static_method_names,
@@ -882,6 +949,11 @@ impl Compiler {
                 instance_member_names,
                 instance_pointer_method_names,
                 instance_field_types,
+                // A struct surface is predeclared from raw `ClassMember`s
+                // BEFORE the declaration pass resolves field types, so there is
+                // nothing to carry yet; `compile_normal_class` overwrites this
+                // entry with the resolved answer.
+                instance_field_value_types: HashMap::new(),
                 static_fields,
                 static_field_types,
                 static_method_names,
@@ -981,6 +1053,7 @@ impl Compiler {
                 instance_member_names: Vec::new(),
                 instance_pointer_method_names: Vec::new(),
                 instance_field_types: HashMap::new(),
+                instance_field_value_types: HashMap::new(),
                 static_fields: module_static_fields,
                 static_field_types: module_static_field_types,
                 static_method_names: module_static_methods,

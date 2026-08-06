@@ -443,7 +443,7 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_SET, message_slot);
 
                 self.emit_u16(Op::LOCAL_GET, message_slot);
-                let idx = self.import("wasi:logging/logging", "log");
+                let idx = self.import("web:console", "log");
                 common::io::emit_print_with_import(self.chunk(), idx, 1, line);
 
                 self.compile_expr(&Expression::string(""))?;
@@ -840,7 +840,7 @@ impl Compiler {
                     for slot in &arg_slots {
                         self.emit_u16(Op::LOCAL_GET, *slot);
                     }
-                    let idx = self.import("wasi:logging/logging", "log");
+                    let idx = self.import("web:console", "log");
                     common::io::emit_print_with_import(self.chunk(), idx, args.len() as u8, line);
                 }
                 BuiltinEmit::StrLength => {
@@ -3692,7 +3692,7 @@ impl Compiler {
             }
             "php_print_expr" => {
                 if let Some(arg) = args.first() {
-                    let log_idx = self.import("wasi:logging/logging", "log");
+                    let log_idx = self.import("web:console", "log");
                     self.compile_expr(arg)?;
                     self.emit_common("php.echo_stringify", 1, line);
                     common::io::emit_print_with_import(self.chunk(), log_idx, 1, line);
