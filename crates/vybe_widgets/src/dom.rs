@@ -32,7 +32,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::controls::make_widget;
 use crate::layout::{
-    find_widget_mut, take_widget, LayoutRect, PanelWidget, WidgetCommand, WidgetEvent };
+    find_widget_mut, take_widget, LayoutRect, PanelWidget, RenderContext, WidgetCommand,
+    WidgetEvent };
 use crate::{CommandValue, Form};
 
 /// A node handle. `0` is the document itself — `document.body`, the form.
@@ -112,6 +113,19 @@ impl Document {
         <Form as PanelWidget>::set_rect(&mut self.form, LayoutRect::new(r.x, r.y, width, height));
     }
 
+    /// Paint the document. This is the whole of what a host needs to show a
+    /// window: hand it a pixmap, get the rendered tree.
+    ///
+    /// Rendering belongs HERE, with the tree it draws — that is the point of
+    /// the toolkit being usable on its own. A host that reached in for the
+    /// form and rendered it itself would be re-implementing the document's
+    /// paint order outside the document, and would be pointing at whichever
+    /// `Form` it happened to hold: that is exactly how a window came up empty
+    /// while the controls sat in the document all along.
+    pub fn render(&mut self, ctx: &mut RenderContext) {
+        self.form.render(ctx);
+    }
+
     pub fn form(&self) -> &Form {
         &self.form
     }
@@ -174,6 +188,22 @@ impl Document {
             .iter()
             .copied()
             .filter(|id| self.nodes.get(id).map(|n| n.tag == tag).unwrap_or(false))
+            .collect()
+    }
+
+    /// `document.querySelectorAll("[id]")` — every element carrying an `id`,
+    /// in tree order, as `(node, id)`.
+    ///
+    /// The one selector a toolkit host genuinely needs: a control's `Name` IS
+    /// its `id`, so this is how anything outside the document enumerates the
+    /// controls it built without knowing their tags in advance.
+    pub fn elements_with_id(&self) -> Vec<(NodeId, String)> {
+        self.order
+            .iter()
+            .filter_map(|id| {
+                let attr = self.nodes.get(id)?.attributes.get("id")?;
+                Some((*id, attr.clone()))
+            })
             .collect()
     }
 

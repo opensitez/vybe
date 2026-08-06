@@ -303,9 +303,15 @@ pub enum OperandFormat {
     /// WASM memory64 memarg: alignment LEB + u64 offset LEB, with the same
     /// optional memory-index extension as MemArg.
     MemArg64,
+    /// WASM SIMD memory op (`v128.load` / `v128.store` / splat/zero loads):
+    /// an OPTIONAL marker-tagged memarg. Present iff the first LEB's 0x80
+    /// bit is set (0x100 = memory64 offset, 0x40 = memidx extension follows);
+    /// a compiler-emitted op with no memarg contributes ZERO operand bytes
+    /// (the peek is unambiguous: instruction group-hi bytes are always 0x00).
+    SimdMemArg,
     /// WASM SIMD lane memory op (`v128.load8_lane` / `v128.store32_lane` / …):
-    /// a `MemArg` (alignment LEB + offset LEB, same optional memory-index
-    /// extension) followed by a single lane-index byte.
+    /// the same optional marker-tagged memarg as `SimdMemArg`, followed by a
+    /// single lane-index byte (lane < 0x80, so the peek never misfires).
     MemLane,
     /// Variable: u16 func_idx + u8 upvalue_count + descriptors.
     Closure,
@@ -331,11 +337,7 @@ impl OperandFormat {
     pub const fn fixed_size(self) -> usize {
         match self {
             Self::None => 0,
-            // A single lane byte. `MemLane` load/store ops carry the same lane
-            // byte as `U8`; the VM's optional-memarg peek never consumes a byte
-            // because lane indices are < 0x80. They differ only in operand order
-            // at emission (see the compiler), not in encoding size.
-            Self::U8 | Self::MemLane => 1,
+            Self::U8 => 1,
             Self::U8_U8 | Self::U16 | Self::I16 => 2,
             Self::U8_U8_U8 | Self::U16_U8 => 3,
             Self::U16_U16 | Self::U16_I16 => 4,
@@ -347,6 +349,8 @@ impl OperandFormat {
             | Self::U32Leb_U32Leb
             | Self::MemArg
             | Self::MemArg64
+            | Self::SimdMemArg
+            | Self::MemLane
             | Self::BrTable
             | Self::TryTable
             | Self::SlI32
@@ -363,6 +367,9 @@ impl OperandFormat {
             }
             Self::MemArg => memarg_size(code, operand_start),
             Self::MemArg64 => memarg64_size(code, operand_start),
+            Self::SimdMemArg => simd_memarg_size(code, operand_start),
+            // Optional marker-tagged memarg + the mandatory lane byte.
+            Self::MemLane => simd_memarg_size(code, operand_start) + 1,
             Self::Closure => {
                 let uv_count_pos = operand_start + 2;
                 // Mask the 0x80 "no-intern" flag (see REF_FUNC dispatch).
@@ -380,6 +387,24 @@ impl OperandFormat {
             }
             fmt => fmt.fixed_size() }
     }
+}
+
+/// Size of the OPTIONAL marker-tagged SIMD memarg. Mirrors the dispatch peek
+/// (`read_optional_simd_memarg`) exactly: no 0x80 marker on the first LEB →
+/// no memarg present → 0 bytes. Present: align LEB + offset LEB (u64 when the
+/// 0x100 flag is set — LEBs self-delimit, so the byte count is identical) +
+/// memidx LEB when the 0x40 flag is set.
+pub fn simd_memarg_size(code: &[u8], operand_start: usize) -> usize {
+    let mut ip = operand_start;
+    let align = read_leb_u32(code, &mut ip);
+    if align & 0x80 == 0 {
+        return 0;
+    }
+    let _offset = read_leb_u64(code, &mut ip);
+    if align & 0x40 != 0 {
+        let _memidx = read_leb_u32(code, &mut ip);
+    }
+    ip.saturating_sub(operand_start)
 }
 
 pub fn memarg_size(code: &[u8], operand_start: usize) -> usize {

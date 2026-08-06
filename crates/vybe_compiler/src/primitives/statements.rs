@@ -5802,24 +5802,36 @@ impl Compiler {
                     self.emit_common("dotnet.observable_collection_set_index", 3, line);
                     self.emit(Op::DROP);
                     return Ok(());
-                } else if self
-                    .infer_expr_type_hint(object)
-                    .as_deref()
-                    .map(Self::normalize_type_hint)
-                    .is_some_and(|type_hint| {
-                        type_hint
-                            .rsplit('.')
-                            .next()
-                            .is_some_and(|name| name.eq_ignore_ascii_case("StringBuilder"))
-                    })
-                {
-                    self.compile_expr(object)?;
-                    self.compile_collection_key(object, index)?;
-                    self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.emit_common("dotnet.sb_index_set", 3, line);
-                    self.emit(Op::DROP);
-                    return Ok(());
                 } else if self.profile.namespaces.use_dotnet {
+                    // `StringBuilder` is the one type name here that is NOT
+                    // exclusive to the dotnet tree — jvm registers it too. And
+                    // `dotnet.sb_index_set` is a PLATFORM-owned emit: the
+                    // `dotnet` prefix only dispatches when
+                    // `vybe_platform_dotnet` is linked, which kotlin/python are
+                    // not. Ungating this would emit an unroutable name in a
+                    // Kotlin `sb[i] = c`. Gate stays until the pair moves to a
+                    // shared `common:` primitive; the READ side in
+                    // `expressions.rs` is gated identically so the two agree
+                    // about the storage shape.
+                    if self
+                        .infer_expr_type_hint(object)
+                        .as_deref()
+                        .map(Self::normalize_type_hint)
+                        .is_some_and(|type_hint| {
+                            type_hint
+                                .rsplit('.')
+                                .next()
+                                .is_some_and(|name| name.eq_ignore_ascii_case("StringBuilder"))
+                        })
+                    {
+                        self.compile_expr(object)?;
+                        self.compile_collection_key(object, index)?;
+                        self.emit_u16(Op::LOCAL_GET, tmp);
+                        self.emit_common("dotnet.sb_index_set", 3, line);
+                        self.emit(Op::DROP);
+                        return Ok(());
+                    }
+
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     let obj_tmp = self.define_local("__index_set_obj");

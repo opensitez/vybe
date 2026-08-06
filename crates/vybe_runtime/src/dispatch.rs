@@ -4499,22 +4499,26 @@ impl VM {
                 _ if op == Op::MEMORY_INIT => {
                     let data_idx = self.read_byte() as u32;
                     let memidx = self.read_optional_memidx_immediate() as usize;
-                    if self.dropped_data.contains(&data_idx) {
-                        return Err(VMError::new("memory.init: data segment dropped"));
-                    }
-                    // Spec: operands are UNSIGNED (i32 as u32; dst is the
-                    // memory's index type). Clamping negatives to 0 silently
-                    // succeeded where the spec requires an OOB trap, and a
-                    // zero count must still bounds-check both ends.
+                    // Spec (bulk-memory Overview §data.drop): a dropped
+                    // segment SHRINKS TO ZERO LENGTH — it may still be used
+                    // by memory.init, "but only a zero-length access at
+                    // offset zero will not trap". A missing segment (raw
+                    // chunks that skipped validation) behaves the same.
+                    // Operands are UNSIGNED (dst is the memory's index
+                    // type), and a zero count still bounds-checks both ends.
                     let is64 = self.mem_is_64(memidx);
                     let count = self.pop().as_i32() as u32 as usize;
                     let src = self.pop().as_i32() as u32 as usize;
                     let dst = self.pop_mem_index(is64);
-                    let data = self
-                        .data_segments
-                        .get(data_idx as usize)
-                        .ok_or_else(|| VMError::new("memory.init: missing data segment"))?;
-                    if src.saturating_add(count) > data.len() {
+                    let seg_len = if self.dropped_data.contains(&data_idx) {
+                        0
+                    } else {
+                        self.data_segments
+                            .get(data_idx as usize)
+                            .map(|d| d.len())
+                            .unwrap_or(0)
+                    };
+                    if src.saturating_add(count) > seg_len {
                         return Err(VMError::new("trap: memory.init source out of bounds"));
                     }
                     if dst.saturating_add(count) > self.mem_len(memidx) {
@@ -4523,7 +4527,8 @@ impl VM {
                         ));
                     }
                     if count > 0 {
-                        let bytes = data[src..src + count].to_vec();
+                        let bytes =
+                            self.data_segments[data_idx as usize][src..src + count].to_vec();
                         self.write_memory_bytes(memidx, dst, &bytes)?;
                     }
                 }
@@ -7661,11 +7666,18 @@ impl VM {
                     }
                 }
 
-                _ if op == Op::BACKPRESSURE_SET => {
-                    // canon backpressure.set — pops enabled_i32, sets/clears backpressure on active task.
-                    let enabled = self.pop().as_i32() != 0;
+                // canon backpressure.inc / backpressure.dec (0x24/0x25) —
+                // CM3 replaced the boolean `backpressure.set` (0x08, retired)
+                // with a counter: the instance resists new calls while > 0.
+                // No operands, no results.
+                _ if op == Op::BACKPRESSURE_INC => {
                     if let Some(task) = self.cm_tasks.last_mut() {
-                        task.backpressure = enabled;
+                        task.backpressure = task.backpressure.saturating_add(1);
+                    }
+                }
+                _ if op == Op::BACKPRESSURE_DEC => {
+                    if let Some(task) = self.cm_tasks.last_mut() {
+                        task.backpressure = task.backpressure.saturating_sub(1);
                     }
                 }
 

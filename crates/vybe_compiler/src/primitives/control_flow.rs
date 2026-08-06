@@ -771,7 +771,10 @@ impl Compiler {
     /// This is the parameter half of aliasing. Without it the argument arrives
     /// as a reference and the body treats it as an ordinary value, which reads
     /// back the cell OBJECT rather than what it points at.
-    pub(super) fn bind_alias_params(&mut self, params: &[Param]) {
+    /// Takes an ITERATOR, not a slice: methods hold their parameters as
+    /// `Vec<&Param>` and define their locals in a third prologue of their own
+    /// (`classes.rs`), which is how they went without this call entirely.
+    pub(super) fn bind_alias_params<'a>(&mut self, params: impl IntoIterator<Item = &'a Param>) {
         for p in params {
             if p.pass_by == PassBy::Alias {
                 self.mark_pointer_cell_binding(&p.name);

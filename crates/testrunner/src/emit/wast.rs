@@ -43,10 +43,10 @@ fn extension_for(src: &str) -> &'static str {
 /// `wat_exec!` wraps a bare function body in a module carrying the four logging
 /// imports — unless the source already is a module.
 const MODULE_WRAPPER: &str = r#"(module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
-  (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
-  (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
-  (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (import "web:console" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log_i64 (param i64)))
+  (import "web:console" "log" (func $log_f32 (param f32)))
+  (import "web:console" "log" (func $log_f64 (param f64)))
 "#;
 
 pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {

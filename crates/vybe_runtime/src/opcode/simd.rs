@@ -1,7 +1,8 @@
 //! SIMD proposal opcodes (prefix 0xFD).
 //! Byte values match the WASM SIMD specification (sub-opcodes are LEB128 u32).
-//! All opcodes 0x00–0xFF are representable as Op::new(0xFD, sub).
-//! Sub-values 0x100–0x113 (relaxed-SIMD) live under the 0xDD internal prefix.
+//! Sub-values 0x00–0xFF live here; 0x100–0x113 (relaxed-SIMD) are in
+//! `relaxed_simd.rs` under the SAME spec 0xFD prefix — the u16 sub in `Op`
+//! holds the full spec range.
 
 use super::Op;
 use super::opcode_category;
@@ -273,18 +274,22 @@ impl Op {
 
 opcode_category! {
     // Memory
-    [0x00] v128_load => None, "v128.load";
-    [0x01] v128_load8x8_s => None, "v128.load8x8_s";
-    [0x02] v128_load8x8_u => None, "v128.load8x8_u";
-    [0x03] v128_load16x4_s => None, "v128.load16x4_s";
-    [0x04] v128_load16x4_u => None, "v128.load16x4_u";
-    [0x05] v128_load32x2_s => None, "v128.load32x2_s";
-    [0x06] v128_load32x2_u => None, "v128.load32x2_u";
-    [0x07] v128_load8_splat => None, "v128.load8_splat";
-    [0x08] v128_load16_splat => None, "v128.load16_splat";
-    [0x09] v128_load32_splat => None, "v128.load32_splat";
-    [0x0A] v128_load64_splat => None, "v128.load64_splat";
-    [0x0B] v128_store => None, "v128.store";
+    // Spec: every v128 load/store carries a memarg. Internally it is the
+    // OPTIONAL marker-tagged form (`SimdMemArg`) — compiler emissions omit
+    // it (0 bytes), reader-translated modules carry it with the 0x80 marker.
+    // Declaring `None` here made every operand walk desync on read modules.
+    [0x00] v128_load => SimdMemArg, "v128.load";
+    [0x01] v128_load8x8_s => SimdMemArg, "v128.load8x8_s";
+    [0x02] v128_load8x8_u => SimdMemArg, "v128.load8x8_u";
+    [0x03] v128_load16x4_s => SimdMemArg, "v128.load16x4_s";
+    [0x04] v128_load16x4_u => SimdMemArg, "v128.load16x4_u";
+    [0x05] v128_load32x2_s => SimdMemArg, "v128.load32x2_s";
+    [0x06] v128_load32x2_u => SimdMemArg, "v128.load32x2_u";
+    [0x07] v128_load8_splat => SimdMemArg, "v128.load8_splat";
+    [0x08] v128_load16_splat => SimdMemArg, "v128.load16_splat";
+    [0x09] v128_load32_splat => SimdMemArg, "v128.load32_splat";
+    [0x0A] v128_load64_splat => SimdMemArg, "v128.load64_splat";
+    [0x0B] v128_store => SimdMemArg, "v128.store";
     [0x0C] v128_const => V128Const, "v128.const";
     [0x0D] i8x16_shuffle => Shuffle, "i8x16.shuffle";
     [0x0E] i8x16_swizzle => None, "i8x16.swizzle";
@@ -374,8 +379,8 @@ opcode_category! {
     [0x59] v128_store16_lane => MemLane, "v128.store16_lane";
     [0x5A] v128_store32_lane => MemLane, "v128.store32_lane";
     [0x5B] v128_store64_lane => MemLane, "v128.store64_lane";
-    [0x5C] v128_load32_zero => None, "v128.load32_zero";
-    [0x5D] v128_load64_zero => None, "v128.load64_zero";
+    [0x5C] v128_load32_zero => SimdMemArg, "v128.load32_zero";
+    [0x5D] v128_load64_zero => SimdMemArg, "v128.load64_zero";
     // Promote / demote
     [0x5E] f32x4_demote_f64x2_zero => None, "f32x4.demote_f64x2_zero";
     [0x5F] f64x2_promote_low_f32x4 => None, "f64x2.promote_low_f32x4";

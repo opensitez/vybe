@@ -29,7 +29,11 @@ pub struct Module {
     pub name: String,
     pub language: Lang,
     pub body: Vec<Statement>,
-    pub imports: Vec<Import> }
+    pub imports: Vec<Import>,
+    /// This module's declared policy, in force from its first statement. The
+    /// walker states its language's defaults here; a [`StmtKind::Directive`]
+    /// in the body changes them from that point on. See [`Directives`].
+    pub directives: Directives }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
@@ -268,6 +272,13 @@ pub enum StmtKind {
     /// Block of statements.
     Block(Vec<Statement>),
 
+    /// A change of declared policy, in force from this point on. The AST form
+    /// of `{$R+}`, `declare(strict_types=1)`, `Option Explicit`. Emits no code
+    /// — `scope` says how far the change reaches. See [`Directives`].
+    Directive {
+        set: Directives,
+        scope: DirectiveScope },
+
     // ── Variable declarations ────────────────────────────────────────────
     VarDecl {
         declarations: Vec<VarDeclarator>,
@@ -321,7 +332,7 @@ pub enum StmtKind {
         /// Declared record semantics — storage, equality, layout, variant part.
         /// Defaults to a plain reference aggregate, so a walker that does not
         /// set it behaves exactly as before. See `recordprimitiveplan.md`.
-        record: RecordPolicy },
+        semantics: ValueSemantics },
 
     ModuleDecl {
         name: String,
@@ -944,7 +955,26 @@ pub enum ExprKind {
         type_name: Option<String> },
     /// Python `{1, 2, 3}` — unordered unique collection
     Set(Vec<Expression>),
+    /// A property-bag literal: string keys, JS object semantics.
     Object(Vec<ObjectProperty>),
+    /// An ORDERED, `Value`-keyed collection literal — Python's `dict`, and the
+    /// natural home for PHP arrays / Ruby hashes / JS `new Map` when they move.
+    ///
+    /// Distinct from [`ExprKind::Object`] because the difference is semantic,
+    /// not cosmetic: a `Map` keeps the key's TYPE (`{1: 'a'}` stays an int key,
+    /// where an object literal stringifies it) and guarantees insertion order,
+    /// which a JS object does not for integer-like keys.
+    ///
+    /// It is a separate NODE rather than a profile flag on purpose. This used to
+    /// be `profile.dict_literals_as_map`, and a per-language boolean deciding
+    /// what a shared node MEANS is exactly the thing the AST is supposed to
+    /// remove: a primitive holding an `Object` could not tell which of two
+    /// runtime shapes it had without consulting the front end's profile. The
+    /// front end knows; it says so here.
+    ///
+    /// Entries only — a spread (`{**a, 'k': 1}`) is a different operation and
+    /// stays an `Object`.
+    Map(Vec<(Expression, Expression)>),
     /// Cross-language zip/transpose primitive. Languages choose the length
     /// policy in their walker: Python `zip` uses `Shortest`, PHP
     /// `array_map(null, ...)` uses `Longest`, Ruby-style receiver zip uses
@@ -1230,7 +1260,29 @@ pub struct Param {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PassBy {
     Value,
+    /// Copy-in / copy-out: the argument is passed BY VALUE and the caller writes
+    /// the final value back into the argument's place after the call returns.
+    ///
+    /// This is an observably different mechanism from [`PassBy::Alias`], not an
+    /// implementation of it. Two ways to tell them apart, both of which real
+    /// languages can see:
+    /// - a mutation is NOT visible through another binding DURING the call, and
+    /// - if the callee THROWS, the write-back never runs and the mutation is
+    ///   silently lost — no write-back can execute on a path that never returns.
+    ///
+    /// Languages still on this: pascal `var`, C# `ref`, VB `ByRef`, cobol
+    /// `BY REFERENCE`, fortran `intent(inout)`. Most of them want `Alias` and
+    /// are simply not migrated yet — migrate one at a time, with a differential
+    /// test for each, per §3 of `referenceplan.md`.
     Ref,
+    /// True aliasing: the argument is passed AS A REFERENCE, and the parameter
+    /// is bound to it, so reads auto-deref and writes go through to the caller's
+    /// storage. Nothing is written back, because nothing was copied.
+    ///
+    /// This is what php's `&$x` means, and what most `Ref` languages actually
+    /// mean too. The place kinds all work: a name gives a cell, `&$a[i]` and
+    /// `&$o->p` give a `(base, key)` carray — see `primitives/references.rs`.
+    Alias,
     Out,
     Const }
 
@@ -1909,6 +1961,11 @@ pub enum AsyncOp {
     /// so any consumer of the tree (an exporter to Java, another backend)
     /// reads the semantics off the operation itself.
     AwaitEager(Box<Expression>),
+    /// Yield one full turn of the ready queue: the fiber requeues at the
+    /// BACK so every already-queued job runs first. Never continues
+    /// synchronously — even under eager-await semantics. C# `Task.Yield`,
+    /// the async channel surface's polling tick.
+    Yield,
     /// Synchronously drive the loop until `source` settles; yield its value
     /// (throw its rejection). The sync↔async boundary: `GetAwaiter().GetResult()`,
     /// `asyncio.run`. Lowers to the JSPI suspend at an async-capable boundary.
@@ -1935,6 +1992,7 @@ impl AsyncOp {
                 v
             }
             AsyncOp::Cleanup { source, on_settled } => vec![source, on_settled],
+            AsyncOp::Yield => Vec::new(),
             AsyncOp::Join { sources, .. } => sources.iter().collect() }
     }
 
@@ -1956,6 +2014,7 @@ impl AsyncOp {
                 v
             }
             AsyncOp::Cleanup { source, on_settled } => vec![source, on_settled],
+            AsyncOp::Yield => Vec::new(),
             AsyncOp::Join { sources, .. } => sources.iter_mut().collect() }
     }
 }
@@ -2010,7 +2069,41 @@ pub enum ChanOp {
     RecvOk(Box<Expression>),
     Len(Box<Expression>),
     Cap(Box<Expression>),
-    Close(Box<Expression>) }
+    Close(Box<Expression>),
+    /// Non-suspending send: `true` iff the value was accepted (room and not
+    /// closed). .NET `Writer.TryWrite`, Kotlin `trySend`, Rust `try_send`;
+    /// Go spells it `select { case ch <- v: ... default: ... }`.
+    TrySend {
+        channel: Box<Expression>,
+        value: Box<Expression> },
+    /// Non-suspending receive of `(value, ok)` — `ok == false` when nothing
+    /// is buffered (empty OR closed-and-drained; the value half is then the
+    /// channel's zero). .NET `Reader.TryRead(out v)`, Kotlin `tryReceive`,
+    /// Rust `try_recv`.
+    TryRecv(Box<Expression>),
+    /// Non-consuming read of `(value, ok)` — the head stays buffered.
+    /// .NET `Reader.TryPeek(out v)`.
+    TryPeek(Box<Expression>),
+    /// `true` iff the channel is closed AND drained — the point where a
+    /// consumer is definitively done. .NET `Reader.Completion.IsCompleted`,
+    /// Kotlin `isClosedForReceive`.
+    Drained(Box<Expression>),
+    /// `true` iff the channel is closed for WRITING — buffered values may
+    /// remain readable. .NET `Writer.TryWrite` returning false after
+    /// `Complete()`, Kotlin `isClosedForSend`. Distinct from [`Drained`]:
+    /// closed-with-backlog is Closed but not yet Drained.
+    Closed(Box<Expression>),
+    /// Blocking receive that THROWS `error` when the channel is closed and
+    /// drained instead of yielding the zero value. The failure value is
+    /// language policy, declared here: .NET `ReadAsync` →
+    /// ChannelClosedException, Rust `recv()` → RecvError.
+    RecvOrFail {
+        channel: Box<Expression>,
+        error: Box<Expression> },
+    /// Block until the channel is READABLE (buffered value present) or
+    /// definitively done; yields the bool "a read will succeed". .NET
+    /// `WaitToReadAsync`.
+    WaitReadable(Box<Expression>) }
 
 impl ChanOp {
     pub fn children(&self) -> Vec<&Expression> {
@@ -2023,9 +2116,13 @@ impl ChanOp {
                 v.push(zero);
                 v
             }
-            ChanOp::Send { channel, value } => vec![channel, value],
+            ChanOp::Send { channel, value } | ChanOp::TrySend { channel, value } => {
+                vec![channel, value]
+            }
+            ChanOp::RecvOrFail { channel, error } => vec![channel, error],
             ChanOp::Recv(e) | ChanOp::RecvOk(e) | ChanOp::Len(e) | ChanOp::Cap(e)
-            | ChanOp::Close(e) => vec![e] }
+            | ChanOp::Close(e) | ChanOp::TryRecv(e) | ChanOp::TryPeek(e)
+            | ChanOp::Drained(e) | ChanOp::Closed(e) | ChanOp::WaitReadable(e) => vec![e] }
     }
 
     pub fn children_mut(&mut self) -> Vec<&mut Expression> {
@@ -2038,9 +2135,13 @@ impl ChanOp {
                 v.push(zero);
                 v
             }
-            ChanOp::Send { channel, value } => vec![channel, value],
+            ChanOp::Send { channel, value } | ChanOp::TrySend { channel, value } => {
+                vec![channel, value]
+            }
+            ChanOp::RecvOrFail { channel, error } => vec![channel, error],
             ChanOp::Recv(e) | ChanOp::RecvOk(e) | ChanOp::Len(e) | ChanOp::Cap(e)
-            | ChanOp::Close(e) => vec![e] }
+            | ChanOp::Close(e) | ChanOp::TryRecv(e) | ChanOp::TryPeek(e)
+            | ChanOp::Drained(e) | ChanOp::Closed(e) | ChanOp::WaitReadable(e) => vec![e] }
     }
 }
 
@@ -2242,6 +2343,16 @@ pub enum ProtocolSlot {
     ILShift,
     IRShift,
 
+    // ── Step operators ──────────────────────────────────────────────
+    //
+    // `x++` / `x--` are their OWN operations, not sugar for `+ 1`, wherever a
+    // language steps non-numbers: PHP's alphanumeric increment ("a"++ is "b",
+    // "2026-03-25"++ carries the date). A type binds them per
+    // `[builtin_slots.<type>] inc/dec`; with no binding the shared step is
+    // numeric (ECMA §13.4 ToNumeric).
+    Inc,
+    Dec,
+
     // ── Reflected (right-hand) operators ────────────────────────────
     //
     // `2 + vec` — the LEFT operand's type has no rule for the right one, so
@@ -2259,7 +2370,21 @@ pub enum ProtocolSlot {
     ROr,
     RXor,
     RLShift,
-    RRShift }
+    RRShift,
+
+    // ── Character-class predicates ──────────────────────────────────
+    //
+    // `isdigit`/`isalpha`/… — non-standard behaviour (no ECMA-262 string
+    // surface defines them), so the platform default rows point at tier-3
+    // adapter primitives (`common:str_is_*`), never at a host fn. A language
+    // whose classes differ (PHP ctype is C-locale ASCII) overrides per
+    // `[builtin_slots.string] is_*`.
+    IsDigit,
+    IsAlpha,
+    IsAlnum,
+    IsSpace,
+    IsUpper,
+    IsLower }
 
 /// The reserved property holding a class's protocol slot table.
 ///
@@ -2298,7 +2423,7 @@ impl ProtocolSlot {
     /// Generated from the same exhaustive `slot_id` match as
     /// [`Self::as_key`], so it cannot drift from the enum without `slot_id`
     /// failing to compile first.
-    pub const ALL: [ProtocolSlot; 93] = [
+    pub const ALL: [ProtocolSlot; 101] = [
         ProtocolSlot::Destructor,
         ProtocolSlot::ToString,
         ProtocolSlot::Repr,
@@ -2392,6 +2517,14 @@ impl ProtocolSlot {
         ProtocolSlot::RLShift,
         ProtocolSlot::RRShift,
         ProtocolSlot::CallMissing,
+        ProtocolSlot::Inc,
+        ProtocolSlot::Dec,
+        ProtocolSlot::IsDigit,
+        ProtocolSlot::IsAlpha,
+        ProtocolSlot::IsAlnum,
+        ProtocolSlot::IsSpace,
+        ProtocolSlot::IsUpper,
+        ProtocolSlot::IsLower,
     ];
 
     /// The slot's stable STRING key, for profile declarations.
@@ -2501,7 +2634,15 @@ impl ProtocolSlot {
             RXor => "r_xor",
             RLShift => "r_l_shift",
             RRShift => "r_r_shift",
-            CallMissing => "call_missing" }
+            CallMissing => "call_missing",
+            Inc => "inc",
+            Dec => "dec",
+            IsDigit => "is_digit",
+            IsAlpha => "is_alpha",
+            IsAlnum => "is_alnum",
+            IsSpace => "is_space",
+            IsUpper => "is_upper",
+            IsLower => "is_lower" }
     }
 
     /// The slot a profile's `slot = "..."` names, or `None` if unrecognised.
@@ -2605,6 +2746,14 @@ impl ProtocolSlot {
             "r_l_shift" => RLShift,
             "r_r_shift" => RRShift,
             "call_missing" => CallMissing,
+            "inc" => Inc,
+            "dec" => Dec,
+            "is_digit" => IsDigit,
+            "is_alpha" => IsAlpha,
+            "is_alnum" => IsAlnum,
+            "is_space" => IsSpace,
+            "is_upper" => IsUpper,
+            "is_lower" => IsLower,
             _ => return None })
     }
 
@@ -2704,7 +2853,16 @@ impl ProtocolSlot {
             RXor => 89,
             RLShift => 90,
             RRShift => 91,
-            CallMissing => 92 }
+            CallMissing => 92,
+            Inc => 93,
+            Dec => 94,
+            // Appended 2026-08-07 — ids continue from 94, existing ones unmoved.
+            IsDigit => 95,
+            IsAlpha => 96,
+            IsAlnum => 97,
+            IsSpace => 98,
+            IsUpper => 99,
+            IsLower => 100 }
     }
 }
 
@@ -2799,7 +2957,7 @@ pub struct ClassModifiers {
     ///
     /// The two declaration nodes converging is the real endgame; see
     /// `recordprimitiveplan.md`.
-    pub record: RecordPolicy }
+    pub semantics: ValueSemantics }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Visibility {
@@ -2828,7 +2986,7 @@ pub enum Visibility {
 
 /// Does assignment copy, or alias?
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum RecordStorage {
+pub enum ValueStorage {
     /// `b = a` aliases — a class, a C# `record`, a Python `@dataclass`.
     #[default]
     Reference,
@@ -2839,7 +2997,7 @@ pub enum RecordStorage {
 
 /// Does `==` compare fields, or identity?
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum RecordEquality {
+pub enum ValueEquality {
     /// Reference identity.
     #[default]
     Identity,
@@ -2850,7 +3008,7 @@ pub enum RecordEquality {
 /// Storage layout. Only meaningful where bytes are observable — C, COBOL
 /// groups, Pascal `packed record`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum RecordLayout {
+pub enum FieldLayout {
     #[default]
     Auto,
     Packed,
@@ -2882,11 +3040,73 @@ pub struct VariantArm {
 /// The declared semantics of a record. Defaults reproduce a plain reference
 /// aggregate, which is what every `StructDecl` was before this existed.
 #[derive(Debug, Clone, Default)]
-pub struct RecordPolicy {
-    pub storage: RecordStorage,
-    pub equality: RecordEquality,
-    pub layout: RecordLayout,
+pub struct ValueSemantics {
+    pub storage: ValueStorage,
+    pub equality: ValueEquality,
+    pub layout: FieldLayout,
     pub variant: Option<VariantPart> }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Directives — declared policy over CODE
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `ValueSemantics` above declares policy for one DECLARATION and travels on the
+// instance. A directive declares policy for a REGION OF CODE and does not: the
+// two answer different questions and the assign path consults both. A Pascal
+// record passed into PHP still copies, because its stamp came with it; a PHP
+// array copies because the code assigning it is governed by PHP's directive.
+//
+// Real languages state these in the source and change them mid-file —
+// `Option Explicit`, `declare(strict_types=1)`, `{$R+}`/`{$R-}`, `"use strict"`.
+// A profile flag would work but is invisible in the program and cannot be
+// overridden by it, so policy that a program is allowed to state lives here.
+//
+// Isolation across languages is structural, not enforced here: each unit of a
+// multi-language program is compiled on its own terms and nothing is
+// concatenated across languages (`DynamicRuntime::run_program_unit`). Pascal
+// never sees PHP's directives because it never shares PHP's compile.
+
+/// A statement of policy. Every field is an `Option`: `None` means "not stated
+/// here", so the same type serves as a module's declared defaults and as an
+/// in-source delta that changes one thing and leaves the rest alone.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Directives {
+    /// Does assigning the language's builtin ARRAY copy it? PHP says yes —
+    /// `$b = $a` on an array is a value copy, and objects inside stay shared.
+    /// Every other language in the tree aliases, which is the `None` default.
+    ///
+    /// Distinct from `ValueSemantics::storage`, which is about a declared
+    /// aggregate. This is about the builtin type, which has no declaration to
+    /// hang policy on and no constructor to stamp.
+    pub array_storage: Option<ValueStorage> }
+
+impl Directives {
+    /// Nothing stated.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Apply `other` on top of `self`: a field `other` states wins, a field it
+    /// leaves `None` is inherited. This is the only way directives combine.
+    pub fn overlay(&mut self, other: &Directives) {
+        if other.array_storage.is_some() {
+            self.array_storage = other.array_storage;
+        }
+    }
+}
+
+/// How far a directive statement's effect reaches — itself a language quirk,
+/// so it is declared rather than assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DirectiveScope {
+    /// Until the end of the enclosing block, then restored. A JS
+    /// `"use strict"` at the head of a function body works this way.
+    #[default]
+    Block,
+    /// Until the end of the module, surviving every intervening block end.
+    /// Pascal's `{$R+}`/`{$R-}` and a C `#pragma` are positional like this —
+    /// switched on halfway down a procedure, they stay on afterwards.
+    Module }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Enum members
@@ -3955,7 +4175,7 @@ mod protocol_slot_key_tests {
                 panic!("key {key:?} is shared by {other:?} and {slot:?}");
             }
         }
-        assert_eq!(count, 93, "ProtocolSlot::ALL lost a slot");
+        assert_eq!(count, 101, "ProtocolSlot::ALL lost a slot");
     }
 
     /// An unrecognised key is ignored, not an error: a profile written against

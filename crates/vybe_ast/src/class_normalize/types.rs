@@ -94,7 +94,17 @@ pub struct NormalClass {
     pub is_partial: bool,
     /// Value types (for example C# structs) still use the shared class
     /// pipeline, but they need different default-value semantics.
+    ///
+    /// This is STORAGE — `semantics.storage == Value`. Kept as its own field
+    /// because ten call sites read it, but it is derived, never declared.
     pub is_value_type: bool,
+
+    /// What the language DECLARED about this type: does assignment copy, does
+    /// `==` compare fields, how is it laid out, does it overlap. Storage and
+    /// equality are INDEPENDENT — a Pascal `record` copies and has no `==`, a
+    /// Kotlin `data class` has value `==` and does not copy — so one boolean
+    /// cannot express both. See `recordprimitiveplan.md`.
+    pub semantics: crate::ValueSemantics,
 
     /// Every instance method (including the constructor) has `self` as
     /// the first positional parameter, as in Python (`def f(self, …)`).
@@ -455,6 +465,7 @@ impl Default for NormalClass {
             is_sealed: false,
             is_partial: false,
             is_value_type: false,
+            semantics: crate::ValueSemantics::default(),
             explicit_self_param: false,
             implicit_self_fields: false,
             instance_fields: Vec::new(),
@@ -511,7 +522,24 @@ pub struct NormalField {
     pub init: Option<Expression>,
     pub array_bounds: Option<Vec<Expression>>,
     pub access: Access,
-    pub readonly: bool }
+    pub readonly: bool,
+    /// The canonical class name of this field's declared type, WHEN that
+    /// declaration said `ValueStorage::Value` — the answer to "does copying
+    /// the owner have to copy this field too".
+    ///
+    /// Resolved once, in the declaration pass, where every declaration in the
+    /// program is known. A normalizer leaves it `None`: at the time a walker
+    /// runs, the type this field names may not have been walked yet, and a
+    /// language crate cannot see the other languages a value can reach.
+    ///
+    /// It exists because the alternative is re-deriving it from `type_hint` at
+    /// each emit site — trimming `?`, rejecting `*`/`^`/`[]`/`map[` prefixes,
+    /// then matching the remainder case-insensitively against a class table.
+    /// That answers a DECLARED property by spelling, and a spelling that fails
+    /// to match produces a silent shallow copy rather than a diagnosable miss.
+    /// `ValueSemantics::storage` is the declaration; this is where the
+    /// declaration lands after resolution.
+    pub value_type: Option<String> }
 
 #[derive(Debug, Clone)]
 pub struct NormalMethod {

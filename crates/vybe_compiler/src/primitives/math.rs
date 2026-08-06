@@ -8,6 +8,58 @@ use crate::primitives::Target;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+// ── Mathematical constants ──────────────────────────────────
+//
+// π is π. It is not a .NET surface, a Go surface or a Dart surface, and it does
+// not belong to whichever platform happens to be linked — so it lives here,
+// once, keyed by the CONCEPT rather than by anyone's spelling of it.
+//
+// It used to live in eleven places: a `[namespace_constants]` block in each
+// language profile, plus `platforms/dotnet`'s `NAMESPACE_CONSTANTS`, which the
+// profile parser merged in behind `use_dotnet`. That made the dotnet platform
+// the de-facto owner of `Math.PI` — and, for any language that reached the
+// merged table, a dependency on a platform it has nothing to do with.
+
+const CONSTANTS: &[(&str, f64)] = &[
+    ("pi", std::f64::consts::PI),
+    ("e", std::f64::consts::E),
+    ("tau", std::f64::consts::TAU),
+    ("ln2", std::f64::consts::LN_2),
+    ("ln10", std::f64::consts::LN_10),
+    ("log2e", std::f64::consts::LOG2_E),
+    ("log10e", std::f64::consts::LOG10_E),
+    ("sqrt2", std::f64::consts::SQRT_2),
+    ("sqrt1_2", std::f64::consts::FRAC_1_SQRT_2),
+    ("sqrtpi", 1.772_453_850_905_516),
+];
+
+/// The value of a mathematical constant named by its CONCEPT (`pi`, `ln2`,
+/// `sqrt2`), case-insensitively — `Pi`, `PI` and `pi` are the same number.
+pub fn constant(name: &str) -> Option<f64> {
+    CONSTANTS
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| *v)
+}
+
+/// The value behind a DOTTED constant reference whose owner is the math
+/// namespace: `math.pi`, `Math.PI`, `system.math.pi`, `System.Math.Tau`,
+/// Go's `math.Pi`, Dart's `math.ln2`.
+///
+/// The owner segment must actually be spelled `math`, so this never claims an
+/// unrelated `Foo.E` or a user class's `.pi`.
+pub fn dotted_constant(key: &str) -> Option<f64> {
+    let (owner, name) = key.rsplit_once('.')?;
+    if !owner
+        .rsplit('.')
+        .next()
+        .is_some_and(|seg| seg.eq_ignore_ascii_case("math"))
+    {
+        return None;
+    }
+    constant(name)
+}
+
 // ── Direct WASM opcodes (no host call) ──────────────────────
 
 pub fn emit_abs(chunk: &mut Chunk, line: u32) {

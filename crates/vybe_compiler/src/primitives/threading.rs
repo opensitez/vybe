@@ -76,22 +76,25 @@ pub fn emit_atomic_cmpxchg(chunk: &mut Chunk, line: u32) {
     atomic_memarg32(chunk, line);
 }
 
-/// Emit atomic fence: memory barrier.
+/// Emit atomic fence: memory barrier. Spec: one u8 immediate, must be 0.
 /// Stack: unchanged
 pub fn emit_atomic_fence(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::ATOMIC_FENCE, line);
+    chunk.emit(0x00, line);
 }
 
 /// Emit atomic wait: block thread until memory[addr] != expected or timeout.
 /// Stack before: [addr, expected, timeout_ns]  Stack after: [0=ok, 1=not_equal, 2=timed_out]
 pub fn emit_atomic_wait(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::MEMORY_ATOMIC_WAIT32, line);
+    atomic_memarg32(chunk, line);
 }
 
 /// Emit atomic notify: wake N threads waiting on memory[addr].
 /// Stack before: [addr, count]  Stack after: [num_woken]
 pub fn emit_atomic_notify(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::MEMORY_ATOMIC_NOTIFY, line);
+    atomic_memarg32(chunk, line);
 }
 
 // ── Lock pattern (spinlock via atomics) ─────────────────────────────────
@@ -112,6 +115,7 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
     chunk.emit_i32_const(1, line);
     chunk.emit_op(Op::I32_ATOMIC_RMW_XCHG, line);
+    atomic_memarg32(chunk, line);
     // If old value was 0, we acquired the lock
     core_wasm::i32_const(chunk, line, 0);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
@@ -121,6 +125,7 @@ pub fn emit_lock_acquire(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_i32_const(1, line);
     chunk.emit_i64_const(-1, line);
     chunk.emit_op(Op::MEMORY_ATOMIC_WAIT32, line);
+    atomic_memarg32(chunk, line);
     chunk.emit_op(Op::DROP, line); // drop wait result
     chunk.emit_br(0, line);
     chunk.emit_end(line);
@@ -137,10 +142,12 @@ pub fn emit_lock_release(chunk: &mut Chunk, addr_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
     core_wasm::i32_const(chunk, line, 0);
     chunk.emit_op(Op::I32_ATOMIC_STORE, line);
+    atomic_memarg32(chunk, line);
     // Notify one waiter
     chunk.emit_op_u16(Op::LOCAL_GET, addr_slot, line);
     chunk.emit_i32_const(1, line);
     chunk.emit_op(Op::MEMORY_ATOMIC_NOTIFY, line);
+    atomic_memarg32(chunk, line);
     chunk.emit_op(Op::DROP, line); // drop notify count
 }
 

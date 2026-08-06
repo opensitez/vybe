@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[test]
 fn generator_stack_switching_ops_are_emitted_only_by_generator_emitter() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let allowed = root.join("emitter").join("generators.rs");
+    let allowed = root.join("primitives").join("generators.rs");
     let needles = [
         "Op::SUSPEND",
         "Op::RESUME",
@@ -47,7 +47,7 @@ fn generator_stack_switching_ops_are_emitted_only_by_generator_emitter() {
 #[test]
 fn promise_suspend_ops_are_emitted_only_by_common_async_emitter() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let allowed = root.join("emitter").join("functions.rs");
+    let allowed = root.join("primitives").join("functions.rs");
     let needle = "Op::PROMISE_SUSPEND";
 
     let mut offenders = Vec::new();

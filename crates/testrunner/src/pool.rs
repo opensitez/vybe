@@ -214,6 +214,34 @@ pub fn run_all(
                     let mode = Mode::of(&text);
                     let started = Instant::now();
 
+                    // A multi-unit test takes the COLD path. The warm-worker
+                    // protocol sends ONE path per line, and widening it means
+                    // changing `vybex --worker`; a cross-language test is rare
+                    // enough that a fresh process costs nothing, and the
+                    // testrunner stays the only thing that had to learn the
+                    // directive.
+                    if !crate::run::extra_units(&text, &file).is_empty() {
+                        let outcome = crate::run::run_case(
+                            vybex,
+                            &file,
+                            mode,
+                            timeout.as_secs(),
+                            &|secs| slow(&file, secs),
+                        );
+                        let (language, category, name) = identify(&file);
+                        let exec = TestExecution {
+                            path: file,
+                            language,
+                            category,
+                            name,
+                            result: outcome.result,
+                            message: outcome.message,
+                            duration_ms: outcome.duration_ms };
+                        progress(&exec);
+                        done.lock().unwrap().push(exec);
+                        continue;
+                    }
+
                     let reply = dispatch(&mut worker, &file, mode, timeout, slow.as_ref());
                     let (result, message) = match reply {
                         // In run-fail mode the program is SUPPOSED to fail.

@@ -23,8 +23,10 @@ pub struct CMTask {
     pub num_borrows: u32,
     /// Outstanding borrows this task has lent to subtasks.
     pub num_lends: u32,
-    /// Whether backpressure is signalled for this task.
-    pub backpressure: bool,
+    /// Backpressure COUNTER (CM3 `backpressure.inc`/`dec`): the instance
+    /// resists new incoming calls while > 0. The old boolean
+    /// `backpressure.set` (canon 0x08) was dropped from the spec.
+    pub backpressure: u32,
 }
 
 impl CMTask {
@@ -34,7 +36,7 @@ impl CMTask {
             phase: TaskPhase::Initial,
             num_borrows: 0,
             num_lends: 0,
-            backpressure: false,
+            backpressure: 0,
         }
     }
 

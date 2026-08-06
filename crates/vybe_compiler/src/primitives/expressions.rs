@@ -6,6 +6,20 @@
 use super::*;
 
 impl Compiler {
+    /// A named constant, from the profile's own table or — for a dotted
+    /// reference into the math namespace — from `primitives::math`.
+    ///
+    /// The profile wins, so a language that deliberately spells a constant
+    /// differently keeps its own value. The shared table is the FLOOR: `Math.PI`
+    /// resolves to π whether or not the compiling language remembered to write
+    /// it down, and no language needs a platform linked to reach a number.
+    pub(super) fn lookup_named_constant(&self, key: &str) -> Option<ConstantValue> {
+        if let Some(cv) = self.profile.lookup_constant(key) {
+            return Some(cv.clone());
+        }
+        super::math::dotted_constant(key).map(ConstantValue::Float)
+    }
+
     /// Construct a tree `Type` node generically — the common-resolver
     /// construction path (namespaceplan.md), retiring per-platform surfaces.
     ///
@@ -2254,7 +2268,7 @@ impl Compiler {
                     }
 
                     let compound = format!("{}.{}", obj_name, field);
-                    if let Some(cv) = self.profile.lookup_constant(&compound) {
+                    if let Some(cv) = self.lookup_named_constant(&compound).as_ref() {
                         match cv {
                             ConstantValue::Bool(b) => self.emit_const(Value::Bool(*b)),
                             ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),
@@ -2327,7 +2341,7 @@ impl Compiler {
                     let parts = self.flatten_member_chain(expr);
                     if !parts.is_empty() {
                         let const_key = parts.join(".");
-                        if let Some(cv) = self.profile.lookup_constant(&const_key).cloned() {
+                        if let Some(cv) = self.lookup_named_constant(&const_key) {
                             match cv {
                                 ConstantValue::Bool(b) => self.emit_const(Value::Bool(b)),
                                 ConstantValue::Float(f) => self.emit_const(Value::F64(f)),
@@ -2415,7 +2429,7 @@ impl Compiler {
                                     'outer: for start in 0..ns_parts.len().saturating_sub(1) {
                                         for end in ((start + 2)..=ns_parts.len()).rev() {
                                             let key = ns_parts[start..end].join(".");
-                                            if self.profile.lookup_constant(&key).is_some() {
+                                            if self.lookup_named_constant(&key).is_some() {
                                                 found_window = Some((start, end));
                                                 break 'outer;
                                             }
@@ -2424,7 +2438,7 @@ impl Compiler {
                                     if let Some((_const_start, const_end)) = found_window {
                                         let key = ns_parts[_const_start..const_end].join(".");
                                         let cv =
-                                            self.profile.lookup_constant(&key).cloned().unwrap();
+                                            self.lookup_named_constant(&key).unwrap();
                                         match cv {
                                             ConstantValue::Bool(b) => {
                                                 self.emit_const(Value::Bool(b))
@@ -3766,6 +3780,16 @@ impl Compiler {
                     self.chunk().emit_end(lookup_line);
                     self.chunk().emit_end(line);
                 } else if self.profile.namespaces.use_dotnet {
+                    // `StringBuilder` is the one type name here that is NOT
+                    // exclusive to the dotnet tree — jvm registers it too. And
+                    // `dotnet.sb_index_get` is a PLATFORM-owned emit: the
+                    // `dotnet` prefix only dispatches when
+                    // `vybe_platform_dotnet` is linked, which kotlin/python are
+                    // not. Ungating this would emit an unroutable name in a
+                    // Kotlin `sb[i]`, so the gate stays until the read/write
+                    // pair moves to a shared `common:` primitive. The WRITE side
+                    // in `statements.rs` is gated for the same reason — the two
+                    // must agree about the storage shape.
                     if self
                             .infer_expr_type_hint(object)
                             .as_deref()
@@ -5747,36 +5771,63 @@ impl Compiler {
                         return Ok(());
                     }
 
-                    if self.profile.namespaces.use_dotnet {
-                        match canon_type.as_str() {
-                            "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort"
-                            | "sbyte" => {
-                                let is_char_like =
-                                    matches!(&inner.kind, ExprKind::Lit(Literal::Char(_)))
-                                        || self.infer_expr_type_hint(inner).is_some_and(|hint| {
-                                            Self::normalize_type_hint(&hint) == "char"
-                                        });
-                                if is_char_like {
-                                    // Widening a `char` reads its UTF-16 code
-                                    // point — `(int)'A'` is 65. This used to
-                                    // push a literal ZERO and stringify it,
-                                    // never evaluating the operand at all, so
-                                    // every dotnet language answered `0`. The
-                                    // conversion belongs to the dotnet adapter
-                                    // (`Convert.ToChar` already lives there as
-                                    // its inverse), not to this arm.
+                    // Widening a `char` to an integer reads its UTF-16 code
+                    // point — `(int)'A'` is 65. Which emitter does that is the
+                    // `char`/`int` COERCION SLOT (`builtinslotplan.md` §2a), so
+                    // a language declares it in `[builtin_slots.char] int` and
+                    // this arm asks the slot table rather than asking who the
+                    // language is. A language that binds nothing keeps its own
+                    // cast behaviour, because the lookup answers `None` and
+                    // this whole block falls through.
+                    if matches!(
+                        canon_type.as_str(),
+                        "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort" | "sbyte"
+                    ) {
+                        let is_char_like = matches!(&inner.kind, ExprKind::Lit(Literal::Char(_)))
+                            || self
+                                .infer_expr_type_hint(inner)
+                                .is_some_and(|hint| Self::normalize_type_hint(&hint) == "char");
+                        let bound = self
+                            .profile
+                            .builtin_slots
+                            .get(
+                                vybe_ast::builtin_slots::BuiltinType::Char,
+                                vybe_ast::ProtocolSlot::Int,
+                            )
+                            .map(str::to_string);
+                        if let (true, Some(target)) = (is_char_like, bound.as_deref()) {
+                            // Reuses the profile's own emit-target parser — a
+                            // slot binding is deliberately not a new vocabulary.
+                            // A one-argument coercion is a `common:` emitter or
+                            // a host call; anything else is a mis-declaration
+                            // and falls through rather than emitting nonsense.
+                            match vybe_runtime::profile::parse_emit_target(target) {
+                                Some(vybe_runtime::profile::BuiltinEmit::Common(emit)) => {
                                     self.compile_expr(inner)?;
                                     let line = self.line;
-                                    self.emit_common("dotnet.char_code", 1, line);
+                                    self.emit_common(&emit, 1, line);
                                     return Ok(());
                                 }
-                                self.compile_expr(inner)?;
-                                let num = self.import("ecma:number", "Number");
-                                self.emit_host_call(num, 1);
-                                self.emit(Op::F64_TRUNC);
-                                return Ok(());
+                                Some(vybe_runtime::profile::BuiltinEmit::HostCall(
+                                    module,
+                                    func,
+                                )) => {
+                                    self.compile_expr(inner)?;
+                                    let idx = self.import(&module, &func);
+                                    self.emit_host_call(idx, 1);
+                                    return Ok(());
+                                }
+                                _ => {}
                             }
-                            _ => {}
+                        }
+                        if bound.is_some() {
+                            // The language declared how a char widens, so it also
+                            // owns the ordinary numeric widening beside it.
+                            self.compile_expr(inner)?;
+                            let num = self.import("ecma:number", "Number");
+                            self.emit_host_call(num, 1);
+                            self.emit(Op::F64_TRUNC);
+                            return Ok(());
                         }
                     }
 
@@ -7031,7 +7082,7 @@ impl Compiler {
                     }
 
                     let compound = self.canon(&format!("{}.{}", class_name, member_name));
-                    if let Some(cv) = self.profile.lookup_constant(&compound) {
+                    if let Some(cv) = self.lookup_named_constant(&compound).as_ref() {
                         match cv {
                             ConstantValue::Bool(b) => self.emit_const(Value::Bool(*b)),
                             ConstantValue::Float(f) => self.emit_const(Value::F64(*f)),

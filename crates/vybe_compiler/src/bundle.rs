@@ -272,24 +272,11 @@ impl Bundle {
         // compiler Linker can bind `import { X } from "node:http"` in
         // one lookup. Walks the `Indirect` chain from Adapter modules
         // through to a Synthetic `Function` export.
-        // Seed the platform-specific namespace constants into the language SDK
-        // once, so the generic profile parser (in `vybe_plugin`) stays free of any
-        // platform reference. When platforms become loadable modules they will
-        // register these themselves at load time.
-        {
-            static SEED: std::sync::Once = std::sync::Once::new();
-            SEED.call_once(|| {
-                let constants = vybe_runtime::registry::platform_namespace_constants();
-                let m = constants
-                    .iter()
-                    .map(|c| **c)
-                    .collect::<Vec<_>>()
-                    .iter()
-                    .map(|(n, v)| (n.to_string(), *v))
-                    .collect();
-                crate::profile::register_dotnet_namespace_constants(m);
-            });
-        }
+        // No seeding step: the profile parser reads platform constants straight
+        // from the registry, keeping only those whose platform the profile
+        // declares in `type_scopes`. The seed here flattened EVERY registered
+        // platform into one list and handed it to every language, which is the
+        // opposite of scoping.
         let mut profile = crate::profile::parse_profile((self.language.profile_source)())?;
 
         // Entry override, `ld -e` style: the profile's `entry_point` is the

@@ -118,6 +118,21 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     // PHP overrides both: its `==` coerces (`"1" == 1`).
     b.insert(BuiltinType::String, ProtocolSlot::Eq, "common:dyn_eq");
     b.insert(BuiltinType::String, ProtocolSlot::Ne, "common:dyn_ne");
+    // Character-class predicates. NON-standard behaviour (no ECMA-262 string
+    // surface defines `isdigit`/`isalpha`/…), so the platform rows point at
+    // the tier-3 adapter primitives in strings.rs — NEVER at a host fn: the
+    // predicates registered on `ecma:string` are a reported deviation, and
+    // routing the unified surface through them would canonize it. A language
+    // whose classes differ (PHP ctype = C-locale ASCII) overrides per
+    // `[builtin_slots.string] is_*`. JVM consumers delegate to the same
+    // emitters directly because their char model needs a non-string guard
+    // first — the php-`strlen`-coerces-first split documented above.
+    b.insert(BuiltinType::String, ProtocolSlot::IsDigit, "common:str_is_digit");
+    b.insert(BuiltinType::String, ProtocolSlot::IsAlpha, "common:str_is_alpha");
+    b.insert(BuiltinType::String, ProtocolSlot::IsAlnum, "common:str_is_alnum");
+    b.insert(BuiltinType::String, ProtocolSlot::IsSpace, "common:str_is_space");
+    b.insert(BuiltinType::String, ProtocolSlot::IsUpper, "common:str_is_upper");
+    b.insert(BuiltinType::String, ProtocolSlot::IsLower, "common:str_is_lower");
 
     // ── array ───────────────────────────────────────────────────────────
     b.insert(

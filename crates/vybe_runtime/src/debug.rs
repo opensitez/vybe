@@ -177,11 +177,21 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
                 next,
             )
         }
-        // SIMD lane mem op: a single lane-index byte (the VM's optional-memarg
-        // peek never consumes a byte since lane indices are < 0x80).
+        // SIMD memory op: OPTIONAL marker-tagged memarg (0x80 bit on the
+        // first LEB signals presence; absent = zero operand bytes).
+        OperandFormat::SimdMemArg => {
+            let size = vybe_runtime_simd_memarg_render(&chunk.code, operand_start);
+            (format!("{}{}", name, size.0), size.1)
+        }
+        // SIMD lane mem op: the same optional memarg, then the lane byte.
         OperandFormat::MemLane => {
-            let lane = chunk.code.get(operand_start).copied().unwrap_or(0);
-            (format!("{} lane={}", name, lane), operand_start + 1)
+            let (memarg_txt, after_memarg) =
+                vybe_runtime_simd_memarg_render(&chunk.code, operand_start);
+            let lane = chunk.code.get(after_memarg).copied().unwrap_or(0);
+            (
+                format!("{}{} lane={}", name, memarg_txt, lane),
+                after_memarg + 1,
+            )
         }
         OperandFormat::Closure => {
             // ref_func: u16 func_index, u8 upvalue_count, then
@@ -257,6 +267,27 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
             (format!("{} {}", name, val), operand_start + 8)
         }
     }
+}
+
+/// Render the optional marker-tagged SIMD memarg (see `SimdMemArg`). Returns
+/// the rendered suffix (empty when absent) and the offset just past it.
+fn vybe_runtime_simd_memarg_render(code: &[u8], operand_start: usize) -> (String, usize) {
+    let mut ip = operand_start;
+    let align = read_leb_u32(code, &mut ip);
+    if align & 0x80 == 0 {
+        return (String::new(), operand_start);
+    }
+    let offset = read_leb_u64(code, &mut ip);
+    let memidx = if align & 0x40 != 0 {
+        Some(read_leb_u32(code, &mut ip))
+    } else {
+        None
+    };
+    let mem = memidx.map(|idx| format!(" mem={idx}")).unwrap_or_default();
+    (
+        format!(" align={} offset={}{}", align & !0x1C0, offset, mem),
+        ip,
+    )
 }
 
 // ── Bytecode verifier ────────────────────────────────────────────────────

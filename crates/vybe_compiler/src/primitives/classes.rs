@@ -2395,6 +2395,14 @@ impl Compiler {
                     );
                 }
             }
+            // An alias parameter is handed a reference — mark it, do not wrap
+            // it. Methods define their locals in THIS prologue rather than
+            // `compile_function_decl`'s, so the mark never happened for them:
+            // the caller passed a cell and the body read it as an ordinary
+            // value, so a read saw the cell object and a write replaced it,
+            // leaving the caller's storage untouched.
+            cc.bind_alias_params(user_params.iter().copied());
+
             let js_arguments_len_slot = if uses_js_arguments {
                 let slot = cc.define_local("arguments");
                 cc.emit_u16(Op::LOCAL_GET, js_arguments_source_slot.unwrap());
@@ -3527,22 +3535,8 @@ impl Compiler {
                         self.emit_const(Value::String(Arc::from(name)));
                         let type_key = self.str_const("__type");
                         self.emit_struct_field_op(Op::STRUCT_SET, 0, type_key);
-                        // Storage and equality are INDEPENDENT axes. Gating the
-                        // EQUALITY stamp on `is_value_type` — which is storage —
-                        // is the conflation `emit_derived_ctor_stamps` already
-                        // removed; it survived on this path, so a Pascal
-                        // `record` claimed field-wise `=` (Delphi gives it none
-                        // without `class operator Equal`) and never claimed the
-                        // copy-on-assign it actually declares.
-                        if class.semantics.equality == vybe_ast::ValueEquality::Structural {
-                            crate::primitives::classes::emit_value_equality_stamp(
-                                self.chunk(),
-                                this_slot,
-                                line,
-                            );
-                        }
                         if class.is_value_type {
-                            crate::primitives::classes::emit_value_storage_stamp(
+                            crate::primitives::classes::emit_value_equality_stamp(
                                 self.chunk(),
                                 this_slot,
                                 line,
@@ -3756,21 +3750,8 @@ impl Compiler {
                         type_slot,
                         line,
                     );
-                    // Same pair as the derived path: equality by the declared
-                    // equality, storage by the declared storage. Without the
-                    // second stamp an instance built on this path advertises no
-                    // value storage at all, so the cross-language copy — the
-                    // half a static type cannot answer — always bails and hands
-                    // the ORIGINAL back.
-                    if class.semantics.equality == vybe_ast::ValueEquality::Structural {
-                        crate::primitives::classes::emit_value_equality_stamp(
-                            self.chunk(),
-                            this_slot,
-                            line,
-                        );
-                    }
                     if class.is_value_type {
-                        crate::primitives::classes::emit_value_storage_stamp(
+                        crate::primitives::classes::emit_value_equality_stamp(
                             self.chunk(),
                             this_slot,
                             line,

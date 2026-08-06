@@ -15,7 +15,7 @@
 //! `vybex`, to `go run`, or into the step debugger unchanged.
 
 use crate::model::TestResult;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
@@ -37,6 +37,31 @@ pub enum Mode {
 /// behaviour is a non-zero exit — a PHP script ending in `exit(1)` that real
 /// php also exits 1 on. `run-fail` mode is not the same thing: it accepts ANY
 /// non-zero status, so it cannot tell `exit(1)` from a crash.
+/// The other UNITS a test links alongside its entry file —
+/// `// vybe-test-units: lib_pascal.pas other.py`.
+///
+/// A program is `Program { units: Vec<Bundle> }` and every unit carries its
+/// OWN language, so a cross-language test is just a file list with the entry
+/// LAST (`cli.rs`: "Link the other languages in first ... puts its functions
+/// and classes in the shared global table"). Until this directive there was no
+/// way to spell that in the corpus, which is why interop had zero tests
+/// despite the whole protocol-slot design existing to serve it.
+///
+/// Paths resolve relative to the test file's own directory, so a pair moves
+/// as a directory.
+pub fn extra_units(text: &str, file: &Path) -> Vec<PathBuf> {
+    let dir = file.parent().unwrap_or(Path::new("."));
+    for line in text.lines().take(10) {
+        if let Some((_, rest)) = line.split_once("vybe-test-units:") {
+            return rest
+                .split_whitespace()
+                .map(|name| dir.join(name.trim_end_matches(',')))
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
 pub fn expected_exit(text: &str) -> i32 {
     for line in text.lines().take(10) {
         if let Some((_, rest)) = line.split_once("vybe-test-exit:")
@@ -76,14 +101,24 @@ pub fn run_case(
     timeout_secs: u64,
     slow: &dyn Fn(u64),
 ) -> Outcome {
-    let want_exit = std::fs::read_to_string(file).map(|t| expected_exit(&t)).unwrap_or(0);
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let want_exit = expected_exit(&text);
     let mut cmd = Command::new(vybex);
     if matches!(mode, Mode::Compile | Mode::CompileFail) {
         // `-d` disassembles without running: the frontend must accept the
         // program, nothing more. That is exactly what `compile_ok` asserted.
         cmd.arg("-d");
     }
+    // The ENTRY FILE IS FIRST. `single_file::load_many_program` takes
+    // `entry_lang` from `paths.split_first()`, and `cli.rs` says the same —
+    // "the entry file (first positional) ... the rest link alongside it".
+    // Passing the library first made vybex treat PASCAL as the entry language
+    // and run the PHP half as a secondary unit BEFORE it, so the Pascal
+    // functions it called did not exist yet.
     cmd.arg(file);
+    for unit in extra_units(&text, file) {
+        cmd.arg(unit);
+    }
     execute(cmd, mode, timeout_secs, slow, want_exit)
 }
 

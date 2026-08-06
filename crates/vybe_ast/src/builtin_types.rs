@@ -279,6 +279,11 @@ pub const PLATFORM_SPELLINGS: &[Spelling] = &[
     s("uint16", Match::Exact, BuiltinType::Int),
     s("byte", Match::Exact, BuiltinType::Int),
     s("sbyte", Match::Exact, BuiltinType::Int),
+    // `bigint` is the inference's own answer for BigInt literals and the
+    // ecma constructor; a LANGUAGE that lowers one of its integer types onto
+    // BigInt declares that spelling itself (`[builtin_types] bigint` —
+    // Kotlin's `long`), which overrides the Int rows above.
+    s("bigint", Match::Exact, BuiltinType::BigInt),
     s("real", Match::Exact, BuiltinType::Double),
     s("double", Match::Exact, BuiltinType::Double),
     s("float", Match::Exact, BuiltinType::Double),

@@ -502,6 +502,7 @@ pub fn emit_common(
         // ── Python adapters ──
         "strings.join_iterable" => strings::emit_join_iterable(chunks, current, line),
         "strings.length" => strings::emit_length(&mut chunks[current], line),
+        "strings.char_code" => strings::emit_char_code(&mut chunks[current], line),
         "strings.to_upper" => strings::emit_to_upper(&mut chunks[current], line),
         "strings.to_lower" => strings::emit_to_lower(&mut chunks[current], line),
         "strings.trim" => strings::emit_trim(&mut chunks[current], line),
@@ -601,6 +602,17 @@ pub fn emit_common(
         // this arm existed there was nothing on the platform to point at — the
         // only byte counter was private to php's adapter.
         "str_byte_length" => strings::emit_byte_length(chunks, current, line),
+        // Character-class predicates — tier-3 adapter primitives (no ECMA-262
+        // string surface defines them). The `(String, Is*)` platform-default
+        // slot rows point here; the receiver must already BE a string, so a
+        // platform with a non-string char model (JVM lone-surrogate numbers)
+        // guards at its own call site. See strings.rs section note.
+        "str_is_digit" => strings::emit_is_digit(chunks, current, line),
+        "str_is_alpha" => strings::emit_is_alpha(chunks, current, line),
+        "str_is_alnum" => strings::emit_is_alnum(chunks, current, line),
+        "str_is_space" => strings::emit_is_space(chunks, current, line),
+        "str_is_upper" => strings::emit_is_upper(chunks, current, line),
+        "str_is_lower" => strings::emit_is_lower(chunks, current, line),
         "str_cstr_length" => strings::emit_cstr_length(chunks, current, line),
         "str_cstr_truncate" => strings::emit_cstr_truncate(chunks, current, line),
         // Shell-style glob matching — php `fnmatch`, python `fnmatch.fnmatch`,

@@ -20,7 +20,8 @@ impl Op {
     // ── task ────────────────────────────────────────────────────────
     pub const TASK_CANCEL: Op = Op::new(0xF0, 0x05);
     pub const SUBTASK_CANCEL: Op = Op::new(0xF0, 0x06);
-    pub const BACKPRESSURE_SET: Op = Op::new(0xF0, 0x08);
+    // 0x08 RETIRED (`backpressure.set`) — dropped from Binary.md in favor of
+    // the 0x24/0x25 inc/dec counter form. Slot vacant; fails decode loudly.
     pub const TASK_RETURN: Op = Op::new(0xF0, 0x09);
     pub const CONTEXT_GET: Op = Op::new(0xF0, 0x0A);
     pub const CONTEXT_SET: Op = Op::new(0xF0, 0x0B);
@@ -74,7 +75,7 @@ opcode_category! {
     [0x04] resource_rep => U16, "resource.rep";
     [0x05] task_cancel => None, "task.cancel";
     [0x06] subtask_cancel => None, "subtask.cancel";
-    [0x08] backpressure_set => None, "backpressure.set";
+    // 0x08 RETIRED (`backpressure.set`) — see the const block note.
     [0x09] task_return => None, "task.return";
     [0x0A] context_get => None, "context.get";
     [0x0B] context_set => None, "context.set";

@@ -1121,9 +1121,20 @@ impl Compiler {
         {
             let receiver_param_offset = usize::from(param_modes.len() == args.len() + 1);
             let user_modes = &param_modes[receiver_param_offset.min(param_modes.len())..];
+            // Two different questions, and one hardcoded `Ref | Out` was
+            // answering both: which arguments are passed as REFERENCES, and
+            // which are written back from the copy-in/copy-out pack. `Alias`
+            // belongs in the first and must stay out of the second — it was
+            // never copied, so there is nothing to write back, and a callee
+            // with only `Alias` parameters returns a plain value rather than a
+            // pack. Conflating them is why aliasing silently did nothing on
+            // every METHOD call, in every language.
+            let needs_packed_result = user_modes
+                .iter()
+                .any(|mode| self.mode_needs_call_writeback(*mode));
             if user_modes
                 .iter()
-                .any(|mode| matches!(mode, PassBy::Ref | PassBy::Out))
+                .any(|mode| self.mode_needs_ref_aware_call_handling(*mode))
             {
                 let mut arg_slots = Vec::with_capacity(args.len());
                 for (index, arg) in args.iter().enumerate() {
@@ -1143,11 +1154,19 @@ impl Compiler {
                     self.emit_call_ref_with_arg_slots(fn_tmp, Some(obj_tmp), &arg_slots);
                 }
 
+                if !needs_packed_result {
+                    return Ok(());
+                }
+
                 let pack_slot = self.define_local("__direct_instance_method_ref_call_pack");
                 self.emit_u16(Op::LOCAL_SET, pack_slot);
                 let mut ref_out_index = 1usize;
                 for (index, arg) in args.iter().enumerate() {
-                    if !matches!(user_modes.get(index), Some(PassBy::Ref | PassBy::Out)) {
+                    if !user_modes
+                        .get(index)
+                        .copied()
+                        .is_some_and(|mode| self.mode_needs_call_writeback(mode))
+                    {
                         continue;
                     }
                     self.emit_u16(Op::LOCAL_GET, pack_slot);
@@ -4260,9 +4279,14 @@ impl Compiler {
                         .cloned()
                         .or_else(|| self.function_param_modes.get(&method_canon).cloned())
                     {
+                        // Reference-passing vs pack write-back — see the
+                        // instance-method path above.
+                        let needs_packed_result = param_modes
+                            .iter()
+                            .any(|mode| self.mode_needs_call_writeback(*mode));
                         if param_modes
                             .iter()
-                            .any(|mode| matches!(mode, PassBy::Ref | PassBy::Out))
+                            .any(|mode| self.mode_needs_ref_aware_call_handling(*mode))
                         {
                             let mut arg_slots = Vec::with_capacity(args.len());
                             for (index, arg) in args.iter().enumerate() {
@@ -4282,14 +4306,19 @@ impl Compiler {
                             }
                             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
 
+                            if !needs_packed_result {
+                                return Ok(());
+                            }
+
                             let pack_slot = self.define_local("__early_static_ref_call_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
                             let mut ref_out_index = 1usize;
                             for (index, arg) in args.iter().enumerate() {
-                                if !matches!(
-                                    param_modes.get(index),
-                                    Some(PassBy::Ref | PassBy::Out)
-                                ) {
+                                if !param_modes
+                                    .get(index)
+                                    .copied()
+                                    .is_some_and(|mode| self.mode_needs_call_writeback(mode))
+                                {
                                     continue;
                                 }
                                 self.emit_u16(Op::LOCAL_GET, pack_slot);
@@ -4531,7 +4560,7 @@ impl Compiler {
                                                 continue;
                                             }
                                             let key = ns_parts[start..end].join(".");
-                                            if self.profile.lookup_constant(&key).is_some() {
+                                            if self.lookup_named_constant(&key).is_some() {
                                                 found_window = Some((start, end));
                                                 break 'outer;
                                             }
@@ -4540,7 +4569,7 @@ impl Compiler {
                                     if let Some((_const_start, const_end)) = found_window {
                                         let key = ns_parts[_const_start..const_end].join(".");
                                         let cv =
-                                            self.profile.lookup_constant(&key).cloned().unwrap();
+                                            self.lookup_named_constant(&key).unwrap();
                                         match &cv {
                                             ConstantValue::Bool(b) => {
                                                 self.emit_const(Value::Bool(*b))
@@ -4790,7 +4819,7 @@ impl Compiler {
                                 for end in (2..lower_parts.len()).rev() {
                                     let const_key = parts[..end].join(".");
                                     if let Some(cv) =
-                                        self.profile.lookup_constant(&const_key).cloned()
+                                        self.lookup_named_constant(&const_key)
                                     {
                                         match &cv {
                                             ConstantValue::Bool(b) => {
@@ -5017,9 +5046,14 @@ impl Compiler {
                             .cloned()
                             .or_else(|| self.function_param_modes.get(&method_name).cloned())
                         {
+                            // Reference-passing vs pack write-back — see the
+                            // instance-method path above.
+                            let needs_packed_result = param_modes
+                                .iter()
+                                .any(|mode| self.mode_needs_call_writeback(*mode));
                             if param_modes
                                 .iter()
-                                .any(|mode| matches!(mode, PassBy::Ref | PassBy::Out))
+                                .any(|mode| self.mode_needs_ref_aware_call_handling(*mode))
                             {
                                 let mut arg_slots = Vec::with_capacity(args.len());
                                 for (index, arg) in args.iter().enumerate() {
@@ -5042,12 +5076,23 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, pack_slot);
                                 self.restore_js_this(saved_js_this);
 
+                                // With nothing to write back the callee returned
+                                // a plain value, not a pack — hand it back.
+                                // Returning BEFORE the store above would skip
+                                // `restore_js_this`, so the value is popped and
+                                // pushed rather than left on the stack.
+                                if !needs_packed_result {
+                                    self.emit_u16(Op::LOCAL_GET, pack_slot);
+                                    return Ok(());
+                                }
+
                                 let mut ref_out_index = 1usize;
                                 for (index, arg) in args.iter().enumerate() {
-                                    if !matches!(
-                                        param_modes.get(index),
-                                        Some(PassBy::Ref | PassBy::Out)
-                                    ) {
+                                    if !param_modes
+                                        .get(index)
+                                        .copied()
+                                        .is_some_and(|mode| self.mode_needs_call_writeback(mode))
+                                    {
                                         continue;
                                     }
                                     self.emit_u16(Op::LOCAL_GET, pack_slot);
@@ -5132,9 +5177,14 @@ impl Compiler {
                         .cloned()
                         .or_else(|| self.function_param_modes.get(&m).cloned())
                     {
+                        // Reference-passing vs pack write-back — see the
+                        // instance-method path above.
+                        let needs_packed_result = param_modes
+                            .iter()
+                            .any(|mode| self.mode_needs_call_writeback(*mode));
                         if param_modes
                             .iter()
-                            .any(|mode| matches!(mode, PassBy::Ref | PassBy::Out))
+                            .any(|mode| self.mode_needs_ref_aware_call_handling(*mode))
                         {
                             let mut arg_slots = Vec::with_capacity(args.len());
                             for (index, arg) in args.iter().enumerate() {
@@ -5154,14 +5204,19 @@ impl Compiler {
                             }
                             self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
 
+                            if !needs_packed_result {
+                                return Ok(());
+                            }
+
                             let pack_slot = self.define_local("__static_ref_call_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
                             let mut ref_out_index = 1usize;
                             for (index, arg) in args.iter().enumerate() {
-                                if !matches!(
-                                    param_modes.get(index),
-                                    Some(PassBy::Ref | PassBy::Out)
-                                ) {
+                                if !param_modes
+                                    .get(index)
+                                    .copied()
+                                    .is_some_and(|mode| self.mode_needs_call_writeback(mode))
+                                {
                                     continue;
                                 }
                                 self.emit_u16(Op::LOCAL_GET, pack_slot);
@@ -8061,9 +8116,14 @@ impl Compiler {
                             usize::from(param_modes.len() == args.len() + 1);
                         let user_modes =
                             &param_modes[receiver_param_offset.min(param_modes.len())..];
+                        // Reference-passing vs pack write-back — see the
+                        // instance-method path above.
+                        let needs_packed_result = user_modes
+                            .iter()
+                            .any(|mode| self.mode_needs_call_writeback(*mode));
                         if user_modes
                             .iter()
-                            .any(|mode| matches!(mode, PassBy::Ref | PassBy::Out))
+                            .any(|mode| self.mode_needs_ref_aware_call_handling(*mode))
                         {
                             let mut arg_slots = Vec::with_capacity(args.len());
                             for (index, arg) in args.iter().enumerate() {
@@ -8083,11 +8143,18 @@ impl Compiler {
                                 &arg_slots,
                             );
 
+                            if !needs_packed_result {
+                                return Ok(());
+                            }
+
                             let pack_slot = self.define_local("__member_fast_ref_call_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
                             let mut ref_out_index = 1usize;
                             for (index, arg) in args.iter().enumerate() {
-                                if !matches!(user_modes.get(index), Some(PassBy::Ref | PassBy::Out))
+                                if !user_modes
+                                    .get(index)
+                                    .copied()
+                                    .is_some_and(|mode| self.mode_needs_call_writeback(mode))
                                 {
                                     continue;
                                 }
@@ -8731,9 +8798,14 @@ impl Compiler {
                             usize::from(param_modes.len() == args.len() + 1);
                         let user_modes =
                             &param_modes[receiver_param_offset.min(param_modes.len())..];
+                        // Reference-passing vs pack write-back — see the
+                        // instance-method path above.
+                        let needs_packed_result = user_modes
+                            .iter()
+                            .any(|mode| self.mode_needs_call_writeback(*mode));
                         if user_modes
                             .iter()
-                            .any(|mode| matches!(mode, PassBy::Ref | PassBy::Out))
+                            .any(|mode| self.mode_needs_ref_aware_call_handling(*mode))
                         {
                             let mut arg_slots = Vec::with_capacity(args.len());
                             for (index, arg) in args.iter().enumerate() {
@@ -8752,11 +8824,18 @@ impl Compiler {
                                 &arg_slots,
                             );
 
+                            if !needs_packed_result {
+                                return Ok(());
+                            }
+
                             let pack_slot = self.define_local("__member_call_ref_pack");
                             self.emit_u16(Op::LOCAL_SET, pack_slot);
                             let mut ref_out_index = 1usize;
                             for (index, arg) in args.iter().enumerate() {
-                                if !matches!(user_modes.get(index), Some(PassBy::Ref | PassBy::Out))
+                                if !user_modes
+                                    .get(index)
+                                    .copied()
+                                    .is_some_and(|mode| self.mode_needs_call_writeback(mode))
                                 {
                                     continue;
                                 }
@@ -9033,9 +9112,14 @@ impl Compiler {
                         if let Some(param_modes) =
                             self.function_param_modes.get(&method_canon).cloned()
                         {
+                            // Reference-passing vs pack write-back — see the
+                            // instance-method path above.
+                            let needs_packed_result = param_modes
+                                .iter()
+                                .any(|mode| self.mode_needs_call_writeback(*mode));
                             if param_modes
                                 .iter()
-                                .any(|mode| matches!(mode, PassBy::Ref | PassBy::Out))
+                                .any(|mode| self.mode_needs_ref_aware_call_handling(*mode))
                             {
                                 let mut arg_slots = Vec::with_capacity(args.len());
                                 for (index, arg) in args.iter().enumerate() {
@@ -9055,14 +9139,19 @@ impl Compiler {
                                 }
                                 self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
 
+                                if !needs_packed_result {
+                                    return Ok(());
+                                }
+
                                 let pack_slot = self.define_local("__bare_static_ref_call_pack");
                                 self.emit_u16(Op::LOCAL_SET, pack_slot);
                                 let mut ref_out_index = 1usize;
                                 for (index, arg) in args.iter().enumerate() {
-                                    if !matches!(
-                                        param_modes.get(index),
-                                        Some(PassBy::Ref | PassBy::Out)
-                                    ) {
+                                    if !param_modes
+                                        .get(index)
+                                        .copied()
+                                        .is_some_and(|mode| self.mode_needs_call_writeback(mode))
+                                    {
                                         continue;
                                     }
                                     self.emit_u16(Op::LOCAL_GET, pack_slot);
