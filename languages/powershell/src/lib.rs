@@ -7,6 +7,7 @@
 // registration reaches the registry. Generated from Cargo.toml.
 include!(concat!(env!("OUT_DIR"), "/linked_plugins.rs"));
 
+pub mod emitter;
 pub mod normalize_class;
 pub mod protocol;
 pub mod walker;
@@ -24,14 +25,10 @@ pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
 
 /// Embedded profile TOML source.
 pub fn profile_source() -> &'static str {
-    static DOTNET_CONSTANTS: std::sync::Once = std::sync::Once::new();
-    DOTNET_CONSTANTS.call_once(|| {
-        let mappings = vybe_platform_dotnet::emitter::namespace_constant_mappings()
-            .iter()
-            .map(|(name, value)| (name.to_string(), *value))
-            .collect();
-        vybe_runtime::profile::register_dotnet_namespace_constants(mappings);
-    });
+    // The profile inherits its platform constants through `type_scopes`, so the
+    // platform has to be in the registry before the TOML is parsed. `register`
+    // is idempotent, and this is the one call site guaranteed to run first.
+    vybe_platform_dotnet::register();
     include_str!("profile")
 }
 
@@ -44,7 +41,11 @@ pub fn register() {
         name: "powershell",
         parse,
         profile_source,
-        emit_dispatch: None,
+        // ONE arm: `powershell.add`. PowerShell's `+` types its result from
+        // the LEFT operand (array append / string concat / arithmetic) and no
+        // shared primitive expresses that — see `emitter/operators.rs` for the
+        // three lowerings that were tried first.
+        emit_dispatch: Some(emitter::dispatch::dispatch),
         normalize_class: Some(normalize_class::normalize_class),
         register_tree: None,
         expand_source: None,

@@ -86,7 +86,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         language: Lang::CSharp,
         body,
             // Declared in the profile's `[async]` section; see python's note.
-        imports };
+        imports,
+        directives: Default::default() };
     rewrite_using_imports(&mut module);
     normalize_task_surface(&mut module);
     inject_interface_defaults(&mut module.body);
@@ -1475,6 +1476,14 @@ fn rewrite_explicit_interface_accesses_in_expr(
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
+                rewrite_explicit_interface_accesses_in_expr(value, conflicted);
+            }
+        }
+        // c# never builds a `Map` literal, but this walks the COMMON AST, so it
+        // has to descend into one all the same.
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                rewrite_explicit_interface_accesses_in_expr(key, conflicted);
                 rewrite_explicit_interface_accesses_in_expr(value, conflicted);
             }
         }
@@ -4609,6 +4618,12 @@ fn rewrite_using_imports_in_expr(
                 rewrite_using_imports_in_expr(value, aliases, static_paths);
             }
         }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                rewrite_using_imports_in_expr(key, aliases, static_paths);
+                rewrite_using_imports_in_expr(value, aliases, static_paths);
+            }
+        }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
@@ -5291,6 +5306,12 @@ fn rewrite_extension_calls_in_expr(
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
+                rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                rewrite_extension_calls_in_expr(key, extension_methods, extension_containers);
                 rewrite_extension_calls_in_expr(value, extension_methods, extension_containers);
             }
         }
@@ -10005,9 +10026,9 @@ fn walk_struct_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
         //
         // `record` and `record struct` go through `walk_record_decl`, which
         // returns a ClassDecl — so they carry no policy yet. See the plan.
-        record: RecordPolicy {
-            storage: RecordStorage::Value,
-            equality: RecordEquality::Structural,
+        semantics: ValueSemantics {
+            storage: ValueStorage::Value,
+            equality: ValueEquality::Structural,
             ..Default::default()
         } })
 }
@@ -10608,8 +10629,8 @@ fn walk_record_decl(pair: Pair<Rule>, decorators: &[Expression]) -> Result<StmtK
             // still heap-allocated and inherits. A `record struct` is the same
             // equality with Value storage; it reaches here too, via
             // `record_struct_declaration`.
-            record: RecordPolicy {
-                equality: RecordEquality::Structural,
+            semantics: ValueSemantics {
+                equality: ValueEquality::Structural,
                 ..Default::default()
             },
             ..record_mods
@@ -12699,6 +12720,32 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                 .peek()
                 .map(|c| c.as_str().starts_with('('))
                 .unwrap_or(false);
+            // System.Threading.Channels reader-side properties → ChanOp:
+            // `x.Reader.Count` and `x.Reader.Completion.IsCompleted`.
+            if !next_is_call && name == "Count" {
+                if let ExprKind::Member { object: ch_obj, field: side, .. } = &expr.kind {
+                    if side.eq_ignore_ascii_case("Reader") {
+                        expr = Expression::new(ExprKind::Chan(ChanOp::Len(ch_obj.clone())));
+                        continue;
+                    }
+                }
+            }
+            if !next_is_call && name == "IsCompleted" {
+                if let ExprKind::Member { object: comp_obj, field: comp, .. } = &expr.kind {
+                    if comp.eq_ignore_ascii_case("Completion") {
+                        if let ExprKind::Member { object: ch_obj, field: side, .. } =
+                            &comp_obj.kind
+                        {
+                            if side.eq_ignore_ascii_case("Reader") {
+                                expr = Expression::new(ExprKind::Chan(ChanOp::Drained(
+                                    ch_obj.clone(),
+                                )));
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
             if next_is_call {
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
@@ -15885,7 +15932,220 @@ fn build_csharp_string_null_or_empty_expr(value: Expression, trim_first: bool) -
 // syntax for what other languages express as `arr.join(sep)`. We rewrite it to
 // the canonical instance-method form so the compiler dispatches it through the
 // shared value-method path with the correct `this` arg ordering.
+/// `(async () => { ...poll... })()` — the .NET async channel surface must
+/// YIELD to the job queue, never thread-block: a C# `Task.Run` producer is
+/// a deferred event-loop JOB, and a futex-blocked main starves it forever
+/// (measured: the all-asleep detector then fires on the sole thread). Each
+/// failed poll awaits one job tick (§6.2.3.1 — one tick even for plain
+/// values), and the FIFO ready queue runs pending producer jobs first.
+fn csharp_chan_async_poll(body: Vec<Statement>) -> Expression {
+    let lambda = Expression::new(ExprKind::Lambda {
+        params: Vec::new(),
+        body: LambdaBody::Block(vec![Statement::new(StmtKind::While {
+            cond: Expression::bool(true),
+            body,
+            else_body: None })]),
+        is_async: true,
+        captures: Vec::new() });
+    Expression::new(ExprKind::Call {
+        callee: Box::new(lambda),
+        args: Vec::new(),
+        optional: false })
+}
+
+/// One ready-queue turn as a statement — `AsyncOp::Yield` (C#'s
+/// `Task.Yield` semantics). NOT `await null`: C# awaits are EAGER, so a
+/// settled await continues synchronously and would never let queued
+/// `Task.Run` jobs run — the poll loop must requeue BEHIND them.
+fn csharp_await_tick() -> Statement {
+    Statement::new(StmtKind::Expr(Expression::new(ExprKind::Async(
+        AsyncOp::Yield,
+    ))))
+}
+
+/// `[value, ok]`-pair out-param desugar for the channel try-ops: bind the
+/// pair once to a reserved name, write the `out` target from the value
+/// half, yield the ok half. Sequential evaluation makes the single reserved
+/// name safe — two try-calls in one expression never interleave.
+fn csharp_chan_pair_out_desugar(op: ChanOp, out_target: &Expression) -> Expression {
+    let pair = Expression::ident("__vybe_chan_pair");
+    Expression::new(ExprKind::Sequence(vec![
+        Expression::new(ExprKind::Assign {
+            target: Box::new(pair.clone()),
+            value: Box::new(Expression::new(ExprKind::Chan(op))) }),
+        Expression::new(ExprKind::Assign {
+            target: Box::new(out_target.clone()),
+            value: Box::new(Expression::new(ExprKind::Index {
+                object: Box::new(pair.clone()),
+                index: Box::new(Expression::int(0)),
+                null_safe: false })) }),
+        Expression::new(ExprKind::Index {
+            object: Box::new(pair),
+            index: Box::new(Expression::int(1)),
+            null_safe: false }),
+    ]))
+}
+
 fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expression {
+    // System.Threading.Channels non-suspending surface → `ChanOp` (the
+    // shared CSP vocabulary; ONE lowering in primitives/channels.rs).
+    if let ExprKind::Member { object, field, .. } = &callee.kind {
+        if let Some(path) = expr_dotted_name(object) {
+            let stripped = strip_csharp_type_path_generic_args(&path);
+            if stripped.eq_ignore_ascii_case("Channel")
+                || stripped.eq_ignore_ascii_case("System.Threading.Channels.Channel")
+            {
+                // The parser erases `<T>` to a synthesized trailing null
+                // arg, so the element type is unrecoverable here; the zero
+                // value is null — the non-suspending surface only exposes
+                // the value half after `ok == true`, never the zero.
+                if field.eq_ignore_ascii_case("CreateUnbounded") {
+                    return Expression::new(ExprKind::Chan(ChanOp::New {
+                        capacity: Some(Box::new(Expression::int(i32::MAX as i64))),
+                        zero: Box::new(Expression::null()) }));
+                }
+                if field.eq_ignore_ascii_case("CreateBounded") {
+                    let capacity = args
+                        .iter()
+                        .map(|a| &a.value)
+                        .find(|v| !matches!(v.kind, ExprKind::Lit(Literal::Null)))
+                        .cloned()
+                        .unwrap_or_else(|| Expression::int(i32::MAX as i64));
+                    return Expression::new(ExprKind::Chan(ChanOp::New {
+                        capacity: Some(Box::new(capacity)),
+                        zero: Box::new(Expression::null()) }));
+                }
+            }
+        }
+        if let ExprKind::Member { object: ch_obj, field: side, .. } = &object.kind {
+            if side.eq_ignore_ascii_case("Writer") {
+                if field.eq_ignore_ascii_case("TryWrite") && args.len() == 1 {
+                    return Expression::new(ExprKind::Chan(ChanOp::TrySend {
+                        channel: ch_obj.clone(),
+                        value: Box::new(args[0].value.clone()) }));
+                }
+                // WriteAsync = the suspending send as an async POLL loop:
+                // TrySend until room appears, one job tick per miss.
+                // WriteAsync-on-completed throws (ChannelClosedException is
+                // .NET policy, declared here) — TrySend reports false on a
+                // closed channel, so the Closed query after the miss
+                // distinguishes "full, keep polling" from "completed, fail".
+                if field.eq_ignore_ascii_case("WriteAsync") && args.len() == 1 {
+                    return csharp_chan_async_poll(vec![
+                        Statement::new(StmtKind::If {
+                            cond: Expression::new(ExprKind::Chan(ChanOp::TrySend {
+                                channel: ch_obj.clone(),
+                                value: Box::new(args[0].value.clone()) })),
+                            then_body: vec![Statement::new(StmtKind::Return(Some(
+                                Expression::null(),
+                            )))],
+                            elifs: Vec::new(),
+                            else_body: None }),
+                        Statement::new(StmtKind::If {
+                            cond: Expression::new(ExprKind::Chan(ChanOp::Closed(
+                                ch_obj.clone(),
+                            ))),
+                            then_body: vec![Statement::new(StmtKind::Throw {
+                                expr: Some(Expression::string(
+                                    "ChannelClosedException: The channel has been closed.",
+                                )),
+                                cause: None })],
+                            elifs: Vec::new(),
+                            else_body: None }),
+                        csharp_await_tick(),
+                    ]);
+                }
+                if field.eq_ignore_ascii_case("Complete") && args.is_empty() {
+                    return Expression::new(ExprKind::Chan(ChanOp::Close(ch_obj.clone())));
+                }
+            }
+            if side.eq_ignore_ascii_case("Reader") && args.is_empty() {
+                // ReadAsync: async poll — TryRecv until a value lands;
+                // closed+drained throws (ChannelClosedException is .NET
+                // policy, declared here); one job tick per miss.
+                if field.eq_ignore_ascii_case("ReadAsync") {
+                    let pair = Expression::ident("__vybe_chan_pair");
+                    return csharp_chan_async_poll(vec![
+                        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                            target: Box::new(pair.clone()),
+                            value: Box::new(Expression::new(ExprKind::Chan(
+                                ChanOp::TryRecv(ch_obj.clone()),
+                            ))) }))),
+                        Statement::new(StmtKind::If {
+                            cond: Expression::new(ExprKind::Index {
+                                object: Box::new(pair.clone()),
+                                index: Box::new(Expression::int(1)),
+                                null_safe: false }),
+                            then_body: vec![Statement::new(StmtKind::Return(Some(
+                                Expression::new(ExprKind::Index {
+                                    object: Box::new(pair.clone()),
+                                    index: Box::new(Expression::int(0)),
+                                    null_safe: false }),
+                            )))],
+                            elifs: Vec::new(),
+                            else_body: None }),
+                        Statement::new(StmtKind::If {
+                            cond: Expression::new(ExprKind::Chan(ChanOp::Drained(
+                                ch_obj.clone(),
+                            ))),
+                            then_body: vec![Statement::new(StmtKind::Throw {
+                                expr: Some(Expression::string(
+                                    "ChannelClosedException: The channel has been closed.",
+                                )),
+                                cause: None })],
+                            elifs: Vec::new(),
+                            else_body: None }),
+                        csharp_await_tick(),
+                    ]);
+                }
+                // WaitToReadAsync: async poll — readable → true, done →
+                // false, else one job tick.
+                if field.eq_ignore_ascii_case("WaitToReadAsync") {
+                    let pair = Expression::ident("__vybe_chan_pair");
+                    return csharp_chan_async_poll(vec![
+                        Statement::new(StmtKind::Expr(Expression::new(ExprKind::Assign {
+                            target: Box::new(pair.clone()),
+                            value: Box::new(Expression::new(ExprKind::Chan(
+                                ChanOp::TryPeek(ch_obj.clone()),
+                            ))) }))),
+                        Statement::new(StmtKind::If {
+                            cond: Expression::new(ExprKind::Index {
+                                object: Box::new(pair.clone()),
+                                index: Box::new(Expression::int(1)),
+                                null_safe: false }),
+                            then_body: vec![Statement::new(StmtKind::Return(Some(
+                                Expression::bool(true),
+                            )))],
+                            elifs: Vec::new(),
+                            else_body: None }),
+                        Statement::new(StmtKind::If {
+                            cond: Expression::new(ExprKind::Chan(ChanOp::Drained(
+                                ch_obj.clone(),
+                            ))),
+                            then_body: vec![Statement::new(StmtKind::Return(Some(
+                                Expression::bool(false),
+                            )))],
+                            elifs: Vec::new(),
+                            else_body: None }),
+                        csharp_await_tick(),
+                    ]);
+                }
+            }
+            if side.eq_ignore_ascii_case("Reader")
+                && args.len() == 1
+                && args[0].by_ref
+                && (field.eq_ignore_ascii_case("TryRead")
+                    || field.eq_ignore_ascii_case("TryPeek"))
+            {
+                let op = if field.eq_ignore_ascii_case("TryRead") {
+                    ChanOp::TryRecv(ch_obj.clone())
+                } else {
+                    ChanOp::TryPeek(ch_obj.clone())
+                };
+                return csharp_chan_pair_out_desugar(op, &args[0].value);
+            }
+        }
+    }
     // LINQ surface (First / Last / Skip / Take / Average / FirstOrDefault /
     // Distinct / Aggregate / OrderByDescending / Count(pred) / ToList /
     // ToArray) is in `emitter/dotnet/core/linq_adapter.rs` and wired

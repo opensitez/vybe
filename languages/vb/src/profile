@@ -724,3 +724,13 @@ path = "dotnet.system.xml.linq"
 # bare `Task.Run`/`Task.Delay` take the compiler's THREAD_SPAWN/JSPI
 # special path, which the descriptor's common-emit duplicate must not
 # shadow (three task_combinators tests regressed when it did).
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILT-IN SLOTS
+# ────────────────────────────────────────────────────────────────────────────
+# Widening a `char` to an integer reads its UTF-16 code point: `(int)'A'` is 65.
+# That is the char/int COERCION SLOT (builtinslotplan.md §2a) and it is declared
+# here rather than decided by a language check in the shared compiler.
+[builtin_slots.char]
+int = "common:strings.char_code"

@@ -23,6 +23,7 @@ statement = _{
   | trap_stmt
   | named_block
   | namespace_decl
+  | enum_decl
   | class_decl
   | function_decl
   | param_stmt
@@ -68,6 +69,7 @@ ws1 = _{ (" " | "\t" | "\r")+ }
 // evaluating `ws1`, so the separator it is looking for is already gone. Putting
 // the boundary inside an atomic rule is the documented fix.
 kw_class     = @{ ^"class" ~ !ident_tail }
+kw_enum      = @{ ^"enum" ~ !ident_tail }
 kw_function  = @{ ^"function" ~ !ident_tail }
 kw_namespace = @{ ^"namespace" ~ !ident_tail }
 kw_param     = @{ ^"param" ~ !ident_tail }
@@ -108,6 +110,12 @@ var_ref = @{ "$" ~ ("{" ~ (!"}" ~ ANY)+ ~ "}" | (ASCII_ALPHANUMERIC | "_" | ":")
 namespace_decl = { kw_namespace ~ namespace_name ~ block }
 
 class_decl = { kw_class ~ IDENT ~ class_heritage? ~ class_body }
+
+// `enum Color { Red; Green = 2 }`. Members are separated by newlines, `;` or
+// `,` interchangeably, and a value is optional — an unvalued member takes the
+// previous one plus one, which the walker fills in.
+enum_decl   = { kw_enum ~ IDENT ~ eat_separators ~ "{" ~ eat_separators ~ (enum_member ~ eat_separators ~ (("," | ";") ~ eat_separators)?)* ~ "}" }
+enum_member = { IDENT ~ (ws* ~ "=" ~ ws* ~ ternary_expr)? }
 class_heritage = { ":" ~ ws* ~ DOTTED_NAME ~ (ws* ~ "," ~ ws* ~ DOTTED_NAME)* }
 class_body = { "{" ~ eat_separators ~ (class_member_decl ~ eat_separators)* ~ "}" }
 
@@ -246,7 +254,7 @@ script_block = {
 }
 bare_token = @{ (!("|" | NEWLINE | ";" | "{" | "}" | "(" | ")" | "\"" | "'" | WHITESPACE) ~ ANY)+ }
 
-keyword = @{ (^"if" | ^"elseif" | ^"else" | ^"while" | ^"foreach" | ^"for" | ^"switch" | ^"do" | ^"try" | ^"catch" | ^"finally" | ^"return" | ^"throw" | ^"break" | ^"continue" | ^"using" | ^"param" | ^"class" | ^"namespace" | ^"function") ~ !(ASCII_ALPHANUMERIC | "_" | "-") }
+keyword = @{ (^"if" | ^"elseif" | ^"else" | ^"while" | ^"foreach" | ^"for" | ^"switch" | ^"do" | ^"try" | ^"catch" | ^"finally" | ^"return" | ^"throw" | ^"break" | ^"continue" | ^"using" | ^"param" | ^"class" | ^"enum" | ^"namespace" | ^"function") ~ !(ASCII_ALPHANUMERIC | "_" | "-") }
 ws_boundary = _{ WHITESPACE | NEWLINE | "{" | "}" | "(" | ")" | ";" | "|" }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -366,7 +374,11 @@ paren_expr   = { "(" ~ eat_separators ~ paren_body ~ eat_separators ~ ")" }
 // terminator, `EOI` or `}` after it and a `)` is none of those, so `$(1 + 2)`
 // failed the whole rule and fell through to a command call on `$`.
 sub_expr     = { "$(" ~ eat_separators ~ sub_body ~ eat_separators ~ ")" }
-sub_body     = _{ (expression ~ &(eat_separators ~ ")")) | (statement ~ eat_separators)* }
+// `value_stmt` is listed for the same reason `rhs_value` lists it: `$(if (…) {
+// … })` is ordinary PowerShell, and without it the `if` parsed as a bare
+// statement whose value nothing collected, so the subexpression was empty.
+// It reuses the branch-value lowering `$x = if (…) { … }` already goes through.
+sub_body     = _{ (expression ~ &(eat_separators ~ ")")) | (value_stmt ~ &(eat_separators ~ ")")) | (statement ~ eat_separators)* }
 // Elements may be commands too: `@(Get-ChildItem)`.
 array_expr   = { "@(" ~ eat_separators ~ (array_element ~ eat_separators ~ (("," | ";") ~ eat_separators ~ array_element ~ eat_separators)*)? ~ ")" }
 array_element = _{ (ternary_expr ~ &(eat_separators ~ ("," | ")"))) | command_pipeline }
@@ -393,5 +405,17 @@ splat_ref    = @{ "@" ~ (ASCII_ALPHANUMERIC | "_")+ }
 
 here_string_double = @{ "@\"" ~ (!(NEWLINE ~ "\"@") ~ ANY)* ~ NEWLINE ~ "\"@" }
 here_string_single = @{ "@'" ~ (!(NEWLINE ~ "'@") ~ ANY)* ~ NEWLINE ~ "'@" }
-quoted_string = @{ "\"" ~ ( "\\\"" | "\\\\" | "`" ~ ANY | (!"\"" ~ ANY) )* ~ "\"" }
+// A `$( … )` inside a double-quoted string holds CODE, and that code may spell
+// its own double-quoted strings: `"B=$("lit".ToUpper())"`. Scanning the body as
+// "any character that is not a quote" ended the outer string at the inner one,
+// so the tail leaked out as literal text — `$("x" + "y")` rendered as itself.
+// The subexpression is therefore matched as a balanced region BEFORE the
+// catch-all, and nests through `quoted_string` recursively.
+//
+// `""` is PowerShell's escape for a literal quote inside a double-quoted string
+// (the backtick form `` `" `` is handled by the escape alternative).
+quoted_string = @{ "\"" ~ ( "\"\"" | "\\\"" | "\\\\" | "`" ~ ANY | interp_sub | (!"\"" ~ ANY) )* ~ "\"" }
+interp_sub    = @{ "$(" ~ interp_part* ~ ")" }
+nested_paren  = @{ "(" ~ interp_part* ~ ")" }
+interp_part   = _{ "`" ~ ANY | quoted_string | single_quoted_string | nested_paren | (!")" ~ !"(" ~ ANY) }
 single_quoted_string = @{ "'" ~ ( "''" | (!"'" ~ ANY) )* ~ "'" }

@@ -19,14 +19,10 @@ pub fn parse(source: &str) -> Result<vybe_ast::Module, String> {
 
 /// Embedded profile TOML source.
 pub fn profile_source() -> &'static str {
-    static DOTNET_CONSTANTS: std::sync::Once = std::sync::Once::new();
-    DOTNET_CONSTANTS.call_once(|| {
-        let mappings = vybe_platform_dotnet::emitter::namespace_constant_mappings()
-            .iter()
-            .map(|(name, value)| (name.to_string(), *value))
-            .collect();
-        vybe_runtime::profile::register_dotnet_namespace_constants(mappings);
-    });
+    // The profile inherits its platform constants through `type_scopes`, so the
+    // platform has to be in the registry before the TOML is parsed. `register`
+    // is idempotent, and this is the one call site guaranteed to run first.
+    vybe_platform_dotnet::register();
     include_str!("profile")
 }
 

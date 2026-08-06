@@ -58,7 +58,8 @@ pub fn normalize_class(
                     init: init.clone().or_else(|| vb_default_field_init(type_hint)),
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
-                    readonly: m.is_readonly };
+                    readonly: m.is_readonly,
+                    value_type: None };
                 out.push_field(m.is_static || m.is_shared, field);
             }
             ClassMember::Method(stmt) => {

@@ -8,6 +8,7 @@ use pest::Parser;
 use vybe_ast::*;
 use super::Rule;
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 
 pub fn parse(source: &str) -> Result<Module, String> {
@@ -18,6 +19,10 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let pair = pairs
         .next()
         .ok_or_else(|| "No PowerShell parse root".to_string())?;
+
+    // Which method names this script's own classes declare, collected BEFORE
+    // the walk so a rewrite never captures a call meant for a user method.
+    collect_declared_methods(pair.clone());
 
     let mut body = Vec::new();
 
@@ -30,8 +35,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
     Ok(Module {
         name: "main".into(),
         language: Lang::Unknown,
-        body: apply_traps(body),
+        body: apply_aliases(apply_traps(body)),
         imports: Vec::new(),
+        directives: Default::default(),
     })
 }
 
@@ -89,6 +95,7 @@ fn parse_statement(pair: Pair<Rule>) -> Result<Option<Statement>, String> {
             Rule::COMMENT => return Ok(None),
             Rule::namespace_decl => return Ok(Some(parse_namespace_decl(pair)?)),
             Rule::class_decl => return Ok(Some(parse_class_decl(pair)?)),
+            Rule::enum_decl => return Ok(Some(parse_enum_decl(pair)?)),
             Rule::function_decl => return Ok(Some(parse_function_decl(pair)?)),
             Rule::if_stmt => return Ok(Some(parse_if_stmt(pair)?)),
             Rule::switch_stmt => return Ok(Some(parse_switch_stmt(pair)?)),
@@ -278,6 +285,251 @@ fn is_trap_marker(stmt: &Statement) -> bool {
         }
         _ => false,
     }
+}
+
+/// The name of the accumulator [`accumulate_outputs`] introduces.
+const OUT_ACC: &str = "__ps_output";
+
+/// PowerShell's SUCCESS STREAM: every value a function body produces and does
+/// not consume is output, and the caller receives all of them. `function F { 'a';
+/// return 'b' }` returns two values, not one.
+///
+/// This is not output buffering — the stream carries live objects, not rendered
+/// bytes (`$r[0].X` must reach a property). So it is a value mechanism: collect
+/// the emitted values and hand back the collection, unwrapped to a scalar when
+/// there is exactly one, `$null` when there are none.
+///
+/// Applied ONLY to a body with two or more emit sites. A body with one or none
+/// already lowers correctly through the plain trailing-return path, and leaving
+/// it alone keeps this transformation off every function that does not need it.
+fn accumulate_outputs(body: Vec<Statement>) -> Option<Vec<Statement>> {
+    if body.iter().filter(|s| emits_value(s)).count() < 2 {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(body.len() + 2);
+    out.push(Statement::new(StmtKind::Assign {
+        targets: vec![Expression::ident(OUT_ACC)],
+        value: Expression::new(ExprKind::Array(Vec::new())),
+        by_ref: false,
+    }));
+
+    let mut returned = false;
+    for stmt in body {
+        match stmt.kind {
+            StmtKind::Expr(expr) if expression_emits(&expr) => {
+                out.push(Statement::new(StmtKind::Expr(collect_call(expr))));
+            }
+            StmtKind::Return(Some(expr)) => {
+                out.push(Statement::new(StmtKind::Expr(collect_call(expr))));
+                out.push(Statement::new(StmtKind::Return(Some(unwrap_output()))));
+                returned = true;
+                break;
+            }
+            _ => out.push(stmt),
+        }
+    }
+
+    if !returned {
+        out.push(Statement::new(StmtKind::Return(Some(unwrap_output()))));
+    }
+    Some(out)
+}
+
+fn collect_call(value: Expression) -> Expression {
+    method_call_expr(Expression::ident(OUT_ACC), "Add", vec![value])
+}
+
+/// `$out.Count -eq 0 ? $null : ($out.Count -eq 1 ? $out[0] : $out)` — PowerShell
+/// hands back a scalar for a single value and `$null` for none, and only wraps
+/// in an array from two upward.
+fn unwrap_output() -> Expression {
+    let count = || {
+        Expression::new(ExprKind::Member {
+            object: Box::new(Expression::ident(OUT_ACC)),
+            field: "Count".to_string(),
+            null_safe: false,
+        })
+    };
+    let count_is = |n: i64| {
+        Expression::new(ExprKind::Binary {
+            op: BinOp::Eq,
+            left: Box::new(count()),
+            right: Box::new(Expression::int(n)),
+        })
+    };
+
+    Expression::new(ExprKind::Ternary {
+        cond: Box::new(count_is(0)),
+        then: Box::new(Expression::null()),
+        else_: Box::new(Expression::new(ExprKind::Ternary {
+            cond: Box::new(count_is(1)),
+            then: Box::new(Expression::new(ExprKind::Index {
+                object: Box::new(Expression::ident(OUT_ACC)),
+                index: Box::new(Expression::int(0)),
+                null_safe: false,
+            })),
+            else_: Box::new(Expression::ident(OUT_ACC)),
+        })),
+    })
+}
+
+fn emits_value(stmt: &Statement) -> bool {
+    match &stmt.kind {
+        StmtKind::Expr(expr) => expression_emits(expr),
+        StmtKind::Return(Some(_)) => true,
+        _ => false,
+    }
+}
+
+/// Whether evaluating this as a statement contributes to the success stream.
+/// `Write-Host` and friends write to the HOST — a different stream, which the
+/// caller never captures — and an assignment consumes its own value.
+fn expression_emits(expr: &Expression) -> bool {
+    match &expr.kind {
+        ExprKind::Assign { .. } => false,
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => !writes_to_host(name),
+            _ => true,
+        },
+        _ => true,
+    }
+}
+
+fn writes_to_host(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "write-host"
+            | "write-verbose"
+            | "write-warning"
+            | "write-debug"
+            | "write-information"
+            | "write-error"
+            | "write-progress"
+            | "out-null"
+            | "out-host"
+            | "set-alias"
+            | "new-alias"
+            | "remove-alias"
+            | "set-variable"
+            | "start-sleep"
+    )
+}
+
+/// `Set-Alias hi Write-Output` makes `hi 'x'` mean `Write-Output 'x'`. The
+/// alias is a NAME rewrite, so it is resolved here rather than becoming a
+/// runtime lookup table: collect every alias the script defines, then retarget
+/// the calls that use one. `Set-Alias` itself becomes a no-op — the mapping it
+/// carried has already been applied.
+fn apply_aliases(mut body: Vec<Statement>) -> Vec<Statement> {
+    let mut aliases: HashMap<String, String> = HashMap::new();
+    for stmt in &body {
+        collect_aliases(stmt, &mut aliases);
+    }
+    if aliases.is_empty() {
+        return body;
+    }
+
+    for stmt in &mut body {
+        stmt.walk_exprs_mut(&mut |expr| {
+            let ExprKind::Call { callee, .. } = &mut expr.kind else {
+                return;
+            };
+            let ExprKind::Ident(name) = &callee.kind else {
+                return;
+            };
+            if let Some(target) = aliases.get(&name.to_lowercase()) {
+                *callee = Box::new(Expression::ident(target));
+            }
+        });
+    }
+    body
+}
+
+fn collect_aliases(stmt: &Statement, out: &mut HashMap<String, String>) {
+    let mut visit = |expr: &mut Expression| {
+        let ExprKind::Call { callee, args, .. } = &expr.kind else {
+            return;
+        };
+        let ExprKind::Ident(name) = &callee.kind else {
+            return;
+        };
+        if !matches!(name.to_lowercase().as_str(), "set-alias" | "new-alias") {
+            return;
+        }
+        let named = |key: &str| {
+            args.iter()
+                .find(|a| a.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(key)))
+                .map(|a| a.value.clone())
+        };
+        let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
+        let alias = named("Name").or_else(|| positional.first().map(|a| a.value.clone()));
+        let target = named("Value").or_else(|| positional.get(1).map(|a| a.value.clone()));
+        if let (Some(alias), Some(target)) = (alias, target) {
+            if let (Some(a), Some(t)) = (literal_text(&alias), literal_text(&target)) {
+                out.insert(a.to_lowercase(), t);
+            }
+        }
+    };
+    // `walk_exprs_mut` on a clone: the collection pass only READS, and a
+    // shared read-only walker does not exist.
+    let mut probe = stmt.clone();
+    probe.walk_exprs_mut(&mut visit);
+}
+
+/// `enum Color { Red; Green = 5; Blue }`. A member without an explicit value
+/// takes the previous member's value plus one, starting at 0 — the same rule
+/// .NET uses, filled in here so the shared `EnumDecl` sees every value.
+fn parse_enum_decl(pair: Pair<Rule>) -> Result<Statement, String> {
+    let mut name = String::new();
+    let mut members: Vec<EnumMember> = Vec::new();
+    let mut next_value: i64 = 0;
+
+    for child in pair.into_inner() {
+        match child.as_rule() {
+            Rule::IDENT if name.is_empty() => name = child.as_str().trim().to_string(),
+            Rule::enum_member => {
+                let mut member_name = String::new();
+                let mut value = None;
+                for part in child.into_inner() {
+                    match part.as_rule() {
+                        Rule::IDENT if member_name.is_empty() => {
+                            member_name = part.as_str().trim().to_string();
+                        }
+                        Rule::expression | Rule::ternary_expr => {
+                            value = Some(walk_expr(part));
+                        }
+                        _ => {}
+                    }
+                }
+                if member_name.is_empty() {
+                    continue;
+                }
+                if let Some(ExprKind::Lit(Literal::Int(n))) = value.as_ref().map(|e| &e.kind) {
+                    next_value = *n;
+                }
+                let value = value.unwrap_or_else(|| Expression::int(next_value));
+                next_value += 1;
+                members.push(EnumMember {
+                    name: member_name,
+                    value: Some(value),
+                    constructor_args: Vec::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Statement::new(StmtKind::EnumDecl {
+        name,
+        members,
+        visibility: Visibility::Public,
+        is_flags: false,
+        backing_type: None,
+        interfaces: Vec::new(),
+        body_members: Vec::new(),
+        decorators: Vec::new(),
+    }))
 }
 
 fn parse_namespace_decl(pair: Pair<Rule>) -> Result<Statement, String> {
@@ -525,9 +777,11 @@ fn parse_function_decl(pair: Pair<Rule>) -> Result<Statement, String> {
                 // ending in `if ($x) { 'yes' }` outputs `'yes'`, so the trailing
                 // expression of each BRANCH is the return value, not just a
                 // trailing expression statement.
-                body = return_last_of_branches(parse_block_with_function_params(
-                    child, &mut params,
-                )?);
+                let parsed = parse_block_with_function_params(child, &mut params)?;
+                body = match accumulate_outputs(parsed.clone()) {
+                    Some(accumulated) => accumulated,
+                    None => return_last_of_branches(parsed),
+                };
                 // `$args` is the automatic variable holding every argument the
                 // declared parameters did not take — a rest parameter, which is
                 // a shape the compiler already has.
@@ -1377,10 +1631,20 @@ fn parse_assignment_statement(pair: Pair<Rule>) -> Statement {
             value,
             by_ref: false,
         },
-        "+=" => StmtKind::CompoundAssign {
-            target,
-            op: CompoundOp::Add,
-            value,
+        // `$a += $b` spelled out as `$a = $a + $b`. `+` is the operator whose
+        // meaning depends on the left operand's runtime type (array append /
+        // string concat / arithmetic), and only the BINARY path consults
+        // `[builtin_slots.array] add` — `compile_compound_op` has its own arm
+        // that goes straight to the numeric add, so `$arr += $x` trapped in
+        // `toF64`. Growing an array with `+=` is idiomatic PowerShell.
+        "+=" => StmtKind::Assign {
+            targets: vec![target.clone()],
+            value: Expression::new(ExprKind::Binary {
+                op: BinOp::Add,
+                left: Box::new(target),
+                right: Box::new(value),
+            }),
+            by_ref: false,
         },
         "-=" => StmtKind::CompoundAssign {
             target,
@@ -1584,36 +1848,86 @@ fn parse_pipeline(pair: Pair<Rule>) -> Option<Expression> {
 
     let mut segments = segments.into_iter();
     let first = segments.next()?;
+    let head_text = first.as_str().trim().to_string();
     let (head, args) = parse_command_segment(first)?;
-    // Through `build_command_call`, not a bare `Call`: a cmdlet reached as a
-    // STATEMENT must get the same `normalize_cmdlet` rewrite it gets as an
-    // expression, or `Set-Variable -Name x -Value 1` compiles to a call to a
-    // function that was never defined.
-    let mut expr = build_command_call(head, args);
+    // A pipeline can START with a value: `$o | Add-Member …` feeds `$o` in, it
+    // does not invoke it. Everything else goes through `build_command_call`,
+    // not a bare `Call` — a cmdlet reached as a STATEMENT must get the same
+    // `normalize_cmdlet` rewrite it gets as an expression, or `Set-Variable
+    // -Name x -Value 1` compiles to a call to a function never defined.
+    let mut expr = if args.is_empty() && pipeline_head_is_value(&head_text) {
+        head
+    } else {
+        build_command_call(head, args)
+    };
 
     for segment in segments {
         let (next, mut next_args) = parse_command_segment(segment)?;
+        // The same collection-cmdlet rewrite the value-position builder does.
+        if let Some(folded) = pipeline_stage_as_method(&expr, &next, &next_args) {
+            expr = folded;
+            continue;
+        }
         let mut chained = vec![Argument::positional(expr)];
         chained.append(&mut next_args);
-        expr = Expression::new(ExprKind::Call {
-            callee: Box::new(next),
-            args: chained,
-            optional: false,
-        });
+        // Also through `build_command_call`. A cmdlet does not stop being one
+        // because it is downstream of a `|`: `$o | Add-Member …` needs the same
+        // rewrite as the head of the pipeline, and without it compiled to a
+        // call to a function that was never defined.
+        expr = build_command_call(next, chained);
     }
 
     Some(expr)
 }
 
+/// True when a pipeline's first segment is a VALUE being fed in rather than a
+/// command to invoke.
+///
+/// A pipeline can start with either — `Get-Item | …` invokes, `$o | …` and
+/// `1..3 | …` feed. The test used to be "starts with `$`", so every other value
+/// form was compiled as a call to a function named after its own source text:
+/// `1..3 | ForEach-Object { $_ }` trapped with "f64 is not callable" and
+/// `@("x","y") | Sort-Object` with "undefined is not callable".
+///
+/// A command name is a bare word or a path; none of these openers can begin one.
+fn pipeline_head_is_value(text: &str) -> bool {
+    let text = text.trim_start();
+    match text.chars().next() {
+        Some('$') | Some('(') | Some('"') | Some('\'') | Some('[') => true,
+        // `@(…)` and `@{…}` are values; `@name` is a splat, which is an argument
+        // rather than a pipeline head.
+        Some('@') => matches!(text.chars().nth(1), Some('(') | Some('{')),
+        Some(c) => c.is_ascii_digit(),
+        None => false,
+    }
+}
+
 fn parse_command_tokens_as_expr(tokens: &[String]) -> Option<Expression> {
     let (callee, args) = parse_command_parts(tokens)?;
-    Some(build_command_call(callee, args))
+    Some(build_command_call_in(callee, args, true))
 }
 
 /// Build the call for a command invocation, giving `normalize_cmdlet` first
 /// refusal so .NET-shaped cmdlets never need a builtin of their own.
 fn build_command_call(callee: Expression, args: Vec<Argument>) -> Expression {
+    build_command_call_in(callee, args, false)
+}
+
+/// `in_value_position` distinguishes `Write-Output $x` used as a STATEMENT —
+/// where the host renders it — from the same call used as a VALUE, where it
+/// passes `$x` down the pipeline and prints nothing. One cmdlet, two lowerings,
+/// and only the walker knows which position it is in.
+fn build_command_call_in(
+    callee: Expression,
+    args: Vec<Argument>,
+    in_value_position: bool,
+) -> Expression {
     if let ExprKind::Ident(name) = &callee.kind {
+        if in_value_position {
+            if let Some(expr) = passthrough_cmdlet(name, &args) {
+                return expr;
+            }
+        }
         if let Some(expr) = normalize_cmdlet(name, &args) {
             return expr;
         }
@@ -2232,6 +2546,16 @@ fn walk_cast(pair: Pair<Rule>) -> Expression {
         return negate(negate(expr));
     }
 
+    // `[PSCustomObject]@{ … }` builds an object with those properties — which
+    // is what the hashtable literal already walked to. The cast selects a
+    // .NET wrapper type that has no counterpart here, so it is the identity.
+    if matches!(
+        type_name.to_lowercase().as_str(),
+        "pscustomobject" | "psobject" | "system.management.automation.pscustomobject"
+    ) {
+        return expr;
+    }
+
     Expression::new(ExprKind::Cast {
         expr: Box::new(expr),
         type_name,
@@ -2253,6 +2577,21 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                     .next()
                     .map(|p| p.as_str().trim_start_matches('$').to_string())
                     .unwrap_or_default();
+                // `$h.Keys` / `$h.Values` carry NO parentheses — they are
+                // property reads, so `[value_methods]` (a call-site table) can
+                // never see them. Compiled as a plain member they became a
+                // struct field read of a field no `@{…}` object has, which is
+                // why `($h.Keys -join '|')` answered the empty string while
+                // `$h.Count` (a different path) answered correctly.
+                //
+                // Rewritten to a call, the profile's object-shaped binding
+                // applies. An object carrying its own literal `Keys` property
+                // loses to this, which is the right trade: a PowerShell
+                // hashtable is overwhelmingly the receiver that spells it.
+                if let Some(private) = hashtable_only_property(&name) {
+                    expr = method_call_expr(expr, private, Vec::new());
+                    continue;
+                }
                 expr = Expression::new(ExprKind::Member {
                     object: Box::new(expr),
                     field: normalize_member_name(&name),
@@ -2279,6 +2618,45 @@ fn walk_postfix(pair: Pair<Rule>) -> Expression {
                     .map(|p| p.as_str().to_string())
                     .unwrap_or_default();
                 let args = parts.next().map(walk_arg_list).unwrap_or_default();
+
+                // Rename the dictionary-only methods the runtime collection
+                // registry would otherwise claim. `runtime_collection_scope`
+                // makes `scope_declares_member_arity` answer yes for
+                // `ContainsKey/1` (System.Collections.Hashtable declares it),
+                // which routes the call to runtime `__type` dispatch — and a
+                // PowerShell `@{…}` is a bare object carrying no `__type`, so
+                // the lookup reached undefined and the call trapped.
+                //
+                // Only names NO list receiver shares are renamed here.
+                // `Add` / `Remove` / `Clear` / `Contains` are spelled the same
+                // on an ArrayList, so renaming them by spelling alone would
+                // break `New-Object System.Collections.ArrayList` — those need
+                // a receiver-shape test, not a rewrite.
+                // `$h.ContainsValue($v)` is membership over the VALUES, so the
+                // receiver of the test is the values array — not `$h`. A
+                // profile rename cannot express that (the binding's receiver is
+                // always the object), so this becomes the `-contains` node the
+                // shared `[builtin_slots.array] contains` slot already lowers.
+                // `BinOp::In` takes the needle on the left, matching how
+                // `-contains` itself is built above.
+                if !is_static
+                    && args.len() == 1
+                    && name.eq_ignore_ascii_case("ContainsValue")
+                {
+                    let values = method_call_expr(expr, "__ps_ht_values", Vec::new());
+                    let mut args = args;
+                    expr = Expression::new(ExprKind::Binary {
+                        op: BinOp::In,
+                        left: Box::new(args.remove(0)),
+                        right: Box::new(values),
+                    });
+                    continue;
+                }
+
+                let name = match hashtable_only_method(&name, is_static, args.len()) {
+                    Some(private) => private.to_string(),
+                    None => name,
+                };
 
                 // `[Animal]::new(…)` is construction, not a static call — hand
                 // the shared compiler the `New` node it already knows.
@@ -2343,6 +2721,96 @@ fn walk_arg_list(pair: Pair<Rule>) -> Vec<Expression> {
     pair.into_inner().map(walk_expr).collect()
 }
 
+/// The PowerShell-private spelling for a method the runtime collection registry
+/// claims but a bare `@{…}` object cannot answer, or `None` to leave the name
+/// alone. Every name here is dictionary-only: no list/set receiver spells it the
+/// same way, so the rewrite cannot capture a call meant for another type.
+// Method names declared by classes in the script being walked, folded to
+// lowercase. Read by the hashtable rewrites so a user method always wins.
+thread_local! {
+    static DECLARED_METHODS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Record every method name the script's classes declare.
+///
+/// Without this the rewrites below decide by SPELLING alone, and a user class
+/// that happens to spell a hashtable method loses its own body: `class
+/// Calculator { [int]Add([int]$a, [int]$b) }` made `$calc.Add(6, 7)` return
+/// null. Measured as a regression in `classes/class_method`, which is why the
+/// rewrite table asks this first.
+fn collect_declared_methods(root: Pair<Rule>) {
+    let mut names = std::collections::HashSet::new();
+    let mut work = VecDeque::new();
+    work.push_back(root);
+    while let Some(node) = work.pop_front() {
+        match node.as_rule() {
+            Rule::ps_method => {
+                if let Some(n) = node
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::member_name)
+                {
+                    names.insert(n.as_str().to_lowercase());
+                }
+            }
+            Rule::class_function_decl => {
+                if let Some(n) = node
+                    .clone()
+                    .into_inner()
+                    .find(|c| c.as_rule() == Rule::function_name)
+                {
+                    names.insert(n.as_str().to_lowercase());
+                }
+            }
+            _ => {}
+        }
+        for child in node.into_inner() {
+            work.push_back(child);
+        }
+    }
+    DECLARED_METHODS.with(|d| *d.borrow_mut() = names);
+}
+
+/// True when a class in this script declares `name` as a method.
+fn is_declared_method(name: &str) -> bool {
+    let folded = name.to_lowercase();
+    DECLARED_METHODS.with(|d| d.borrow().contains(&folded))
+}
+
+/// The PowerShell-private call that replaces a hashtable PROPERTY read.
+fn hashtable_only_property(name: &str) -> Option<&'static str> {
+    if is_declared_method(name) {
+        return None;
+    }
+    match name.to_lowercase().as_str() {
+        "keys" => Some("__ps_ht_keys"),
+        "values" => Some("__ps_ht_values"),
+        _ => None,
+    }
+}
+
+fn hashtable_only_method(name: &str, is_static: bool, argc: usize) -> Option<&'static str> {
+    if is_static || is_declared_method(name) {
+        return None;
+    }
+    match (name.to_lowercase().as_str(), argc) {
+        ("containskey", 1) => Some("__ps_ht_haskey"),
+        // `Add` is spelled by a list (`Add(x)`) and by user classes too. Arity
+        // separates the list — one element vs a key AND a value — and
+        // `is_declared_method` above separates the user class, which is what
+        // `classes/class_method` regressed on when only arity guarded it.
+        ("add", 2) => Some("__ps_ht_add"),
+        // NO `Remove` / `Clear` / `Contains`. Each names several receivers at
+        // ONE arity — a hashtable, an ArrayList, and (for `Remove`) a string,
+        // where `'abc'.Remove(1)` is substring arithmetic. Arity cannot split
+        // them, so they need a receiver-shape test at runtime rather than a
+        // rewrite. Renaming them by spelling would fix the hashtable tests by
+        // cementing a wrong lowering for the other two receivers.
+        _ => None,
+    }
+}
+
 fn method_call_expr(receiver: Expression, name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
@@ -2381,23 +2849,9 @@ fn walk_command_pipeline(pair: Pair<Rule>) -> Expression {
             _ => (walk_expr(stage), Vec::new()),
         };
 
-        // The core pipeline cmdlets are collection operations. Rewriting them
-        // to the equivalent method call lets the existing `[array_methods]`
-        // dispatch handle them — no cmdlet builtins, no emitter arm.
-        if let ExprKind::Ident(name) = &callee.kind {
-            if let Some(method) = pipeline_cmdlet_method(name) {
-                let positional: Vec<Expression> = args
-                    .iter()
-                    .filter(|a| a.name.is_none())
-                    .map(|a| a.value.clone())
-                    .collect();
-                expr = match method {
-                    // `… | Out-Null` discards the pipeline value.
-                    "" => Expression::null(),
-                    m => method_call_expr(expr, m, positional),
-                };
-                continue;
-            }
+        if let Some(folded) = pipeline_stage_as_method(&expr, &callee, &args) {
+            expr = folded;
+            continue;
         }
         args.insert(
             0,
@@ -2418,6 +2872,38 @@ fn walk_command_pipeline(pair: Pair<Rule>) -> Expression {
     expr
 }
 
+/// Fold one pipeline stage onto the value accumulated so far, when that stage is
+/// one of the core collection cmdlets. Rewriting them to the equivalent method
+/// call lets the existing `[array_methods]` dispatch handle them — no cmdlet
+/// builtins, no emitter arm.
+///
+/// Shared by BOTH pipeline builders. A pipeline reaches the walker two ways —
+/// `walk_command_pipeline` for one in value position (`$r = $a | Sort-Object`)
+/// and `parse_pipeline` for one used as a statement (`$a | Sort-Object`) — and
+/// only the first applied this rewrite. The statement path emitted a call to
+/// `Sort-Object`, a function nothing defines, so EVERY bare-statement pipeline
+/// trapped with "undefined is not callable" while the assigned form worked.
+fn pipeline_stage_as_method(
+    upstream: &Expression,
+    callee: &Expression,
+    args: &[Argument],
+) -> Option<Expression> {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return None;
+    };
+    let method = pipeline_cmdlet_method(name)?;
+    if method.is_empty() {
+        // `… | Out-Null` discards the pipeline value.
+        return Some(Expression::null());
+    }
+    let positional: Vec<Expression> = args
+        .iter()
+        .filter(|a| a.name.is_none())
+        .map(|a| a.value.clone())
+        .collect();
+    Some(method_call_expr(upstream.clone(), method, positional))
+}
+
 /// The method a pipeline cmdlet is equivalent to, including its `?` / `%`
 /// aliases. `""` means the stage drops the value (`Out-Null`).
 fn pipeline_cmdlet_method(name: &str) -> Option<&'static str> {
@@ -2436,6 +2922,29 @@ fn pipeline_cmdlet_method(name: &str) -> Option<&'static str> {
 /// cmdlet builtins, no host functions, no emitter arm.
 ///
 /// `New-Object` is construction; the file cmdlets are `System.IO.File` statics.
+/// Cmdlets that, used as a VALUE, are the identity on their arguments.
+/// `@(Write-Output (1..5))` is five elements, not one call that printed.
+fn passthrough_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
+    if !matches!(name.to_lowercase().as_str(), "write-output" | "echo") {
+        return None;
+    }
+    let values: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
+    match values.as_slice() {
+        [] => Some(Expression::null()),
+        [only] => Some(only.value.clone()),
+        many => Some(Expression::new(ExprKind::Array(
+            many.iter()
+                .map(|a| ArrayElement {
+                    key: None,
+                    value: a.value.clone(),
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        ))),
+    }
+}
+
 fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
     let positional: Vec<&Argument> = args.iter().filter(|a| a.name.is_none()).collect();
     let named = |key: &str| {
@@ -2490,6 +2999,25 @@ fn normalize_cmdlet(name: &str, args: &[Argument]) -> Option<Expression> {
             "Delete",
             vec![named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?],
         )),
+        // `$o | Add-Member -MemberType NoteProperty -Name X -Value 1` attaches a
+        // property. The pipeline hands the object in as argument 0, so this is
+        // the assignment `$o.X = 1` written the long way.
+        "add-member" => {
+            let target = positional.first().map(|a| a.value.clone())?;
+            let name = literal_text(&named("Name").or_else(|| {
+                positional.get(1).map(|a| a.value.clone())
+            })?)?;
+            let value = named("Value").or_else(|| positional.get(2).map(|a| a.value.clone()))?;
+            Some(Expression::new(ExprKind::Assign {
+                target: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(target),
+                    field: normalize_member_name(&name),
+                    null_safe: false,
+                })),
+                value: Box::new(value),
+            }))
+        }
+
         "join-path" => {
             let head = named("Path").or_else(|| positional.first().map(|a| a.value.clone()))?;
             let tail =
@@ -2570,22 +3098,44 @@ fn literal_text(expr: &Expression) -> Option<String> {
 /// A bare command invocation used where an expression is expected: `(hi 'PASS')`.
 fn walk_command_segment_expr(pair: Pair<Rule>) -> Expression {
     match parse_command_segment(pair) {
-        Some((callee, args)) => build_command_call(callee, args),
+        Some((callee, args)) => build_command_call_in(callee, args, true),
         None => Expression::null(),
     }
 }
 
+/// `@( … )` is the ARRAY SUBEXPRESSION operator: it guarantees an array and
+/// flattens one level, so `@(1..5)` is five elements and `@($arr)` is `$arr`'s
+/// elements — not one element holding a collection. Each element is therefore
+/// spread rather than nested; a scalar element spreads to itself.
 fn walk_array_expr(pair: Pair<Rule>) -> Expression {
-    Expression::new(ExprKind::Array(
-        pair.into_inner()
-            .map(|p| ArrayElement {
-                key: None,
-                value: walk_expr(p),
-                spread: false,
-                by_ref: false,
-            })
-            .collect(),
-    ))
+    // ONE argument, not one per element. `@( … )` collects the output of the
+    // whole body — it does not flatten each comma-separated element in turn.
+    // `@(1, @(2,3))` is TWO elements whose second is an array, because the
+    // commas build one array and `@()` guarantees that array; flattening
+    // per-element would splice the inner one and give four.
+    let elements: Vec<Expression> = pair.into_inner().map(walk_expr).collect();
+    let body = match <[Expression; 1]>::try_from(elements) {
+        Ok([only]) => only,
+        Err(many) => Expression::new(ExprKind::Array(
+            many.into_iter()
+                .map(|value| ArrayElement {
+                    key: None,
+                    value,
+                    spread: false,
+                    by_ref: false,
+                })
+                .collect(),
+        )),
+    };
+
+    // Whether that one value flattens is a question about its RUNTIME shape —
+    // a collection contributes its elements, a scalar contributes itself — so
+    // `__ps_array` answers it rather than the syntax.
+    Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__ps_array")),
+        args: vec![Argument::positional(body)],
+        optional: false,
+    })
 }
 
 fn walk_hash_literal(pair: Pair<Rule>) -> Expression {
@@ -2950,11 +3500,31 @@ fn build_binary(op_raw: &str, left: Expression, right: Expression) -> Expression
                 // arrives here as an `Array` when the source spelled more than
                 // one. Spread it: `$s -replace 'a', 'b'` is `replace(a, b)`,
                 // not `replace(['a','b'])`.
+                // `-split` takes a REGEX, not a literal: `'a.b.c' -split '\.'`
+                // splits on the dot. `strings.split` is a literal split and was
+                // matching the two characters `\.`, so the result was one
+                // element. `Regex.Split` is the operator's actual meaning, and
+                // it is the same dotnet route `-match` and `-like` take.
                 "split" => {
-                    return method_call_expr(left, "split", spread_operands(right));
+                    let mut args = vec![left];
+                    args.extend(spread_operands(right));
+                    return dotnet_static_call(
+                        "System.Text.RegularExpressions.Regex",
+                        "Split",
+                        args,
+                    );
                 }
+                // `-replace` is regex too, and replaces EVERY match. The string
+                // `replace` is literal and first-only, so `'the cat sat on the
+                // mat' -replace '[cm]at','dog'` changed nothing.
                 "replace" => {
-                    return method_call_expr(left, "replace", spread_operands(right));
+                    let mut args = vec![left];
+                    args.extend(spread_operands(right));
+                    return dotnet_static_call(
+                        "System.Text.RegularExpressions.Regex",
+                        "Replace",
+                        args,
+                    );
                 }
                 "join" => {
                     return method_call_expr(left, "join", spread_operands(right));
@@ -3150,6 +3720,15 @@ fn parse_double_quoted_string(text: &str) -> Expression {
             continue;
         }
 
+        // `""` inside a double-quoted string is ONE literal quote — the same
+        // doubling `''` uses inside a single-quoted one. The grammar matches the
+        // pair so it cannot end the string; this is where it collapses.
+        if ch == '"' && chars.get(i + 1) == Some(&'"') {
+            literal.push('"');
+            i += 2;
+            continue;
+        }
+
         if ch != '$' {
             literal.push(ch);
             i += 1;
@@ -3245,10 +3824,30 @@ fn parse_script_expression(raw: &str) -> Expression {
 
     match super::PowerShellParser::parse(Rule::program, text) {
         Ok(mut pairs) => match pairs.next() {
-            Some(root) => last_expression_of(collect_statements(root)),
+            Some(root) => statements_as_value(collect_statements(root)),
             None => Expression::null(),
         },
         Err(_) => Expression::string(text),
+    }
+}
+
+/// The value of a `$( … )` whose body is a statement rather than an expression.
+///
+/// `last_expression_of` alone answers null for a BRANCH — an `if` is not an
+/// `Expr` statement, so `"v=$(if ($true) { 'yes' })"` interpolated nothing.
+/// A branch's value is the last expression of whichever arm ran, which is
+/// exactly what `statement_value_expr` builds and what `$x = if (…) { … }`
+/// already goes through.
+fn statements_as_value(mut stmts: Vec<Statement>) -> Expression {
+    match stmts.pop() {
+        Some(stmt) => match stmt.kind {
+            StmtKind::Expr(expr) => expr,
+            StmtKind::If { .. } | StmtKind::Switch { .. } | StmtKind::Try { .. } => {
+                statement_value_expr(stmt)
+            }
+            _ => Expression::null(),
+        },
+        None => Expression::null(),
     }
 }
 

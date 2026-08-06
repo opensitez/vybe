@@ -21,7 +21,7 @@ fn register_output_capture(vm: &mut VM) -> Arc<Mutex<Vec<String>>> {
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();

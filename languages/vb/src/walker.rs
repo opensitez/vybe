@@ -94,7 +94,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::VB,
         body: synthesized,
-        imports };
+        imports,
+        directives: Default::default() };
     normalize_vb_type_hint_whitespace(&mut module);
     rewrite_vb_import_aliases(&mut module);
     normalize_vb_system_static_receivers(&mut module);
@@ -10702,6 +10703,14 @@ fn normalize_vb_convert_change_type_reflection_expr(
                 *expr = value;
             }
         }
+        // vb never builds a `Map` literal, but this walks the COMMON AST, so it
+        // has to descend into one all the same.
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                normalize_vb_convert_change_type_reflection_expr(key, locals);
+                normalize_vb_convert_change_type_reflection_expr(value, locals);
+            }
+        }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
@@ -17495,6 +17504,12 @@ fn rewrite_vb_aliases_in_expr(expr: &mut Expression, aliases: &HashMap<String, S
                 rewrite_vb_aliases_in_expr(value, aliases);
             }
         }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                rewrite_vb_aliases_in_expr(key, aliases);
+                rewrite_vb_aliases_in_expr(value, aliases);
+            }
+        }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
@@ -18200,6 +18215,12 @@ fn normalize_vb_date_literal_expr(expr: &mut Expression, dates: &HashMap<String,
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
+                normalize_vb_date_literal_expr(value, dates);
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                normalize_vb_date_literal_expr(key, dates);
                 normalize_vb_date_literal_expr(value, dates);
             }
         }
@@ -19767,6 +19788,12 @@ fn normalize_vb_delegate_binding_expr(
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields {
+                normalize_vb_delegate_binding_expr(value, delegates, locals, bindings);
+            }
+        }
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                normalize_vb_delegate_binding_expr(key, delegates, locals, bindings);
                 normalize_vb_delegate_binding_expr(value, delegates, locals, bindings);
             }
         }
@@ -29020,6 +29047,14 @@ fn rewrite_vb_err_expr(expr: &mut Expression) -> bool {
             }
             used
         }
+        ExprKind::Map(entries) => {
+            let mut used = false;
+            for (key, value) in entries {
+                used |= rewrite_vb_err_expr(key);
+                used |= rewrite_vb_err_expr(value);
+            }
+            used
+        }
         ExprKind::Object(props) => {
             let mut used = false;
             for prop in props {
@@ -38025,9 +38060,9 @@ fn parse_structure_decl(pair: Pair<Rule>) -> Result<Statement, String> {
             // the same field-wise `ValueType.Equals` measured for C# structs.
             // `=` needs an explicit `Operator =` overload; that is a mapping
             // from syntax to the policy, not a different policy.
-            record: RecordPolicy {
-                storage: RecordStorage::Value,
-                equality: RecordEquality::Structural,
+            semantics: ValueSemantics {
+                storage: ValueStorage::Value,
+                equality: ValueEquality::Structural,
                 ..Default::default()
             } },
         span,

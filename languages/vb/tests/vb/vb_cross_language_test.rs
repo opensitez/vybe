@@ -11,7 +11,7 @@ fn setup_vm() -> (VM, Arc<Mutex<Vec<String>>>) {
     let out = output.clone();
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(
             move |_ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
