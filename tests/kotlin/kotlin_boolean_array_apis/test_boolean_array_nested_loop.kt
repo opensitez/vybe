@@ -35,5 +35,5 @@ fun main() {
             }
             __p((out).toString())
         
-__check("1010")
+__check("1000")
 }

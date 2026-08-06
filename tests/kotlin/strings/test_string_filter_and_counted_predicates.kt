@@ -34,5 +34,5 @@ fun main() {
             __p((letters).toString())
             __p((filtered).toString())
         
-__check("4\n4\nac")
+__check("4\n4\nabcd")
 }

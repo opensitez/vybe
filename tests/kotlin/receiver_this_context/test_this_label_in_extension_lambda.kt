@@ -4,7 +4,7 @@
 class Host {
             fun transform(): String {
                 val f: Host.() -> String = {
-                    "${'$'}{this::class.simpleName}"
+                    "${this::class.simpleName}"
                 }
                 return f()
             }

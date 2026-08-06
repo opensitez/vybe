@@ -30,5 +30,7 @@ fun main() {
             __p((-32 ushr 3).toString())
             __p((16 ushr 1).toString())
         
-__check("2147483647\n536870911\n8")
+// Real Kotlin agrees: -32 as u32 is 0xFFFFFFE0; ushr 3 gives 0x1FFFFFFC
+// = 536870908 (536870911 = 0x1FFFFFFF is `-1 ushr 3`, a different input).
+__check("2147483647\n536870908\n8")
 }

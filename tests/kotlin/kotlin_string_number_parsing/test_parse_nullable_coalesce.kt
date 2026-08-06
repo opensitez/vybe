@@ -31,5 +31,5 @@ fun main() {
             __p((sum).toString())
             __p((raw.mapNotNull { it.toIntOrNull(16) }.size).toString())
         
-__check("30\n0")
+__check("30\n2")
 }

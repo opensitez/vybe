@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val o = object {
                 val v = 4
-                fun text() = "v${'$'}{v}"
+                fun text() = "v${v}"
             }
             __p((o.text()).toString())
         

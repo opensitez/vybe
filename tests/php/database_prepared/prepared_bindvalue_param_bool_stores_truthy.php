@@ -23,10 +23,13 @@ ob_start();
 
 $pdo = new PDO('sqlite::memory:');
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-$pdo->exec('CREATE TABLE f (on INTEGER)');
-$stmt = $pdo->prepare('INSERT INTO f (on) VALUES (?)');
+// `on` is a RESERVED WORD in sqlite — unquoted it is a syntax error, and real
+// php throws `PDOException: near "on"` on the CREATE. The test is about
+// PDO::PARAM_BOOL binding as 1, not about bare keyword identifiers, so quote it.
+$pdo->exec('CREATE TABLE f ("on" INTEGER)');
+$stmt = $pdo->prepare('INSERT INTO f ("on") VALUES (?)');
 $stmt->bindValue(1, true, PDO::PARAM_BOOL);
 $stmt->execute();
-echo $pdo->query('SELECT on FROM f')->fetchColumn();
+echo $pdo->query('SELECT "on" FROM f')->fetchColumn();
 
 __vybe_check(ob_get_clean(), "1");

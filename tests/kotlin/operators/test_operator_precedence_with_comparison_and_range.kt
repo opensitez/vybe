@@ -32,5 +32,8 @@ fun main() {
             __p((value in 1..(2 + 1) * 2).toString())
             __p((value in 1..2 + 1 * 2).toString())
         
-__check("false\ntrue\ntrue\nfalse")
+// Real Kotlin agrees: additive binds TIGHTER than `..` (rangeExpression is
+// built from additive operands), so `1..2 + 1 * 2` is `1..4` and `4 in 1..4`
+// is true.
+__check("false\ntrue\ntrue\ntrue")
 }

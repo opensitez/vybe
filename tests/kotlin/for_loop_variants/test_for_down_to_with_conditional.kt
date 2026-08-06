@@ -32,5 +32,5 @@ fun main() {
             }
             __p((out).toString())
         
-__check("14")
+__check("12")
 }

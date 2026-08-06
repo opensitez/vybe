@@ -29,7 +29,7 @@ fun main() {
             val name = "k"
             val count = 2
             __p(("$name$count").toString())
-            __p(("${'$'}{name.uppercase()}${'$'}count").toString())
+            __p(("${name.uppercase()}$count").toString())
         
 __check("k2\nK2")
 }

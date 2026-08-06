@@ -29,5 +29,5 @@ fun main() {
             val text = """a  b"""
             __p((text.replace("  ", "_")).toString())
         
-__check("a__b")
+__check("a_b")
 }

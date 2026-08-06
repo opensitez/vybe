@@ -26,4 +26,4 @@ echo (isset($x[0]) ? 'a' : 'na') . '|';
 echo (isset($x[1]) ? 'b' : 'nb') . '|';
 echo (isset($x[2]) ? 'c' : 'nc');
 
-__vybe_check(ob_get_clean(), "a|b|nc");
+__vybe_check(ob_get_clean(), "a|nb|nc");

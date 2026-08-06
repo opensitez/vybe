@@ -30,5 +30,5 @@ fun main() {
             __p((value.toDouble(DurationUnit.MILLISECONDS)).toString())
             __p((value.toDouble(DurationUnit.SECONDS)).toString())
         
-__check("1500\n1.5")
+__check("1500.0\n1.5")
 }

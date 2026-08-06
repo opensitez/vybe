@@ -26,7 +26,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            val zipped = (1..5).asSequence().zip(listOf("a", "b", "c")) { n, s -> "${'$'}n${'$'}s" }.toList()
+            val zipped = (1..5).asSequence().zip(listOf("a", "b", "c")) { n, s -> "$n$s" }.toList()
             __p((zipped.joinToString(",")).toString())
         
 __check("1a,2b,3c")

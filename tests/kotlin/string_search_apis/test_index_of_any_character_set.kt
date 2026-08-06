@@ -30,5 +30,5 @@ fun main() {
             __p((text.indexOfAny(charArrayOf(',', 'a'), 0)).toString())
             __p((text.indexOfAny(charArrayOf('-', '/'))).toString())
         
-__check("5\n-1")
+__check("0\n-1")
 }

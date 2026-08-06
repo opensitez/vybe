@@ -31,7 +31,7 @@ fun main() {
             __p((trimmed).toString())
             __p((trimmed.startsWith("Kot")).toString())
             __p((trimmed.endsWith("lin")).toString())
-            __p((trimmed.contains("tin")).toString())
+            __p((trimmed.contains("lin")).toString())
         
 __check("Kotlin\ntrue\ntrue\ntrue")
 }

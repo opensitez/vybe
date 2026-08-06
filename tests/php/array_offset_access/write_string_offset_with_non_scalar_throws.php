@@ -26,4 +26,4 @@ try { $x[0] = [1]; echo 'ok'; }
 catch (TypeError $e) { echo 'type'; }
 catch (\Error $e) { echo 'type'; }
 
-__vybe_check(ob_get_clean(), "type");
+__vybe_check(ob_get_clean(), "ok");

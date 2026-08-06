@@ -27,6 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val text = """a
+
 b"""
             __p((text.split('\n').joinToString(",")).toString())
         

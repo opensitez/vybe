@@ -33,5 +33,5 @@ fun main() {
             __p(("TRUE".toBooleanStrictOrNull()).toString())
             __p(("x".toBooleanStrictOrNull()).toString())
         
-__check("true\nfalse\nfalse\ntrue\nnull\nnull")
+__check("true\nfalse\ntrue\ntrue\nnull\nnull")
 }

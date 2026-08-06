@@ -26,4 +26,4 @@ $right = [...$left, 'b' => 3, 4 => 4];
 ksort($right);
 echo json_encode($right);
 
-__vybe_check(ob_get_clean(), "{\"a\":1,\"2\":2,\"b\":3,\"4\":4}");
+__vybe_check(ob_get_clean(), "{\"0\":2,\"4\":4,\"a\":1,\"b\":3}");

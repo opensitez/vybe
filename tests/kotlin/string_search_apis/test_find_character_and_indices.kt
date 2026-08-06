@@ -32,5 +32,5 @@ fun main() {
             __p((text.find { it == 'i' }).toString())
             __p((text.findLast { it == 'o' } ?: "none").toString())
         
-__check("0\n2\nk\no")
+__check("0\n2\ni\no")
 }

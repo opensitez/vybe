@@ -30,7 +30,7 @@ fun __check(want: String) {
 fun main() {
             val list = listOf(Pair(1, 2), Pair(1, 1), Pair(0, 3))
             val sorted = list.sortedWith(compareBy<Pair> { it.left }.thenBy { it.right })
-            __p((sorted.map { "${'$'}{it.left}:${'$'}{it.right}" }.joinToString("|")).toString())
+            __p((sorted.map { "${it.left}:${it.right}" }.joinToString("|")).toString())
         
 __check("0:3|1:1|1:2")
 }

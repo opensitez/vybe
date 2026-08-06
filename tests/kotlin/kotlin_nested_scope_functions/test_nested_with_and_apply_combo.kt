@@ -35,7 +35,7 @@ fun main() {
                 bump()
                 value += 2
             }.run {
-                "${'$'}value"
+                "$value"
             }
             __p((b).toString())
         

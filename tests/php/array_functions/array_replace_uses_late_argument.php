@@ -27,4 +27,4 @@ $c = ['k' => ['v' => 7]];
 $d = array_replace($a, $b, $c);
 echo json_encode($d['k']) . '|' . $d['n'];
 
-__vybe_check(ob_get_clean(), "{\"v\":7,\"other\":9}|3");
+__vybe_check(ob_get_clean(), "{\"v\":7}|3");

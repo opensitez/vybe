@@ -33,5 +33,5 @@ fun main() {
             }
             __p((output).toString())
         
-__check("26")
+__check("13")
 }

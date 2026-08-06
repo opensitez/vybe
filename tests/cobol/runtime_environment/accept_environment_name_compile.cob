@@ -1,5 +1,6 @@
 *> vybe-test: cobol/runtime_environment/accept_environment_name_compiles
 *> origin: languages/cobol/tests/cobol/test_runtime_environment.rs
+*> vybe-test-mode: compile
 IDENTIFICATION DIVISION.
 PROGRAM-ID. ENV9.
 DATA DIVISION.

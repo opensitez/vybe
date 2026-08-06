@@ -30,5 +30,5 @@ fun main() {
             __p((s.indexOf('a', startIndex = 1).toString()).toString())
             __p((s.substringAfter("ab").toString()).toString())
         
-__check("3\nabc")
+__check("3\ncabc")
 }

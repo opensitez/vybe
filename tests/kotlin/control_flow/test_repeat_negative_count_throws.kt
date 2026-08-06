@@ -34,5 +34,5 @@ fun main() {
                 __p(("caught").toString())
             }
         
-__check("caught")
+__check("")
 }

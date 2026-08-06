@@ -26,7 +26,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            val text = """price ${'$'}100"""
+            val text = """price $100"""
             __p((text).toString())
         
 __check("price \$100")

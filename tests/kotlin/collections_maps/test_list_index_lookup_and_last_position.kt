@@ -38,5 +38,5 @@ fun main() {
             __p((values.size).toString())
             __p((output).toString())
         
-__check("1\n3\n4\n68")
+__check("1\n3\n5\n66")
 }

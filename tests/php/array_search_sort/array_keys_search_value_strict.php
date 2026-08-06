@@ -24,4 +24,4 @@ ob_start();
 $a = ['a' => '1', 'b' => 1, 'c' => '1'];
 echo implode('|', array_keys($a, '1', true));
 
-__vybe_check(ob_get_clean(), "b");
+__vybe_check(ob_get_clean(), "a|c");

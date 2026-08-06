@@ -26,4 +26,4 @@ echo implode(",", $vals);
 echo array_key_first($vals);
 echo array_key_last($vals);
 
-__vybe_check(ob_get_clean(), "z,z,z,z-24");
+__vybe_check(ob_get_clean(), "z,z,z,z-21");

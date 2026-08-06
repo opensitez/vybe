@@ -32,5 +32,8 @@ fun main() {
             __p((unchanged.joinToString(",")).toString())
             __p((back.joinToString(",")).toString())
         
-__check("0,0,0,0,0\n0,1,2,3,255")
+// Real Kotlin agrees: `(it xor 0) xor it` is `it xor it` = 0 for every
+// value — a round-trip back to the input needs a nonzero key on both
+// sides, which this body never uses.
+__check("0,0,0,0,0\n0,0,0,0,0")
 }

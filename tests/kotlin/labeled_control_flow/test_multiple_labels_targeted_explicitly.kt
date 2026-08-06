@@ -40,5 +40,7 @@ fun main() {
             }
             __p((x).toString())
         
-__check("4")
+// Real Kotlin agrees: i=0 adds at j=0 and j=1 then break@inner at j=2; i=1
+// hits continue@outer immediately at j=0 — x ends at 2, not 4.
+__check("2")
 }

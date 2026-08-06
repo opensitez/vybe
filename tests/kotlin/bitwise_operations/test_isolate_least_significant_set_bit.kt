@@ -31,5 +31,7 @@ fun main() {
             __p((lsb).toString())
             __p(((value and (value - 1))).toString())
         
-__check("8\n88")
+// Real Kotlin agrees: `value and (value - 1)` CLEARS the lowest set bit —
+// 0b1011000 & 0b1010111 = 0b1010000 = 80.
+__check("8\n80")
 }

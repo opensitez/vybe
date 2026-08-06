@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val ch = 'A'
-            __p(("${'$'}ch-${'$'}{ch.code}").toString())
+            __p(("$ch-${ch.code}").toString())
         
 __check("A-65")
 }

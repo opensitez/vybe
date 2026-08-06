@@ -33,5 +33,5 @@ fun main() {
             val dir = Direction.NORTH
             __p((dir).toString())
         
-__check("0")
+__check("NORTH")
 }

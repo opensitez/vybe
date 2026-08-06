@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val values = listOf("ab", "cd", "ef")
-            __p(("first=${'$'}{values[0]} len=${'$'}{values[0].length}").toString())
+            __p(("first=${values[0]} len=${values[0].length}").toString())
         
 __check("first=ab len=2")
 }

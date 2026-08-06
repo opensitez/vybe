@@ -34,5 +34,8 @@ fun main() {
             __p((countZeroLow).toString())
             __p((countPairs.joinToString(",")).toString())
         
-__check("3\n3\n10")
+// Real Kotlin agrees: infix `and` binds tighter than `==`, so
+// `it and 1 == 0` keeps only the even values 0b1010 and 0b1000 (2), and
+// the pair filter passes BOTH 0b1010 (10) and 0b0011 (3).
+__check("3\n2\n10,3")
 }

@@ -32,5 +32,5 @@ fun main() {
             __p((Level.MEDIUM).toString())
             __p((Level.HIGH).toString())
         
-__check("0\n1\n2")
+__check("LOW\nMEDIUM\nHIGH")
 }

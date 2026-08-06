@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val text = """
-                |$x = 1
+                |${'$'}x = 1
             """.trimMargin()
             __p((text).toString())
         

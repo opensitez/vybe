@@ -36,5 +36,5 @@ fun main() {
             __p((raw.startsWith("one")).toString())
             __p((raw.lines().size).toString())
         
-__check("a\nb\nc\ntrue\n2")
+__check("a\nb\nc\nfalse\n1")
 }

@@ -23,7 +23,10 @@ ob_start();
 
 $a = ['a' => ['x' => 1], 'b' => ['y' => 2]];
 $b = ['a' => ['x' => 1]];
-$d = array_diff($a, $b, SORT_REGULAR);
+// array_diff() takes only arrays — a flag as argument #3 is a TypeError, and
+// array_diff compares elements as STRINGS, so nested arrays all collapse to
+// "Array". Comparing nested values needs array_udiff with a real comparator.
+$d = array_udiff($a, $b, fn($p, $q) => strcmp(json_encode($p), json_encode($q)));
 echo json_encode($d);
 
 __vybe_check(ob_get_clean(), "{\"b\":{\"y\":2}}");

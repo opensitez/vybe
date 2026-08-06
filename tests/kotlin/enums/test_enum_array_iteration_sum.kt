@@ -27,7 +27,7 @@ fun __check(want: String) {
 }
 
 fun main() { var n = 0
-for (d in arrayOf(Digit.D0, Digit.D1, Digit.D2, Digit.D3)) { n += d }
+for (d in arrayOf(Digit.D0, Digit.D1, Digit.D2, Digit.D3)) { n += d.ordinal }
 __p((n).toString()) 
 __check("6")
 }

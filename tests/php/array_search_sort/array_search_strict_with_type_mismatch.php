@@ -23,4 +23,4 @@ ob_start();
 
 echo array_search('2', [1, '2', 2, '2'], true) === false ? 'no' : 'yes';
 
-__vybe_check(ob_get_clean(), "no");
+__vybe_check(ob_get_clean(), "yes");

@@ -32,5 +32,5 @@ fun main() {
             __p((short["beta"]).toString())
             __p((short.containsKey("alpha")).toString())
         
-__check("2\n2\nfalse")
+__check("1\n2\nfalse")
 }

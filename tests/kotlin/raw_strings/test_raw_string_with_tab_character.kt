@@ -29,5 +29,5 @@ fun main() {
             val text = """a	b"""
             __p((text.contains("\t")).toString())
         
-__check("false")
+__check("true")
 }

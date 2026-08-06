@@ -32,5 +32,5 @@ fun main() {
             __p((shortKeys.keys.joinToString(",")).toString())
             __p((highValues.keys.joinToString(",")).toString())
         
-__check("kiwi\npear")
+__check("kiwi,pear\npear")
 }

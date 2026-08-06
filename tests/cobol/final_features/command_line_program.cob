@@ -1,5 +1,6 @@
 *> vybe-test: cobol/final_features/command_line_program
 *> origin: languages/cobol/tests/cobol/test_final_features.rs
+*> vybe-test-mode: compile
 
 IDENTIFICATION DIVISION.
 PROGRAM-ID. CLIAPP.

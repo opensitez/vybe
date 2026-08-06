@@ -21,6 +21,10 @@ function __vybe_check($got, $want) {
 
 ob_start();
 
-echo array_search('2', ['2', 3, '2', 4], false, 2);
+// array_search() takes at most 3 arguments — a 4th "offset" is an
+// ArgumentCountError, not a search start. Starting the search after an index is
+// spelled with a key-preserving array_slice.
+$a = ['2', 3, '2', 4];
+echo array_search('2', array_slice($a, 2, null, true), false);
 
 __vybe_check(ob_get_clean(), "2");

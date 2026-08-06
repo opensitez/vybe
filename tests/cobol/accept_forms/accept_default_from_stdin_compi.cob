@@ -1,5 +1,6 @@
 *> vybe-test: cobol/accept_forms/accept_default_from_stdin_compiles
 *> origin: languages/cobol/tests/cobol/test_accept_forms.rs
+*> vybe-test-mode: compile
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.

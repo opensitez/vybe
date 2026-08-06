@@ -31,5 +31,8 @@ fun main() {
             __p((2 shl 3 + 1).toString())
             __p((2 shl (3 + 1)).toString())
         
-__check("9\n3\n16\n32")
+// Real Kotlin agrees: additive binds tighter than the named infix ops, and
+// same-level infix chains are LEFT-associative — `1 or 2 + 4 and 8` is
+// `(1 or 6) and 8` = 0, and `2 shl 3 + 1` is `2 shl 4` = 32.
+__check("0\n3\n32\n32")
 }

@@ -5,7 +5,7 @@ class Context {
             val label = "root"
             inner class Node {
                 val label = "node"
-                fun describe(): String = "${'$'}{this@Context.label}/${'$'}{label}"
+                fun describe(): String = "${this@Context.label}/${label}"
             }
         }
 

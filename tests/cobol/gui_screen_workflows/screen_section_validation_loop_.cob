@@ -1,5 +1,6 @@
 *> vybe-test: cobol/gui_screen_workflows/screen_section_validation_loop_compiles
 *> origin: languages/cobol/tests/cobol/test_gui_screen_workflows.rs
+*> vybe-test-mode: compile
 IDENTIFICATION DIVISION.
 PROGRAM-ID. SCREEN-C.
 DATA DIVISION.

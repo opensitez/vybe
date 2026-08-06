@@ -26,7 +26,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            __p(("cost: ${'$'}5").toString())
+            __p(("cost: $5").toString())
         
 __check("cost: \$5")
 }

@@ -29,7 +29,7 @@ fun main() {
             val width = 4
             val height = 5
             __p(("${width}x${height}=${width * height}").toString())
-            __p(("${'$'}${width + height}").toString())
+            __p(("$${width + height}").toString())
         
 __check("4x5=20\n\$9")
 }

@@ -36,5 +36,5 @@ fun main() {
             }
             __p((names).toString())
         
-__check("0,1,2,")
+__check("RED,GREEN,BLUE,")
 }

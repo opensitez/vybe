@@ -34,7 +34,8 @@ public class Main {
 
     public static void main(String[] args) {
 int v = 7; int w = (v << 1) & 10; __p(w);
-__check("6");
+// Real Java agrees: (7 << 1) & 10 = 14 & 10 = 10.
+__check("10");
     }
 }
 

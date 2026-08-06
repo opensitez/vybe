@@ -27,7 +27,7 @@ fun __check(want: String) {
 }
 
 fun main() { var total = 0
-for (p in arrayOf(Piece.A, Piece.B, Piece.C, Piece.D)) { total += p }
+for (p in arrayOf(Piece.A, Piece.B, Piece.C, Piece.D)) { total += p.ordinal }
 __p((total).toString()) 
 __check("6")
 }

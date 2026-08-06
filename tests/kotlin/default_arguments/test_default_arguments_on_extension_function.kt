@@ -32,5 +32,5 @@ fun main() {
             __p(("a".wrap()).toString())
             __p(("b".wrap(prefix = "[")).toString())
         
-__check("<a>\n[b]")
+__check("<a>\n[b>")
 }

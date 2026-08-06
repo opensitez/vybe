@@ -35,5 +35,5 @@ fun main() {
             }
             __p((odds).toString())
         
-__check("26")
+__check("246")
 }

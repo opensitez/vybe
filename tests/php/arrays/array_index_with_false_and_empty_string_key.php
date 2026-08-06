@@ -25,4 +25,4 @@ $a = [false => 'f', '' => 'e', 0 => 'z'];
 echo $a[false] . '|';
 echo $a[''];
 
-__vybe_check(ob_get_clean(), "f|e");
+__vybe_check(ob_get_clean(), "z|e");

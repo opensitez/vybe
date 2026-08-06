@@ -63,6 +63,6 @@ begin
   end;
 end;
 type TItem=class public V:Integer; constructor Create(v:Integer); end;
-constructor TItem.Create(v:Integer); begin V:=v; end;
+constructor TItem.Create(v:Integer); begin Self.V:=v; end;
 var a,b:TItem; begin a:=TItem.Create(1); b:=TItem.Create(2); __p(__vs(a.V+b.V)); a.Free; b.Free; __vybeCheck('3');
 end.

@@ -33,5 +33,5 @@ fun main() {
             __p((raw[2].isEmpty()).toString())
             __p((value.lines().filter { it.isNotEmpty() }.joinToString("|")).toString())
         
-__check("3\n\ntrue\na|b")
+__check("4\n\nfalse\na|b")
 }

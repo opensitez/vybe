@@ -27,7 +27,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            __p(("${'$'}{decorate("kotlin")}").toString())
+            __p(("${decorate("kotlin")}").toString())
         
 __check("KOTLIN")
 }

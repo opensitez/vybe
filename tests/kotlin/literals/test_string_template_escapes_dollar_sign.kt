@@ -26,8 +26,8 @@ fun __check(want: String) {
 }
 
 fun main() {
-            __p(("${'$'}4.99").toString())
-            __p(("${'$'}{a + 2}").toString())
+            __p(("$4.99").toString())
+            __p(("${a + 2}").toString())
             val prefix = "\${prefix}"
             __p((prefix).toString())
         

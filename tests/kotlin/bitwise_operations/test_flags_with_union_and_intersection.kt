@@ -39,5 +39,7 @@ fun main() {
             __p((withoutRead and canWrite).toString())
             __p((withoutRead and canExecute).toString())
         
-__check("1\n0\n7\n-8\n2\n4")
+// Real Kotlin agrees: `withExec and canRead.inv()` is 7 & ~1 = 6 —
+// clearing one bit of a 3-bit mask cannot go negative (-8 is ~7).
+__check("1\n0\n7\n6\n2\n4")
 }

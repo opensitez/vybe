@@ -27,8 +27,8 @@ fun __check(want: String) {
 
 fun main() {
             val text = "Kotlin"
-            __p((text.contains("kin")).toString())
-            __p((text.contains("KIN", ignoreCase = true)).toString())
+            __p((text.contains("lin")).toString())
+            __p((text.contains("LIN", ignoreCase = true)).toString())
             __p((text.contains('K')).toString())
             __p((text.contains('z')).toString())
         

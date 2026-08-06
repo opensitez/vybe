@@ -1,5 +1,6 @@
 *> vybe-test: cobol/gui_forms_events/gui_field_validation_branch_compiles
 *> origin: languages/cobol/tests/cobol/test_gui_forms_events.rs
+*> vybe-test-mode: compile
 IDENTIFICATION DIVISION.
 PROGRAM-ID. S21.
 DATA DIVISION.

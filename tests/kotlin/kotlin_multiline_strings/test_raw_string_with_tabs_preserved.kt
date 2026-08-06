@@ -26,7 +26,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            val text = """a\tb\tc"""
+            val text = """a	b	c"""
             __p((text.length).toString())
         
 __check("5")

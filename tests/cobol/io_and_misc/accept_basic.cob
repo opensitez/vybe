@@ -1,5 +1,6 @@
 *> vybe-test: cobol/io_and_misc/accept_basic
 *> origin: languages/cobol/tests/cobol/test_io_and_misc.rs
+*> vybe-test-mode: compile
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.

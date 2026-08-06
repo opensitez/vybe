@@ -32,7 +32,7 @@ fun main() {
                     val value = "inner"
                     return value
                 }
-                return "${'$'}{inner()}|${'$'}value"
+                return "${inner()}|$value"
             }
             __p((outer()).toString())
         

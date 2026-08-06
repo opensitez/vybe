@@ -33,5 +33,7 @@ fun main() {
             __p((uniq.joinToString(",")).toString())
             __p((union.joinToString(",")).toString())
         
-__check("1,2,3\n1,2,2,3,4")
+// Real Kotlin agrees: `union` returns a SET of distinct elements, so the
+// duplicate 2 cannot survive; kotlinc prints [1, 2, 3, 4].
+__check("1,2,3\n1,2,3,4")
 }

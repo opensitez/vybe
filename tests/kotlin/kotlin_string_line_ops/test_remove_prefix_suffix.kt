@@ -29,7 +29,7 @@ fun main() {
             __p(("prefix:value".removePrefix("prefix:")).toString())
             __p(("prefix:value".removePrefix("x")).toString())
             __p(("value/suffix".removeSuffix("/suffix")).toString())
-            __p(("value/suffix".removeSuffix("x")).toString())
+            __p(("value/suffix".removeSuffix("z")).toString())
         
 __check("value\nprefix:value\nvalue\nvalue/suffix")
 }

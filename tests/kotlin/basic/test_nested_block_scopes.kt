@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val x = 1
-            {
+            run {
                 val y = 2
                 __p((x + y).toString())
             }

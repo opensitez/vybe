@@ -33,5 +33,5 @@ fun main() {
             __p((score(10, 3)).toString())
             __p((score(10, penalty = 4)).toString())
         
-__check("10\n12\n6")
+__check("10\n12\n7")
 }

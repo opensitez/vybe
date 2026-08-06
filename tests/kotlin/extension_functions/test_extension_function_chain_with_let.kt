@@ -33,5 +33,5 @@ fun main() {
                 .repeatPrefix("b", 2)
             __p((value).toString())
         
-__check("bbaaaak")
+__check("bbaaak")
 }

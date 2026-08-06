@@ -31,5 +31,5 @@ fun main() {
             __p((format("A", c = "X")).toString())
             __p((format("A", "Y", "Z")).toString())
         
-__check("ABC\nAXX\nAYZ")
+__check("ABC\nABX\nAYZ")
 }

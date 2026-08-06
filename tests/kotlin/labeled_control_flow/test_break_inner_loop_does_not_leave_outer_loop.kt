@@ -38,5 +38,8 @@ fun main() {
             }
             __p((acc).toString())
         
-__check("36")
+// Real Kotlin agrees: each outer pass adds 1 (j=0) before the unlabeled break
+// fires at j=1, then 10 after the inner loop — (1+10)*3 = 33. The outer loop
+// running all 3 passes is the point of the test.
+__check("33")
 }

@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val values = sequenceOf(1, 2, 3, 4).zipWithNext()
-            __p((values.toList().joinToString("|") { "${'$'}{it.first}-${'$'}{it.second}" }).toString())
+            __p((values.toList().joinToString("|") { "${it.first}-${it.second}" }).toString())
         
 __check("1-2|2-3|3-4")
 }

@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val nums = listOf(1, 2, 3)
             val chars = listOf("a", "b", "c")
-            val out = nums.zip(chars) { n, c -> "$c${'$'}n" }
+            val out = nums.zip(chars) { n, c -> "$c$n" }
             __p((out.joinToString(",")).toString())
         
 __check("a1,b2,c3")

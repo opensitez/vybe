@@ -32,5 +32,5 @@ fun main() {
             val last = bytes[3].toInt()
             __p((first + last).toString())
         
-__check("1,-2,127,-128\n-130")
+__check("1|-2|127|-128\n-130")
 }

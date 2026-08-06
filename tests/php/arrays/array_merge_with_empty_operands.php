@@ -28,4 +28,4 @@ echo count($b) . '|';
 echo count($c) . '|';
 echo $b[0] . $c[1];
 
-__vybe_check(ob_get_clean(), "2|2|22");
+__vybe_check(ob_get_clean(), "2|2|12");

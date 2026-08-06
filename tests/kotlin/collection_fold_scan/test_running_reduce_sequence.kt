@@ -35,5 +35,8 @@ fun main() {
                 __p(("err").toString())
             }
         
-__check("2,6,24\nerr")
+// Real Kotlin agrees: `runningReduce` on an empty collection returns an
+// EMPTY LIST (only `reduce` throws), so the catch never fires and the second
+// println emits the empty join.
+__check("2,6,24\n")
 }

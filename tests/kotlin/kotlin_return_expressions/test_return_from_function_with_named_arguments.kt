@@ -2,7 +2,7 @@
 // origin: languages/kotlin/tests/kotlin/test_kotlin_return_expressions.rs
 
 fun join(prefix: String, value: Int): String {
-            return "${'$'}prefix${'$'}value"
+            return "$prefix$value"
         }
 
         var __buf: String = ""

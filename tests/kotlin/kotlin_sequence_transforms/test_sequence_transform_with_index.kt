@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val seq = sequenceOf("a", "b", "c")
-            val withIndex = seq.withIndex().map { "${'$'}{it.index}:${'$'}{it.value}" }
+            val withIndex = seq.withIndex().map { "${it.index}:${it.value}" }
             __p((withIndex.toList().joinToString(",")).toString())
         
 __check("0:a,1:b,2:c")

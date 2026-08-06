@@ -31,5 +31,5 @@ fun main() {
             __p((values.sumOf { it }).toString())
             __p((values.average()).toString())
         
-__check("2\n28\n5.6")
+__check("3\n28\n5.6")
 }

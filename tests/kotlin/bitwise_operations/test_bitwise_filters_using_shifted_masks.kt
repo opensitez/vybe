@@ -32,5 +32,7 @@ fun main() {
             __p((maskedTwoBits.joinToString(",")).toString())
             __p((flags.joinToString(",")).toString())
         
-__check("0,1,2,3,0,1,2,3,0,3,0,3\n8,15")
+// Real Kotlin agrees: 31 = 0b11111 has bit 3 set, so the flags filter
+// keeps 8, 15 AND 31.
+__check("0,1,2,3,0,1,2,3,0,3,0,3\n8,15,31")
 }

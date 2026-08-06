@@ -30,7 +30,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            __p((apply({ println("x" + it); })).toString())
+            __p((apply({ __p(("x" + it).toString()); })).toString())
         
 __check("x3\nok")
 }

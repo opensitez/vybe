@@ -27,4 +27,4 @@ echo count($foundLoose);
 $foundStrict = array_keys($values, 1, true);
 echo count($foundStrict);
 
-__vybe_check(ob_get_clean(), "3|2");
+__vybe_check(ob_get_clean(), "31");

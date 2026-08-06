@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val mode = "outer"
             __p((mode).toString())
-            {
+            run {
                 val mode = "inner"
                 __p((mode).toString())
             }

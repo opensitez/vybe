@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val value = 2
-            val result = {
+            val result = run {
                 val value = 5
                 value * 3
             }

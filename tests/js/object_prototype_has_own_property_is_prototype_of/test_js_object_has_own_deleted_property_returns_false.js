@@ -1,10 +1,15 @@
 // vybe-test: js/object_prototype_has_own_property_is_prototype_of/test_js_object_has_own_deleted_property_returns_false
 // origin: languages/js/tests/js/test_js_object_prototype_has_own_property_is_prototype_of.rs
 
+function __fmt(v) {
+    // console.log renders a bigint with an `n` suffix; String() drops it.
+    return typeof v === "bigint" ? String(v) + "n" : String(v);
+}
+
 function __line(...args) {
-    // console.log joins its arguments with a single space. String() is the
-    // coercion Vybe's logging host applies to each one.
-    return args.map(String).join(" ");
+    // console.log joins its arguments with a single space. __fmt is the
+    // per-argument coercion console.log applies.
+    return args.map(__fmt).join(" ");
 }
 
 // Output is COLLECTED, not paired. The emitter rewrites every `console.log(a)`

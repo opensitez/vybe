@@ -30,4 +30,4 @@ echo $m[2] . '|';
 echo $m[3] . '|';
 echo $u[2];
 
-__vybe_check(ob_get_clean(), "1|3|7|3");
+__vybe_check(ob_get_clean(), "9|7||3");

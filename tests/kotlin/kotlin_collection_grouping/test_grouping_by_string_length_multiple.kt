@@ -32,5 +32,5 @@ fun main() {
             __p((keys.joinToString(",")).toString())
             __p((grouped[3]!!.size).toString())
         
-__check("3,4\n2")
+__check("3,4\n3")
 }

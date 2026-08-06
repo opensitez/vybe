@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val value = "abcdef"
             __p((value.replaceRange(1, 3, "ZZ")).toString())
-            __p((value.regionMatches(1, "CD", 0, 2, ignoreCase = true)).toString())
+            __p((value.regionMatches(2, "CD", 0, 2, ignoreCase = true)).toString())
             __p((value.regionMatches(1, "Cd", 0, 2, ignoreCase = true)).toString())
         
 __check("aZZdef\ntrue\nfalse")

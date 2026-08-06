@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             var name = "outer"
-            {
+            run {
                 val name = "inner"
                 __p((name).toString())
             }

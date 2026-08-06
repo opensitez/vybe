@@ -32,4 +32,4 @@ echo implode(',', array_keys($b));
 echo '|';
 echo implode(',', $b);
 
-__vybe_check(ob_get_clean(), "1,0,2|3,2,1|x,0,a|3,2,1");
+__vybe_check(ob_get_clean(), "x,0,a|3,2,1|x,0,a|3,2,1");

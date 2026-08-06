@@ -1,5 +1,6 @@
 *> vybe-test: cobol/gui_forms_events/screen_with_evaluate_compiles
 *> origin: languages/cobol/tests/cobol/test_gui_forms_events.rs
+*> vybe-test-mode: compile
 IDENTIFICATION DIVISION.
 PROGRAM-ID. S4.
 DATA DIVISION.

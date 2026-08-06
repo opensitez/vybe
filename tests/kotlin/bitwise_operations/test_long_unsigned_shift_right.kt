@@ -33,5 +33,8 @@ fun main() {
             __p((15L ushr 1).toString())
             __p((1L ushr 1).toString())
         
-__check("9223372036854775807\n2305843009213693950\n7\n0")
+// Real Kotlin agrees: -16L is 0xFFFF_FFFF_FFFF_FFF0; ushr 2 gives
+// 0x3FFF_FFFF_FFFF_FFFC = 2^62 - 4 = 4611686018427387900 (the old value was
+// `ushr 3`'s answer).
+__check("9223372036854775807\n4611686018427387900\n7\n0")
 }

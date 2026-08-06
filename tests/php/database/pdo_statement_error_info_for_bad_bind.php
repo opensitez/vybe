@@ -22,7 +22,7 @@ function __vybe_check($got, $want) {
 ob_start();
 
 $pdo = new PDO('sqlite::memory:');
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 try {
     $pdo->prepare('SELECT * FROM bad')->execute([]);
     echo 'ok';

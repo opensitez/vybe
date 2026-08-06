@@ -1,5 +1,6 @@
 *> vybe-test: cobol/cobol/accept_input
 *> origin: languages/cobol/tests/cobol/test_cobol.rs
+*> vybe-test-mode: compile
 
 IDENTIFICATION DIVISION.
 PROGRAM-ID. INPUT.

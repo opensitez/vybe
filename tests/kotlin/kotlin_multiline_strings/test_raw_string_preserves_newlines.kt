@@ -34,5 +34,5 @@ line3
             __p((text.lines().size).toString())
             __p((text.lines()[1]).toString())
         
-__check("4\nline2")
+__check("5\nline1")
 }

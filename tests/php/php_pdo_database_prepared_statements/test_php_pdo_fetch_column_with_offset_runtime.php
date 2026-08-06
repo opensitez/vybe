@@ -29,4 +29,4 @@ echo $stmt->fetchColumn(0);
 echo '|';
 echo $stmt->fetchColumn(2);
 
-__vybe_check(ob_get_clean(), "1|3");
+__vybe_check(ob_get_clean(), "1|");

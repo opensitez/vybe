@@ -22,7 +22,7 @@ function __vybe_check($got, $want) {
 ob_start();
 
 $pdo = new PDO('sqlite::memory:');
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $pdo->exec('CREATE TABLE items (a INTEGER, b INTEGER, c INTEGER)');
 $pdo->exec('INSERT INTO items VALUES (1, 2, 3)');
 $stmt = $pdo->query('SELECT a, b, c FROM items');
@@ -30,4 +30,7 @@ echo $stmt->fetchColumn(0);
 echo '|';
 echo $stmt->fetchColumn(2);
 
-__vybe_check(ob_get_clean(), "1|3");
+// fetchColumn() ADVANCES the cursor, so the second call is on the next row —
+// and there is only one. The column index selects within that row, it does not
+// re-read the first one.
+__vybe_check(ob_get_clean(), "1|");

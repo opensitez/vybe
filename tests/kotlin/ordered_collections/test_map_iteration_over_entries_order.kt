@@ -30,5 +30,8 @@ fun main() {
             __p((map.entries.joinToString(";") { it.key }).toString())
             __p((map.entries.joinToString(";") { it.value.toString() }).toString())
         
-__check("first,second,third\n1,2,3")
+// Real Kotlin agrees: the source passes ";" as the separator, so kotlinc
+// prints semicolon-joined lines (the comma expectation contradicted the
+// test's own source; insertion order is the point).
+__check("first;second;third\n1;2;3")
 }

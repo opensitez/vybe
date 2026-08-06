@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val words = listOf("one", "two", "three", "four")
             val nums = listOf(10)
-            val zipped = words.zip(nums).joinToString(",") { "${'$'}{it.first}:${'$'}{it.second}" }
+            val zipped = words.zip(nums).joinToString(",") { "${it.first}:${it.second}" }
             __p((zipped).toString())
         
 __check("one:10")

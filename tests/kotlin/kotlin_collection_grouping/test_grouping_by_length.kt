@@ -33,5 +33,5 @@ fun main() {
             __p((short).toString())
             __p((long).toString())
         
-__check("a\ncat,dog")
+__check("a\nbee,cat,dog")
 }

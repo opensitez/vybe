@@ -32,5 +32,7 @@ fun main() {
             __p((java.lang.Integer.numberOfTrailingZeros(sample)).toString())
             __p((java.lang.Integer.numberOfTrailingZeros(0)).toString())
         
-__check("2\n28\n1\n32")
+// Real Java agrees: 0b10010 = 18 occupies 5 bits, so numberOfLeadingZeros
+// is 32 - 5 = 27, not 28.
+__check("2\n27\n1\n32")
 }

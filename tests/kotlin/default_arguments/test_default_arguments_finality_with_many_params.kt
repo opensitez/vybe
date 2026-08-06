@@ -33,5 +33,5 @@ fun main() {
             __p((eval(1, d = 10)).toString())
             __p((eval(1, 2, 3, 4)).toString())
         
-__check("7\n16\n10")
+__check("7\n14\n10")
 }

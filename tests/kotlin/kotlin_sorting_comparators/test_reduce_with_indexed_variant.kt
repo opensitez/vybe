@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val values = listOf(4, 5, 6).sorted()
             val out = values.foldIndexed("") { index, acc, value ->
-                if (index == 0) value.toString() else "${'$'}{acc}-${'$'}value"
+                if (index == 0) value.toString() else "${acc}-$value"
             }
             __p((out).toString())
         

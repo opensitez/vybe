@@ -34,7 +34,7 @@ fun main() {
             run {
                 val source = Holder(9, 10)
                 val (x, y) = source
-                out = "${'$'}x,${'$'}y"
+                out = "$x,$y"
             }
             __p((out).toString())
         

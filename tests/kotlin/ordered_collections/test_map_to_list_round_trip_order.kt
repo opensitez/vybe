@@ -30,7 +30,7 @@ fun main() {
             val map = linkedMapOf<String, Int>()
             map.putAll(list.toMap())
             val rebuilt = map.toList()
-            __p((rebuilt.joinToString("|") { "${'$'}{it.first}:${'$'}{it.second}" }).toString())
+            __p((rebuilt.joinToString("|") { "${it.first}:${it.second}" }).toString())
         
 __check("a:1|b:2|c:3")
 }

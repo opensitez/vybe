@@ -29,5 +29,5 @@ fun main() {
             val seq = listOf("aa", "ab", "b", "cc").asSequence().distinctBy { it.length }
             __p((seq.toList().joinToString("|")).toString())
         
-__check("aa,b")
+__check("aa|b")
 }

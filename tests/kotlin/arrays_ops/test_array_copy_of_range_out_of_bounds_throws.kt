@@ -29,7 +29,7 @@ fun main() {
             val nums = intArrayOf(1, 2, 3)
             try {
                 nums.copyOfRange(-1, 2)
-            } catch (e: IllegalArgumentException) {
+            } catch (e: IndexOutOfBoundsException) {
                 __p(("bad").toString())
             }
         

@@ -32,5 +32,5 @@ fun main() {
             val reverse = nums.sortedWith(compareByDescending { it.length })
             __p((reverse.joinToString(",")).toString())
         
-__check("a,bb,charlie,delta\ndelta,charlie,bb,a")
+__check("a,bb,delta,charlie\ncharlie,delta,bb,a")
 }

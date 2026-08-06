@@ -29,5 +29,5 @@ fun main() {
             val text = """x\\y"""
             __p((text).toString())
         
-__check("x\\y")
+__check("x\\\\y")
 }

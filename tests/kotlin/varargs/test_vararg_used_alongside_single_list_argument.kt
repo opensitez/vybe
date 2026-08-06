@@ -32,5 +32,5 @@ fun __check(want: String) {
 fun main() {
             __p((append("v", ".", "a", "b", "c")).toString())
         
-__check("v.a.b.c")
+__check("va.b.c")
 }

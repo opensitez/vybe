@@ -26,11 +26,18 @@ fun __check(want: String) {
 }
 
 fun main() {
+            // The buffered harness can't observe output past an UNCAUGHT
+            // exception (the .rs runner read stdout from the crashed run);
+            // an outer catch preserves the intent — the finally runs before
+            // the exception propagates.
             try {
-                throw Exception("x")
-            } finally {
-                __p(("ok").toString())
+                try {
+                    throw Exception("x")
+                } finally {
+                    __p(("ok").toString())
+                }
+            } catch (e: Exception) {
             }
-        
+
 __check("ok")
 }

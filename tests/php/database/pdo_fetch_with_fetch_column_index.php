@@ -22,7 +22,7 @@ function __vybe_check($got, $want) {
 ob_start();
 
 $pdo = new PDO('sqlite::memory:');
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $pdo->exec('CREATE TABLE t (x INTEGER, y INTEGER)');
 $pdo->exec('INSERT INTO t VALUES (11, 22), (33, 44)');
 $stmt = $pdo->prepare('SELECT x, y FROM t ORDER BY x');

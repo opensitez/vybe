@@ -64,6 +64,6 @@ begin
 end;
 type TVal=class public V:Integer; constructor Create; overload; constructor Create(v:Integer); overload; end;
 constructor TVal.Create; begin V:=0; end;
-constructor TVal.Create(v:Integer); begin V:=v; end;
+constructor TVal.Create(v:Integer); begin Self.V:=v; end;
 var a,b:TVal; begin a:=TVal.Create; b:=TVal.Create(5); __p(__vs(a.V)); __p(__vs(b.V)); a.Free; b.Free; __vybeCheck('0' + #10 + '5');
 end.

@@ -31,5 +31,5 @@ fun main() {
                 .filter { it % 2 == 0 }
             __p((seq.toList().joinToString(",")).toString())
         
-__check("2,4,6,8")
+__check("2,4,6")
 }

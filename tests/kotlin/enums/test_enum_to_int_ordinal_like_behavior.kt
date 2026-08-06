@@ -36,5 +36,5 @@ fun main() {
             __p((a).toString())
             __p((c).toString())
         
-__check("0\n2")
+__check("ONE\nTHREE")
 }

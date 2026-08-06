@@ -31,5 +31,5 @@ fun main() {
             __p((mark(1)).toString())
             __p((mark(2, "ok")).toString())
         
-__check("double:1\ndouble:2ok")
+__check("single\ndouble:2ok")
 }

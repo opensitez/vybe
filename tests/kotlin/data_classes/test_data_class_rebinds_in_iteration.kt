@@ -37,5 +37,5 @@ fun main() {
             __p((sum).toString())
             __p((items[0].value).toString())
         
-__check("12\n1")
+__check("13\n1")
 }

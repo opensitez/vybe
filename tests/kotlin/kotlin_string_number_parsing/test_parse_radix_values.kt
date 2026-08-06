@@ -29,7 +29,7 @@ fun main() {
             __p(("ff".toInt(16)).toString())
             __p(("11".toInt(2)).toString())
             __p(("77".toInt(8)).toString())
-            __p(("123".toIntOrNull(37)).toString())
+            __p(("xyz".toIntOrNull(16)).toString())
         
 __check("255\n3\n63\nnull")
 }

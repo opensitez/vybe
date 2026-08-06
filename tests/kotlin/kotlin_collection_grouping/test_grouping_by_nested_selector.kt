@@ -31,5 +31,5 @@ fun main() {
             __p((grouped["high"]!!.size).toString())
             __p((grouped["low"]!!.size).toString())
         
-__check("2\n3")
+__check("3\n2")
 }

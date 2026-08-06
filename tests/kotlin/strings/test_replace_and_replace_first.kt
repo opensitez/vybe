@@ -31,5 +31,5 @@ fun main() {
             __p((word.replaceFirst("ba", "BO")).toString())
             __p((word.replace("na", "", false)).toString())
         
-__check("baNANA\nNAna\nbaa")
+__check("baNANA\nBOnana\nba")
 }

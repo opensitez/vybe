@@ -30,7 +30,7 @@ fun main() {
             for (i in 1..4) {
                 total += i
             }
-            __p(("sum=${'$'}total").toString())
+            __p(("sum=$total").toString())
         
 __check("sum=10")
 }

@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val out = StringBuilder("a-b-c")
-            out.replace(1, 2, "B")
+            out.replace(1, 4, "B")
             __p((out.toString()).toString())
         
 __check("aBc")

@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val count = 4
-            __p(("${'$'}count items").toString())
+            __p(("$count items").toString())
         
 __check("4 items")
 }

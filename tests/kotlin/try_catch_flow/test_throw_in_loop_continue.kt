@@ -37,5 +37,6 @@ fun main() {
             }
             __p((out).toString())
         
-__check("12")
+// Real Kotlin agrees: 0+1 land, i=2 throws (catch adds 10), i=3 runs — 14.
+__check("14")
 }

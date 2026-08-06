@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val left = listOf(1, 2, 3, 4)
             val right = listOf("a", "b")
-            __p((left.zip(right).joinToString("|") { "${'$'}{it.first}${'$'}{it.second}" }).toString())
+            __p((left.zip(right).joinToString("|") { "${it.first}${it.second}" }).toString())
             __p((left.zip(right).size).toString())
         
 __check("1a|2b\n2")

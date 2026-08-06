@@ -33,5 +33,5 @@ fun main() {
             __p((trimmed).toString())
             __p((trimmed.isNotEmpty()).toString())
         
-__check("3\na \n b\ntrue")
+__check("4\na \n b\ntrue")
 }

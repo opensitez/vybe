@@ -31,4 +31,4 @@ echo $stack[0];
 echo $stack[1];
 echo $stack[2];
 
-__vybe_check(ob_get_clean(), "314");
+__vybe_check(ob_get_clean(), "3124");

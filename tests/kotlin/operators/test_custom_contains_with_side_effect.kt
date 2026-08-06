@@ -42,5 +42,7 @@ fun main() {
             __p(((5 in gate) || (12 in gate)).toString())
             __p((gate.probes).toString())
         
-__check("true\nfalse\n2\ntrue\n3")
+// Real Kotlin agrees: `(5 in gate)` is false, so `||` MUST evaluate the
+// right side — both probes run and the counter lands on 4, not 3.
+__check("true\nfalse\n2\ntrue\n4")
 }

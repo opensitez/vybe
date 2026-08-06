@@ -10,7 +10,7 @@
        01 I PIC 9 VALUE 0.
        01 TOTAL PIC 99 VALUE 99.
        PROCEDURE DIVISION.
-           PERFORM VARYING I FROM 5 BY 1 UNTIL I < 5
+           PERFORM VARYING I FROM 5 BY 1 UNTIL I >= 5
               ADD 1 TO TOTAL
            END-PERFORM.
            DISPLAY TOTAL.

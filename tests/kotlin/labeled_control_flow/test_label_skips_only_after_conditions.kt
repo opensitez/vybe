@@ -37,5 +37,7 @@ fun main() {
             }
             __p((out).toString())
         
-__check("a1|a2|a3|c1|c2|c3|")
+// Real Kotlin agrees: `continue@outer` fires at (b, 2) — AFTER (b, 1) already
+// appended "b1|". Only b2 and b3 are skipped.
+__check("a1|a2|a3|b1|c1|c2|c3|")
 }

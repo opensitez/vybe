@@ -25,4 +25,4 @@ $s = ['a' => 1, 'b' => 2, 'c' => 3];
 $t = array_slice($s, 1, 2, false);
 echo implode(',', array_keys($t)) . ':' . implode(',', $t);
 
-__vybe_check(ob_get_clean(), "0,1|2,3");
+__vybe_check(ob_get_clean(), "b,c:2,3");

@@ -24,4 +24,4 @@ ob_start();
 $f = array_flip(['a', 'b', 'a', 'c']);
 echo $f['a'];
 
-__vybe_check(ob_get_clean(), "3");
+__vybe_check(ob_get_clean(), "2");

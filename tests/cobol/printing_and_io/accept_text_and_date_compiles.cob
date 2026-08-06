@@ -1,5 +1,6 @@
 *> vybe-test: cobol/printing_and_io/accept_text_and_date_compiles
 *> origin: languages/cobol/tests/cobol/test_printing_and_io.rs
+*> vybe-test-mode: compile
 IDENTIFICATION DIVISION.
 PROGRAM-ID. T.
 DATA DIVISION.

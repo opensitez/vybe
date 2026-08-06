@@ -28,4 +28,4 @@ echo implode(",", $scores);
 echo "|";
 echo implode(",", $names);
 
-__vybe_check(ob_get_clean(), "5,4,2|Alice,Bob,Cara");
+__vybe_check(ob_get_clean(), "5,4,2|Cara,Bob,Alice");

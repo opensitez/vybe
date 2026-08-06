@@ -10,9 +10,11 @@ enum class Operation {
             },
             MULTIPLY {
                 override fun apply(a: Int, b: Int): Int = a * b
-            }
-abstract fun apply(a: Int, b: Int): Int
+            };
+            abstract fun apply(a: Int, b: Int): Int
         }
+// NOTE: extraction had dropped the `;` the .rs original carries after the last
+// entry — Kotlin REQUIRES it between the entries and the body members.
 
         var __buf: String = ""
 

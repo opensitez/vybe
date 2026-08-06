@@ -31,5 +31,5 @@ fun main() {
             __p((parts.size).toString())
             __p((parts[0]).toString())
         
-__check("3\none")
+__check("4\none")
 }

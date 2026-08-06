@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val ok = true
-            __p(("state=${'$'}{ok && true}").toString())
+            __p(("state=${ok && true}").toString())
         
 __check("state=true")
 }

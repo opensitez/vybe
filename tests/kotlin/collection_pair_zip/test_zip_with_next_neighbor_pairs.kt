@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val nums = listOf(1, 2, 3, 4)
-            val pairs = nums.zipWithNext().joinToString("|") { "${'$'}{it.first}:${'$'}{it.second}" }
+            val pairs = nums.zipWithNext().joinToString("|") { "${it.first}:${it.second}" }
             __p((pairs).toString())
         
 __check("1:2|2:3|3:4")

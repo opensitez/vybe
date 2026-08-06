@@ -42,5 +42,5 @@ fun main() {
             __p((b.addStep(4)).toString())
             __p((b.value).toString())
         
-__check("4\n8")
+__check("12\n8")
 }

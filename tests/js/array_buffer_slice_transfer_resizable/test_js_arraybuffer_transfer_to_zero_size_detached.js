@@ -1,10 +1,15 @@
 // vybe-test: js/array_buffer_slice_transfer_resizable/test_js_arraybuffer_transfer_to_zero_size_detached
 // origin: languages/js/tests/js/test_js_array_buffer_slice_transfer_resizable.rs
 
+function __fmt(v) {
+    // console.log renders a bigint with an `n` suffix; String() drops it.
+    return typeof v === "bigint" ? String(v) + "n" : String(v);
+}
+
 function __line(...args) {
-    // console.log joins its arguments with a single space. String() is the
-    // coercion Vybe's logging host applies to each one.
-    return args.map(String).join(" ");
+    // console.log joins its arguments with a single space. __fmt is the
+    // per-argument coercion console.log applies.
+    return args.map(__fmt).join(" ");
 }
 
 // Output is COLLECTED, not paired. The emitter rewrites every `console.log(a)`

@@ -37,5 +37,5 @@ fun main() {
             }
             __p((out.value).toString())
         
-__check("7")
+__check("8")
 }

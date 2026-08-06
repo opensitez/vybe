@@ -30,5 +30,5 @@ fun main() {
             __p((nums.binarySearch(4, 1, 4)).toString())
             __p((nums.binarySearch(4, 0, 3)).toString())
         
-__check("3\n-5")
+__check("3\n-4")
 }

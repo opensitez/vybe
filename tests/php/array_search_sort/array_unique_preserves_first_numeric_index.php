@@ -24,4 +24,4 @@ ob_start();
 $u = array_unique([10 => 'a', 11 => 'b', 12 => 'a']);
 echo array_key_first($u) . ':' . implode(',', array_values($u));
 
-__vybe_check(ob_get_clean(), "10|a,b");
+__vybe_check(ob_get_clean(), "10:a,b");

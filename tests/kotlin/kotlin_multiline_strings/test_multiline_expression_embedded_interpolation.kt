@@ -28,8 +28,8 @@ fun __check(want: String) {
 fun main() {
             val n = 2
             val message = """
-${'$'}n squared is ${'$'}{n * n}
-${'$'}n cubed is ${'$'}{n * n * n}
+$n squared is ${n * n}
+$n cubed is ${n * n * n}
 """
             val lines = message.trim().lines()
             __p((lines[0]).toString())

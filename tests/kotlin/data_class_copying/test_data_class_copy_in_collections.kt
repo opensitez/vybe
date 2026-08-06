@@ -29,7 +29,7 @@ fun __check(want: String) {
 fun main() {
             val items = listOf(Item("a", 1), Item("b", 2))
             val upgraded = items.map { it.copy(count = it.count + 10) }
-            __p((upgraded.joinToString("|") { "${'$'}{it.name}:${'$'}{it.count}" }).toString())
+            __p((upgraded.joinToString("|") { "${it.name}:${it.count}" }).toString())
         
 __check("a:11|b:12")
 }

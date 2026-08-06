@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             fun format(v: Int): String {
-                return "v=${'$'}v"
+                return "v=$v"
             }
             __p((format(7)).toString())
         

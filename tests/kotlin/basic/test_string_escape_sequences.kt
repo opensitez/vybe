@@ -31,5 +31,5 @@ fun main() {
             __p(("quote: \"").toString())
             __p(('c').toString())
         
-__check("a\\nb\\n\ntab\tend\nquote: \"\nc")
+__check("a\\nb\\n\ntab\\tend\nquote: \"\nc")
 }

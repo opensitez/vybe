@@ -30,5 +30,5 @@ fun main() {
             __p((s.indexOf("-").toString()).toString())
             __p((s.lastIndexOf("x").toString()).toString())
         
-__check("1\n4")
+__check("1\n5")
 }

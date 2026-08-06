@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val entries = listOf(Pair("a", 3), Pair("b", 4))
-            val keys = entries.map { (k, v) -> "${'$'}k${'$'}v" }
+            val keys = entries.map { (k, v) -> "$k$v" }
             __p((keys.joinToString("|")).toString())
         
 __check("a3|b4")

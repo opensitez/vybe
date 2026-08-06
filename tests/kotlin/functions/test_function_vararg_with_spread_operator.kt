@@ -38,5 +38,5 @@ fun main() {
             __p((sum("base", 1, 2, 3, *extras)).toString())
             __p((sum("empty")).toString())
         
-__check("base:12\nempty:0")
+__check("base:15\nempty:0")
 }

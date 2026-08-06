@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val token = "global"
-            {
+            run {
                 val token = "inner"
                 __p((token).toString())
             }

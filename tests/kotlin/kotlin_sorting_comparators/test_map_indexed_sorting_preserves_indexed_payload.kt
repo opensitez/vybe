@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val values = listOf("c", "a", "b").withIndex().toList().sortedBy { it.value }
-            __p((values.map { "${'$'}{it.index}:${'$'}{it.value}" }.joinToString(",")).toString())
+            __p((values.map { "${it.index}:${it.value}" }.joinToString(",")).toString())
         
 __check("1:a,2:b,0:c")
 }

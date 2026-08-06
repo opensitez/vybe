@@ -29,7 +29,7 @@ fun main() {
             val a = listOf(1 to 2)
             val b = listOf(3 to 4)
             val combined = a + b
-            val out = combined.joinToString(",") { "${'$'}{it.first}=${'$'}{it.second}" }
+            val out = combined.joinToString(",") { "${it.first}=${it.second}" }
             __p((out).toString())
         
 __check("1=2,3=4")

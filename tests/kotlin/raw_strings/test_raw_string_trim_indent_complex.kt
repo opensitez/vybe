@@ -33,5 +33,5 @@ fun main() {
             """.trimIndent()
             __p((text.length).toString())
         
-__check("9")
+__check("7")
 }

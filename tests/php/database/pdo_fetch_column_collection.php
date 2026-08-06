@@ -22,7 +22,7 @@ function __vybe_check($got, $want) {
 ob_start();
 
 $pdo = new PDO('sqlite::memory:');
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ATTR_ERRMODE_EXCEPTION);
+$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $pdo->exec('CREATE TABLE nums (n INTEGER)');
 $pdo->exec('INSERT INTO nums VALUES (1), (2), (3)');
 $rows = $pdo->query('SELECT n FROM nums')->fetchAll(PDO::FETCH_COLUMN, 0);

@@ -31,5 +31,7 @@ fun main() {
             __p((unsigned).toString())
             __p((unsigned and 0x3FFFFFFF).toString())
         
-__check("1073741822\n2")
+// Real Kotlin agrees: 0x3FFFFFFE & 0x3FFFFFFF keeps every set bit —
+// 1073741822 again, not 2.
+__check("1073741822\n1073741822")
 }

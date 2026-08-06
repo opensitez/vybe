@@ -36,5 +36,5 @@ fun main() {
             __p((out['b']).toString())
             __p((out['c']).toString())
         
-__check("42\n12\n3")
+__check("53\n34\n3")
 }

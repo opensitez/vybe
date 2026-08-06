@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val source = linkedMapOf("a" to 1, "b" to 2, "c" to 3)
-            val indexed = source.entries.mapIndexed { index, e -> "${'$'}{index}:${'$'}{e.key}:${'$'}{e.value}" }
+            val indexed = source.entries.mapIndexed { index, e -> "${index}:${e.key}:${e.value}" }
             __p((indexed.joinToString("|")).toString())
         
 __check("0:a:1|1:b:2|2:c:3")

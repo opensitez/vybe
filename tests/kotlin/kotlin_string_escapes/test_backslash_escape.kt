@@ -26,7 +26,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            __p(("path:" + "c\\\\temp").toString())
+            __p(("path:" + "c\\temp").toString())
             __p(("quote:" + "\"").toString())
         
 __check("path:c\\temp\nquote:\"")

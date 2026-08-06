@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val value = 5
-            val msg = "value is ${'$'}{if (value > 3) "high" else "low"} and ${'$'}value"
+            val msg = "value is ${if (value > 3) "high" else "low"} and $value"
             __p((msg).toString())
         
 __check("value is high and 5")

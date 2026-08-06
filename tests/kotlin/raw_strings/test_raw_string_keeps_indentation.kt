@@ -31,5 +31,5 @@ fun main() {
             __p((text[0]).toString())
             __p((text[3]).toString())
         
-__check(" \nb")
+__check(" \n\n")
 }

@@ -28,7 +28,7 @@ fun __check(want: String) {
 fun main() {
             val ok = true
             val text = """
-status=${'$'}{if (ok) "yes" else "no"}
+status=${if (ok) "yes" else "no"}
 """
             __p((text.trim()).toString())
         

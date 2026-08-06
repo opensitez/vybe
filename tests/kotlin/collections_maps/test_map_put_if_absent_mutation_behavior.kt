@@ -33,5 +33,5 @@ fun main() {
             __p((counts["a"]).toString())
             __p((counts["b"]).toString())
         
-__check("1\n1\nnull\n9\n2")
+__check("1\n9\nnull\n9\n2")
 }

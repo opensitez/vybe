@@ -63,6 +63,6 @@ begin
   end;
 end;
 type TRect=class public W,H:Integer; constructor Create(w,h:Integer); end;
-constructor TRect.Create(w,h:Integer); begin W:=w; H:=h; end;
+constructor TRect.Create(w,h:Integer); begin Self.W:=w; Self.H:=h; end;
 var r:TRect; begin r:=TRect.Create(4,5); __p(__vs(r.W*r.H)); r.Free; __vybeCheck('20');
 end.

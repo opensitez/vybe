@@ -26,12 +26,19 @@ fun __check(want: String) {
 }
 
 fun main() {
+            // The buffered harness can't observe output past an UNCAUGHT
+            // exception (the .rs runner read stdout from the crashed run);
+            // an outer catch preserves the intent — `1 / 0` throws
+            // ArithmeticException, the x line never runs, the finally does.
             try {
-                val x = 1 / 0
-                __p((x).toString())
-            } finally {
-                __p(("finally").toString())
+                try {
+                    val x = 1 / 0
+                    __p((x).toString())
+                } finally {
+                    __p(("finally").toString())
+                }
+            } catch (e: Exception) {
             }
-        
+
 __check("finally")
 }

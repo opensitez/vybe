@@ -24,6 +24,8 @@ ob_start();
 $values = ["zero", "needle", "skip", "needle", "end"];
 echo array_search("needle", $values, true);
 echo "|";
-echo array_search("needle", $values, true, 3);
+// array_search() has no 4th "offset" parameter (ArgumentCountError); resuming
+// the search past an index is a key-preserving array_slice.
+echo array_search("needle", array_slice($values, 3, null, true), true);
 
 __vybe_check(ob_get_clean(), "1|3");

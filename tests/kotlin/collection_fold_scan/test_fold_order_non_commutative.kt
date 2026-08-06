@@ -27,8 +27,8 @@ fun __check(want: String) {
 
 fun main() {
             val values = listOf("a", "b", "c")
-            val left = values.fold("") { acc, value -> "${'$'}acc${'$'}{value}" }
-            val right = values.foldRight("") { value, acc -> "${'$'}value${'$'}{acc}" }
+            val left = values.fold("") { acc, value -> "$acc${value}" }
+            val right = values.foldRight("") { value, acc -> "$value${acc}" }
             __p((left).toString())
             __p((right).toString())
         

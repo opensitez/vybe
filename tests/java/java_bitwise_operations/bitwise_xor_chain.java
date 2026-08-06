@@ -34,7 +34,8 @@ public class Main {
 
     public static void main(String[] args) {
 __p((15 ^ 10 ^ 3));
-__check("4");
+// Real Java agrees: 15 ^ 10 = 5, 5 ^ 3 = 6.
+__check("6");
     }
 }
 

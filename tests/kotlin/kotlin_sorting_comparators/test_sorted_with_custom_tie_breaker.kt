@@ -29,7 +29,7 @@ fun main() {
             data class Item(val first: Int, val second: String)
             val values = listOf(Item(2, "b"), Item(1, "c"), Item(2, "a"))
             val out = values.sortedWith(compareBy<Item> { it.first }.thenBy { it.second })
-            __p((out.joinToString(",") { "${'$'}{it.first}${'$'}{it.second}" }).toString())
+            __p((out.joinToString(",") { "${it.first}${it.second}" }).toString())
         
 __check("1c,2a,2b")
 }

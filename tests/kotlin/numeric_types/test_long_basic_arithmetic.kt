@@ -33,5 +33,7 @@ fun main() {
             __p((a * 2).toString())
             __p((a / b).toString())
         
-__check("1000000000250\n999999999750\n2000000000000\n4000000")
+// Real Kotlin agrees: 1_000_000_000_000 / 250 is 4_000_000_000 — the old
+// value dropped three zeros.
+__check("1000000000250\n999999999750\n2000000000000\n4000000000")
 }

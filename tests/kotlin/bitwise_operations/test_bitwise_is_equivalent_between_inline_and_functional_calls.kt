@@ -34,5 +34,7 @@ fun main() {
             val invAnd = base and (1 shl 4).inv()
             __p((invAnd).toString())
         
-__check("25\n25\n201")
+// Real Kotlin agrees: 0b11011001 & 0b00001111 = 0b1001 = 9 for both the
+// inline and functional forms; only the inv-mask line was right.
+__check("9\n9\n201")
 }

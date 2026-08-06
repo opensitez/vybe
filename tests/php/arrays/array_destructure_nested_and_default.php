@@ -24,7 +24,11 @@ ob_start();
 $data = [['a', 'b'], ['c']];
 [$left, $right] = $data;
 [$x, $y] = $left;
-[$x2, $y2 = 'zz'] = $right;
+// PHP list()/[] destructuring has no default syntax — `[$a, $b = 'x'] = …` is
+// "Assignments can only happen to writable values". The default is spelled with
+// `??` on the read.
+[$x2] = $right;
+$y2 = $right[1] ?? 'zz';
 echo $x . $y . $x2 . $y2;
 
 __vybe_check(ob_get_clean(), "abczz");

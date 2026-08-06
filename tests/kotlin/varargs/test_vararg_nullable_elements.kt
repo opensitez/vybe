@@ -1,7 +1,7 @@
 // vybe-test: kotlin/varargs/test_vararg_nullable_elements
 // origin: languages/kotlin/tests/kotlin/test_varargs.rs
 
-fun read(values: vararg value: String?): String {
+fun read(vararg values: String?): String {
             return values.joinToString(";") { it ?: "nil" }
         }
 

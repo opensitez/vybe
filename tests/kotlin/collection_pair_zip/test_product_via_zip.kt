@@ -27,7 +27,7 @@ fun __check(want: String) {
 
 fun main() {
             val names = listOf("a", "b", "c")
-            val out = names.zip(generateSequence(0) { it + 1 }) { name, i -> "${'$'}name${'$'}i" }
+            val out = names.zip(generateSequence(0) { it + 1 }) { name, i -> "$name$i" }
             __p((out.joinToString(",")).toString())
         
 __check("a0,b1,c2")

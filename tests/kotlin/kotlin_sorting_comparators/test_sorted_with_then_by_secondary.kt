@@ -29,7 +29,7 @@ fun main() {
             data class Item(val first: Int, val second: Int)
             val values = listOf(Item(1, 9), Item(1, 2), Item(2, 5))
             val out = values.sortedWith(compareBy<Item> { it.first }.thenByDescending { it.second })
-            __p((out.joinToString(",") { "${'$'}{it.first}-${'$'}{it.second}" }).toString())
+            __p((out.joinToString(",") { "${it.first}-${it.second}" }).toString())
         
 __check("1-9,1-2,2-5")
 }

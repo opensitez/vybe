@@ -30,7 +30,7 @@ fun main() {
             val r = a.reduce { acc, value -> acc + value }
             __p((r).toString())
             val b = emptyList<Int>()
-            __p((b.reduceOrNull() ?: "empty").toString())
+            __p((b.reduceOrNull { acc, value -> acc + value } ?: "empty").toString())
         
 __check("10\nempty")
 }

@@ -1,10 +1,15 @@
 // vybe-test: js/object_entries_keys_values_symbols/test_js_object_get_own_property_symbols_includes_non_enumerable
 // origin: languages/js/tests/js/test_js_object_entries_keys_values_symbols.rs
 
+function __fmt(v) {
+    // console.log renders a bigint with an `n` suffix; String() drops it.
+    return typeof v === "bigint" ? String(v) + "n" : String(v);
+}
+
 function __line(...args) {
-    // console.log joins its arguments with a single space. String() is the
-    // coercion Vybe's logging host applies to each one.
-    return args.map(String).join(" ");
+    // console.log joins its arguments with a single space. __fmt is the
+    // per-argument coercion console.log applies.
+    return args.map(__fmt).join(" ");
 }
 
 // Output is COLLECTED, not paired. The emitter rewrites every `console.log(a)`

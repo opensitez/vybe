@@ -2,7 +2,7 @@
 // origin: languages/kotlin/tests/kotlin/test_kotlin_string_interpolation_advanced.rs
 
 fun label(value: String?): String {
-            return "${'$'}{value ?: "none"}"
+            return "${value ?: "none"}"
         }
         var __buf: String = ""
 

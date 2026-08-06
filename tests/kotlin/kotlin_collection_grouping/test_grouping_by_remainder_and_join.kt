@@ -31,5 +31,5 @@ fun main() {
             val oddLast = grouped[1]!![2]
             __p((evenFirst + oddLast).toString())
         
-__check("16")
+__check("15")
 }

@@ -29,4 +29,4 @@ echo count($a) . '|';
 echo $a[1] . '|';
 echo $a[1.9];
 
-__vybe_check(ob_get_clean(), "2|string1|string1");
+__vybe_check(ob_get_clean(), "2|float1|float1");

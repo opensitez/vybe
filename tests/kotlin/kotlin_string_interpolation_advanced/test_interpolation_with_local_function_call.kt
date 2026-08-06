@@ -28,7 +28,7 @@ fun __check(want: String) {
 
 fun main() {
             val x = 3
-            __p(("doubled=${'$'}{value(x)}").toString())
+            __p(("doubled=${value(x)}").toString())
         
 __check("doubled=6")
 }

@@ -1,7 +1,10 @@
 // vybe-test: kotlin/operators/test_equality_operators_for_data_and_reference
 // origin: languages/kotlin/tests/kotlin/test_operators.rs
 
-class Cell(val value: Int)
+// `data class`, as the test name says: a PLAIN class keeps identity `equals`,
+// so real Kotlin prints false/true/false for this body — only the data
+// modifier makes `a == b` structural (true/true/false).
+data class Cell(val value: Int)
 
         var __buf: String = ""
 

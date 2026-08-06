@@ -30,7 +30,7 @@ fun main() {
                 a
                 b
             """.trimIndent()
-            __p(("${'$'}{lines.lines().size}").toString())
+            __p(("${lines.lines().size}").toString())
             __p((lines[0]).toString())
         
 __check("2\na")

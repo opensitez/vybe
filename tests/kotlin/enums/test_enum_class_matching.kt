@@ -31,7 +31,7 @@ fun __check(want: String) {
 
 fun main() {
             val s = Status.APPROVED
-            if (s == 1) {
+            if (s == Status.APPROVED) {
                 __p(("Approved Status").toString())
             } else {
                 __p(("Other Status").toString())

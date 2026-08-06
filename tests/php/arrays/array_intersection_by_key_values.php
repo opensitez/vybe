@@ -30,4 +30,4 @@ ksort($all);
 echo implode(',', array_keys($both)) . '|';
 echo implode(',', $all);
 
-__vybe_check(ob_get_clean(), "a,c|c");
+__vybe_check(ob_get_clean(), "a,c|3");

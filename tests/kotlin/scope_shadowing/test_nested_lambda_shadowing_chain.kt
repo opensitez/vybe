@@ -28,11 +28,11 @@ fun __check(want: String) {
 fun main() {
             val prefix = "A"
             val f = { prefix: String ->
-                { prefix: Int -> "${'$'}{prefix}_${'$'}{prefix + 1}" }
+                { prefix: Int -> "${prefix}_${prefix + 1}" }
             }
             val g = f("B")
             __p((g(3)).toString())
             __p((prefix).toString())
         
-__check("B_4\nA")
+__check("3_4\nA")
 }

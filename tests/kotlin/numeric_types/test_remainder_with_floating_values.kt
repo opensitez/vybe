@@ -30,5 +30,9 @@ fun main() {
             __p((8.2 % 2.0).toString())
             __p((-7.5 % 2.0).toString())
         
-__check("1.5\n0.2\n-1.5")
+// Real Kotlin agrees: IEEE 8.2 is not exactly 8.2, so `8.2 % 2.0` prints its
+// shortest round-trip form "0.19999999999999929" — never "0.2". (Currently
+// still red: the host's Number→String stops at "0.1999999999999993", an ecma
+// shortest-repr deviation reported upstream.)
+__check("1.5\n0.19999999999999929\n-1.5")
 }

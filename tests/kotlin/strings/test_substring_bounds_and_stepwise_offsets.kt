@@ -31,5 +31,5 @@ fun main() {
             __p((word.substring(3)).toString())
             __p((word.substring(word.length - 2)).toString())
         
-__check("com\niler\ner")
+__check("com\npiler\ner")
 }

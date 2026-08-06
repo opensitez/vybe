@@ -27,4 +27,4 @@ echo array_product([5]);
 echo "|";
 echo array_product([2, 2.5, 4]);
 
-__vybe_check(ob_get_clean(), "10|10|20");
+__vybe_check(ob_get_clean(), "1|5|20");

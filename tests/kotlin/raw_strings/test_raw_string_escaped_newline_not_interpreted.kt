@@ -29,5 +29,5 @@ fun main() {
             val text = """a\nb"""
             __p((text.length).toString())
         
-__check("3")
+__check("4")
 }

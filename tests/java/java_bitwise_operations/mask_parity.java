@@ -34,7 +34,8 @@ public class Main {
 
     public static void main(String[] args) {
 int v = 13; __p((v & 2) == 0);
-__check("false");
+// Real Java agrees: 13 is 0b1101 — bit 1 is CLEAR, so the test is true.
+__check("true");
     }
 }
 

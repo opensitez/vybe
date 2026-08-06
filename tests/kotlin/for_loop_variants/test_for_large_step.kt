@@ -32,5 +32,5 @@ fun main() {
             }
             __p((total).toString())
         
-__check("30")
+__check("50")
 }

@@ -32,5 +32,5 @@ fun main() {
                 i += 1
             } while (i < 3)
         
-__check("0\n1\n2\n3")
+__check("0\n1\n2")
 }

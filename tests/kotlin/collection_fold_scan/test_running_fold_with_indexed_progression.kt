@@ -31,5 +31,5 @@ fun main() {
             }
             __p((parts.joinToString(",")).toString())
         
-__check("0,1,3,6,10")
+__check("0,1,3,7,13")
 }

@@ -30,5 +30,5 @@ fun main() {
             __p((10 % (-3)).toString())
             __p(((-10) % (-3)).toString())
         
-__check("-1\n-1\n-1")
+__check("-1\n1\n-1")
 }

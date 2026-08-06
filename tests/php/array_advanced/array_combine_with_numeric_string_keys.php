@@ -29,4 +29,4 @@ echo $combined["20"];
 echo isset($combined[30.0]) ? "has30" : "no30";
 echo $combined[0] ?? "missing0";
 
-__vybe_check(ob_get_clean(), "abhas30missing0");
+__vybe_check(ob_get_clean(), "abno30missing0");

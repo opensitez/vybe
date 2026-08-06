@@ -26,8 +26,8 @@ fun __check(want: String) {
 }
 
 fun main() {
-            __p(("literal ${'$'}").toString())
-            __p(("price ${'$'}{10}").toString())
+            __p(("literal $").toString())
+            __p(("price ${10}").toString())
         
 __check("literal \$\nprice 10")
 }

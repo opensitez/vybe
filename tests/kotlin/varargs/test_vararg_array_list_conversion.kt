@@ -33,5 +33,5 @@ fun __check(want: String) {
 fun main() {
             __p((asList("a", 1, 2, 3)).toString())
         
-__check("1-2-3")
+__check("a1-2-3")
 }

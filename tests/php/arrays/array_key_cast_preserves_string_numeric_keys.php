@@ -26,4 +26,4 @@ echo array_key_exists('1', $a) ? 'one' : 'no';
 echo '|';
 echo array_key_exists(1, $a) ? 'num1' : 'no';
 
-__vybe_check(ob_get_clean(), "one|no");
+__vybe_check(ob_get_clean(), "one|num1");

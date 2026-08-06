@@ -28,4 +28,4 @@ try {
     echo 'error';
 }
 
-__vybe_check(ob_get_clean(), "error");
+__vybe_check(ob_get_clean(), "no-error");

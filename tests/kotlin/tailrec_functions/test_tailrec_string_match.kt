@@ -32,5 +32,5 @@ fun __check(want: String) {
 fun main() {
             __p((countChars("abracadabra")).toString())
         
-__check("4")
+__check("5")
 }

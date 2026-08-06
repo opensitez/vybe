@@ -34,7 +34,8 @@ public class Main {
 
     public static void main(String[] args) {
 int a = 12; a >>= 2; a <<= 2; __p(a);
-__check("8");
+// Real Java agrees: 12 >> 2 = 3, 3 << 2 = 12.
+__check("12");
     }
 }
 

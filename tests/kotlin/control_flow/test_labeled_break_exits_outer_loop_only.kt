@@ -37,5 +37,5 @@ fun main() {
             }
             __p((values).toString())
         
-__check("111;112;21;")
+__check("11;12;13;21;")
 }

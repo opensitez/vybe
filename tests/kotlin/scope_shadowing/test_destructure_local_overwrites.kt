@@ -32,5 +32,5 @@ fun main() {
             __p((count).toString())
             __p(("outer").toString())
         
-__check("x\n0\nouter")
+__check("0\nx\nouter")
 }

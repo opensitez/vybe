@@ -31,5 +31,7 @@ fun main() {
             __p((255.inv()).toString())
             __p((1023.inv()).toString())
         
-__check("-1\n0\n-256\n-1024")
+// Real Kotlin agrees: `inv()` is bitwise NOT, so `1.inv()` is ~1 = -2 in
+// two's complement (the old `0` expectation was a logical-not answer).
+__check("-1\n-2\n-256\n-1024")
 }

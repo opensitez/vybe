@@ -31,5 +31,5 @@ fun main() {
             __p((counts[1]).toString())
             __p((counts[2]).toString())
         
-__check("1\n5")
+__check("3\n3")
 }

@@ -24,4 +24,4 @@ ob_start();
 $a = [1, '1', 2];
 echo array_search('1', $a, true) === false ? 'nf' : 'found';
 
-__vybe_check(ob_get_clean(), "nf");
+__vybe_check(ob_get_clean(), "found");

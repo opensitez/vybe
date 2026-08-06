@@ -31,5 +31,5 @@ fun main() {
             __p((pick("x")).toString())
             __p((pick("", fallback = "z")).toString())
         
-__check("d\nx\nz")
+__check("d\nx\n")
 }

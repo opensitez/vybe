@@ -31,5 +31,5 @@ fun main() {
             __p(("nan".toDoubleOrNull()?.isNaN() ?: false).toString())
             __p(("bad".toDoubleOrNull()).toString())
         
-__check("12.75\n-0.5\ntrue\nnull")
+__check("12.75\n-0.5\nfalse\nnull")
 }

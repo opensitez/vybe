@@ -31,5 +31,7 @@ fun main() {
             __p((8 / 4.0).toString())
             __p((8L / 3L).toString())
         
-__check("3\n3.5\n2\n2")
+// Real Kotlin agrees: `1 + 2.0` and `8 / 4.0` are Double, and Double prints
+// with its decimal point — "3.0" and "2.0". Only Long/Long stays integral.
+__check("3.0\n3.5\n2.0\n2")
 }

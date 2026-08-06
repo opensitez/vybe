@@ -36,5 +36,5 @@ fun main() {
             }
             __p((band).toString())
         
-__check("D")
+__check("F")
 }

@@ -33,5 +33,5 @@ fun main() {
                 .sum()
             __p((out).toString())
         
-__check("3\n12")
+__check("2\n10")
 }

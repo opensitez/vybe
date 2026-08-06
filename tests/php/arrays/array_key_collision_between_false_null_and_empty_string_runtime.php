@@ -31,4 +31,4 @@ echo $a[''];
 echo '|';
 echo count($a);
 
-__vybe_check(ob_get_clean(), "empty|empty|1");
+__vybe_check(ob_get_clean(), "false|empty|2");

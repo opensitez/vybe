@@ -34,5 +34,8 @@ fun main() {
             __p((-0.0).toString())
             __p((0.0 == -0.0).toString())
         
-__check("0\n0\n0\n0\n0\n0\ntrue")
+// Real Kotlin agrees: Doubles print with their decimal point and negative
+// zero KEEPS its sign — `println(0.0)` is "0.0" and `println(-0.0)` is
+// "-0.0" (only the Int lines render bare).
+__check("0\n0\n0\n0\n0.0\n-0.0\ntrue")
 }

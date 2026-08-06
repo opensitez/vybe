@@ -26,4 +26,4 @@ $r = array_splice($a, 1, 1, ['x' => 'vv']);
 echo isset($r[0]) ? $r[0] : 'none';
 echo ':' . count($r);
 
-__vybe_check(ob_get_clean(), "v2:1");
+__vybe_check(ob_get_clean(), "none:1");

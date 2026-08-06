@@ -32,5 +32,7 @@ fun main() {
             __p((value / 2.0).toString())
             __p((10 / 4 + 0.5).toString())
         
-__check("7.5\n7.5\n2.5\n3.5")
+// Real Kotlin agrees: `10 / 4` is INTEGER division (2), so the last line is
+// 2.5 — 3.5 would need `10 / 4.0`.
+__check("7.5\n7.5\n2.5\n2.5")
 }

@@ -29,7 +29,7 @@ fun __check(want: String) {
 }
 
 fun main() {
-            val inc = fun Int.() -> Int { return this + 1 }
+            val inc = fun Int.(): Int { return this + 1 }
             __p((applyBlock(5, inc)).toString())
         
 __check("6")

@@ -40,5 +40,6 @@ fun main() {
             }
             __p((sum).toString())
         
-__check("12")
+// Real Kotlin agrees: i=-1 throws (catch adds 10), then 0+1+2 land — 13.
+__check("13")
 }

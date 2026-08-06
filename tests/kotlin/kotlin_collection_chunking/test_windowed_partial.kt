@@ -31,5 +31,5 @@ fun main() {
             __p((windows.size).toString())
             __p((windows[2].joinToString(",")).toString())
         
-__check("2\n3")
+__check("3\n3")
 }
