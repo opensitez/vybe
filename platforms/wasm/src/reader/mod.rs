@@ -281,6 +281,19 @@ fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, String> {
     Ok(imports)
 }
 
+/// The VM's internal bytecode carries bulk-memory/table indices as a fixed
+/// u8. A spec module may use any u32 index; rather than silently truncating
+/// (`as u8`) during translation — which mis-decodes a VALID module — reject
+/// it loudly here until the internal width is widened.
+fn check_u8_immediate_ceiling(idx: u32, what: &str) -> Result<(), String> {
+    if idx > u8::MAX as u32 {
+        return Err(format!(
+            "Unsupported: {what} {idx} exceeds the VM's u8 immediate width (max 255)"
+        ));
+    }
+    Ok(())
+}
+
 fn section_count(data: &[u8]) -> Result<u32, String> {
     if data.is_empty() {
         return Err("Invalid WASM: missing required section count".into());
@@ -1302,6 +1315,7 @@ fn validate_instruction_stream(
                         if data_idx as usize >= data_count {
                             return Err("Invalid WASM: memory.init data index out of range".into());
                         }
+                        check_u8_immediate_ceiling(data_idx, "memory.init data index")?;
                         skip_leb128(code, &mut pos);
                         st.pop(3, "memory.init")?;
                     }
@@ -1311,6 +1325,7 @@ fn validate_instruction_stream(
                         if data_idx as usize >= data_count {
                             return Err("Invalid WASM: data.drop index out of range".into());
                         }
+                        check_u8_immediate_ceiling(data_idx, "data.drop data index")?;
                     }
                     0x0A => {
                         skip_leb128(code, &mut pos);
@@ -1329,31 +1344,55 @@ fn validate_instruction_stream(
                                 "Invalid WASM: table.init element index out of range".into()
                             );
                         }
+                        check_u8_immediate_ceiling(elem_idx, "table.init element index")?;
                         skip_leb128(code, &mut pos);
                         st.pop(3, "table.init")?;
                     }
                     0x0D => {
-                        skip_leb128(code, &mut pos); // elem.drop
+                        // elem.drop — same index validity rule as data.drop.
+                        let (elem_idx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        if elem_idx as usize >= elem_count {
+                            return Err("Invalid WASM: elem.drop index out of range".into());
+                        }
+                        check_u8_immediate_ceiling(elem_idx, "elem.drop element index")?;
                     }
                     0x0E => {
-                        skip_leb128(code, &mut pos);
-                        skip_leb128(code, &mut pos);
+                        let (dst_table, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u8_immediate_ceiling(dst_table, "table.copy dst table")?;
+                        let (src_table, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u8_immediate_ceiling(src_table, "table.copy src table")?;
                         st.pop(3, "table.copy")?;
                     }
                     0x0F => {
-                        skip_leb128(code, &mut pos);
+                        let (table_idx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u8_immediate_ceiling(table_idx, "table.grow table index")?;
                         st.pop(2, "table.grow")?;
                         st.push(1);
                     }
                     0x10 => {
-                        skip_leb128(code, &mut pos);
+                        let (table_idx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u8_immediate_ceiling(table_idx, "table.size table index")?;
                         st.push(1); // table.size
                     }
                     0x11 => {
-                        skip_leb128(code, &mut pos);
+                        let (table_idx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u8_immediate_ceiling(table_idx, "table.fill table index")?;
                         st.pop(3, "table.fill")?;
                     }
-                    _ => {}
+                    // Spec: an unrecognised sub-opcode is a MALFORMED module.
+                    // Accepting it silently let the translate pass skip the
+                    // instruction and desync from its operand bytes.
+                    other => {
+                        return Err(format!(
+                            "Invalid WASM: unknown 0xFC sub-opcode 0x{other:02X}"
+                        ));
+                    }
                 }
             }
             0xFD => {
@@ -1402,6 +1441,10 @@ fn validate_instruction_stream(
                         st.push(1);
                     }
                     0x03 => {
+                        // atomic.fence: the u8 immediate MUST be 0x00 per spec.
+                        if code.get(pos).copied().unwrap_or(0) != 0 {
+                            return Err("Invalid WASM: atomic.fence immediate must be 0".into());
+                        }
                         pos = pos.saturating_add(1).min(code.len());
                     }
                     0x10..=0x16 => {
@@ -1423,7 +1466,13 @@ fn validate_instruction_stream(
                         st.pop(3, "atomic cmpxchg")?;
                         st.push(1);
                     }
-                    _ => {}
+                    // Spec: unknown atomic sub-opcodes are malformed, not
+                    // skippable — silent acceptance desyncs the operand walk.
+                    other => {
+                        return Err(format!(
+                            "Invalid WASM: unknown 0xFE sub-opcode 0x{other:02X}"
+                        ));
+                    }
                 }
             }
             _ => {}
@@ -1472,6 +1521,36 @@ fn decode_standard_wasm(
     // Parse imports
     let imports = parse_import_section(import_sec);
     let import_func_count = imports.iter().filter(|(_, _, kind)| *kind == 0).count();
+
+    // Function-import (module, name) pairs in index-space order, and the
+    // param count of EVERY function in the module index space (imports
+    // first, then local funcs) — `call funcidx` decode derives its
+    // VM-internal argc byte from these instead of hardcoding 0.
+    let import_details = parse_import_details(import_sec).unwrap_or_default();
+    let func_imports: Vec<(String, String)> = imports
+        .iter()
+        .filter(|(_, _, kind)| *kind == 0)
+        .map(|(m, n, _)| (m.clone(), n.clone()))
+        .collect();
+    let mut func_arities: Vec<u8> = Vec::with_capacity(import_func_count + func_type_indices.len());
+    for d in &import_details {
+        if d.kind == 0 {
+            func_arities.push(
+                types
+                    .get(d.type_index as usize)
+                    .map(|(params, _)| params.len() as u8)
+                    .unwrap_or(0),
+            );
+        }
+    }
+    for &type_idx in &func_type_indices {
+        func_arities.push(
+            types
+                .get(type_idx as usize)
+                .map(|(params, _)| params.len() as u8)
+                .unwrap_or(0),
+        );
+    }
 
     // Parse exports to find function names
     let exports = parse_export_section(export_sec);
@@ -1548,7 +1627,8 @@ fn decode_standard_wasm(
             &name,
             arity,
             local_count,
-            import_func_count,
+            &func_imports,
+            &func_arities,
             uses_memory64,
             uses_table64,
             &types,
@@ -1637,7 +1717,8 @@ fn translate_wasm_to_chunk(
     name: &str,
     arity: u8,
     wasm_local_count: u32,
-    _import_count: usize,
+    func_imports: &[(String, String)],
+    func_arities: &[u8],
     uses_memory64: bool,
     uses_table64: bool,
     types: &[(Vec<u8>, Vec<u8>)],
@@ -1646,6 +1727,14 @@ fn translate_wasm_to_chunk(
     let mut chunk = Chunk::new(name);
     chunk.arity = arity;
     chunk.local_count = arity as u16 + wasm_local_count as u16;
+
+    // Register the module's function imports on THIS chunk so a decoded
+    // `call funcidx` resolves chunk-scoped, the same contract the compiler's
+    // emitters follow. Imports occupy the front of the module's function
+    // index space, so the chunk-local index equals the module funcidx.
+    for (module, fn_name) in func_imports {
+        chunk.add_import(module, fn_name);
+    }
 
     // Import the module's exception tags by a stable name so every function
     // chunk resolves the same tag index to the SAME load-time entity (a
@@ -1665,7 +1754,9 @@ fn translate_wasm_to_chunk(
         pos += 1;
 
         match byte {
-            0x00 => chunk.emit_op(Op::HALT, 0),
+            // Spec §5.4.1: 0x00 is `unreachable` — it MUST trap. Mapping it to
+            // HALT made a round-tripped module's traps into clean exits.
+            0x00 => chunk.emit_op(Op::UNREACHABLE, 0),
             0x01 => {} // nop
             0x09 => {
                 chunk.emit_op(Op::RETHROW, 0);
@@ -1827,11 +1918,39 @@ fn translate_wasm_to_chunk(
             0x1A => chunk.emit_op(Op::DROP, 0),
             0x1B => chunk.emit_op(Op::SELECT, 0),
 
-            // call funcidx — WASM direct call by function index
+            // call funcidx — WASM direct call by function index. The
+            // VM-internal argc byte comes from the callee's function type
+            // (it used to be hardcoded 0, silently dropping every argument
+            // on a round-tripped host call).
             0x10 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_call(idx as u16, 0, 0);
+                let argc = func_arities.get(idx as usize).copied().unwrap_or(0);
+                let import_count = func_imports.len() as u32;
+                if idx < import_count {
+                    chunk.emit_call(idx as u16, argc, 0);
+                } else {
+                    // Local function: funcref model (REF_FUNC + CALL_REF).
+                    // Function chunks start at index 1 (script is chunk 0).
+                    // The spec stack has the args already pushed, but
+                    // call_value expects the callee BELOW them — stage the
+                    // args in scratch locals, push the funcref, restore.
+                    let chunk_idx = 1 + (idx - import_count) as u16;
+                    let base = if argc > 0 {
+                        chunk.alloc_scratch(argc as u16)
+                    } else {
+                        0
+                    };
+                    for i in (0..argc as u16).rev() {
+                        chunk.emit_op_u16(Op::LOCAL_SET, base + i, 0);
+                    }
+                    chunk.emit_op_u16(Op::REF_FUNC, chunk_idx, 0);
+                    chunk.emit(0, 0); // 0 upvalues
+                    for i in 0..argc as u16 {
+                        chunk.emit_op_u16(Op::LOCAL_GET, base + i, 0);
+                    }
+                    chunk.emit_op_u8(Op::CALL_REF, argc, 0);
+                }
             }
 
             // local.get — slot 0 is the first argument, matching the VM.
@@ -2600,9 +2719,6 @@ fn emit_threads_prefixed(
             let immediate = wasm.get(*pos).copied().unwrap_or(0);
             *pos = (*pos).saturating_add(1).min(wasm.len());
             chunk.emit(immediate, 0);
-        }
-        _ if op == Op::THREAD_SPAWN || op == Op::THREAD_JOIN => {
-            chunk.emit_op(op, 0);
         }
         _ => {
             chunk.emit_op(op, 0);

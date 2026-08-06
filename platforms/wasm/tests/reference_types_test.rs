@@ -22,8 +22,7 @@ fn table_get_returns_func_table_slot() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     // Push index 1, read from table 0.
-    let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, one, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -37,8 +36,7 @@ fn table_get_traps_on_out_of_bounds() {
     vm.wasm_tables = vec![vec![Value::Null]];
 
     let mut chunk = Chunk::new("<script>");
-    let idx = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, idx, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -54,10 +52,8 @@ fn table_set_writes_to_func_table_slot() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     // table.set 0: stack order [index, value]
-    let idx = chunk.add_constant(Value::I32(0));
-    let val = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, idx, 0);
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op_u8(Op::TABLE_SET, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -73,10 +69,8 @@ fn table_set_traps_on_out_of_bounds() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let idx = chunk.add_constant(Value::I32(5));
-    let val = chunk.add_constant(Value::I32(99));
-    chunk.emit_op_u16(Op::CONST, idx, 0);
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_i32_const(5, 0);
+    chunk.emit_i32_const(99, 0);
     chunk.emit_op_u8(Op::TABLE_SET, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -92,8 +86,7 @@ fn table_set_traps_on_out_of_bounds() {
 #[test]
 fn table_get_unknown_table_traps() {
     let mut chunk = Chunk::new("<script>");
-    let idx = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, idx, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 3, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -109,12 +102,9 @@ fn select_t_picks_first_when_cond_is_truthy() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     // select_t: [a, b, cond] → cond ? a : b
-    let a = chunk.add_constant(Value::I32(10));
-    let b = chunk.add_constant(Value::I32(20));
-    let c = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_i32_const(10, 0);
+    chunk.emit_i32_const(20, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::SELECT_T, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -127,12 +117,9 @@ fn select_t_picks_second_when_cond_is_zero() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let a = chunk.add_constant(Value::I32(10));
-    let b = chunk.add_constant(Value::I32(20));
-    let c = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_i32_const(10, 0);
+    chunk.emit_i32_const(20, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::SELECT_T, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -156,12 +143,11 @@ fn multi_table_routes_by_tableidx() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 2;
     // Read table 0[0], save; read table 1[0], add them.
-    let zero = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 0, 0); // tableidx = 0
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
-    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 1, 0); // tableidx = 1
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
@@ -188,8 +174,7 @@ fn table_grow_extends_selected_table() {
     chunk.local_count = 1;
     // table.grow table 1 by 3 entries, init = null. Returns old size = 2.
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // init value
-    let delta = chunk.add_constant(Value::I32(3));
-    chunk.emit_op_u16(Op::CONST, delta, 0);
+    chunk.emit_i32_const(3, 0);
     chunk.emit_op_u8(Op::TABLE_GROW, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -226,8 +211,7 @@ fn table_size_unknown_table_traps() {
 fn table_grow_unknown_table_traps() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    let delta = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, delta, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op_u8(Op::TABLE_GROW, 2, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -241,12 +225,9 @@ fn table_fill_writes_requested_range() {
     vm.wasm_tables = vec![vec![Value::I32(0); 5]];
 
     let mut chunk = Chunk::new("<script>");
-    let dst = chunk.add_constant(Value::I32(1));
-    let value = chunk.add_constant(Value::I32(55));
-    let count = chunk.add_constant(Value::I32(3));
-    chunk.emit_op_u16(Op::CONST, dst, 0);
-    chunk.emit_op_u16(Op::CONST, value, 0);
-    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(55, 0);
+    chunk.emit_i32_const(3, 0);
     chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -265,11 +246,9 @@ fn table_fill_oob_traps() {
     vm.wasm_tables = vec![vec![Value::Null; 2]];
 
     let mut chunk = Chunk::new("<script>");
-    let dst = chunk.add_constant(Value::I32(1));
-    let count = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, dst, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -281,10 +260,9 @@ fn table_fill_oob_traps() {
 #[test]
 fn table_fill_unknown_table_traps() {
     let mut chunk = Chunk::new("<script>");
-    let zero = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op_u8(Op::TABLE_FILL, 2, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -299,12 +277,9 @@ fn table_fill_zero_count_at_table_end_is_noop() {
     vm.wasm_tables = vec![vec![Value::I32(1), Value::I32(2)]];
 
     let mut chunk = Chunk::new("<script>");
-    let end = chunk.add_constant(Value::I32(2));
-    let value = chunk.add_constant(Value::I32(99));
-    let zero = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, end, 0);
-    chunk.emit_op_u16(Op::CONST, value, 0);
-    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_i32_const(2, 0);
+    chunk.emit_i32_const(99, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -325,12 +300,9 @@ fn table_copy_overlapping_forward_preserves_source_snapshot() {
     ]];
 
     let mut chunk = Chunk::new("<script>");
-    let dst = chunk.add_constant(Value::I32(1));
-    let src = chunk.add_constant(Value::I32(0));
-    let count = chunk.add_constant(Value::I32(3));
-    chunk.emit_op_u16(Op::CONST, dst, 0);
-    chunk.emit_op_u16(Op::CONST, src, 0);
-    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(3, 0);
     chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -346,12 +318,9 @@ fn table_copy_destination_oob_traps() {
     vm.wasm_tables = vec![vec![Value::Null; 3]];
 
     let mut chunk = Chunk::new("<script>");
-    let dst = chunk.add_constant(Value::I32(2));
-    let src = chunk.add_constant(Value::I32(0));
-    let count = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, dst, 0);
-    chunk.emit_op_u16(Op::CONST, src, 0);
-    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_i32_const(2, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -366,12 +335,9 @@ fn table_copy_source_oob_traps() {
     vm.wasm_tables = vec![vec![Value::Null; 3]];
 
     let mut chunk = Chunk::new("<script>");
-    let dst = chunk.add_constant(Value::I32(0));
-    let src = chunk.add_constant(Value::I32(2));
-    let count = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, dst, 0);
-    chunk.emit_op_u16(Op::CONST, src, 0);
-    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(2, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -388,12 +354,9 @@ fn table_copy_routes_to_selected_extra_table() {
         .push(vec![Value::I32(1), Value::I32(2), Value::I32(3)]);
 
     let mut chunk = Chunk::new("<script>");
-    let dst = chunk.add_constant(Value::I32(1));
-    let src = chunk.add_constant(Value::I32(0));
-    let count = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, dst, 0);
-    chunk.emit_op_u16(Op::CONST, src, 0);
-    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u8_u8(Op::TABLE_COPY, 1, 1, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -415,11 +378,9 @@ fn table_copy_zero_count_at_table_end_is_noop() {
     vm.wasm_tables = vec![vec![Value::I32(1), Value::I32(2)]];
 
     let mut chunk = Chunk::new("<script>");
-    let end = chunk.add_constant(Value::I32(2));
-    let zero = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, end, 0);
-    chunk.emit_op_u16(Op::CONST, end, 0);
-    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_i32_const(2, 0);
+    chunk.emit_i32_const(2, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -435,10 +396,9 @@ fn table_init_after_elem_drop_traps() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op_u8(Op::ELEM_DROP, 0, 0);
-    let zero = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, zero, 0); // dst
-    chunk.emit_op_u16(Op::CONST, zero, 0); // src
-    chunk.emit_op_u16(Op::CONST, zero, 0); // count
+    chunk.emit_i32_const(0, 0); // dst
+    chunk.emit_i32_const(0, 0); // src
+    chunk.emit_i32_const(0, 0); // count
     chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -462,8 +422,7 @@ fn ref_is_null_true_for_null() {
 #[test]
 fn ref_is_null_false_for_non_null() {
     let mut c = Chunk::new("<script>");
-    let k = c.add_constant(Value::I32(42));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i32_const(42, 0);
     c.emit_op(Op::REF_IS_NULL, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).unwrap();
@@ -484,10 +443,8 @@ fn ref_eq_same_value_is_true() {
 #[test]
 fn ref_eq_different_values_is_false() {
     let mut c = Chunk::new("<script>");
-    let k1 = c.add_constant(Value::I32(1));
-    let k2 = c.add_constant(Value::I32(2));
-    c.emit_op_u16(Op::CONST, k1, 0);
-    c.emit_op_u16(Op::CONST, k2, 0);
+    c.emit_i32_const(1, 0);
+    c.emit_i32_const(2, 0);
     c.emit_op(Op::REF_EQ, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).unwrap();
@@ -497,8 +454,7 @@ fn ref_eq_different_values_is_false() {
 #[test]
 fn ref_as_non_null_passes_non_null() {
     let mut c = Chunk::new("<script>");
-    let k = c.add_constant(Value::I32(99));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i32_const(99, 0);
     c.emit_op(Op::REF_AS_NON_NULL, 0);
     c.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![c]).unwrap();

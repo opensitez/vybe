@@ -125,8 +125,7 @@ fn script_chunk() -> Chunk {
 fn loop_chunk(name: &str) -> Chunk {
     let mut f = Chunk::new(name);
     f.arity = 0;
-    let zero = f.add_constant(Value::I32(0));
-    f.emit_op_u16(Op::CONST, zero, 0);
+    f.emit_i32_const(0, 0);
     f.emit_loop_s(0);
     f.emit_dup(0);
     f.emit_br_if(0, 0); // back-edge → likely
@@ -209,8 +208,7 @@ fn branch_hint_marks_exception_handler_as_unlikely() {
     let blk = f.emit_block(0);
     f.emit_op(Op::LOOP, 0);
     f.emit(0u8, 0); // result_count = 0
-    let zero = f.add_constant(Value::I32(0));
-    f.emit_op_u16(Op::CONST, zero, 0);
+    f.emit_i32_const(0, 0);
     f.emit_br_if(0, 0); // back-edge → likely
     f.emit_end(0);
     f.emit_end(0);
@@ -273,8 +271,7 @@ fn branch_hint_offsets_within_function_are_strictly_increasing() {
     // Two conditional branches in one loop: offsets must be sorted.
     let mut f = Chunk::new("two_branches");
     f.arity = 0;
-    let zero = f.add_constant(Value::I32(0));
-    f.emit_op_u16(Op::CONST, zero, 0);
+    f.emit_i32_const(0, 0);
     f.emit_loop_s(0);
     f.emit_dup(0);
     f.emit_br_if(0, 0); // first back-edge
@@ -362,8 +359,7 @@ fn branch_hint_payload_function_count_matches_loop_functions() {
 fn branch_hint_nested_loops_both_get_hints() {
     let mut f = Chunk::new("nested");
     f.arity = 0;
-    let zero = f.add_constant(Value::I32(0));
-    f.emit_op_u16(Op::CONST, zero, 0);
+    f.emit_i32_const(0, 0);
     f.emit_loop_s(0); // outer loop
     f.emit_loop_s(0); // inner loop
     f.emit_dup(0);
@@ -394,8 +390,7 @@ fn branch_hint_nested_loops_both_get_hints() {
 fn branch_hint_br_if_in_loop_gets_likely() {
     let mut f = Chunk::new("br_if_loop");
     f.arity = 0;
-    let zero = f.add_constant(Value::I32(0));
-    f.emit_op_u16(Op::CONST, zero, 0);
+    f.emit_i32_const(0, 0);
     f.emit_loop_s(0);
     f.emit_dup(0);
     f.emit_br_if(0, 0);

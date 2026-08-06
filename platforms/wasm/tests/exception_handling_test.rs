@@ -246,8 +246,7 @@ fn import_new_form_uncaught_throw_propagates() {
 fn throw_uncaught_propagates_as_error() {
     let e = run_err(|c| {
         let tag = lang_tag(c);
-        let k = c.add_constant(Value::String(Arc::from("boom")));
-        c.emit_op_u16(Op::CONST, k, 0);
+        c.emit_string_const("boom", 0);
         emit_throw(c, tag);
     });
     assert!(e.contains("boom"));
@@ -258,8 +257,7 @@ fn throw_uncaught_propagates_as_error() {
 #[test]
 fn throw_ref_of_non_exnref_traps() {
     let e = run_err(|c| {
-        let k = c.add_constant(Value::String(Arc::from("ref-throw")));
-        c.emit_op_u16(Op::CONST, k, 0);
+        c.emit_string_const("ref-throw", 0);
         c.emit_op(Op::THROW_REF, 0);
     });
     assert!(
@@ -274,16 +272,13 @@ fn throw_ref_of_non_exnref_traps() {
 fn catch_lang_tag_intercepts_throw() {
     let r = run(|c| {
         let tag = lang_tag(c);
-        let err = c.add_constant(Value::String(Arc::from("oops")));
-        let ok = c.add_constant(Value::I32(99));
-
         let off = emit_try_table_start(c, KIND_CATCH, tag);
-        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_string_const("oops", 0);
         emit_throw(c, tag);
         patch_try_table(c, off);
 
         c.emit_op(Op::DROP, 0); // drop delivered payload
-        c.emit_op_u16(Op::CONST, ok, 0);
+        c.emit_i32_const(99, 0);
     });
     assert_eq!(r.as_i32(), 99);
 }
@@ -292,18 +287,15 @@ fn catch_lang_tag_intercepts_throw() {
 fn rethrow_in_inner_handler_is_caught_by_outer_handler() {
     let r = run(|c| {
         let tag = lang_tag(c);
-        let err = c.add_constant(Value::String(Arc::from("nested")));
-        let ok = c.add_constant(Value::I32(77));
-
         let outer = emit_try_table_start(c, KIND_CATCH, tag);
         let inner = emit_try_table_start(c, KIND_CATCH, tag);
-        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_string_const("nested", 0);
         emit_throw(c, tag);
         patch_try_table(c, inner);
         emit_rethrow(c, 0);
         patch_try_table(c, outer);
         c.emit_op(Op::DROP, 0);
-        c.emit_op_u16(Op::CONST, ok, 0);
+        c.emit_i32_const(77, 0);
     });
     assert_eq!(r.as_i32(), 77);
 }
@@ -312,18 +304,15 @@ fn rethrow_in_inner_handler_is_caught_by_outer_handler() {
 fn delegate_in_inner_handler_is_caught_by_outer_handler() {
     let r = run(|c| {
         let tag = lang_tag(c);
-        let err = c.add_constant(Value::String(Arc::from("delegated")));
-        let ok = c.add_constant(Value::I32(91));
-
         let outer = emit_try_table_start(c, KIND_CATCH, tag);
         let inner = emit_try_table_start(c, KIND_CATCH, tag);
-        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_string_const("delegated", 0);
         emit_throw(c, tag);
         patch_try_table(c, inner);
         emit_delegate(c, 0);
         patch_try_table(c, outer);
         c.emit_op(Op::DROP, 0);
-        c.emit_op_u16(Op::CONST, ok, 0);
+        c.emit_i32_const(91, 0);
     });
     assert_eq!(r.as_i32(), 91);
 }
@@ -332,25 +321,21 @@ fn delegate_in_inner_handler_is_caught_by_outer_handler() {
 fn delegate_depth_skips_enclosing_handler() {
     let r = run(|c| {
         let tag = lang_tag(c);
-        let err = c.add_constant(Value::String(Arc::from("skip-one")));
-        let outer = c.add_constant(Value::I32(111));
-        let middle = c.add_constant(Value::I32(222));
-
         let o = emit_try_table_start(c, KIND_CATCH, tag);
         let m = emit_try_table_start(c, KIND_CATCH, tag);
         let i = emit_try_table_start(c, KIND_CATCH, tag);
-        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_string_const("skip-one", 0);
         emit_throw(c, tag);
         patch_try_table(c, i);
         emit_delegate(c, 1);
         patch_try_table(c, m);
 
         c.emit_op(Op::DROP, 0);
-        c.emit_op_u16(Op::CONST, middle, 0);
+        c.emit_i32_const(222, 0);
         patch_try_table(c, o);
 
         c.emit_op(Op::DROP, 0);
-        c.emit_op_u16(Op::CONST, outer, 0);
+        c.emit_i32_const(111, 0);
     });
     assert_eq!(r.as_i32(), 111);
 }
@@ -359,10 +344,8 @@ fn delegate_depth_skips_enclosing_handler() {
 fn try_table_thrown_payload_available_in_catch_handler() {
     let r = run(|c| {
         let tag = lang_tag(c);
-        let thrown = c.add_constant(Value::I32(42));
-
         let off = emit_try_table_start(c, KIND_CATCH, tag);
-        c.emit_op_u16(Op::CONST, thrown, 0);
+        c.emit_i32_const(42, 0);
         emit_throw(c, tag);
         patch_try_table(c, off);
         // handler: the tag's payload (the thrown value) is on the stack
@@ -374,10 +357,8 @@ fn try_table_thrown_payload_available_in_catch_handler() {
 fn try_table_no_throw_falls_through() {
     let r = run(|c| {
         let tag = lang_tag(c);
-        let ok = c.add_constant(Value::I32(7));
-
         let off = emit_try_table_start(c, KIND_CATCH, tag);
-        c.emit_op_u16(Op::CONST, ok, 0);
+        c.emit_i32_const(7, 0);
         // run() adds RETURN — no throw, handler never runs
         patch_try_table(c, off);
     });
@@ -390,16 +371,13 @@ fn try_table_no_throw_falls_through() {
 fn catch_matches_by_tag_identity() {
     let r = run(|c| {
         let t = c.declare_exception_tag("ValueError", 1);
-        let err = c.add_constant(Value::String(Arc::from("ValueError: bad")));
-        let caught = c.add_constant(Value::I32(1));
-
         let off = emit_try_table_start(c, KIND_CATCH, t);
-        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_string_const("ValueError: bad", 0);
         emit_throw(c, t);
         patch_try_table(c, off);
 
         c.emit_op(Op::DROP, 0);
-        c.emit_op_u16(Op::CONST, caught, 0);
+        c.emit_i32_const(1, 0);
     });
     assert_eq!(r.as_i32(), 1);
 }
@@ -412,16 +390,13 @@ fn catch_for_different_tag_does_not_match() {
     let t_a = chunk.declare_exception_tag("TypeError", 1);
     let t_b = chunk.declare_exception_tag("ValueError", 1);
 
-    let err_str = chunk.add_constant(Value::String(Arc::from("TypeError: baited")));
-    let fallback = chunk.add_constant(Value::I32(0));
-
     let off = emit_try_table_start(&mut chunk, KIND_CATCH, t_a);
-    chunk.emit_op_u16(Op::CONST, err_str, 0);
+    chunk.emit_string_const("TypeError: baited", 0);
     emit_throw(&mut chunk, t_b);
     patch_try_table(&mut chunk, off);
     // handler (never reached — thrown tag differs)
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::CONST, fallback, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
@@ -436,18 +411,14 @@ fn nonmatching_typed_clause_falls_through_to_enclosing_catch_all() {
     let r = run(|c| {
         let t_a = c.declare_exception_tag("TypeError", 1);
         let t_b = c.declare_exception_tag("ValueError", 1);
-        let err = c.add_constant(Value::String(Arc::from("wrong-tag")));
-        let caught = c.add_constant(Value::I32(77));
-        let sentinel = c.add_constant(Value::I32(77));
-
-        c.emit_op_u16(Op::CONST, sentinel, 0); // catch_all pushes nothing
+        c.emit_i32_const(77, 0); // catch_all pushes nothing
         let outer = emit_try_table_start(c, KIND_CATCH_ALL, 0);
         let inner = emit_try_table_start(c, KIND_CATCH, t_a);
-        c.emit_op_u16(Op::CONST, err, 0);
+        c.emit_string_const("wrong-tag", 0);
         emit_throw(c, t_b);
         patch_try_table(c, inner);
         c.emit_op(Op::DROP, 0);
-        c.emit_op_u16(Op::CONST, caught, 0);
+        c.emit_i32_const(77, 0);
         c.emit_op(Op::RETURN, 0);
         patch_try_table(c, outer);
         // catch_all handler: no payload pushed — sentinel is TOS

@@ -9,7 +9,7 @@
 //!      running through an external disassembler.
 
 use vybe_runtime::value::ValueTag;
-use vybe_runtime::{Chunk, Op, VM, Value};
+use vybe_runtime::{Chunk, Op, VM};
 use vybe_platform_wasm::disassembler::{write_wat, write_wat_chunk};
 
 // ── Type recorder ──────────────────────────────────────────────────
@@ -27,8 +27,7 @@ fn type_recorder_captures_monomorphic_slot() {
     // if a slot is mono-I32, it can become a native i32 local.
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let k = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, k, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -53,11 +52,9 @@ fn type_recorder_flags_polymorphic_slot() {
     // role is to flag them so we don't pick wrong.
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let i = chunk.add_constant(Value::I32(1));
-    let s = chunk.add_constant(Value::String(std::sync::Arc::from("hi")));
-    chunk.emit_op_u16(Op::CONST, i, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
-    chunk.emit_op_u16(Op::CONST, s, 0);
+    chunk.emit_string_const("hi", 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -79,14 +76,12 @@ fn type_recorder_summary_reports_monomorphic_percentage() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 2;
     // slot 0: monomorphic I32
-    let i = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, i, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     // slot 1: polymorphic I32 then String
-    chunk.emit_op_u16(Op::CONST, i, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
-    let s = chunk.add_constant(Value::String(std::sync::Arc::from("x")));
-    chunk.emit_op_u16(Op::CONST, s, 0);
+    chunk.emit_string_const("x", 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -108,8 +103,7 @@ fn type_recorder_off_means_zero_overhead() {
     // field at `None` — no allocation path taken on LOCAL_SET.
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let k = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, k, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
@@ -141,19 +135,18 @@ fn wat_emits_module_scaffold() {
 
 #[test]
 fn wat_renders_const_comment_for_known_values() {
-    // `CONST` opcodes should surface the constant-pool value as a
-    // comment so reading the WAT doesn't require cross-referencing
-    // the constant table.
+    // Spec consts carry their literal inline (`i32.const 42`), so the WAT
+    // is readable with no constant-table cross-referencing. (The legacy
+    // pool-indexed CONST needed a `;; 42i32` comment for this; retired.)
     let mut chunk = Chunk::new("main");
     chunk.arity = 0;
-    let k = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, k, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let wat = write_wat_chunk(&chunk);
     assert!(
-        wat.contains("42i32"),
-        "expected const comment surfacing the literal value, got:\n{wat}"
+        wat.contains("i32.const 42") || wat.contains("42"),
+        "expected the literal value inline in the WAT, got:\n{wat}"
     );
 }
 

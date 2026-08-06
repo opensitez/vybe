@@ -10,7 +10,7 @@
 
 use crate::encoding::*;
 use crate::writer::sections::{
-    emit_box_f64, emit_box_i32, emit_import_call, emit_unbox_f64, emit_unbox_i32 };
+    emit_box_f64, emit_box_i32, emit_unbox_f64, emit_unbox_i32 };
 use crate::writer::types::WasmTypeContext;
 use vybe_runtime::opcode::{OperandFormat, read_leb_u32};
 use vybe_runtime::value::Value;
@@ -600,16 +600,7 @@ pub fn encode_code_section(
             } else if op.group() == 0xFE {
                 emit_thread_prefixed_op(&mut body, op, chunk, &mut ip);
             } else {
-                emit_vm_internal_op(
-                    &mut body,
-                    op,
-                    chunk,
-                    &mut ip,
-                    op_start,
-                    &rt_idx,
-                    temp_local_idx,
-                    type_ctx,
-                );
+                emit_vm_internal_op(&mut body, op, chunk, &mut ip);
             }
         }
 
@@ -645,12 +636,22 @@ fn emit_core_op(
             body.push(0x22);
             write_leb128_u32(body, read_u16(&chunk.code, ip) as u32);
         } // local.tee
-        // `call` and `call_ref` are the SAME shape in this VM: one `u8` argc,
-        // callee on the stack. `call` used to be lowered here as a static
-        // `call $func_idx`, reading a u16 function index that no emitter ever
-        // wrote — three operand bytes against the one that is actually
-        // emitted. Both now take the dynamic path.
-        _ if op == Op::CALL || op == Op::CALL_REF => {
+        // Spec `call`: u16 funcidx + VM-internal u8 argc. The argc byte is
+        // dropped — the .wasm binary carries only LEB(funcidx). Imports
+        // occupy the front of the module's function index space, so the
+        // chunk-scoped import index is already the module-level funcidx.
+        _ if op == Op::CALL => {
+            let funcidx = read_u16(&chunk.code, ip);
+            let _argc = chunk.code[*ip];
+            *ip += 1;
+            body.push(0x10);
+            write_leb128_u32(body, funcidx as u32);
+        }
+        // `call_ref`: one `u8` argc, callee on the stack, lowered to
+        // call_indirect through the function table. (The old `Op::CALL`
+        // alias for this shape is retired; spec `call` is a static import
+        // call — see callimportretirement.md.)
+        _ if op == Op::CALL_REF => {
             let argc = chunk.code[*ip];
             *ip += 1;
             // Stack: [externref_funcref, arg1, ..., argN] — funcref is below args
@@ -867,9 +868,6 @@ fn emit_core_op(
                 }
             }
         }
-        _ if op == Op::HALT => {
-            body.push(0x0F);
-        } // return (not unreachable — _start should return cleanly)
         // Exception-handling proposal. THROW takes the exception value
         // from TOS and raises it via the single `$vybe_exception` tag
         // (declared in the tag section). The tag's signature is
@@ -1112,6 +1110,36 @@ fn emit_core_op(
             emit_stack_switch_handlers(body, chunk, op_start);
         }
 
+        // ── Spec consts ─────────────────────────────────────────────────
+        // The VM-internal immediates already use the spec encodings (signed
+        // LEB128 for i32/i64, raw LE bytes for f32/f64), so they copy through
+        // verbatim. The value is then boxed to the externref stack ABI —
+        // exactly what the retired constant-pool CONST arm did (i64 rides
+        // box_i32, its precedent). Falling into the generic default here
+        // dropped the immediate entirely: `i32.const 42` serialized as a
+        // bare 0x41 — malformed WASM.
+        _ if op == Op::I32_CONST || op == Op::I64_CONST || op == Op::F64_CONST => {
+            let sz = op.operand_format().size_in(&chunk.code, *ip);
+            body.push(op.sub() as u8);
+            body.extend_from_slice(&chunk.code[*ip..*ip + sz]);
+            *ip += sz;
+            if op == Op::F64_CONST {
+                emit_box_f64(body, rt_idx);
+            } else {
+                emit_box_i32(body, rt_idx);
+            }
+        }
+        _ if op == Op::F32_CONST => {
+            let sz = op.operand_format().size_in(&chunk.code, *ip);
+            body.push(op.sub() as u8);
+            body.extend_from_slice(&chunk.code[*ip..*ip + sz]);
+            *ip += sz;
+            // Widen to f64 before boxing — the reader deliberately widens
+            // f32 constants to Value::F64, and there is no f32 box.
+            body.push(0xBB); // f64.promote_f32
+            emit_box_f64(body, rt_idx);
+        }
+
         _ => {
             // Other core ops: emit WASM byte directly
             body.push(op.sub() as u8);
@@ -1129,14 +1157,11 @@ fn emit_thread_prefixed_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut u
         body.push(immediate);
         return;
     }
-    if op == Op::THREAD_SPAWN || op == Op::THREAD_JOIN {
-        return;
-    }
-    if next_bytes_decode_opcode(chunk, *ip) {
-        write_leb128_u32(body, 0);
-        write_leb128_u32(body, 0);
-        return;
-    }
+    // Every 0xFE atomic (notify/wait included) carries an explicit memarg in
+    // the internal bytecode — declared MemArg, emitted by every emitter. The
+    // old "does the next 4-byte block decode as an opcode?" guess is gone:
+    // memarg bytes could legitimately decode as an opcode, silently dropping
+    // a real memarg.
     let align = read_leb_u32(&chunk.code, ip);
     let is_memory64 = align & 0x80 != 0;
     let spec_align = align & !0x80;
@@ -1197,11 +1222,10 @@ fn emit_simd_prefixed_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usi
 }
 
 fn emit_simd_memarg(body: &mut Vec<u8>, chunk: &Chunk, ip: &mut usize, default_align: u32) {
-    if next_bytes_decode_opcode(chunk, *ip) {
-        write_leb128_u32(body, default_align);
-        write_leb128_u32(body, 0);
-        return;
-    }
+    // The internal SIMD memarg is self-describing (`SimdMemArg`): present iff
+    // the first LEB carries the 0x80 marker. Instruction group-hi bytes are
+    // always 0x00, so peeking the marker is unambiguous — no opcode-decode
+    // guessing needed.
     let mut probe = *ip;
     let marker_align = read_leb_u32(&chunk.code, &mut probe);
     if marker_align & 0x80 == 0 {
@@ -1832,63 +1856,11 @@ fn emit_ref_cast_array(body: &mut Vec<u8>, arr_type_idx: u32) {
     emit_ref_cast(body, arr_type_idx);
 }
 
-/// Emit a VM-internal op (prefix 0xFF) — lowered to WASM equivalents or runtime calls.
-fn emit_vm_internal_op(
-    body: &mut Vec<u8>,
-    op: Op,
-    chunk: &Chunk,
-    ip: &mut usize,
-    op_start: usize,
-    rt_idx: &std::collections::HashMap<(&str, &str), usize>,
-    temp_idx: u32,
-    type_ctx: &WasmTypeContext,
-) {
+/// Emit an op with no dedicated core-arm lowering. Prefix 0xFF holds ZERO
+/// opcodes now (CONST, CALL_IMPORT and HALT all retired to spec encodings),
+/// so this is only the TRY_TABLE nop-skip and the unknown-op fallback.
+fn emit_vm_internal_op(body: &mut Vec<u8>, op: Op, chunk: &Chunk, ip: &mut usize) {
     match op {
-        _ if op == Op::CONST => {
-            let idx = read_u16(&chunk.code, ip);
-            if let Some(val) = chunk.constants.get(idx as usize) {
-                match val {
-                    Value::F64(n) => {
-                        body.push(0x44);
-                        body.extend_from_slice(&n.to_le_bytes());
-                        emit_box_f64(body, rt_idx);
-                    }
-                    Value::I32(n) => {
-                        body.push(0x41);
-                        write_leb128_i32(body, *n);
-                        emit_box_i32(body, rt_idx);
-                    }
-                    Value::I64(n) => {
-                        body.push(0x42);
-                        write_leb128_i64(body, *n);
-                        emit_box_i32(body, rt_idx);
-                    }
-                    _ => {
-                        body.push(0xD0);
-                        body.push(0x6F);
-                    } // ref.null externref
-                }
-            }
-        }
-        // ── Typed stack-switching helpers ────────────────────────────────
-        // These VM-internal typed helpers lower to the real proposal bytes.
-        // The untyped stack-switching opcodes themselves live in core 0xE0..=0xE6
-        // and are emitted by `emit_core_op` above.
-        _ if op == Op::CALL_IMPORT => {
-            let import_idx = read_u16(&chunk.code, ip);
-            let _argc = chunk.code[*ip];
-            *ip += 1;
-            body.push(0x10);
-            write_leb128_u32(body, import_idx as u32);
-        }
-
-        // Phase E: the 9  ARRAY_* opcodes (PUSH/POP/SLICE/
-        // JOIN/REVERSE/CONTAINS/INDEX_OF/CONCAT/SHIFT) were removed
-        // along with their inline WASM GC emit sequences. Callers
-        // compile to  CALL_IMPORTs directly via
-        // .
-
-        // Stack ops
         // Exception handling — a TRY_TABLE not recognised as a structural
         // single-clause region (multi-clause try_tables, e.g. from wast, are
         // not yet serialized here) is skipped as a nop. Skip the full variable
@@ -1900,17 +1872,6 @@ fn emit_vm_internal_op(
             *ip += 1 + 5 * clause_count; // clause_count + N·[kind,tag(2),offset(2)]
             body.push(0x01);
         }
-        // TRY_END retired: a try_table now closes with structural `end`
-        // (Op::END), which the writer already lowers to the spec `0x0B` byte.
-        // Spread — TODO: inline impl
-        // Set timer — TODO: needs host import (not stdlib)
-        // Upvalue get/set — closures use WASM function references
-        // Memory64 reuses the standard memory instruction bytes. The i64
-        // address shape is carried by the memory type in the binary format.
-        _ if op == Op::HALT => {
-            body.push(0x0F);
-        } // return (not unreachable — _start should return cleanly)
-        // global_get/set are core ops (prefix 0x00) — handled in emit_core_op
         _ => {
             // Skip operands, emit nop
             let fmt = op.operand_format();

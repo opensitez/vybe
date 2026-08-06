@@ -127,12 +127,10 @@ fn run_with_small_memory_err(bytes: usize, emit: impl FnOnce(&mut Chunk)) -> Str
 }
 
 fn push_i32(c: &mut Chunk, v: i32) {
-    let k = c.add_constant(Value::I32(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i32_const(v, 0);
 }
 fn push_i64(c: &mut Chunk, v: i64) {
-    let k = c.add_constant(Value::I64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i64_const(v, 0);
 }
 
 fn emit_atomic(c: &mut Chunk, op: Op) {

@@ -263,7 +263,6 @@ fn is_leaf_function(chunk: &Chunk) -> bool {
         if op == Op::CALL
             || op == Op::CALL_REF
             || op == Op::CALL_INDIRECT
-            || op == Op::CALL_IMPORT
             || op == Op::RETURN_CALL
             || op == Op::RETURN_CALL_REF
             || op == Op::RETURN_CALL_INDIRECT

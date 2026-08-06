@@ -405,7 +405,7 @@ pub fn build_type_context(
             let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
             let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
             if let Some(op) = vybe_runtime::opcode::Op::decode(g, s) {
-                if op == vybe_runtime::opcode::Op::CALL_IMPORT {
+                if op == vybe_runtime::opcode::Op::CALL {
                     let import_idx = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
                     let argc = chunk.code[ip + 6];
                     if (import_idx as usize) < host_import_count {

@@ -26,7 +26,6 @@
 use std::fmt::Write;
 use vybe_runtime::chunk::Chunk;
 use vybe_runtime::opcode::{Op, OperandFormat, read_leb_u32, read_leb_u64};
-use vybe_runtime::value::Value;
 
 /// Render a collection of chunks as a single WAT module. The output
 /// is human-readable; indentation reflects nesting depth of WASM
@@ -168,16 +167,7 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
         }
         OperandFormat::U16 => {
             let v = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
-            // `const` — look up the constant pool value for readability.
-            if op == Op::CONST {
-                if let Some(val) = chunk.constants.get(v as usize) {
-                    let _ = write!(out, " ;; {}", format_value(val));
-                } else {
-                    let _ = write!(out, " {v}");
-                }
-            } else {
-                let _ = write!(out, " {v}");
-            }
+            let _ = write!(out, " {v}");
         }
         OperandFormat::I16 => {
             let raw = ((chunk.code[ip + 4] as u16) << 8) | chunk.code[ip + 5] as u16;
@@ -230,8 +220,34 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
                 let _ = write!(out, " memory={memidx}");
             }
         }
+        OperandFormat::SimdMemArg => {
+            // Optional marker-tagged memarg — absent contributes zero bytes.
+            let mut operand_ip = ip + 4;
+            let align = read_leb_u32(&chunk.code, &mut operand_ip);
+            if align & 0x80 != 0 {
+                let offset = read_leb_u64(&chunk.code, &mut operand_ip);
+                let _ = write!(out, " align={} offset={offset}", align & !0x1C0);
+                if align & 0x40 != 0 {
+                    let memidx = read_leb_u32(&chunk.code, &mut operand_ip);
+                    let _ = write!(out, " memory={memidx}");
+                }
+            }
+        }
         OperandFormat::MemLane => {
-            let lane = chunk.code.get(ip + 4).copied().unwrap_or(0);
+            // Optional marker-tagged memarg, then the mandatory lane byte.
+            let mut operand_ip = ip + 4;
+            let align = read_leb_u32(&chunk.code, &mut operand_ip);
+            if align & 0x80 != 0 {
+                let offset = read_leb_u64(&chunk.code, &mut operand_ip);
+                let _ = write!(out, " align={} offset={offset}", align & !0x1C0);
+                if align & 0x40 != 0 {
+                    let memidx = read_leb_u32(&chunk.code, &mut operand_ip);
+                    let _ = write!(out, " memory={memidx}");
+                }
+            } else {
+                operand_ip = ip + 4;
+            }
+            let lane = chunk.code.get(operand_ip).copied().unwrap_or(0);
             let _ = write!(out, " {lane}");
         }
         OperandFormat::BrTable => {
@@ -251,38 +267,26 @@ fn render_instruction(out: &mut String, chunk: &Chunk, op: Op, ip: usize) {
             let _ = write!(out, " <variable-length>");
         }
         OperandFormat::SlI32 => {
-            let mut pos = ip + 2;
+            let mut pos = ip + 4;
             let val = vybe_runtime::opcode::read_leb_i32(&chunk.code, &mut pos);
             let _ = write!(out, " {val}");
         }
         OperandFormat::SlI64 => {
-            let mut pos = ip + 2;
+            let mut pos = ip + 4;
             let val = vybe_runtime::opcode::read_leb_i64(&chunk.code, &mut pos);
             let _ = write!(out, " {val}");
         }
         OperandFormat::RawF32 => {
-            let start = ip + 2;
+            let start = ip + 4;
             let bytes: [u8; 4] = chunk.code[start..start + 4].try_into().unwrap_or([0; 4]);
             let _ = write!(out, " {}", f32::from_le_bytes(bytes));
         }
         OperandFormat::RawF64 => {
-            let start = ip + 2;
+            let start = ip + 4;
             let bytes: [u8; 8] = chunk.code[start..start + 8].try_into().unwrap_or([0; 8]);
             let _ = write!(out, " {}", f64::from_le_bytes(bytes));
         }
     }
-}
-
-fn format_value(v: &Value) -> String {
-    match v {
-        Value::Null => "null".into(),
-        Value::Undefined => "undefined".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::I32(n) => format!("{n}i32"),
-        Value::I64(n) => format!("{n}i64"),
-        Value::F64(n) => format!("{n}"),
-        Value::String(s) => format!("{:?}", s.as_ref()),
-        _ => "<obj>".into() }
 }
 
 fn sanitize_ident(s: &str) -> String {

@@ -557,10 +557,8 @@ fn resume_throw_emits_spec_byte() {
 #[test]
 fn resume_throw_non_continuation_traps() {
     let mut chunk = Chunk::new("<script>");
-    let not_cont = chunk.add_constant(Value::I32(1));
-    let exn = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, not_cont, 0);
-    chunk.emit_op_u16(Op::CONST, exn, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u16(Op::RESUME_THROW, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -571,10 +569,8 @@ fn resume_throw_non_continuation_traps() {
 #[test]
 fn resume_throw_ref_non_continuation_traps() {
     let mut chunk = Chunk::new("<script>");
-    let not_cont = chunk.add_constant(Value::I32(1));
-    let exn = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, not_cont, 0);
-    chunk.emit_op_u16(Op::CONST, exn, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op(Op::RESUME_THROW_REF, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -603,10 +599,8 @@ fn resume_throw_ref_null_exception_traps() {
 #[test]
 fn resume_non_continuation_traps() {
     let mut chunk = Chunk::new("<script>");
-    let not_cont = chunk.add_constant(Value::I32(1));
-    let resume_value = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, not_cont, 0);
-    chunk.emit_op_u16(Op::CONST, resume_value, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u16(Op::RESUME, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -617,10 +611,8 @@ fn resume_non_continuation_traps() {
 #[test]
 fn switch_non_continuation_traps() {
     let mut chunk = Chunk::new("<script>");
-    let not_cont = chunk.add_constant(Value::I32(1));
-    let value = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, not_cont, 0);
-    chunk.emit_op_u16(Op::CONST, value, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u16(Op::SWITCH, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -652,8 +644,7 @@ fn switch_requires_matching_on_tag_switch_handler() {
     switcher.arity = 1;
     switcher.local_count = 1;
     switcher.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let payload = switcher.add_constant(Value::I32(55));
-    switcher.emit_op_u16(Op::CONST, payload, 0);
+    switcher.emit_i32_const(55, 0);
     switcher.emit_op_u16(Op::SWITCH, 3, 0);
     switcher.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     switcher.emit_op(Op::RETURN, 0);
@@ -662,8 +653,7 @@ fn switch_requires_matching_on_tag_switch_handler() {
     target.arity = 1;
     target.local_count = 1;
     target.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let one = target.add_constant(Value::I32(1));
-    target.emit_op_u16(Op::CONST, one, 0);
+    target.emit_i32_const(1, 0);
     target.emit_op(Op::I32_ADD, 0);
     target.emit_op_u16(Op::SUSPEND, 0, 0);
     target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
@@ -703,19 +693,16 @@ fn switch_with_on_tag_switch_handler_transfers_to_target_continuation() {
     switcher.arity = 1;
     switcher.local_count = 1;
     switcher.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let payload = switcher.add_constant(Value::I32(55));
-    switcher.emit_op_u16(Op::CONST, payload, 0);
+    switcher.emit_i32_const(55, 0);
     switcher.emit_op_u16(Op::SWITCH, 0, 0);
-    let unreachable = switcher.add_constant(Value::I32(0));
-    switcher.emit_op_u16(Op::CONST, unreachable, 0);
+    switcher.emit_i32_const(0, 0);
     switcher.emit_op(Op::RETURN, 0);
 
     let mut target = Chunk::new("target");
     target.arity = 1;
     target.local_count = 1;
     target.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let one = target.add_constant(Value::I32(1));
-    target.emit_op_u16(Op::CONST, one, 0);
+    target.emit_i32_const(1, 0);
     target.emit_op(Op::I32_ADD, 0);
     target.emit_op_u16(Op::SUSPEND, 0, 0);
     target.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
@@ -749,10 +736,8 @@ fn switch_with_on_tag_switch_handler_transfers_to_target_continuation() {
 #[test]
 fn cont_bind_non_continuation_traps() {
     let mut chunk = Chunk::new("<script>");
-    let not_cont = chunk.add_constant(Value::I32(1));
-    let arg = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, not_cont, 0);
-    chunk.emit_op_u16(Op::CONST, arg, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u8(Op::CONT_BIND, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -763,9 +748,8 @@ fn cont_bind_non_continuation_traps() {
 #[test]
 fn cont_bind_null_traps() {
     let mut chunk = Chunk::new("<script>");
-    let arg = chunk.add_constant(Value::I32(2));
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op_u16(Op::CONST, arg, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op_u8(Op::CONT_BIND, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -783,8 +767,7 @@ fn cont_bind_produces_continuation_with_bound_args() {
     chunk.emit_op_u16(Op::REF_FUNC, 1, 0);
     chunk.emit(0, 0);
     chunk.emit_op(Op::CONT_NEW, 0);
-    let v = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, v, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op_u8(Op::CONT_BIND, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -851,8 +834,7 @@ fn resume_handler_vector_routes_suspend_to_handler_offset() {
     gen_body.arity = 1;
     gen_body.local_count = 1;
     gen_body.is_generator = true;
-    let yielded = gen_body.add_constant(Value::I32(44));
-    gen_body.emit_op_u16(Op::CONST, yielded, 0);
+    gen_body.emit_i32_const(44, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
     gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
@@ -868,14 +850,12 @@ fn resume_handler_vector_routes_suspend_to_handler_offset() {
     let resume_ip = script.code.len();
     script.emit_op_u16(Op::RESUME, 0, 0);
     script.emit_op(Op::DROP, 0);
-    let missed = script.add_constant(Value::I32(0));
-    script.emit_op_u16(Op::CONST, missed, 0);
+    script.emit_i32_const(0, 0);
     script.emit_op(Op::RETURN, 0);
 
     let handler_ip = script.code.len();
     script.emit_op(Op::DROP, 0);
-    let handled = script.add_constant(Value::I32(99));
-    script.emit_op_u16(Op::CONST, handled, 0);
+    script.emit_i32_const(99, 0);
     script.emit_op(Op::RETURN, 0);
     script.stack_switch_handlers.insert(
         resume_ip,
@@ -900,8 +880,7 @@ fn generator_chunk_returns_continuation_on_call() {
     gen_body.arity = 0;
     gen_body.local_count = 0;
     gen_body.is_generator = true;
-    let one = gen_body.add_constant(Value::I32(1));
-    gen_body.emit_op_u16(Op::CONST, one, 0);
+    gen_body.emit_i32_const(1, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
     gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
@@ -1004,8 +983,7 @@ fn generator_resume_preserves_loop_label_stack() {
     let block = gen_body.emit_block(0);
     let (loop_patch, _) = gen_body.emit_loop_s(0);
     gen_body.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let three = gen_body.add_constant(Value::I32(3));
-    gen_body.emit_op_u16(Op::CONST, three, 0);
+    gen_body.emit_i32_const(3, 0);
     gen_body.emit_op(Op::I32_LT_S, 0);
     gen_body.emit_op(Op::I32_EQZ, 0);
     gen_body.emit_br_if(1, 0);
@@ -1015,8 +993,7 @@ fn generator_resume_preserves_loop_label_stack() {
     gen_body.emit_op(Op::DROP, 0);
 
     gen_body.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    let one = gen_body.add_constant(Value::I32(1));
-    gen_body.emit_op_u16(Op::CONST, one, 0);
+    gen_body.emit_i32_const(1, 0);
     gen_body.emit_op(Op::I32_ADD, 0);
     gen_body.emit_op_u16(Op::LOCAL_SET, 1, 0);
     gen_body.emit_br(0, 0);
@@ -1055,8 +1032,7 @@ fn suspend_without_active_continuation_falls_back_to_return() {
     // code that used SUSPEND as "return from async" keeps working.
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let k = chunk.add_constant(Value::I32(77));
-    chunk.emit_op_u16(Op::CONST, k, 0);
+    chunk.emit_i32_const(77, 0);
     chunk.emit_op_u16(Op::SUSPEND, 0, 0);
 
     let mut vm = VM::new();
@@ -1067,43 +1043,47 @@ fn suspend_without_active_continuation_falls_back_to_return() {
 #[test]
 fn jspi_fulfilled_promise_suspend_unwraps_value() {
     let mut chunk = Chunk::new("<script>");
-    let promise = chunk.add_constant(make_promise(1, "fulfilled", Value::I32(88)));
-    chunk.emit_op_u16(Op::CONST, promise, 0);
+    // Host-built promise arrives as an imported global (spec `global.get`).
+    let g = chunk.intern_string_constant("__jspi_fulfilled_promise");
+    chunk.emit_op_u16(Op::GLOBAL_GET, g, 0);
     {
         let aw = chunk.add_import("jspi", "await");
-        chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
-        chunk.emit(1, 0);
+        chunk.emit_call(aw, 1, 0);
     }
     chunk.emit_op(Op::RETURN, 0);
 
-    let result = VM::new().run(vec![chunk]).unwrap();
+    let mut vm = VM::new();
+    vm.globals.insert(
+        "__jspi_fulfilled_promise".into(),
+        make_promise(1, "fulfilled", Value::I32(88)),
+    );
+    let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result, Value::I32(88));
 }
 
 #[test]
 fn jspi_rejected_promise_suspend_enters_wasm_catch_handler() {
     let mut chunk = Chunk::new("<script>");
-    let promise = chunk.add_constant(make_promise(
-        2,
-        "rejected",
-        Value::String(Arc::from("network failed")),
-    ));
-    let handled = chunk.add_constant(Value::I32(91));
+    let g = chunk.intern_string_constant("__jspi_rejected_promise");
 
     let off = emit_try_table_catch_all_start(&mut chunk);
-    chunk.emit_op_u16(Op::CONST, promise, 0);
+    chunk.emit_op_u16(Op::GLOBAL_GET, g, 0);
     {
         let aw = chunk.add_import("jspi", "await");
-        chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
-        chunk.emit(1, 0);
+        chunk.emit_call(aw, 1, 0);
     }
     patch_try_table(&mut chunk, off);
 
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::CONST, handled, 0);
+    chunk.emit_i32_const(91, 0);
     chunk.emit_op(Op::RETURN, 0);
 
-    let result = VM::new().run(vec![chunk]).unwrap();
+    let mut vm = VM::new();
+    vm.globals.insert(
+        "__jspi_rejected_promise".into(),
+        make_promise(2, "rejected", Value::String(Arc::from("network failed"))),
+    );
+    let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result, Value::I32(91));
 }
 
@@ -1123,15 +1103,13 @@ fn jspi_pending_promise_inside_generator_preserves_continuation_and_yields_on_re
     gen_body.local_count = 1;
     gen_body.is_generator = true;
     let awaitable_idx = gen_body.add_import("test", "awaitable");
-    gen_body.emit_op_u16(Op::CALL_IMPORT, awaitable_idx, 0);
-    gen_body.emit(0, 0);
+    gen_body.emit_call(awaitable_idx, 0, 0);
     // `await awaitable()` — the JSPI suspend point. Per ECMA-262 / JSPI a
     // pending promise suspends ONLY at the explicit await (PROMISE_SUSPEND),
     // not implicitly at the import call that produced it.
     {
         let aw = gen_body.add_import("jspi", "await");
-        gen_body.emit_op_u16(Op::CALL_IMPORT, aw, 0);
-        gen_body.emit(1, 0);
+        gen_body.emit_call(aw, 1, 0);
     }
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0);
     gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
@@ -1206,13 +1184,10 @@ fn reentrant_host_callback_inside_generator_does_not_complete_it() {
     let apply_idx = gen_body.add_import("test", "applyCb");
     gen_body.emit_op_u16(Op::REF_FUNC, 2, 0); // cb is chunk index 2
     gen_body.emit(0, 0); // uv_count
-    let c41 = gen_body.add_constant(Value::I32(41));
-    gen_body.emit_op_u16(Op::CONST, c41, 0);
-    gen_body.emit_op_u16(Op::CALL_IMPORT, apply_idx, 0);
-    gen_body.emit(2, 0); // argc = (cbRef, 41)
+    gen_body.emit_i32_const(41, 0);
+    gen_body.emit_call(apply_idx, 2, 0); // argc = (cbRef, 41)
     gen_body.emit_op(Op::DROP, 0); // discard host result (41)
-    let c99 = gen_body.add_constant(Value::I32(99));
-    gen_body.emit_op_u16(Op::CONST, c99, 0);
+    gen_body.emit_i32_const(99, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0); // yield 99
     gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
@@ -1271,8 +1246,7 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     let mut helper = Chunk::new("helper");
     helper.arity = 0;
     helper.local_count = 0;
-    let k7 = helper.add_constant(Value::I32(7));
-    helper.emit_op_u16(Op::CONST, k7, 0);
+    helper.emit_i32_const(7, 0);
     helper.emit_op(Op::RETURN, 0);
 
     // generator g(): { helper(); yield 99; } — nested call BEFORE first yield.
@@ -1284,8 +1258,7 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     gen_body.emit(0, 0);
     gen_body.emit_op_u8(Op::CALL_REF, 0, 0);
     gen_body.emit_op(Op::DROP, 0); // discard helper() result (7)
-    let k99 = gen_body.add_constant(Value::I32(99));
-    gen_body.emit_op_u16(Op::CONST, k99, 0);
+    gen_body.emit_i32_const(99, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0); // yield 99
     gen_body.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     gen_body.emit_op(Op::RETURN, 0);
@@ -1310,8 +1283,7 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     script.emit_op_u16(Op::REF_FUNC, 2, 0); // cb = chunk index 2
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 0, 0); // cont
-    script.emit_op_u16(Op::CALL_IMPORT, drive_idx, 0);
-    script.emit(2, 0); // argc = (cb, cont)
+    script.emit_call(drive_idx, 2, 0); // argc = (cb, cont)
     script.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![script, gen_body, cb, helper]).unwrap();

@@ -690,19 +690,26 @@ fn spec_memory64_all_scalar_widths_execute_with_i64_addresses() {
         let mut vm = VM::new();
         vm.memory.resize(65536, 0);
 
-        let mut chunk = Chunk::new("<script>");
-        let base = chunk.add_constant(Value::I64(4));
-        let value_idx = chunk.add_constant(value);
+        // Spec const per value shape — the custom constant-pool CONST is retired.
+        fn emit_value_const(chunk: &mut Chunk, value: &Value) {
+            match value {
+                Value::I32(n) => chunk.emit_i32_const(*n, 0),
+                Value::I64(n) => chunk.emit_i64_const(*n, 0),
+                Value::F32(f) => chunk.emit_f32_const(*f, 0),
+                Value::F64(f) => chunk.emit_f64_const(*f, 0),
+                other => panic!("unsupported scalar constant: {other:?}"),
+            }
+        }
 
-        chunk.emit_op_u16(Op::CONST, base, 0);
-        chunk.emit_op_u16(Op::CONST, value_idx, 0);
+        let mut chunk = Chunk::new("<script>");
+        chunk.emit_i64_const(4, 0);
+        emit_value_const(&mut chunk, &value);
         chunk.emit_op(store_op, 0);
         emit_memarg64(&mut chunk, align, 3, 0);
 
-        chunk.emit_op_u16(Op::CONST, base, 0);
+        chunk.emit_i64_const(4, 0);
         chunk.emit_op(load_op, 0);
         emit_memarg64(&mut chunk, align, 3, 0);
-        chunk.emit_op(Op::HALT, 0);
 
         let result = vm.run(vec![chunk]).unwrap();
         match (result, expected) {
@@ -818,39 +825,29 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
 
     let mut grow = Chunk::new("<grow>");
     grow.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    let delta = grow.add_constant(Value::I64(2));
-    grow.emit_op_u16(Op::CONST, delta, 0);
+    grow.emit_i64_const(2, 0);
     grow.emit_op_u8(Op::TABLE_GROW, 0, 0);
-    grow.emit_op(Op::HALT, 0);
     let result = vm.run(vec![grow]).unwrap();
     assert_eq!(result.as_i64(), 3);
     assert_eq!(vm.wasm_tables[0].len(), 5);
 
     let mut chunk = Chunk::new("<table64>");
-    let idx1 = chunk.add_constant(Value::I64(1));
-    let idx2 = chunk.add_constant(Value::I64(2));
-    let idx3 = chunk.add_constant(Value::I64(3));
-    let count2 = chunk.add_constant(Value::I64(2));
-    let seven = chunk.add_constant(Value::I32(7));
-    let nine = chunk.add_constant(Value::I32(9));
-
-    chunk.emit_op_u16(Op::CONST, idx1, 0);
-    chunk.emit_op_u16(Op::CONST, seven, 0);
+    chunk.emit_i64_const(1, 0);
+    chunk.emit_i32_const(7, 0);
     chunk.emit_op_u8(Op::TABLE_SET, 0, 0);
 
-    chunk.emit_op_u16(Op::CONST, idx2, 0);
-    chunk.emit_op_u16(Op::CONST, nine, 0);
-    chunk.emit_op_u16(Op::CONST, count2, 0);
+    chunk.emit_i64_const(2, 0);
+    chunk.emit_i32_const(9, 0);
+    chunk.emit_i64_const(2, 0);
     chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
 
-    chunk.emit_op_u16(Op::CONST, idx3, 0);
-    chunk.emit_op_u16(Op::CONST, idx1, 0);
-    chunk.emit_op_u16(Op::CONST, count2, 0);
+    chunk.emit_i64_const(3, 0);
+    chunk.emit_i64_const(1, 0);
+    chunk.emit_i64_const(2, 0);
     chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
 
-    chunk.emit_op_u16(Op::CONST, idx3, 0);
+    chunk.emit_i64_const(3, 0);
     chunk.emit_op_u8(Op::TABLE_GET, 0, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 7);
@@ -873,12 +870,9 @@ fn spec_table64_init_copies_element_segment_with_i64_indices() {
         ],
     );
     let mut chunk = Chunk::new("<table64-init>");
-    let dst = chunk.add_constant(Value::I64(3));
-    let src = chunk.add_constant(Value::I64(1));
-    let count = chunk.add_constant(Value::I64(2));
-    chunk.emit_op_u16(Op::CONST, dst, 0);
-    chunk.emit_op_u16(Op::CONST, src, 0);
-    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_i64_const(3, 0);
+    chunk.emit_i64_const(1, 0);
+    chunk.emit_i64_const(2, 0);
     chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -1012,17 +1006,13 @@ fn memory_select_switches_active() {
     chunk.local_count = 2;
 
     // Store 42 in default memory (index 0)
-    let addr = chunk.add_constant(Value::I32(0));
-    let val = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, addr, 0);
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op(Op::I32_STORE, 0);
 
     // Read it back from default memory
-    let addr2 = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, addr2, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 42);
@@ -1034,7 +1024,6 @@ fn memory_size_reports_correct_size() {
     vm.memory.resize(2 * 65536, 0); // 2 pages
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op(Op::MEMORY_SIZE, 0);
-    chunk.emit_op(Op::HALT, 0);
     let r = vm.run(vec![chunk]).unwrap();
     assert_eq!(r.as_i32(), 2, "memory.size should return page count");
 }
@@ -1044,10 +1033,8 @@ fn memory_grow_increases_size_and_returns_old() {
     let mut vm = VM::new();
     vm.memory.resize(65536, 0); // 1 page
     let mut chunk = Chunk::new("<script>");
-    let delta = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, delta, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
-    chunk.emit_op(Op::HALT, 0);
     let r = vm.run(vec![chunk]).unwrap();
     assert_eq!(r.as_i32(), 1, "memory.grow returns old size in pages");
     assert_eq!(vm.memory.len(), 3 * 65536, "memory grew by 2 pages");
@@ -1059,17 +1046,13 @@ fn memory_fill_in_memory_zero() {
     let mut vm = VM::new();
     vm.memory.resize(65536, 0);
     let mut chunk = Chunk::new("<script>");
-    let start = chunk.add_constant(Value::I32(8));
-    let byte = chunk.add_constant(Value::I32(0xAB));
-    let count = chunk.add_constant(Value::I32(4));
-    chunk.emit_op_u16(Op::CONST, start, 0);
-    chunk.emit_op_u16(Op::CONST, byte, 0);
-    chunk.emit_op_u16(Op::CONST, count, 0);
+    chunk.emit_i32_const(8, 0);
+    chunk.emit_i32_const(0xAB, 0);
+    chunk.emit_i32_const(4, 0);
     chunk.emit_op(Op::MEMORY_FILL, 0);
     // Load back byte at addr 8
-    chunk.emit_op_u16(Op::CONST, start, 0);
+    chunk.emit_i32_const(8, 0);
     chunk.emit_op(Op::I32_LOAD8_U, 0);
-    chunk.emit_op(Op::HALT, 0);
     let r = vm.run(vec![chunk]).unwrap();
     assert_eq!(r.as_i32(), 0xAB);
 }

@@ -599,8 +599,7 @@ fn section_payload(bytes: &[u8], target_id: u8) -> Option<&[u8]> {
 #[test]
 fn roundtrip_const_and_return() {
     let mut chunk = Chunk::new("<script>");
-    let k = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, k, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let chunks = roundtrip(vec![chunk]);
@@ -611,10 +610,8 @@ fn roundtrip_const_and_return() {
 #[test]
 fn roundtrip_i32_arithmetic() {
     let mut chunk = Chunk::new("<script>");
-    let a = chunk.add_constant(Value::I32(10));
-    let b = chunk.add_constant(Value::I32(32));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_i32_const(10, 0);
+    chunk.emit_i32_const(32, 0);
     chunk.emit_op(Op::I32_ADD, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -626,10 +623,8 @@ fn roundtrip_i32_arithmetic() {
 #[test]
 fn roundtrip_f64_arithmetic() {
     let mut chunk = Chunk::new("<script>");
-    let a = chunk.add_constant(Value::F64(3.5));
-    let b = chunk.add_constant(Value::F64(2.0));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_f64_const(3.5, 0);
+    chunk.emit_f64_const(2.0, 0);
     chunk.emit_op(Op::F64_MUL, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -641,15 +636,11 @@ fn roundtrip_f64_arithmetic() {
 #[test]
 fn roundtrip_structured_control_if_else() {
     let mut chunk = Chunk::new("<script>");
-    let one = chunk.add_constant(Value::I32(1));
-    let ten = chunk.add_constant(Value::I32(10));
-    let nine = chunk.add_constant(Value::I32(9));
-
-    chunk.emit_op_u16(Op::CONST, one, 0); // condition = 1 (true)
+    chunk.emit_i32_const(1, 0); // condition = 1 (true)
     let _if_pos = chunk.emit_if(0);
-    chunk.emit_op_u16(Op::CONST, ten, 0);
+    chunk.emit_i32_const(10, 0);
     chunk.emit_else(0);
-    chunk.emit_op_u16(Op::CONST, nine, 0);
+    chunk.emit_i32_const(9, 0);
     chunk.emit_end(0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -663,9 +654,7 @@ fn roundtrip_loop_with_br() {
     // count down from 3 to 0, return 0
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let n = chunk.add_constant(Value::I32(3));
-    let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, n, 0);
+    chunk.emit_i32_const(3, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
     let _blk = chunk.emit_block(0);
@@ -676,7 +665,7 @@ fn roundtrip_loop_with_br() {
     chunk.emit_br_if(1, 0); // exit block
     // local -= 1
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    chunk.emit_op_u16(Op::CONST, one, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::I32_SUB, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     chunk.emit_br(0, 0); // continue loop
@@ -1406,11 +1395,9 @@ fn roundtrip_multiple_functions() {
         name: "__add".to_string(),
         init: ConstExpr::RefFunc(1) });
     let fn_name = main.add_constant(Value::String(Arc::from("__add")));
-    let a = main.add_constant(Value::I32(20));
-    let b = main.add_constant(Value::I32(22));
     main.emit_op_u16(Op::GLOBAL_GET, fn_name, 0);
-    main.emit_op_u16(Op::CONST, a, 0);
-    main.emit_op_u16(Op::CONST, b, 0);
+    main.emit_i32_const(20, 0);
+    main.emit_i32_const(22, 0);
     main.emit_op_u8(Op::CALL_REF, 2, 0);
     main.emit_op(Op::RETURN, 0);
 
@@ -1434,16 +1421,13 @@ fn rt_run(emit: impl FnOnce(&mut Chunk)) -> Value {
 }
 
 fn push_i32_rt(c: &mut Chunk, v: i32) {
-    let k = c.add_constant(Value::I32(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i32_const(v, 0);
 }
 fn push_i64_rt(c: &mut Chunk, v: i64) {
-    let k = c.add_constant(Value::I64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_i64_const(v, 0);
 }
 fn push_f64_rt(c: &mut Chunk, v: f64) {
-    let k = c.add_constant(Value::F64(v));
-    c.emit_op_u16(Op::CONST, k, 0);
+    c.emit_f64_const(v, 0);
 }
 
 // 0xA8 i32.trunc_f32_s — was collapsed to I32_FROM_F64 (no trapping)

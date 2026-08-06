@@ -8,8 +8,7 @@ fn run_chunk_expect_i32(chunk: Chunk, expected: i32) {
 }
 
 fn make_i32(chunk: &mut Chunk, v: i32) {
-    let idx = chunk.add_constant(Value::I32(v));
-    chunk.emit_op_u16(Op::CONST, idx, 0);
+    chunk.emit_i32_const(v, 0);
 }
 
 fn emit_if_typed(chunk: &mut Chunk, result_count: u8) {
@@ -199,17 +198,14 @@ fn vm_rejects_non_numeric_if_condition() {
 #[test]
 fn core_comparisons_produce_i32_zero_or_one() {
     let mut chunk = Chunk::new("<script>");
-    let zero = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, zero, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_EQZ, 0);
     chunk.emit_op(Op::RETURN, 0);
     assert!(matches!(run_chunk(chunk), Value::I32(1)));
 
     let mut chunk = Chunk::new("<script>");
-    let a = chunk.add_constant(Value::I32(7));
-    let b = chunk.add_constant(Value::I32(7));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_i32_const(7, 0);
+    chunk.emit_i32_const(7, 0);
     chunk.emit_op(Op::I32_EQ, 0);
     chunk.emit_op(Op::RETURN, 0);
     assert!(matches!(run_chunk(chunk), Value::I32(1)));

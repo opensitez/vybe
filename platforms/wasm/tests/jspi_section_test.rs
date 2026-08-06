@@ -71,8 +71,7 @@ fn read_leb(buf: &[u8], mut i: usize) -> (usize, usize) {
 #[test]
 fn jspi_section_absent_when_no_async_chunks() {
     let mut script = Chunk::new("<script>");
-    let c = script.add_constant(Value::I32(42));
-    script.emit_op_u16(Op::CONST, c, 0);
+    script.emit_i32_const(42, 0);
     script.emit_op(Op::RETURN, 0);
     let wasm = write_wasm(&[script]);
     assert!(
@@ -93,8 +92,7 @@ fn jspi_section_lists_async_chunk() {
     let mut async_fn = Chunk::new("doSomethingAsync");
     async_fn.arity = 0;
     async_fn.is_async = true;
-    let c = async_fn.add_constant(Value::I32(7));
-    async_fn.emit_op_u16(Op::CONST, c, 0);
+    async_fn.emit_i32_const(7, 0);
     async_fn.emit_op(Op::RETURN, 0);
 
     let wasm = write_wasm(&[script, async_fn]);

@@ -9,18 +9,19 @@
 //!
 //! | Op                     | Status |
 //! |------------------------|--------|
-//! | `memory.copy`          | ✅  VM handler copies real bytes |
-//! | `memory.fill`          | ✅  |
-//! | `memory.init`          | ✅ (no data section support yet — always acts on empty init region) |
-//! | `data.drop`            | ✅ VM no-op (no runtime data segments) |
+//! | `memory.copy`          | ✅ real byte copy, memory64-aware, unsigned operands |
+//! | `memory.fill`          | ✅ |
+//! | `memory.init`          | ✅ reads real data segments; respects `data.drop`; unsigned operands trap OOB |
+//! | `data.drop`            | ✅ marks the segment dropped (`dropped_data`) |
 //! | `table.copy`           | ✅ overlap-aware copy on `func_table` |
-//! | `table.init`           | ✅ bounds-checked no-op (no runtime element segments) |
-//! | `elem.drop`            | ✅ VM no-op |
+//! | `table.init`           | ✅ bounds-checked against element segments |
+//! | `elem.drop`            | ✅ |
 //!
-//! The 0xFC-prefix emitter in `code.rs` treats these as pass-through
-//! (prefix + sub + operands), which is correct for the arithmetic and
-//! memory-ref sub-opcodes. Table operations would need our element
-//! section to expose drop-able segments, which we don't currently do.
+//! The 0xFC-prefix emitter in `code.rs` is NOT pass-through: it reads the
+//! internal fixed-width immediates (u8 indices, optional `0xEE`
+//! multi-memory selector blocks) and re-serializes them as the spec's LEB
+//! immediates. The reader does the inverse, and its validation pass
+//! rejects indices above the internal u8 width instead of truncating.
 
 use vybe_runtime::Chunk;
 

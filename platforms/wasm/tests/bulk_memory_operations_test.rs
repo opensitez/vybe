@@ -69,8 +69,7 @@ fn run_with_memory_err(mem_size: usize, emit: impl FnOnce(&mut Chunk)) -> String
 }
 
 fn push_i32(c: &mut Chunk, v: i32) {
-    let idx = c.add_constant(Value::I32(v));
-    c.emit_op_u16(Op::CONST, idx, 0);
+    c.emit_i32_const(v, 0);
 }
 
 fn read_byte(vm: &VM, addr: usize) -> u8 {
@@ -331,7 +330,11 @@ fn decoded_standard_active_data_segment_initializes_memory() {
 }
 
 #[test]
-fn memory_init_after_data_drop_traps() {
+fn memory_init_after_data_drop_zero_length_ok_nonzero_traps() {
+    // Spec (bulk-memory Overview §data.drop): a dropped segment shrinks to
+    // zero length and "only a zero-length access at offset zero will not
+    // trap". So count=0/src=0 succeeds; any non-zero access is an ordinary
+    // out-of-bounds trap (not a distinct "dropped" error class).
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op_u8(Op::DATA_DROP, 0, 0);
@@ -340,12 +343,23 @@ fn memory_init_after_data_drop_traps() {
     push_i32(&mut chunk, 0); // count
     chunk.emit_op_u8(Op::MEMORY_INIT, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
+    vm.run(vec![chunk])
+        .expect("zero-length memory.init at offset 0 on a dropped segment must not trap");
 
+    let mut vm = VM::new();
+    vm.memory.resize(1024, 0);
+    let mut chunk = Chunk::new("<script>");
+    chunk.emit_op_u8(Op::DATA_DROP, 0, 0);
+    push_i32(&mut chunk, 0); // dst
+    push_i32(&mut chunk, 0); // src offset
+    push_i32(&mut chunk, 1); // count — reads past the zero-length segment
+    chunk.emit_op_u8(Op::MEMORY_INIT, 0, 0);
+    chunk.emit_op(Op::RETURN, 0);
     let err = vm
         .run(vec![chunk])
-        .expect_err("memory.init after data.drop must trap");
+        .expect_err("non-zero memory.init on a dropped segment must trap");
     assert!(
-        err.to_string().contains("data segment dropped"),
+        err.to_string().contains("out of bounds"),
         "unexpected trap: {err}"
     );
 }

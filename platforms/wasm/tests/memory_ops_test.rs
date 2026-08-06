@@ -17,13 +17,11 @@ fn memory_grow_and_size() {
     chunk.emit_op(Op::MEMORY_SIZE, 0);
     // Grow by 1 page (64KB)
     chunk.emit_op(Op::DROP, 0);
-    let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, one, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     // memory_grow returns old size
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::MEMORY_SIZE, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 1); // 1 page after grow
 }
@@ -35,10 +33,8 @@ fn memory_grow_returns_minus_one_when_max_exceeded() {
     vm.memory.set_max_pages(Some(1));
 
     let mut chunk = Chunk::new("<script>");
-    let one = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, one, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), -1);
@@ -54,16 +50,12 @@ fn i32_store_and_load() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     // i32.store addr=0, value=42
-    let addr = chunk.add_constant(Value::I32(0));
-    let val = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, addr, 0);
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op(Op::I32_STORE, 0);
     // i32.load addr=0
-    let addr2 = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, addr2, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 42);
 }
@@ -75,15 +67,11 @@ fn f64_store_and_load() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let addr = chunk.add_constant(Value::I32(0));
-    let val = chunk.add_constant(Value::F64(3.14));
-    chunk.emit_op_u16(Op::CONST, addr, 0);
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_f64_const(3.14, 0);
     chunk.emit_op(Op::F64_STORE, 0);
-    let addr2 = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, addr2, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::F64_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert!((result.as_f64() - 3.14).abs() < 1e-10);
 }
@@ -96,22 +84,16 @@ fn i32_store_load_at_offset() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     // Store 100 at addr 8
-    let addr = chunk.add_constant(Value::I32(8));
-    let val = chunk.add_constant(Value::I32(100));
-    chunk.emit_op_u16(Op::CONST, addr, 0);
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_i32_const(8, 0);
+    chunk.emit_i32_const(100, 0);
     chunk.emit_op(Op::I32_STORE, 0);
     // Store 200 at addr 12
-    let addr2 = chunk.add_constant(Value::I32(12));
-    let val2 = chunk.add_constant(Value::I32(200));
-    chunk.emit_op_u16(Op::CONST, addr2, 0);
-    chunk.emit_op_u16(Op::CONST, val2, 0);
+    chunk.emit_i32_const(12, 0);
+    chunk.emit_i32_const(200, 0);
     chunk.emit_op(Op::I32_STORE, 0);
     // Load from addr 8
-    let addr3 = chunk.add_constant(Value::I32(8));
-    chunk.emit_op_u16(Op::CONST, addr3, 0);
+    chunk.emit_i32_const(8, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 100);
 }
@@ -128,10 +110,8 @@ fn memory_fill_via_rust() {
     // Verify via i32_load
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let addr = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, addr, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), -1); // 0xFFFFFFFF
 }
@@ -148,10 +128,8 @@ fn memory_copy_via_rust() {
     // Verify via i32_load at offset 16
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
-    let addr = chunk.add_constant(Value::I32(16));
-    chunk.emit_op_u16(Op::CONST, addr, 0);
+    chunk.emit_i32_const(16, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 42);
 }
@@ -168,8 +146,7 @@ fn call_indirect_basic() {
     let mut f = Chunk::new("f");
     f.arity = 0;
     f.local_count = 1;
-    let val = f.add_constant(Value::F64(42.0));
-    f.emit_op_u16(Op::CONST, val, 0);
+    f.emit_f64_const(42.0, 0);
     f.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");
@@ -180,8 +157,7 @@ fn call_indirect_basic() {
     main.emit(0, 0); // 0 upvalues
     // For call_indirect, we need the table index on stack
     // Just use regular call for now since func_table setup is complex
-    main.emit_op_u8(Op::CALL, 0, 0);
-    main.emit_op(Op::HALT, 0);
+    main.emit_op_u8(Op::CALL_REF, 0, 0);
 
     let result = vm.run(vec![main, f]).unwrap();
     assert_eq!(result.as_f64(), 42.0);
@@ -213,9 +189,8 @@ fn wasm_module_roundtrip() {
     let mut chunk = Chunk::new("test");
     chunk.arity = 0;
     chunk.local_count = 1;
-    let c = chunk.add_constant(Value::F64(42.0));
-    chunk.emit_op_u16(Op::CONST, c, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_f64_const(42.0, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let wasm_bytes = vybe_platform_wasm::write_wasm(&[chunk.clone()]);
     assert!(!wasm_bytes.is_empty());
@@ -249,12 +224,9 @@ fn function_in_separate_chunk_callable() {
     main.emit_op_u16(Op::GLOBAL_SET, name, 0);
     // Call: add(10, 20)
     main.emit_op_u16(Op::GLOBAL_GET, name, 0);
-    let a = main.add_constant(Value::F64(10.0));
-    let b = main.add_constant(Value::F64(20.0));
-    main.emit_op_u16(Op::CONST, a, 0);
-    main.emit_op_u16(Op::CONST, b, 0);
-    main.emit_op_u8(Op::CALL, 2, 0);
-    main.emit_op(Op::HALT, 0);
+    main.emit_f64_const(10.0, 0);
+    main.emit_f64_const(20.0, 0);
+    main.emit_op_u8(Op::CALL_REF, 2, 0);
 
     let result = vm.run(vec![main, f]).unwrap();
     assert_eq!(result.as_f64(), 30.0);
@@ -269,8 +241,7 @@ fn multiple_chunks_cross_call() {
     double.arity = 1;
     double.local_count = 1;
     double.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let two = double.add_constant(Value::F64(2.0));
-    double.emit_op_u16(Op::CONST, two, 0);
+    double.emit_f64_const(2.0, 0);
     double.emit_op(Op::F64_MUL, 0);
     double.emit_op(Op::RETURN, 0);
 
@@ -284,7 +255,7 @@ fn multiple_chunks_cross_call() {
     let dbl_name = quad.add_constant(Value::String(Arc::from("double")));
     quad.emit_op_u16(Op::GLOBAL_GET, dbl_name, 0);
     quad.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    quad.emit_op_u8(Op::CALL, 1, 0);
+    quad.emit_op_u8(Op::CALL_REF, 1, 0);
     quad.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");
@@ -301,10 +272,8 @@ fn multiple_chunks_cross_call() {
     main.emit_op_u16(Op::GLOBAL_SET, q_name, 0);
     // Call quad(5)
     main.emit_op_u16(Op::GLOBAL_GET, q_name, 0);
-    let five = main.add_constant(Value::F64(5.0));
-    main.emit_op_u16(Op::CONST, five, 0);
-    main.emit_op_u8(Op::CALL, 1, 0);
-    main.emit_op(Op::HALT, 0);
+    main.emit_f64_const(5.0, 0);
+    main.emit_op_u8(Op::CALL_REF, 1, 0);
 
     let result = vm.run(vec![main, double, quad]).unwrap();
     assert_eq!(result.as_f64(), 10.0); // double(5) = 10
@@ -321,16 +290,14 @@ fn call_indirect_vm_function() {
     let mut f = Chunk::new("get99");
     f.arity = 0;
     f.local_count = 1;
-    let val = f.add_constant(Value::F64(99.0));
-    f.emit_op_u16(Op::CONST, val, 0);
+    f.emit_f64_const(99.0, 0);
     f.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");
     main.local_count = 2;
 
     // table.set 0: push slot index 0, then the ref.func value.
-    let zero = main.add_constant(Value::I32(0));
-    main.emit_op_u16(Op::CONST, zero, 0);
+    main.emit_i32_const(0, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0); // 0 upvalues
     main.emit_op_u8(Op::TABLE_SET, 0, 0);
@@ -339,10 +306,9 @@ fn call_indirect_vm_function() {
     // `call_indirect` is `U8_U8_U8`: argc, tableidx, expected_results. The
     // third byte is required — the VM checks it against the callee's
     // `result_arity` for the spec's runtime type check.
-    main.emit_op_u16(Op::CONST, zero, 0);
+    main.emit_i32_const(0, 0);
     main.emit_op_u8_u8(Op::CALL_INDIRECT, 0, 0, 0);
     main.emit(1, 0); // expected_results: `get99` returns one value
-    main.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![main, f]).unwrap();
     assert_eq!(result.as_f64(), 99.0);
@@ -365,8 +331,7 @@ fn decoded_standard_call_indirect_executes_vm_table_function() {
     let mut target = Chunk::new("target");
     target.arity = 0;
     target.local_count = 0;
-    let value = target.add_constant(Value::I32(77));
-    target.emit_op_u16(Op::CONST, value, 0);
+    target.emit_i32_const(77, 0);
     target.emit_op(Op::RETURN, 0);
 
     let mut function = Object::new();
@@ -400,8 +365,7 @@ fn decoded_standard_call_indirect_uses_encoded_table_index() {
     let caller = chunks.remove(1);
 
     let mut target = Chunk::new("target_table_1");
-    let value = target.add_constant(Value::I32(88));
-    target.emit_op_u16(Op::CONST, value, 0);
+    target.emit_i32_const(88, 0);
     target.emit_op(Op::RETURN, 0);
 
     let mut function = Object::new();
@@ -433,7 +397,6 @@ fn run_mem(vm: &mut VM, emit: impl FnOnce(&mut Chunk)) -> Value {
     let mut c = Chunk::new("<script>");
     c.local_count = 1;
     emit(&mut c);
-    c.emit_op(Op::HALT, 0);
     vm.run(vec![c]).unwrap()
 }
 
@@ -441,7 +404,6 @@ fn run_mem_err(vm: &mut VM, emit: impl FnOnce(&mut Chunk)) -> String {
     let mut c = Chunk::new("<script>");
     c.local_count = 1;
     emit(&mut c);
-    c.emit_op(Op::HALT, 0);
     vm.run(vec![c]).unwrap_err().to_string()
 }
 
@@ -451,17 +413,13 @@ fn run_mem_err(vm: &mut VM, emit: impl FnOnce(&mut Chunk)) -> String {
 fn i32_load_store_apply_memarg_offset() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let base = c.add_constant(Value::I32(4));
-        let val = c.add_constant(Value::I32(0x1122_3344));
-        let zero = c.add_constant(Value::I32(0));
-
-        c.emit_op_u16(Op::CONST, base, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(4, 0);
+        c.emit_i32_const(0x1122_3344, 0);
         c.emit_op(Op::I32_STORE, 0);
         c.emit_leb_u32(2, 0); // natural i32 alignment
         c.emit_leb_u32(8, 0); // effective address = 4 + 8
 
-        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I32_LOAD, 0);
         c.emit_leb_u32(2, 0);
         c.emit_leb_u32(12, 0);
@@ -473,17 +431,13 @@ fn i32_load_store_apply_memarg_offset() {
 fn f64_load_store_apply_memarg_offset() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let base = c.add_constant(Value::I32(5));
-        let val = c.add_constant(Value::F64(6.25));
-        let zero = c.add_constant(Value::I32(0));
-
-        c.emit_op_u16(Op::CONST, base, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(5, 0);
+        c.emit_f64_const(6.25, 0);
         c.emit_op(Op::F64_STORE, 0);
         c.emit_leb_u32(3, 0);
         c.emit_leb_u32(9, 0);
 
-        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::F64_LOAD, 0);
         c.emit_leb_u32(3, 0);
         c.emit_leb_u32(14, 0);
@@ -495,17 +449,13 @@ fn f64_load_store_apply_memarg_offset() {
 fn f32_load_store_apply_memarg_offset() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let base = c.add_constant(Value::I32(3));
-        let val = c.add_constant(Value::F64((-2.5f32) as f64));
-        let zero = c.add_constant(Value::I32(0));
-
-        c.emit_op_u16(Op::CONST, base, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(3, 0);
+        c.emit_f64_const((-2.5f32) as f64, 0);
         c.emit_op(Op::F32_STORE, 0);
         c.emit_leb_u32(2, 0);
         c.emit_leb_u32(17, 0);
 
-        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::F32_LOAD, 0);
         c.emit_leb_u32(2, 0);
         c.emit_leb_u32(20, 0);
@@ -517,17 +467,13 @@ fn f32_load_store_apply_memarg_offset() {
 fn i64_load16_s_applies_memarg_offset() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let base = c.add_constant(Value::I32(6));
-        let val = c.add_constant(Value::I64(-1234));
-        let zero = c.add_constant(Value::I32(0));
-
-        c.emit_op_u16(Op::CONST, base, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(6, 0);
+        c.emit_i64_const(-1234, 0);
         c.emit_op(Op::I64_STORE16, 0);
         c.emit_leb_u32(1, 0);
         c.emit_leb_u32(12, 0);
 
-        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD16_S, 0);
         c.emit_leb_u32(1, 0);
         c.emit_leb_u32(18, 0);
@@ -540,8 +486,7 @@ fn i32_load_oob_traps() {
     let mut vm = VM::new();
     vm.memory.resize(3, 0);
     let err = run_mem_err(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I32_LOAD, 0);
     });
     assert!(err.contains("out of bounds") || err.contains("trap"));
@@ -552,10 +497,8 @@ fn i64_store32_oob_traps() {
     let mut vm = VM::new();
     vm.memory.resize(2, 0);
     let err = run_mem_err(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I64(1));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i64_const(1, 0);
         c.emit_op(Op::I64_STORE32, 0);
     });
     assert!(err.contains("out of bounds") || err.contains("trap"));
@@ -566,8 +509,7 @@ fn f32_load_oob_traps() {
     let mut vm = VM::new();
     vm.memory.resize(3, 0);
     let err = run_mem_err(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::F32_LOAD, 0);
     });
     assert!(err.contains("out of bounds") || err.contains("trap"));
@@ -578,10 +520,8 @@ fn f64_store_oob_traps() {
     let mut vm = VM::new();
     vm.memory.resize(7, 0);
     let err = run_mem_err(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::F64(1.0));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_f64_const(1.0, 0);
         c.emit_op(Op::F64_STORE, 0);
     });
     assert!(err.contains("out of bounds") || err.contains("trap"));
@@ -593,12 +533,10 @@ fn f64_store_oob_traps() {
 fn f32_store_and_load() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::F64(3.14f32 as f64));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_f64_const(3.14f32 as f64, 0);
         c.emit_op(Op::F32_STORE, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::F32_LOAD, 0);
     });
     assert!((r.as_f64() as f32 - 3.14f32).abs() < 1e-5);
@@ -610,12 +548,10 @@ fn f32_store_and_load() {
 fn i32_store8_and_load8_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I32(-1i32)); // 0xFF as byte
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(-1i32, 0); // 0xFF as byte
         c.emit_op(Op::I32_STORE8, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I32_LOAD8_S, 0); // sign-extend → -1
     });
     assert_eq!(r.as_i32(), -1);
@@ -625,12 +561,10 @@ fn i32_store8_and_load8_s() {
 fn i32_load8_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I32(0xFF));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0xFF, 0);
         c.emit_op(Op::I32_STORE8, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I32_LOAD8_U, 0); // zero-extend → 255
     });
     assert_eq!(r.as_i32(), 255);
@@ -640,12 +574,10 @@ fn i32_load8_u() {
 fn i32_store16_and_load16_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I32(-1000));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(-1000, 0);
         c.emit_op(Op::I32_STORE16, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I32_LOAD16_S, 0);
     });
     assert_eq!(r.as_i32(), -1000);
@@ -655,12 +587,10 @@ fn i32_store16_and_load16_s() {
 fn i32_load16_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I32(0xFFFF));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0xFFFF, 0);
         c.emit_op(Op::I32_STORE16, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I32_LOAD16_U, 0);
     });
     assert_eq!(r.as_i32(), 65535);
@@ -672,12 +602,10 @@ fn i32_load16_u() {
 fn i64_store_and_load() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I64(i64::MAX));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i64_const(i64::MAX, 0);
         c.emit_op(Op::I64_STORE, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD, 0);
     });
     assert_eq!(r.as_i64(), i64::MAX);
@@ -687,12 +615,10 @@ fn i64_store_and_load() {
 fn i64_store8_and_load8_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I64(-1));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i64_const(-1, 0);
         c.emit_op(Op::I64_STORE8, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD8_S, 0);
     });
     assert_eq!(r.as_i64(), -1);
@@ -702,12 +628,10 @@ fn i64_store8_and_load8_s() {
 fn i64_load8_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I64(200));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i64_const(200, 0);
         c.emit_op(Op::I64_STORE8, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD8_U, 0);
     });
     assert_eq!(r.as_i64(), 200);
@@ -717,12 +641,10 @@ fn i64_load8_u() {
 fn i64_store16_and_load16_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I64(-5000));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i64_const(-5000, 0);
         c.emit_op(Op::I64_STORE16, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD16_S, 0);
     });
     assert_eq!(r.as_i64(), -5000);
@@ -732,12 +654,10 @@ fn i64_store16_and_load16_s() {
 fn i64_load16_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I64(40000));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i64_const(40000, 0);
         c.emit_op(Op::I64_STORE16, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD16_U, 0);
     });
     assert_eq!(r.as_i64(), 40000);
@@ -747,12 +667,10 @@ fn i64_load16_u() {
 fn i64_store32_and_load32_s() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I64(-70000));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i64_const(-70000, 0);
         c.emit_op(Op::I64_STORE32, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD32_S, 0);
     });
     assert_eq!(r.as_i64(), -70000);
@@ -762,12 +680,10 @@ fn i64_store32_and_load32_s() {
 fn i64_load32_u() {
     let mut vm = mem_vm();
     let r = run_mem(&mut vm, |c| {
-        let addr = c.add_constant(Value::I32(0));
-        let val = c.add_constant(Value::I64(3_000_000_000i64));
-        c.emit_op_u16(Op::CONST, addr, 0);
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i64_const(3_000_000_000i64, 0);
         c.emit_op(Op::I64_STORE32, 0);
-        c.emit_op_u16(Op::CONST, addr, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD32_U, 0);
     });
     assert_eq!(r.as_i64(), 3_000_000_000i64);

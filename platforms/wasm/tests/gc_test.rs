@@ -90,9 +90,8 @@ fn gc_emission_struct_set_reorders_object_and_value_operands() {
     chunk.types.push(type_entry("A", &["x"]));
     chunk.types.push(type_entry("B", &["y", "z"]));
     let field = chunk.add_constant(Value::String(Arc::from("z")));
-    let value = chunk.add_constant(Value::I32(9));
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op_u16(Op::CONST, value, 0);
+    chunk.emit_i32_const(9, 0);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, field, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -118,22 +117,19 @@ fn gc_emission_struct_set_reorders_object_and_value_operands() {
 
 #[test]
 fn br_on_null_branches_when_null() {
-    // Layout (ip after BR_ON_NULL operands = 6):
-    //   [0-1]  NULL
-    //   [2-5]  BR_ON_NULL offset=4  → if null: ip = 6 + 4 = 10
-    //   [6-9]  CONST(0)             ← not-null path (not reached)
-    //   [10-11] RETURN               ← exits not-null path
-    //   [12-15] CONST(1)             ← null path lands here
-    //   [16-17] RETURN
+    // Branch offset is relative to the ip after BR_ON_NULL's operands; the
+    // null path must skip the not-reached consts, whose encoded size is
+    // LEB-variable — so measure and patch rather than hand-count bytes.
     let r = run_raw(|c| {
-        let zero = c.add_constant(Value::I32(0));
-        let one = c.add_constant(Value::I32(1));
-
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-        c.emit_op_u16(Op::BR_ON_NULL, 10u16, 0); // offset=10: skip CONST(6)+RETURN(4)
-        c.emit_op_u16(Op::CONST, zero, 0); // not reached
+        c.emit_op_u16(Op::BR_ON_NULL, 0u16, 0); // offset patched below
+        let after = c.code.len();
+        c.emit_i32_const(0, 0); // not-null path (not reached)
         c.emit_op(Op::RETURN, 0); // not reached
-        c.emit_op_u16(Op::CONST, one, 0); // null path lands here
+        let off = (c.code.len() - after) as u16;
+        c.code[after - 2] = (off >> 8) as u8;
+        c.code[after - 1] = (off & 0xff) as u8;
+        c.emit_i32_const(1, 0); // null path lands here
         c.emit_op(Op::RETURN, 0);
     });
     assert_eq!(r.as_i32(), 1);
@@ -143,16 +139,12 @@ fn br_on_null_branches_when_null() {
 fn br_on_null_skips_branch_on_non_null() {
     // Non-null value → fall through to CONST(0), return 0
     let r = run_raw(|c| {
-        let val = c.add_constant(Value::I32(42));
-        let zero = c.add_constant(Value::I32(0));
-        let one = c.add_constant(Value::I32(1));
-
-        c.emit_op_u16(Op::CONST, val, 0); // push non-null i32
+        c.emit_i32_const(42, 0); // push non-null i32
         c.emit_op_u16(Op::BR_ON_NULL, 6u16, 0); // not null → fall through
         c.emit_op(Op::DROP, 0); // drop i32 42
-        c.emit_op_u16(Op::CONST, zero, 0); // push 0
+        c.emit_i32_const(0, 0); // push 0
         c.emit_op(Op::RETURN, 0);
-        c.emit_op_u16(Op::CONST, one, 0); // null path (not reached)
+        c.emit_i32_const(1, 0); // null path (not reached)
         c.emit_op(Op::RETURN, 0);
     });
     assert_eq!(r.as_i32(), 0);
@@ -162,27 +154,21 @@ fn br_on_null_skips_branch_on_non_null() {
 
 #[test]
 fn br_on_non_null_branches_on_non_null() {
-    // Layout (ip after BR_ON_NON_NULL = 8):
-    //   [0-3]  CONST(7)
-    //   [4-7]  BR_ON_NON_NULL offset=4  → ip(8)+4=12 if non-null (value stays on stack)
-    //   [8-9]  DROP
-    //   [10-13] CONST(0)  ← null fall-through (not reached)
-    //   [14-15] RETURN
-    //   [16-17] RETURN   ← non-null path lands at ip=12... wait
+    // BR_ON_NON_NULL leaves the value on the stack when it branches, so the
+    // branch target RETURN returns 7. Offset measured and patched, not
+    // hand-counted (const encoding is LEB-variable).
     let r = run_raw(|c| {
-        let val = c.add_constant(Value::I32(7));
-        let zero = c.add_constant(Value::I32(0));
-
-        c.emit_op_u16(Op::CONST, val, 0); // [0-3]
-        c.emit_op_u16(Op::BR_ON_NON_NULL, 6u16, 0); // [4-7] offset=6 → ip(8)+6=14
-        // null fall-through:
-        c.emit_op(Op::DROP, 0); // [8-9]
-        c.emit_op_u16(Op::CONST, zero, 0); // [10-13]
-        c.emit_op(Op::RETURN, 0); // [14-15]
-        // non-null path at [14]? Wait, 8+6=14, which is RETURN. Let me recalculate.
-        // offset=6: ip=8+6=14 → RETURN at [14-15] (returns what? the value (7))
-        // Because BR_ON_NON_NULL leaves value on stack when branching.
-        // So at ip=14: stack has [7], RETURN → returns 7. ✓
+        c.emit_i32_const(7, 0);
+        c.emit_op_u16(Op::BR_ON_NON_NULL, 0u16, 0); // offset patched below
+        let after = c.code.len();
+        // null fall-through (not reached):
+        c.emit_op(Op::DROP, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_op(Op::RETURN, 0);
+        let off = (c.code.len() - after) as u16;
+        c.code[after - 2] = (off >> 8) as u8;
+        c.code[after - 1] = (off & 0xff) as u8;
+        c.emit_op(Op::RETURN, 0); // non-null path: 7 still on stack
     });
     assert_eq!(r.as_i32(), 7);
 }
@@ -191,14 +177,11 @@ fn br_on_non_null_branches_on_non_null() {
 fn br_on_non_null_skips_on_null() {
     // Push null → BR_ON_NON_NULL should NOT branch → pops null, falls through
     let r = run_raw(|c| {
-        let fallback = c.add_constant(Value::I32(99));
-        let other = c.add_constant(Value::I32(0));
-
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // [0-1]
         c.emit_op_u16(Op::BR_ON_NON_NULL, 4u16, 0); // [2-5] null → no branch, pop
-        c.emit_op_u16(Op::CONST, fallback, 0); // [6-9]
+        c.emit_i32_const(99, 0); // [6-9]
         c.emit_op(Op::RETURN, 0); // [10-11]
-        c.emit_op_u16(Op::CONST, other, 0); // [12-15] not reached
+        c.emit_i32_const(0, 0); // [12-15] not reached
         c.emit_op(Op::RETURN, 0); // [16-17]
     });
     assert_eq!(r.as_i32(), 99);
@@ -209,8 +192,7 @@ fn br_on_non_null_skips_on_null() {
 #[test]
 fn ref_as_non_null_passes_through_non_null() {
     let mut chunk = Chunk::new("<script>");
-    let val = chunk.add_constant(Value::String(Arc::from("hello")));
-    chunk.emit_op_u16(Op::CONST, val, 0);
+    chunk.emit_string_const("hello", 0);
     chunk.emit_op(Op::REF_AS_NON_NULL, 0);
     chunk.emit_op(Op::RETURN, 0);
     let r = VM::new().run(vec![chunk]).expect("run failed");
@@ -233,8 +215,7 @@ fn ref_cast_traps_on_type_mismatch() {
     // Push a string, cast to "dog" — won't match → trap
     let e = run_err(|c| {
         c.types.push(type_entry("Dog", &["legs"]));
-        let val = c.add_constant(Value::String(Arc::from("not-a-dog")));
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_string_const("not-a-dog", 0);
         c.emit_ref_type_op(Op::REF_CAST, HeapType::Concrete(1), 0);
     });
     assert!(e.contains("cast") || e.contains("not"));
@@ -258,13 +239,13 @@ fn br_on_cast_branches_on_type_match() {
     // struct with __type "foo" → br_on_cast "foo" at depth 0 → exits block
     let mut chunk = Chunk::new("<script>");
     let type_str = chunk.add_constant(Value::String(Arc::from("foo")));
-    let matched = chunk.add_constant(Value::I32(1));
-    let missed = chunk.add_constant(Value::I32(0));
 
     let _blk = chunk.emit_block(0);
 
-    // Push a value tagged as "foo" (a string constant that test_type matches)
-    chunk.emit_op_u16(Op::CONST, type_str, 0);
+    // Push a value tagged as "foo" (a string constant that test_type
+    // matches). The pool entry stays alive as BR_ON_CAST's name immediate;
+    // the VALUE rides the spec string-constant route.
+    chunk.emit_string_const("foo", 0);
 
     // br_on_cast: U16 type_name_idx + U8 depth
     chunk.emit_op(Op::BR_ON_CAST, 0);
@@ -274,11 +255,11 @@ fn br_on_cast_branches_on_type_match() {
 
     // not branched: push missed, return
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::CONST, missed, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_end(0);
     // branched: value (type_str constant = "foo") is on stack, drop and push 1
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::CONST, matched, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let r = VM::new().run(vec![chunk]).expect("run failed");
@@ -289,13 +270,10 @@ fn br_on_cast_branches_on_type_match() {
 #[test]
 fn br_on_cast_fail_branches_on_type_mismatch() {
     let mut chunk = Chunk::new("<script>");
-    let type_str = chunk.add_constant(Value::String(Arc::from("bar")));
     let wrong = chunk.add_constant(Value::String(Arc::from("not-bar")));
-    let fallback = chunk.add_constant(Value::I32(99));
-    let other = chunk.add_constant(Value::I32(0));
 
     let _blk = chunk.emit_block(0);
-    chunk.emit_op_u16(Op::CONST, type_str, 0); // "bar" value
+    chunk.emit_string_const("bar", 0); // "bar" value
 
     // br_on_cast_fail "not-bar" → branches because "bar" is not "not-bar"
     chunk.emit_op(Op::BR_ON_CAST_FAIL, 0);
@@ -304,10 +282,10 @@ fn br_on_cast_fail_branches_on_type_mismatch() {
     chunk.emit(0u8, 0);
 
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::CONST, other, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_end(0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u16(Op::CONST, fallback, 0);
+    chunk.emit_i32_const(99, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let r = VM::new().run(vec![chunk]).expect("run failed");
@@ -344,7 +322,6 @@ fn struct_new_creates_object() {
 fn struct_set_and_get_roundtrip() {
     let r = run_locals(1, |c| {
         let key = c.add_constant(Value::String(Arc::from("x")));
-        let val = c.add_constant(Value::I32(42));
 
         // create empty struct, store in slot 0, drop stack copy
         c.emit_struct_new(0, 0, 0); // stack: [obj]
@@ -352,7 +329,7 @@ fn struct_set_and_get_roundtrip() {
 
         // obj.x = 42
         c.emit_op_u16(Op::LOCAL_GET, 0, 0); // stack: [obj]
-        c.emit_op_u16(Op::CONST, val, 0); // stack: [obj, 42]
+        c.emit_i32_const(42, 0); // stack: [obj, 42]
         c.emit_struct_field_op(Op::STRUCT_SET, 0, key, 0); // stack: []
 
         // read obj.x
@@ -366,18 +343,16 @@ fn struct_set_and_get_roundtrip() {
 fn struct_set_overwrites_field() {
     let r = run_locals(1, |c| {
         let key = c.add_constant(Value::String(Arc::from("v")));
-        let v1 = c.add_constant(Value::I32(1));
-        let v2 = c.add_constant(Value::I32(99));
 
         c.emit_struct_new(0, 0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, v1, 0);
+        c.emit_i32_const(1, 0);
         c.emit_struct_field_op(Op::STRUCT_SET, 0, key, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, v2, 0);
+        c.emit_i32_const(99, 0);
         c.emit_struct_field_op(Op::STRUCT_SET, 0, key, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -393,16 +368,12 @@ fn struct_set_overwrites_field() {
 #[test]
 fn array_new_fixed_and_get() {
     let r = run(|c| {
-        let a = c.add_constant(Value::I32(10));
-        let b = c.add_constant(Value::I32(20));
-        let n = c.add_constant(Value::I32(30));
-        c.emit_op_u16(Op::CONST, a, 0);
-        c.emit_op_u16(Op::CONST, b, 0);
-        c.emit_op_u16(Op::CONST, n, 0);
+        c.emit_i32_const(10, 0);
+        c.emit_i32_const(20, 0);
+        c.emit_i32_const(30, 0);
         c.emit_array_new_fixed(0, 3, 0); // 3 elements
         // get element at index 1 (=20)
-        let idx = c.add_constant(Value::I32(1));
-        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::ARRAY_GET, 0);
     });
     assert_eq!(r.as_i32(), 20);
@@ -411,26 +382,22 @@ fn array_new_fixed_and_get() {
 #[test]
 fn array_set_updates_element() {
     let r = run_locals(1, |c| {
-        let zero = c.add_constant(Value::I32(0));
-        let new_val = c.add_constant(Value::I32(77));
-        let idx = c.add_constant(Value::I32(1));
-
         // create [0,0,0], store in slot 0
-        c.emit_op_u16(Op::CONST, zero, 0);
-        c.emit_op_u16(Op::CONST, zero, 0);
-        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_array_new_fixed(0, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         // arr[1] = 77: push arr, idx, val
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, idx, 0);
-        c.emit_op_u16(Op::CONST, new_val, 0);
+        c.emit_i32_const(1, 0);
+        c.emit_i32_const(77, 0);
         c.emit_op(Op::ARRAY_SET, 0);
 
         // get arr[1]
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::ARRAY_GET, 0);
     });
     assert_eq!(r.as_i32(), 77);
@@ -439,11 +406,10 @@ fn array_set_updates_element() {
 #[test]
 fn array_length() {
     let r = run(|c| {
-        let v = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, v, 0);
-        c.emit_op_u16(Op::CONST, v, 0);
-        c.emit_op_u16(Op::CONST, v, 0);
-        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_array_new_fixed(0, 4, 0);
         c.emit_op(Op::ARRAY_LENGTH, 0);
     });
@@ -453,29 +419,23 @@ fn array_length() {
 #[test]
 fn array_fill_sets_range() {
     let r = run_locals(1, |c| {
-        let zero = c.add_constant(Value::I32(0));
-        let fill = c.add_constant(Value::I32(99));
-
         // [0,0,0,0,0]
         for _ in 0..5 {
-            c.emit_op_u16(Op::CONST, zero, 0);
+            c.emit_i32_const(0, 0);
         }
         c.emit_array_new_fixed(0, 5, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         // array.fill spec stack: [arrayref, index, value, count].
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        let one = c.add_constant(Value::I32(1));
-        let three = c.add_constant(Value::I32(3));
-        c.emit_op_u16(Op::CONST, one, 0); // index (start)
-        c.emit_op_u16(Op::CONST, fill, 0); // value
-        c.emit_op_u16(Op::CONST, three, 0); // count
+        c.emit_i32_const(1, 0); // index (start)
+        c.emit_i32_const(99, 0); // value
+        c.emit_i32_const(3, 0); // count
         c.emit_op(Op::ARRAY_FILL, 0);
 
         // check arr[2] = 99
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        let two = c.add_constant(Value::I32(2));
-        c.emit_op_u16(Op::CONST, two, 0);
+        c.emit_i32_const(2, 0);
         c.emit_op(Op::ARRAY_GET, 0);
     });
     assert_eq!(r.as_i32(), 99);
@@ -484,37 +444,31 @@ fn array_fill_sets_range() {
 #[test]
 fn array_copy_copies_range() {
     let r = run_locals(2, |c| {
-        let v5 = c.add_constant(Value::I32(5));
-        let v0 = c.add_constant(Value::I32(0));
-
         // src = [5,5,5]
-        c.emit_op_u16(Op::CONST, v5, 0);
-        c.emit_op_u16(Op::CONST, v5, 0);
-        c.emit_op_u16(Op::CONST, v5, 0);
+        c.emit_i32_const(5, 0);
+        c.emit_i32_const(5, 0);
+        c.emit_i32_const(5, 0);
         c.emit_array_new_fixed(0, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         // dst = [0,0,0]
-        c.emit_op_u16(Op::CONST, v0, 0);
-        c.emit_op_u16(Op::CONST, v0, 0);
-        c.emit_op_u16(Op::CONST, v0, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(0, 0);
         c.emit_array_new_fixed(0, 3, 0);
         c.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
         // array.copy dst dst_offset=0 src src_offset=0 count=3
-        let zero = c.add_constant(Value::I32(0));
-        let three = c.add_constant(Value::I32(3));
         c.emit_op_u16(Op::LOCAL_GET, 1, 0); // dst
-        c.emit_op_u16(Op::CONST, zero, 0); // dst offset
+        c.emit_i32_const(0, 0); // dst offset
         c.emit_op_u16(Op::LOCAL_GET, 0, 0); // src
-        c.emit_op_u16(Op::CONST, zero, 0); // src offset
-        c.emit_op_u16(Op::CONST, three, 0); // count
+        c.emit_i32_const(0, 0); // src offset
+        c.emit_i32_const(3, 0); // count
         c.emit_op(Op::ARRAY_COPY, 0);
 
         // dst[1] should now be 5
         c.emit_op_u16(Op::LOCAL_GET, 1, 0);
-        let one = c.add_constant(Value::I32(1));
-        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::ARRAY_GET, 0);
     });
     assert_eq!(r.as_i32(), 5);
@@ -527,8 +481,7 @@ fn array_copy_copies_range() {
 #[test]
 fn i31_new_and_get_s() {
     let r = run(|c| {
-        let v = c.add_constant(Value::I32(-42));
-        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_i32_const(-42, 0);
         c.emit_op(Op::I31_NEW, 0);
         c.emit_op(Op::I31_GET_S, 0);
     });
@@ -539,8 +492,7 @@ fn i31_new_and_get_s() {
 fn i31_get_u_unsigned() {
     let r = run(|c| {
         // i31 max signed = 2^30 - 1 = 1073741823
-        let v = c.add_constant(Value::I32(1073741823));
-        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_i32_const(1073741823, 0);
         c.emit_op(Op::I31_NEW, 0);
         c.emit_op(Op::I31_GET_U, 0);
     });
@@ -555,8 +507,7 @@ fn i31_get_u_unsigned() {
 fn any_convert_extern_is_identity() {
     // Both are no-ops at runtime (universal externref ABI)
     let r = run(|c| {
-        let v = c.add_constant(Value::I32(7));
-        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_i32_const(7, 0);
         c.emit_op(Op::ANY_CONVERT_EXTERN, 0);
         c.emit_op(Op::EXTERN_CONVERT_ANY, 0);
     });
@@ -573,15 +524,13 @@ fn ref_test_on_string_value() {
     // Both directions are pinned — a test that accepts either answer pins
     // nothing.
     let any = run(|c| {
-        let val = c.add_constant(Value::String(Arc::from("hello")));
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_string_const("hello", 0);
         c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_ANY), 0);
     });
     assert_eq!(any.as_i32(), 1, "every non-null value is `any`");
 
     let structural = run(|c| {
-        let val = c.add_constant(Value::String(Arc::from("hello")));
-        c.emit_op_u16(Op::CONST, val, 0);
+        c.emit_string_const("hello", 0);
         c.emit_ref_type_op(Op::REF_TEST, HeapType::Abstract(HT_STRUCT), 0);
     });
     assert_eq!(structural.as_i32(), 0, "a string is not a struct");
@@ -595,15 +544,12 @@ fn ref_test_on_string_value() {
 fn array_new_fills_all_lanes_with_value() {
     // array.new $t: pops [value, len] → array of len copies of value
     let r = run(|c| {
-        let val = c.add_constant(Value::I32(7));
-        let len = c.add_constant(Value::I32(4));
-        c.emit_op_u16(Op::CONST, val, 0);
-        c.emit_op_u16(Op::CONST, len, 0);
+        c.emit_i32_const(7, 0);
+        c.emit_i32_const(4, 0);
         c.emit_op_u16(Op::ARRAY_NEW, 0, 0); // typeidx=0, reads u16
 
         // get element at index 2 → should be 7
-        let idx = c.add_constant(Value::I32(2));
-        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_i32_const(2, 0);
         c.emit_op(Op::ARRAY_GET, 0);
     });
     assert_eq!(r.as_i32(), 7);
@@ -612,10 +558,8 @@ fn array_new_fills_all_lanes_with_value() {
 #[test]
 fn array_new_length_is_correct() {
     let r = run(|c| {
-        let val = c.add_constant(Value::I32(0));
-        let len = c.add_constant(Value::I32(5));
-        c.emit_op_u16(Op::CONST, val, 0);
-        c.emit_op_u16(Op::CONST, len, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(5, 0);
         c.emit_op_u16(Op::ARRAY_NEW, 0, 0);
         c.emit_op(Op::ARRAY_LENGTH, 0);
     });
@@ -626,12 +570,10 @@ fn array_new_length_is_correct() {
 fn array_new_default_initializes_to_null() {
     // array.new_default $t: pops [len] → array of len nulls
     let r = run(|c| {
-        let len = c.add_constant(Value::I32(3));
-        c.emit_op_u16(Op::CONST, len, 0);
+        c.emit_i32_const(3, 0);
         c.emit_op_u16(Op::ARRAY_NEW_DEFAULT, 0, 0);
         // element 0 should be null
-        let idx = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::ARRAY_GET, 0);
         c.emit_op(Op::REF_IS_NULL, 0);
     });
@@ -641,8 +583,7 @@ fn array_new_default_initializes_to_null() {
 #[test]
 fn array_new_default_length_is_correct() {
     let r = run(|c| {
-        let len = c.add_constant(Value::I32(6));
-        c.emit_op_u16(Op::CONST, len, 0);
+        c.emit_i32_const(6, 0);
         c.emit_op_u16(Op::ARRAY_NEW_DEFAULT, 0, 0);
         c.emit_op(Op::ARRAY_LENGTH, 0);
     });
@@ -659,15 +600,11 @@ fn array_new_data_reads_data_segment() {
     vm.set_data_segment(0, vec![10, 20, 30, 40]);
     let mut c = Chunk::new("<test>");
     {
-        let size = c.add_constant(Value::I32(4));
-        let offset = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, offset, 0);
-        c.emit_op_u16(Op::CONST, size, 0);
+        c.emit_i32_const(0, 0);
+        c.emit_i32_const(4, 0);
         emit_op_u16_u16(&mut c, Op::ARRAY_NEW_DATA, 0, 0, 0);
-        let idx = c.add_constant(Value::I32(2));
-        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_i32_const(2, 0);
         c.emit_op(Op::ARRAY_GET, 0);
-        c.emit_op(Op::HALT, 0);
     }
     let r = vm.run(vec![c]).unwrap();
     assert_eq!(r.as_i32(), 30);
@@ -679,15 +616,11 @@ fn array_new_elem_reads_elem_segment() {
     vm.set_elem_segment(0, vec![Value::I32(7), Value::I32(8), Value::I32(9)]);
     let mut c = Chunk::new("<test>");
     {
-        let size = c.add_constant(Value::I32(2));
-        let offset = c.add_constant(Value::I32(1));
-        c.emit_op_u16(Op::CONST, offset, 0);
-        c.emit_op_u16(Op::CONST, size, 0);
+        c.emit_i32_const(1, 0);
+        c.emit_i32_const(2, 0);
         emit_op_u16_u16(&mut c, Op::ARRAY_NEW_ELEM, 0, 0, 0);
-        let idx = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::ARRAY_GET, 0);
-        c.emit_op(Op::HALT, 0);
     }
     let r = vm.run(vec![c]).unwrap();
     assert_eq!(r.as_i32(), 8);
@@ -701,11 +634,9 @@ fn array_new_elem_reads_elem_segment() {
 fn array_get_s_on_regular_array_reads_element() {
     // For Value arrays (non-packed), array.get_s behaves like array.get
     let r = run(|c| {
-        let v = c.add_constant(Value::I32(42));
-        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_i32_const(42, 0);
         c.emit_array_new_fixed(0, 1, 0);
-        let idx = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op_u16(Op::ARRAY_GET_S, 0, 0);
     });
     assert_eq!(r.as_i32(), 42);
@@ -714,11 +645,9 @@ fn array_get_s_on_regular_array_reads_element() {
 #[test]
 fn array_get_u_on_regular_array_reads_element() {
     let r = run(|c| {
-        let v = c.add_constant(Value::I32(99));
-        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_i32_const(99, 0);
         c.emit_array_new_fixed(0, 1, 0);
-        let idx = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, idx, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op_u16(Op::ARRAY_GET_U, 0, 0);
     });
     assert_eq!(r.as_i32(), 99);
@@ -764,12 +693,9 @@ fn array_init_data_copies_into_array() {
     });
     let i8_array_type = 1u16;
     {
-        let one = c.add_constant(Value::I32(1));
-        let two = c.add_constant(Value::I32(2));
-        let null = c.add_constant(Value::Null);
-        c.emit_op_u16(Op::CONST, null, 0);
-        c.emit_op_u16(Op::CONST, null, 0);
-        c.emit_op_u16(Op::CONST, null, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         // `array.new_fixed $t 3` — the rtt comes from the TYPE INDEX immediate
         // and is stamped at allocation, per spec. This used to allocate an
         // untyped array and then re-stamp it with the custom `SET_TYPE_ID`
@@ -778,15 +704,14 @@ fn array_init_data_copies_into_array() {
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, one, 0); // dst_offset
-        c.emit_op_u16(Op::CONST, two, 0); // src_offset
-        c.emit_op_u16(Op::CONST, one, 0); // size
+        c.emit_i32_const(1, 0); // dst_offset
+        c.emit_i32_const(2, 0); // src_offset
+        c.emit_i32_const(1, 0); // size
         emit_op_u16_u16(&mut c, Op::ARRAY_INIT_DATA, 0, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::ARRAY_GET, 0);
-        c.emit_op(Op::HALT, 0);
     }
     let r = vm.run(vec![c]).unwrap();
     assert_eq!(r.as_i32(), 3);
@@ -799,25 +724,20 @@ fn array_init_elem_copies_into_array() {
     let mut c = Chunk::new("<test>");
     c.local_count = 1;
     {
-        let zero = c.add_constant(Value::I32(0));
-        let one = c.add_constant(Value::I32(1));
-        let two = c.add_constant(Value::I32(2));
-        let null = c.add_constant(Value::Null);
-        c.emit_op_u16(Op::CONST, null, 0);
-        c.emit_op_u16(Op::CONST, null, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
+        c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_array_new_fixed(0, 2, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, zero, 0); // dst_offset
-        c.emit_op_u16(Op::CONST, one, 0); // src_offset
-        c.emit_op_u16(Op::CONST, two, 0); // size
+        c.emit_i32_const(0, 0); // dst_offset
+        c.emit_i32_const(1, 0); // src_offset
+        c.emit_i32_const(2, 0); // size
         emit_op_u16_u16(&mut c, Op::ARRAY_INIT_ELEM, 0, 0, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, one, 0);
+        c.emit_i32_const(1, 0);
         c.emit_op(Op::ARRAY_GET, 0);
-        c.emit_op(Op::HALT, 0);
     }
     let r = vm.run(vec![c]).unwrap();
     assert_eq!(r.as_i32(), 13);
@@ -872,9 +792,8 @@ fn struct_get_u_reads_from_fields_array() {
 fn struct_new_desc_attaches_descriptor() {
     // struct.new_desc: pops descriptor → creates struct with __descriptor property
     let r = run(|c| {
-        let desc_val = c.add_constant(Value::String(Arc::from("my-type")));
         let desc_key = c.add_constant(Value::String(Arc::from("__descriptor")));
-        c.emit_op_u16(Op::CONST, desc_val, 0); // descriptor
+        c.emit_string_const("my-type", 0); // descriptor
         c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
         // read __descriptor back
         c.emit_struct_field_op(Op::STRUCT_GET, 0, desc_key, 0);
@@ -885,9 +804,8 @@ fn struct_new_desc_attaches_descriptor() {
 #[test]
 fn struct_new_default_desc_attaches_descriptor() {
     let r = run(|c| {
-        let desc_val = c.add_constant(Value::I32(42));
         let desc_key = c.add_constant(Value::String(Arc::from("__descriptor")));
-        c.emit_op_u16(Op::CONST, desc_val, 0);
+        c.emit_i32_const(42, 0);
         c.emit_op_u16(Op::STRUCT_NEW_DEFAULT_DESC, 0, 0);
         c.emit_struct_field_op(Op::STRUCT_GET, 0, desc_key, 0);
     });
@@ -898,8 +816,7 @@ fn struct_new_default_desc_attaches_descriptor() {
 fn ref_get_desc_retrieves_descriptor() {
     // ref.get_desc: pops struct → pushes its __descriptor property
     let r = run(|c| {
-        let desc_val = c.add_constant(Value::String(Arc::from("tag")));
-        c.emit_op_u16(Op::CONST, desc_val, 0);
+        c.emit_string_const("tag", 0);
         c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
         c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
     });
@@ -927,18 +844,20 @@ fn ref_get_desc_on_struct_without_desc_returns_null() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// `[ref-with-descriptor `desc`, descriptor `operand`]` — the operand layout
-/// every one of the four instructions takes.
-fn push_described_ref_and_descriptor(c: &mut Chunk, desc: u16, operand: u16) {
-    c.emit_op_u16(Op::CONST, desc, 0);
+/// every one of the four instructions takes. Descriptors ride the spec
+/// string-constant route (one imported global per distinct text): the same
+/// name yields the same materialized Arc on every `global.get`, a different
+/// name a different one — exactly the identity semantics these casts test.
+fn push_described_ref_and_descriptor(c: &mut Chunk, desc: &str, operand: &str) {
+    c.emit_string_const(desc, 0);
     c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
-    c.emit_op_u16(Op::CONST, operand, 0);
+    c.emit_string_const(operand, 0);
 }
 
 #[test]
 fn ref_cast_desc_eq_passes_when_the_descriptor_is_the_same_reference() {
     let r = run(|c| {
-        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
-        push_described_ref_and_descriptor(c, desc, desc);
+        push_described_ref_and_descriptor(c, "vtable-a", "vtable-a");
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
         // The cast consumes only the descriptor; the reference survives it.
         c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
@@ -949,9 +868,7 @@ fn ref_cast_desc_eq_passes_when_the_descriptor_is_the_same_reference() {
 #[test]
 fn ref_cast_desc_eq_traps_on_a_different_descriptor() {
     let err = run_err(|c| {
-        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
-        let other = c.add_constant(Value::String(Arc::from("vtable-b")));
-        push_described_ref_and_descriptor(c, desc, other);
+        push_described_ref_and_descriptor(c, "vtable-a", "vtable-b");
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
     assert!(
@@ -966,8 +883,7 @@ fn ref_cast_desc_eq_traps_on_a_null_descriptor_before_looking_at_the_reference()
     // ORDER: the proposal traps on a null descriptor unconditionally, so the
     // message must be the null-descriptor one, not the mismatch one.
     let err = run_err(|c| {
-        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
-        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_string_const("vtable-a", 0);
         c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // descriptor operand = null
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
@@ -983,9 +899,8 @@ fn ref_cast_desc_eq_traps_on_a_reference_with_no_descriptor() {
     // A struct built with plain `struct.new` carries no descriptor, so it can
     // never equal a real one.
     let err = run_err(|c| {
-        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
         c.emit_struct_new(0, 0, 0);
-        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_string_const("vtable-a", 0);
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
     assert!(
@@ -999,9 +914,8 @@ fn ref_cast_desc_eq_traps_on_a_null_reference_but_the_nullable_form_does_not() {
     let desc_text = "vtable-a";
 
     let err = run_err(|c| {
-        let desc = c.add_constant(Value::String(Arc::from(desc_text)));
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // the reference
-        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_string_const(desc_text, 0);
         c.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     });
     assert!(
@@ -1011,9 +925,8 @@ fn ref_cast_desc_eq_traps_on_a_null_reference_but_the_nullable_form_does_not() {
 
     // The (ref null ht) form passes null straight through.
     let r = run(|c| {
-        let desc = c.add_constant(Value::String(Arc::from(desc_text)));
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_string_const(desc_text, 0);
         c.emit_op_u16(Op::REF_CAST_DESC_EQ_NULL, 0, 0);
         c.emit_op(Op::REF_IS_NULL, 0);
     });
@@ -1025,9 +938,7 @@ fn ref_cast_desc_eq_null_still_traps_on_a_mismatched_non_null_reference() {
     // Nullability is about the REFERENCE, not about the descriptor check —
     // a non-null value with the wrong descriptor traps in both forms.
     let err = run_err(|c| {
-        let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
-        let other = c.add_constant(Value::String(Arc::from("vtable-b")));
-        push_described_ref_and_descriptor(c, desc, other);
+        push_described_ref_and_descriptor(c, "vtable-a", "vtable-b");
         c.emit_op_u16(Op::REF_CAST_DESC_EQ_NULL, 0, 0);
     });
     assert!(err.contains("descriptor mismatch"), "got: {err}");
@@ -1045,25 +956,22 @@ fn ref_cast_desc_eq_null_still_traps_on_a_mismatched_non_null_reference() {
 /// distinction between descriptor equality and type equality.
 fn run_desc_branch(op: Op, same_descriptor: bool) -> Value {
     run(|c| {
+        // The pool entry stays alive as the instruction's name immediate;
+        // the descriptor VALUES ride the string-constant global route.
         let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
-        let operand = if same_descriptor {
-            desc
-        } else {
-            c.add_constant(Value::String(Arc::from("vtable-b")))
-        };
-        let sentinel = c.add_constant(Value::I32(0));
+        let operand = if same_descriptor { "vtable-a" } else { "vtable-b" };
 
         // Arity 1: per the proposal the label takes the reference
         // (`C.labels[l] = t* rt`), so a void block would discard it on branch.
         let _blk = c.emit_block_typed(0, 1);
-        push_described_ref_and_descriptor(c, desc, operand);
+        push_described_ref_and_descriptor(c, "vtable-a", operand);
         c.emit_op(op, 0);
         c.emit((desc >> 8) as u8, 0);
         c.emit((desc & 0xFF) as u8, 0);
         c.emit(0u8, 0); // label depth 0 — exit the enclosing block
         // Fallthrough only.
         c.emit_op(Op::DROP, 0);
-        c.emit_op_u16(Op::CONST, sentinel, 0);
+        c.emit_i32_const(0, 0);
         c.emit_end(0);
 
         c.emit_op_u16(Op::REF_GET_DESC, 0, 0);
@@ -1108,8 +1016,10 @@ fn br_on_cast_desc_eq_fail_traps_on_a_null_descriptor() {
     // the one whose branch condition is "did not match", where treating null
     // as a mismatch would be the tempting shortcut.
     let err = run_err(|c| {
+        // Pool entry only feeds the instruction's name immediate now; the
+        // descriptor VALUE rides the string-constant global route.
         let desc = c.add_constant(Value::String(Arc::from("vtable-a")));
-        c.emit_op_u16(Op::CONST, desc, 0);
+        c.emit_string_const("vtable-a", 0);
         c.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
         c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
         c.emit_op(Op::BR_ON_CAST_DESC_EQ_FAIL, 0);
@@ -1130,8 +1040,7 @@ fn descriptor_instructions_do_not_desync_the_instructions_after_them() {
     // only that the descriptor op survived would pass with that bug present —
     // what has to survive is the instruction AFTER it.
     let mut chunk = Chunk::new("<script>");
-    let desc = chunk.add_constant(Value::String(Arc::from("vtable-a")));
-    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_string_const("vtable-a", 0);
     chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
     chunk.emit_op_u16(Op::REF_GET_DESC, 0, 0);
     chunk.emit_op(Op::DROP, 0);
@@ -1161,10 +1070,9 @@ fn descriptor_instructions_do_not_desync_the_instructions_after_them() {
 #[test]
 fn descriptor_casts_round_trip_through_the_binary_format() {
     let mut chunk = Chunk::new("<script>");
-    let desc = chunk.add_constant(Value::String(Arc::from("vtable-a")));
-    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_string_const("vtable-a", 0);
     chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
-    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_string_const("vtable-a", 0);
     chunk.emit_op_u16(Op::REF_CAST_DESC_EQ, 0, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_NONE, 0);
@@ -1189,9 +1097,9 @@ fn descriptor_casts_round_trip_through_the_binary_format() {
 fn br_on_cast_desc_eq_encodes_castflags_labelidx_and_two_heaptypes() {
     let mut chunk = Chunk::new("<script>");
     let desc = chunk.add_constant(Value::String(Arc::from("vtable-a")));
-    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_string_const("vtable-a", 0);
     chunk.emit_op_u16(Op::STRUCT_NEW_DESC, 0, 0);
-    chunk.emit_op_u16(Op::CONST, desc, 0);
+    chunk.emit_string_const("vtable-a", 0);
     chunk.emit_op(Op::BR_ON_CAST_DESC_EQ, 0);
     chunk.emit((desc >> 8) as u8, 0);
     chunk.emit((desc & 0xFF) as u8, 0);
@@ -1304,10 +1212,8 @@ fn emit_three_element_array(c: &mut Chunk) {
         implements: Vec::new(),
         constructor_chunk: None,
         field_descriptors: std::collections::HashMap::new() });
-    let zero = c.add_constant(Value::I32(0));
-    let three = c.add_constant(Value::I32(3));
-    c.emit_op_u16(Op::CONST, zero, 0);   // fill value
-    c.emit_op_u16(Op::CONST, three, 0);  // length
+    c.emit_i32_const(0, 0);   // fill value
+    c.emit_i32_const(3, 0);  // length
     c.emit_op_u16(Op::ARRAY_NEW, 1, 0);  // 1-based type immediate
     c.emit_op_u16(Op::LOCAL_SET, 0, 0);
 }
@@ -1353,8 +1259,7 @@ fn i31_get_u_traps_on_null_reference() {
 #[test]
 fn i31_round_trips_zero_without_trapping() {
     let value = run(|c| {
-        let zero = c.add_constant(Value::I32(0));
-        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::I31_NEW, 0);
         c.emit_op(Op::I31_GET_S, 0);
     });
@@ -1366,8 +1271,7 @@ fn i31_round_trips_zero_without_trapping() {
 #[test]
 fn i31_wraps_to_31_bits_and_sign_extends() {
     let value = run(|c| {
-        let big = c.add_constant(Value::I32(0x4000_0000));
-        c.emit_op_u16(Op::CONST, big, 0);
+        c.emit_i32_const(0x4000_0000, 0);
         c.emit_op(Op::I31_NEW, 0);
         c.emit_op(Op::I31_GET_S, 0);
     });
@@ -1379,8 +1283,7 @@ fn i31_wraps_to_31_bits_and_sign_extends() {
 
     // The same bits read unsigned stay positive.
     let unsigned = run(|c| {
-        let big = c.add_constant(Value::I32(0x4000_0000));
-        c.emit_op_u16(Op::CONST, big, 0);
+        c.emit_i32_const(0x4000_0000, 0);
         c.emit_op(Op::I31_NEW, 0);
         c.emit_op(Op::I31_GET_U, 0);
     });
@@ -1391,9 +1294,8 @@ fn i31_wraps_to_31_bits_and_sign_extends() {
 fn array_get_traps_past_the_end() {
     let err = run_locals_err(1, |c| {
         emit_three_element_array(c);
-        let three = c.add_constant(Value::I32(3));
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, three, 0);
+        c.emit_i32_const(3, 0);
         c.emit_op(Op::ARRAY_GET, 0);
     });
     assert!(
@@ -1406,9 +1308,8 @@ fn array_get_traps_past_the_end() {
 fn array_get_s_traps_past_the_end() {
     let err = run_locals_err(1, |c| {
         emit_three_element_array(c);
-        let three = c.add_constant(Value::I32(3));
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, three, 0);
+        c.emit_i32_const(3, 0);
         c.emit_op_u16(Op::ARRAY_GET_S, 0, 0);
     });
     assert!(
@@ -1421,9 +1322,8 @@ fn array_get_s_traps_past_the_end() {
 fn array_get_u_traps_on_a_negative_index() {
     let err = run_locals_err(1, |c| {
         emit_three_element_array(c);
-        let minus_one = c.add_constant(Value::I32(-1));
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, minus_one, 0);
+        c.emit_i32_const(-1, 0);
         c.emit_op_u16(Op::ARRAY_GET_U, 0, 0);
     });
     assert!(
@@ -1436,12 +1336,10 @@ fn array_get_u_traps_on_a_negative_index() {
 fn array_fill_traps_when_the_region_leaves_the_array() {
     let err = run_locals_err(1, |c| {
         emit_three_element_array(c);
-        let one = c.add_constant(Value::I32(1));
-        let five = c.add_constant(Value::I32(5));
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, one, 0); // index
-        c.emit_op_u16(Op::CONST, one, 0); // value
-        c.emit_op_u16(Op::CONST, five, 0); // count — 1 + 5 > 3
+        c.emit_i32_const(1, 0); // index
+        c.emit_i32_const(1, 0); // value
+        c.emit_i32_const(5, 0); // count — 1 + 5 > 3
         c.emit_op(Op::ARRAY_FILL, 0);
     });
     assert!(
@@ -1455,17 +1353,14 @@ fn array_fill_traps_when_the_region_leaves_the_array() {
 fn array_fill_within_bounds_still_writes() {
     let value = run_locals(1, |c| {
         emit_three_element_array(c);
-        let zero = c.add_constant(Value::I32(0));
-        let two = c.add_constant(Value::I32(2));
-        let seven = c.add_constant(Value::I32(7));
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, zero, 0); // index
-        c.emit_op_u16(Op::CONST, seven, 0); // value
-        c.emit_op_u16(Op::CONST, two, 0); // count
+        c.emit_i32_const(0, 0); // index
+        c.emit_i32_const(7, 0); // value
+        c.emit_i32_const(2, 0); // count
         c.emit_op(Op::ARRAY_FILL, 0);
 
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, zero, 0);
+        c.emit_i32_const(0, 0);
         c.emit_op(Op::ARRAY_GET, 0);
     });
     assert_eq!(value.as_i32(), 7);
@@ -1487,8 +1382,7 @@ fn gc_type_section_round_trips_without_shifting_function_indices() {
     let mut chunk = Chunk::new("<script>");
     chunk.types.push(type_entry("alpha", &["x", "y"]));
     chunk.types.push(type_entry("beta", &["z"]));
-    let konst = chunk.add_constant(Value::I32(7));
-    chunk.emit_op_u16(Op::CONST, konst, 0);
+    chunk.emit_i32_const(7, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let bytes = write_wasm(&[chunk]);
@@ -1535,14 +1429,13 @@ fn array_new_fixed_inside_a_block_does_not_desync_the_scan() {
     );
 
     let r = run(|c| {
-        let sentinel = c.add_constant(Value::I32(7));
         let _blk = c.emit_block_typed(0, 1);
         c.emit_array_new_fixed(0, 0, 0); // empty array, in-block
         c.emit_op(Op::ARRAY_LENGTH, 0);
         c.emit_end(0);
         // Reached only if the block closed where the scan thought it did.
         c.emit_op(Op::DROP, 0);
-        c.emit_op_u16(Op::CONST, sentinel, 0);
+        c.emit_i32_const(7, 0);
     });
     assert_eq!(
         r.as_i32(),
@@ -1561,10 +1454,8 @@ fn struct_new_with_a_typeidx_stamps_rtt_and_fills_indexed_fields() {
     // string. typeidx 0 stays the dynamic object-literal form.
     let mut chunk = Chunk::new("<script>");
     chunk.types.push(type_entry("Point", &["x", "y"]));
-    let a = chunk.add_constant(Value::I32(11));
-    let b = chunk.add_constant(Value::I32(22));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_i32_const(11, 0);
+    chunk.emit_i32_const(22, 0);
     chunk.emit_struct_new(1, 0, 0); // typeidx 1 → chunk.types[0] = "Point"
     chunk.emit_struct_field_op(Op::STRUCT_GET_U, 0, 1, 0); // indexed read of field 1
     chunk.emit_op(Op::RETURN, 0);
@@ -1576,10 +1467,8 @@ fn struct_new_with_a_typeidx_stamps_rtt_and_fills_indexed_fields() {
 fn struct_new_with_a_typeidx_answers_ref_test_from_the_registry() {
     let mut chunk = Chunk::new("<script>");
     chunk.types.push(type_entry("Point", &["x", "y"]));
-    let a = chunk.add_constant(Value::I32(1));
-    let b = chunk.add_constant(Value::I32(2));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_i32_const(1, 0);
+    chunk.emit_i32_const(2, 0);
     chunk.emit_struct_new(1, 0, 0);
     // Same immediate the allocation carried — the test names no type.
     chunk.emit_ref_type_op(Op::REF_TEST, HeapType::Concrete(1), 0);
@@ -1597,10 +1486,11 @@ fn struct_new_with_typeidx_zero_is_still_the_object_literal_form() {
     // The ~258 rewritten emit sites all pass 0 — key/value pairs, named
     // properties, no rtt. Breaking this breaks every object literal.
     let r = run(|c| {
+        // Pool entry only feeds STRUCT_GET's name immediate; the KEY value
+        // on the stack rides the string-constant global route.
         let k = c.add_constant(Value::String(Arc::from("a")));
-        let v = c.add_constant(Value::I32(5));
-        c.emit_op_u16(Op::CONST, k, 0);
-        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_string_const("a", 0);
+        c.emit_i32_const(5, 0);
         c.emit_struct_new(0, 1, 0);
         c.emit_struct_field_op(Op::STRUCT_GET, 0, k, 0);
     });
@@ -1640,11 +1530,10 @@ fn struct_set_has_an_indexed_form_that_struct_get_reads_back() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     chunk.types.push(type_entry("Cell", &["v"]));
-    let v = chunk.add_constant(Value::I32(9));
     chunk.emit_op_u16(Op::STRUCT_NEW_DEFAULT, 1, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    chunk.emit_op_u16(Op::CONST, v, 0);
+    chunk.emit_i32_const(9, 0);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 1, 0, 0); // typed: fieldidx 0
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 1, 0, 0); // typed read
@@ -1677,11 +1566,10 @@ fn struct_field_ops_with_typeidx_zero_stay_name_keyed() {
     // every language.
     let r = run_locals(1, |c| {
         let k = c.add_constant(Value::String(Arc::from("a")));
-        let v = c.add_constant(Value::I32(3));
         c.emit_struct_new(0, 0, 0);
         c.emit_op_u16(Op::LOCAL_SET, 0, 0);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);
-        c.emit_op_u16(Op::CONST, v, 0);
+        c.emit_i32_const(3, 0);
         c.emit_struct_field_op(Op::STRUCT_SET, 0, k, 0);
         c.emit_op(Op::DROP, 0);
         c.emit_op_u16(Op::LOCAL_GET, 0, 0);

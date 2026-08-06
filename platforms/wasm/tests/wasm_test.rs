@@ -57,9 +57,8 @@ fn wasm_too_short() {
 #[test]
 fn roundtrip_simple_constant() {
     let mut chunk = Chunk::new("test");
-    let ci = chunk.add_constant(Value::F64(42.0));
-    chunk.emit_op_u16(Op::CONST, ci, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_f64_const(42.0, 0);
+    chunk.emit_op(Op::RETURN, 0);
     chunk.local_count = 1;
 
     let chunks = roundtrip(vec![chunk]);
@@ -70,7 +69,7 @@ fn roundtrip_simple_constant() {
 fn roundtrip_preserves_chunk_count() {
     let mut c1 = Chunk::new("main");
     c1.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    c1.emit_op(Op::HALT, 0);
+    c1.emit_op(Op::RETURN, 0);
 
     let mut c2 = Chunk::new("helper");
     c2.arity = 1;
@@ -88,12 +87,10 @@ fn roundtrip_f64_arithmetic() {
     // Build: push 10.0, push 3.0, divide → 3.333...
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    let c10 = chunk.add_constant(Value::F64(10.0));
-    let c3 = chunk.add_constant(Value::F64(3.0));
-    chunk.emit_op_u16(Op::CONST, c10, 0);
-    chunk.emit_op_u16(Op::CONST, c3, 0);
+    chunk.emit_f64_const(10.0, 0);
+    chunk.emit_f64_const(3.0, 0);
     chunk.emit_op(Op::F64_DIV, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     // Run original
     let result1 = run_chunks(vec![chunk.clone()]);
@@ -113,12 +110,10 @@ fn roundtrip_f64_arithmetic() {
 fn roundtrip_i32_arithmetic() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    let c7 = chunk.add_constant(Value::I32(7));
-    let c3 = chunk.add_constant(Value::I32(3));
-    chunk.emit_op_u16(Op::CONST, c7, 0);
-    chunk.emit_op_u16(Op::CONST, c3, 0);
+    chunk.emit_i32_const(7, 0);
+    chunk.emit_i32_const(3, 0);
     chunk.emit_op(Op::I32_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let restored = roundtrip(vec![chunk]);
     let result = run_chunks(restored);
@@ -132,11 +127,10 @@ fn roundtrip_locals() {
     // set local 1 = 99, get local 1
     let mut chunk = Chunk::new("test");
     chunk.local_count = 3;
-    let c99 = chunk.add_constant(Value::F64(99.0));
-    chunk.emit_op_u16(Op::CONST, c99, 0);
+    chunk.emit_f64_const(99.0, 0);
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
     chunk.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let restored = roundtrip(vec![chunk]);
     let result = run_chunks(restored);
@@ -152,22 +146,18 @@ fn roundtrip_locals() {
 #[test]
 fn i32_div_and_rem() {
     let mut chunk = Chunk::new("test");
-    let c17 = chunk.add_constant(Value::I32(17));
-    let c5 = chunk.add_constant(Value::I32(5));
-
     // 17 / 5 = 3
-    chunk.emit_op_u16(Op::CONST, c17, 0);
-    chunk.emit_op_u16(Op::CONST, c5, 0);
+    chunk.emit_i32_const(17, 0);
+    chunk.emit_i32_const(5, 0);
     chunk.emit_op(Op::I32_DIV_S, 0);
 
     // 17 % 5 = 2
-    chunk.emit_op_u16(Op::CONST, c17, 0);
-    chunk.emit_op_u16(Op::CONST, c5, 0);
+    chunk.emit_i32_const(17, 0);
+    chunk.emit_i32_const(5, 0);
     chunk.emit_op(Op::I32_REM_S, 0);
 
     // Stack: [3, 2] → add = 5
     chunk.emit_op(Op::I32_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -179,12 +169,9 @@ fn i32_div_and_rem() {
 fn i32_div_by_zero() {
     // WASM spec: i32.div_s with zero divisor traps ("integer divide by zero").
     let mut chunk = Chunk::new("test");
-    let c10 = chunk.add_constant(Value::I32(10));
-    let c0 = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, c10, 0);
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i32_const(10, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_DIV_S, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let mut vm = VM::new();
     let err = vm.run(vec![chunk]).expect_err("expected trap");
@@ -199,12 +186,9 @@ fn i32_div_by_zero() {
 fn i32_rotate() {
     let mut chunk = Chunk::new("test");
     // rotl(0x8000_0001, 1) = 0x0000_0003
-    let cv = chunk.add_constant(Value::I32(0x8000_0001_u32 as i32));
-    let c1 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, cv, 0);
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_i32_const(0x8000_0001_u32 as i32, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::I32_ROTL, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -216,22 +200,18 @@ fn i32_rotate() {
 fn i32_clz_ctz_popcnt() {
     let mut chunk = Chunk::new("test");
     // clz(1) = 31
-    let c1 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::I32_CLZ, 0);
     // ctz(0x80) = 7
-    let c128 = chunk.add_constant(Value::I32(0x80));
-    chunk.emit_op_u16(Op::CONST, c128, 0);
+    chunk.emit_i32_const(0x80, 0);
     chunk.emit_op(Op::I32_CTZ, 0);
     // add: 31 + 7 = 38
     chunk.emit_op(Op::I32_ADD, 0);
     // popcnt(0xFF) = 8
-    let c255 = chunk.add_constant(Value::I32(0xFF));
-    chunk.emit_op_u16(Op::CONST, c255, 0);
+    chunk.emit_i32_const(0xFF, 0);
     chunk.emit_op(Op::I32_POPCNT, 0);
     // add: 38 + 8 = 46
     chunk.emit_op(Op::I32_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -242,10 +222,8 @@ fn i32_clz_ctz_popcnt() {
 #[test]
 fn i32_eqz() {
     let mut chunk = Chunk::new("test");
-    let c0 = chunk.add_constant(Value::I32(0));
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_EQZ, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     // i32.eqz returns i32(1) per WASM spec §3.3.4.1 (not bool)
@@ -259,12 +237,9 @@ fn i32_eqz() {
 #[test]
 fn i64_arithmetic() {
     let mut chunk = Chunk::new("test");
-    let a = chunk.add_constant(Value::I64(1_000_000_000_000));
-    let b = chunk.add_constant(Value::I64(2_000_000_000_000));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_i64_const(1_000_000_000_000, 0);
+    chunk.emit_i64_const(2_000_000_000_000, 0);
     chunk.emit_op(Op::I64_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -275,13 +250,10 @@ fn i64_arithmetic() {
 #[test]
 fn i64_bitwise() {
     let mut chunk = Chunk::new("test");
-    let a = chunk.add_constant(Value::I64(0xFF00));
-    let b = chunk.add_constant(Value::I64(0x0FF0));
     // AND: 0xFF00 & 0x0FF0 = 0x0F00
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_i64_const(0xFF00, 0);
+    chunk.emit_i64_const(0x0FF0, 0);
     chunk.emit_op(Op::I64_AND, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -297,10 +269,8 @@ fn i64_bitwise() {
 fn f64_math_ops() {
     let mut chunk = Chunk::new("test");
     // ceil(3.2) = 4.0
-    let c = chunk.add_constant(Value::F64(3.2));
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_f64_const(3.2, 0);
     chunk.emit_op(Op::F64_CEIL, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -311,10 +281,8 @@ fn f64_math_ops() {
 #[test]
 fn f64_floor() {
     let mut chunk = Chunk::new("test");
-    let c = chunk.add_constant(Value::F64(3.7));
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_f64_const(3.7, 0);
     chunk.emit_op(Op::F64_FLOOR, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -325,10 +293,8 @@ fn f64_floor() {
 #[test]
 fn f64_sqrt() {
     let mut chunk = Chunk::new("test");
-    let c = chunk.add_constant(Value::F64(144.0));
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_f64_const(144.0, 0);
     chunk.emit_op(Op::F64_SQRT, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -339,10 +305,8 @@ fn f64_sqrt() {
 #[test]
 fn f64_abs_neg() {
     let mut chunk = Chunk::new("test");
-    let c = chunk.add_constant(Value::F64(-7.5));
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_f64_const(-7.5, 0);
     chunk.emit_op(Op::F64_ABS, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -353,19 +317,16 @@ fn f64_abs_neg() {
 #[test]
 fn f64_min_max() {
     let mut chunk = Chunk::new("test");
-    let a = chunk.add_constant(Value::F64(3.0));
-    let b = chunk.add_constant(Value::F64(7.0));
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_f64_const(3.0, 0);
+    chunk.emit_f64_const(7.0, 0);
     chunk.emit_op(Op::F64_MIN, 0);
     // min(3, 7) = 3
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
+    chunk.emit_f64_const(3.0, 0);
+    chunk.emit_f64_const(7.0, 0);
     chunk.emit_op(Op::F64_MAX, 0);
     // max(3, 7) = 7
     // stack: [3, 7], add = 10
     chunk.emit_op(Op::F64_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -377,17 +338,14 @@ fn f64_min_max() {
 fn f64_trunc_nearest() {
     let mut chunk = Chunk::new("test");
     // trunc(3.9) = 3.0
-    let c = chunk.add_constant(Value::F64(3.9));
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_f64_const(3.9, 0);
     chunk.emit_op(Op::F64_TRUNC, 0);
     // nearest(2.5) = 2.0 (round to even) — Rust's round() gives 3.0 though
     // Use 2.3 → nearest = 2.0
-    let c2 = chunk.add_constant(Value::F64(2.3));
-    chunk.emit_op_u16(Op::CONST, c2, 0);
+    chunk.emit_f64_const(2.3, 0);
     chunk.emit_op(Op::F64_NEAREST, 0);
     // 3.0 + 2.0 = 5.0
     chunk.emit_op(Op::F64_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -402,14 +360,10 @@ fn f64_trunc_nearest() {
 #[test]
 fn select_true() {
     let mut chunk = Chunk::new("test");
-    let a = chunk.add_constant(Value::F64(10.0));
-    let b = chunk.add_constant(Value::F64(20.0));
-    let cond = chunk.add_constant(Value::I32(1)); // true
-    chunk.emit_op_u16(Op::CONST, a, 0); // val1
-    chunk.emit_op_u16(Op::CONST, b, 0); // val2
-    chunk.emit_op_u16(Op::CONST, cond, 0); // condition
+    chunk.emit_f64_const(10.0, 0); // val1
+    chunk.emit_f64_const(20.0, 0); // val2
+    chunk.emit_i32_const(1, 0); // condition (true)
     chunk.emit_op(Op::SELECT, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -420,14 +374,10 @@ fn select_true() {
 #[test]
 fn select_false() {
     let mut chunk = Chunk::new("test");
-    let a = chunk.add_constant(Value::F64(10.0));
-    let b = chunk.add_constant(Value::F64(20.0));
-    let cond = chunk.add_constant(Value::I32(0)); // false
-    chunk.emit_op_u16(Op::CONST, a, 0);
-    chunk.emit_op_u16(Op::CONST, b, 0);
-    chunk.emit_op_u16(Op::CONST, cond, 0);
+    chunk.emit_f64_const(10.0, 0);
+    chunk.emit_f64_const(20.0, 0);
+    chunk.emit_i32_const(0, 0); // condition (false)
     chunk.emit_op(Op::SELECT, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -442,10 +392,8 @@ fn select_false() {
 #[test]
 fn i32_wrap_i64_test() {
     let mut chunk = Chunk::new("test");
-    let c = chunk.add_constant(Value::I64(0x1_0000_002A)); // wrap → 42
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_i64_const(0x1_0000_002A, 0); // wrap → 42
     chunk.emit_op(Op::I32_WRAP_I64, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -457,10 +405,8 @@ fn i32_wrap_i64_test() {
 fn i64_extend_i32() {
     let mut chunk = Chunk::new("test");
     // extend_s: -1 as i32 → -1 as i64
-    let cn1 = chunk.add_constant(Value::I32(-1));
-    chunk.emit_op_u16(Op::CONST, cn1, 0);
+    chunk.emit_i32_const(-1, 0);
     chunk.emit_op(Op::I64_EXTEND_I32_S, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -472,10 +418,8 @@ fn i64_extend_i32() {
 fn i64_extend_i32_unsigned() {
     let mut chunk = Chunk::new("test");
     // extend_u: -1 as i32 (0xFFFFFFFF) → 4294967295 as i64
-    let cn1 = chunk.add_constant(Value::I32(-1));
-    chunk.emit_op_u16(Op::CONST, cn1, 0);
+    chunk.emit_i32_const(-1, 0);
     chunk.emit_op(Op::I64_EXTEND_I32_U, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -487,10 +431,8 @@ fn i64_extend_i32_unsigned() {
 fn sign_extension_i32() {
     let mut chunk = Chunk::new("test");
     // extend8_s: 0x80 → -128
-    let c = chunk.add_constant(Value::I32(0x80));
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_i32_const(0x80, 0);
     chunk.emit_op(Op::I32_EXTEND8_S, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -502,12 +444,10 @@ fn sign_extension_i32() {
 fn reinterpret_f64_i64() {
     let mut chunk = Chunk::new("test");
     // reinterpret 1.0 as i64
-    let c = chunk.add_constant(Value::F64(1.0));
-    chunk.emit_op_u16(Op::CONST, c, 0);
+    chunk.emit_f64_const(1.0, 0);
     chunk.emit_op(Op::I64_REINTERPRET_F64, 0);
     // reinterpret back
     chunk.emit_op(Op::F64_REINTERPRET_I64, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -522,29 +462,25 @@ fn reinterpret_f64_i64() {
 #[test]
 fn memory_i32_load8_signed() {
     let mut chunk = Chunk::new("test");
-    let c1 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store 0xFF at addr 0
-    let c0 = chunk.add_constant(Value::I32(0));
-    let cff = chunk.add_constant(Value::F64(0xFF as f64));
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op_u16(Op::CONST, cff, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_f64_const(0xFF as f64, 0);
     chunk.emit_op(Op::I32_STORE8, 0);
 
     // Load unsigned → 255
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_LOAD8_U, 0);
 
     // Load signed → -1
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_LOAD8_S, 0);
 
     // -1 + 255 = 254
     chunk.emit_op(Op::I32_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -555,29 +491,25 @@ fn memory_i32_load8_signed() {
 #[test]
 fn memory_i32_load16() {
     let mut chunk = Chunk::new("test");
-    let c1 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store 0x8001 as i32 at addr 0
-    let c0 = chunk.add_constant(Value::I32(0));
-    let cv = chunk.add_constant(Value::F64(0x8001 as f64));
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op_u16(Op::CONST, cv, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_f64_const(0x8001 as f64, 0);
     chunk.emit_op(Op::I32_STORE, 0);
 
     // load16_u → 0x8001 = 32769
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_LOAD16_U, 0);
 
     // load16_s → -32767
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::I32_LOAD16_S, 0);
 
     // 32769 + (-32767) = 2
     chunk.emit_op(Op::I32_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -588,22 +520,18 @@ fn memory_i32_load16() {
 #[test]
 fn memory_f32_roundtrip() {
     let mut chunk = Chunk::new("test");
-    let c1 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store f32(3.14) at addr 0
-    let c0 = chunk.add_constant(Value::I32(0));
-    let cpi = chunk.add_constant(Value::F64(3.140000104904175)); // f32 precision
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op_u16(Op::CONST, cpi, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_f64_const(3.140000104904175, 0); // f32 precision
     chunk.emit_op(Op::F32_STORE, 0);
 
     // Load back
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i32_const(0, 0);
     chunk.emit_op(Op::F32_LOAD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -621,17 +549,13 @@ fn bool_in_arithmetic() {
     // This tests the fix that made fibonacci work:
     // Bool(true).as_i32() should be 1, not 0
     let mut chunk = Chunk::new("test");
-    let c5 = chunk.add_constant(Value::I32(5));
-    let c3 = chunk.add_constant(Value::I32(3));
     // 5 < 3 = false → 0
-    chunk.emit_op_u16(Op::CONST, c5, 0);
-    chunk.emit_op_u16(Op::CONST, c3, 0);
+    chunk.emit_i32_const(5, 0);
+    chunk.emit_i32_const(3, 0);
     chunk.emit_op(Op::I32_LT_S, 0);
     // Result is Bool(false), add 10 → should be 10
-    let c10 = chunk.add_constant(Value::I32(10));
-    chunk.emit_op_u16(Op::CONST, c10, 0);
+    chunk.emit_i32_const(10, 0);
     chunk.emit_op(Op::I32_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -642,17 +566,13 @@ fn bool_in_arithmetic() {
 #[test]
 fn bool_true_as_one() {
     let mut chunk = Chunk::new("test");
-    let c3 = chunk.add_constant(Value::I32(3));
-    let c5 = chunk.add_constant(Value::I32(5));
     // 3 < 5 = true → 1
-    chunk.emit_op_u16(Op::CONST, c3, 0);
-    chunk.emit_op_u16(Op::CONST, c5, 0);
+    chunk.emit_i32_const(3, 0);
+    chunk.emit_i32_const(5, 0);
     chunk.emit_op(Op::I32_LT_S, 0);
     // Bool(true) + 10 → 11
-    let c10 = chunk.add_constant(Value::I32(10));
-    chunk.emit_op_u16(Op::CONST, c10, 0);
+    chunk.emit_i32_const(10, 0);
     chunk.emit_op(Op::I32_ADD, 0);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
@@ -669,12 +589,10 @@ fn roundtrip_run_hello() {
     // Build a chunk that does: push 6, push 7, multiply → 42
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    let c6 = chunk.add_constant(Value::F64(6.0));
-    let c7 = chunk.add_constant(Value::F64(7.0));
-    chunk.emit_op_u16(Op::CONST, c6, 0);
-    chunk.emit_op_u16(Op::CONST, c7, 0);
+    chunk.emit_f64_const(6.0, 0);
+    chunk.emit_f64_const(7.0, 0);
     chunk.emit_op(Op::F64_MUL, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     // Write to WASM, read back, run
     let wasm_bytes = wasm::write_wasm(&vec![chunk]);
@@ -688,19 +606,58 @@ fn roundtrip_run_hello() {
 }
 
 #[test]
+fn roundtrip_host_call_preserves_args() {
+    // Regression: the reader hardcoded argc=0 when decoding spec `call`,
+    // silently dropping every argument on a round-tripped host call. The
+    // argc must be re-derived from the callee's function type.
+    let received = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let recv = received.clone();
+    let mut vm = VM::new();
+    vm.register_host_fn(
+        "test",
+        "sum3",
+        Box::new(
+            move |_ctx: &mut vybe_runtime::HostContext, args: &[Value]| {
+                *recv.lock().unwrap() = args.to_vec();
+                Value::F64(args.iter().map(|a| a.as_f64()).sum())
+            },
+        ),
+    );
+
+    let mut chunk = Chunk::new("test");
+    chunk.local_count = 1;
+    let idx = chunk.add_import("test", "sum3");
+    chunk.emit_f64_const(1.0, 0);
+    chunk.emit_f64_const(2.0, 0);
+    chunk.emit_f64_const(4.0, 0);
+    chunk.emit_call(idx, 3, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
+    let wasm_bytes = wasm::write_wasm(&vec![chunk]);
+    let restored = wasm::read_wasm(&wasm_bytes).unwrap();
+    let result = vm.run(restored).unwrap();
+
+    let args = received.lock().unwrap();
+    assert_eq!(args.len(), 3, "all 3 args must survive write→read→run");
+    assert_eq!(args[0].as_f64(), 1.0);
+    assert_eq!(args[1].as_f64(), 2.0);
+    assert_eq!(args[2].as_f64(), 4.0);
+    assert_eq!(result.as_f64(), 7.0);
+}
+
+#[test]
 fn roundtrip_memory_ops() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
 
     // memory.grow 1
-    let c1 = chunk.add_constant(Value::F64(1.0));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_f64_const(1.0, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // memory.size → should be 1
     chunk.emit_op(Op::MEMORY_SIZE, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let wasm_bytes = wasm::write_wasm(&vec![chunk]);
     let restored = wasm::read_wasm(&wasm_bytes).unwrap();
@@ -713,12 +670,10 @@ fn roundtrip_i32_ops() {
     // Test that i32 opcodes survive round-trip
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
-    let c10 = chunk.add_constant(Value::I32(10));
-    let c3 = chunk.add_constant(Value::I32(3));
-    chunk.emit_op_u16(Op::CONST, c10, 0);
-    chunk.emit_op_u16(Op::CONST, c3, 0);
+    chunk.emit_i32_const(10, 0);
+    chunk.emit_i32_const(3, 0);
     chunk.emit_op(Op::I32_SUB, 0); // 10 - 3 = 7
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_op(Op::RETURN, 0);
 
     let restored = roundtrip(vec![chunk]);
     let result = run_chunks(restored);
@@ -750,15 +705,11 @@ fn wasm_writer_magic() {
 #[test]
 fn array_length_op() {
     let mut chunk = Chunk::new("test");
-    let c1 = chunk.add_constant(Value::I32(10));
-    let c2 = chunk.add_constant(Value::I32(20));
-    let c3 = chunk.add_constant(Value::I32(30));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
-    chunk.emit_op_u16(Op::CONST, c2, 0);
-    chunk.emit_op_u16(Op::CONST, c3, 0);
+    chunk.emit_i32_const(10, 0);
+    chunk.emit_i32_const(20, 0);
+    chunk.emit_i32_const(30, 0);
     chunk.emit_array_new_fixed(0, 3, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(3) => {}
@@ -769,11 +720,9 @@ fn array_length_op() {
 fn array_new_default_op() {
     // Spec: `array.new_default $typeidx` takes a u16 typeidx immediate.
     let mut chunk = Chunk::new("test");
-    let c5 = chunk.add_constant(Value::I32(5));
-    chunk.emit_op_u16(Op::CONST, c5, 0);
+    chunk.emit_i32_const(5, 0);
     chunk.emit_op_u16(Op::ARRAY_NEW_DEFAULT, 0, 0);
     chunk.emit_op(Op::ARRAY_LENGTH, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(5) => {}
@@ -788,18 +737,15 @@ fn array_new_default_op() {
 fn simd_i32x4_add() {
     let mut chunk = Chunk::new("test");
     // splat 10 → [10, 10, 10, 10]
-    let c10 = chunk.add_constant(Value::I32(10));
-    chunk.emit_op_u16(Op::CONST, c10, 0);
+    chunk.emit_i32_const(10, 0);
     chunk.emit_op(Op::I32X4_SPLAT, 0);
     // splat 5 → [5, 5, 5, 5]
-    let c5 = chunk.add_constant(Value::I32(5));
-    chunk.emit_op_u16(Op::CONST, c5, 0);
+    chunk.emit_i32_const(5, 0);
     chunk.emit_op(Op::I32X4_SPLAT, 0);
     // add → [15, 15, 15, 15]
     chunk.emit_op(Op::I32X4_ADD, 0);
     // extract lane 0 → 15
     chunk.emit_op_u8(Op::I32X4_EXTRACT_LANE, 0, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(15) => {}
@@ -809,15 +755,12 @@ fn simd_i32x4_add() {
 #[test]
 fn simd_f64x2_mul() {
     let mut chunk = Chunk::new("test");
-    let c3 = chunk.add_constant(Value::F64(3.0));
-    chunk.emit_op_u16(Op::CONST, c3, 0);
+    chunk.emit_f64_const(3.0, 0);
     chunk.emit_op(Op::F64X2_SPLAT, 0);
-    let c7 = chunk.add_constant(Value::F64(7.0));
-    chunk.emit_op_u16(Op::CONST, c7, 0);
+    chunk.emit_f64_const(7.0, 0);
     chunk.emit_op(Op::F64X2_SPLAT, 0);
     chunk.emit_op(Op::F64X2_MUL, 0);
     chunk.emit_op_u8(Op::F64X2_EXTRACT_LANE, 0, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) if v == 21.0 => {}
@@ -828,15 +771,12 @@ fn simd_f64x2_mul() {
 fn simd_v128_bitwise() {
     let mut chunk = Chunk::new("test");
     // [0xFF, 0xFF, ...] AND [0x0F, 0x0F, ...] = [0x0F, 0x0F, ...]
-    let c_ff = chunk.add_constant(Value::I32(0xFF));
-    chunk.emit_op_u16(Op::CONST, c_ff, 0);
+    chunk.emit_i32_const(0xFF, 0);
     chunk.emit_op(Op::I8X16_SPLAT, 0);
-    let c_0f = chunk.add_constant(Value::I32(0x0F));
-    chunk.emit_op_u16(Op::CONST, c_0f, 0);
+    chunk.emit_i32_const(0x0F, 0);
     chunk.emit_op(Op::I8X16_SPLAT, 0);
     chunk.emit_op(Op::V128_AND, 0);
     chunk.emit_op_u8(Op::I8X16_EXTRACT_LANE_U, 0, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(0x0F) => {}
@@ -857,23 +797,18 @@ fn emit_atomic(c: &mut Chunk, op: Op) {
 fn atomic_rmw_add() {
     let mut chunk = Chunk::new("test");
     // Grow memory
-    let c1 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 100 at addr 0
-    let c0 = chunk.add_constant(Value::I32(0));
-    let c100 = chunk.add_constant(Value::I32(100));
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op_u16(Op::CONST, c100, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(100, 0);
     emit_atomic(&mut chunk, Op::I32_ATOMIC_STORE);
     // atomic_rmw_add(0, 42) → old=100, new=142
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    let c42 = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, c42, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(42, 0);
     emit_atomic(&mut chunk, Op::I32_ATOMIC_RMW_ADD);
     // Returns old value (100)
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(100) => {}
@@ -883,27 +818,22 @@ fn atomic_rmw_add() {
 #[test]
 fn atomic_cmpxchg() {
     let mut chunk = Chunk::new("test");
-    let c1 = chunk.add_constant(Value::I32(1));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_i32_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 50 at addr 0
-    let c0 = chunk.add_constant(Value::I32(0));
-    let c50 = chunk.add_constant(Value::I32(50));
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op_u16(Op::CONST, c50, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(50, 0);
     emit_atomic(&mut chunk, Op::I32_ATOMIC_STORE);
     // cmpxchg(addr=0, expected=50, replacement=99) → old=50, swap happens
-    let c99 = chunk.add_constant(Value::I32(99));
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op_u16(Op::CONST, c50, 0);
-    chunk.emit_op_u16(Op::CONST, c99, 0);
+    chunk.emit_i32_const(0, 0);
+    chunk.emit_i32_const(50, 0);
+    chunk.emit_i32_const(99, 0);
     emit_atomic(&mut chunk, Op::I32_ATOMIC_RMW_CMPXCHG);
     chunk.emit_op(Op::DROP, 0); // drop old (50)
     // Load → should be 99
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i32_const(0, 0);
     emit_atomic(&mut chunk, Op::I32_ATOMIC_LOAD);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(99) => {}
@@ -917,11 +847,9 @@ fn atomic_cmpxchg() {
 #[test]
 fn i31ref_roundtrip() {
     let mut chunk = Chunk::new("test");
-    let c42 = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, c42, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op(Op::I31_NEW, 0);
     chunk.emit_op(Op::I31_GET_S, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(42) => {}
@@ -932,11 +860,9 @@ fn i31ref_roundtrip() {
 fn i31ref_negative() {
     let mut chunk = Chunk::new("test");
     // -1 & 0x7FFF_FFFF = 0x7FFF_FFFF, sign extend from bit 30 → -1
-    let cn1 = chunk.add_constant(Value::I32(-1));
-    chunk.emit_op_u16(Op::CONST, cn1, 0);
+    chunk.emit_i32_const(-1, 0);
     chunk.emit_op(Op::I31_NEW, 0);
     chunk.emit_op(Op::I31_GET_S, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(-1) => {}
@@ -950,8 +876,7 @@ fn i31ref_negative() {
 #[test]
 fn ref_cast_success() {
     let mut chunk = Chunk::new("test");
-    let cs = chunk.add_constant(Value::String(Arc::from("hello")));
-    chunk.emit_op_u16(Op::CONST, cs, 0);
+    chunk.emit_string_const("hello", 0);
     // Every value in this ABI is an external reference, so `ref.cast extern`
     // is the cast that must succeed.
     chunk.emit_ref_type_op(
@@ -962,7 +887,6 @@ fn ref_cast_success() {
         0,
     );
     // Should not trap — the cast value stays on the stack unchanged.
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::String(s) if s.as_ref() == "hello" => {}
@@ -982,18 +906,15 @@ fn call_ref_basic() {
     double_chunk.arity = 1;
     double_chunk.local_count = 1;
     double_chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    let c2 = double_chunk.add_constant(Value::F64(2.0));
-    double_chunk.emit_op_u16(Op::CONST, c2, 0);
+    double_chunk.emit_f64_const(2.0, 0);
     double_chunk.emit_op(Op::F64_MUL, 0);
     double_chunk.emit_op(Op::RETURN, 0);
 
     // Script: ref_func 1, push arg 21, call_ref 1
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0); // 0 upvalues
-    let c21 = script.add_constant(Value::F64(21.0));
-    script.emit_op_u16(Op::CONST, c21, 0);
+    script.emit_f64_const(21.0, 0);
     script.emit_op_u8(Op::CALL_REF, 1, 0);
-    script.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![script, double_chunk]);
     match result {
@@ -1012,17 +933,21 @@ fn call_ref_preserves_array_argument() {
     first_chunk.emit_op(Op::ARRAY_GET, 0);
     first_chunk.emit_op(Op::RETURN, 0);
 
+    // The host-side array reaches the chunk as an imported global (spec
+    // `global.get`, embedder-provided) — the retired CONST pool is no
+    // longer a host-value injection channel.
     let array = Value::Object(Arc::new(std::sync::Mutex::new(Object::new_array(vec![
         Value::F64(50.0),
     ]))));
-    let c_array = script.add_constant(array);
+    let g_array = script.intern_string_constant("__call_ref_arg_array");
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
-    script.emit_op_u16(Op::CONST, c_array, 0);
+    script.emit_op_u16(Op::GLOBAL_GET, g_array, 0);
     script.emit_op_u8(Op::CALL_REF, 1, 0);
-    script.emit_op(Op::HALT, 0);
 
-    let result = run_chunks(vec![script, first_chunk]);
+    let mut vm = VM::new();
+    vm.globals.insert("__call_ref_arg_array".into(), array);
+    let result = vm.run(vec![script, first_chunk]).unwrap();
     match result {
         Value::F64(v) if v == 50.0 => {}
         _ => panic!("Expected F64(50.0), got {:?}", result) }
@@ -1070,22 +995,18 @@ fn memory64_grow_and_load() {
 
     let mut chunk = Chunk::new("test");
     // Grow with i64
-    let c1 = chunk.add_constant(Value::I64(1));
-    chunk.emit_op_u16(Op::CONST, c1, 0);
+    chunk.emit_i64_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 42 at i64 addr 0
-    let c0 = chunk.add_constant(Value::I64(0));
-    let c42 = chunk.add_constant(Value::I32(42));
-    chunk.emit_op_u16(Op::CONST, c0, 0);
-    chunk.emit_op_u16(Op::CONST, c42, 0);
+    chunk.emit_i64_const(0, 0);
+    chunk.emit_i32_const(42, 0);
     chunk.emit_op(Op::I32_STORE, 0);
     emit_memarg64(&mut chunk, 2, 0, 0);
     // Load back
-    chunk.emit_op_u16(Op::CONST, c0, 0);
+    chunk.emit_i64_const(0, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
     emit_memarg64(&mut chunk, 2, 0, 0);
-    chunk.emit_op(Op::HALT, 0);
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I32(42) => {}
@@ -1095,25 +1016,20 @@ fn memory64_grow_and_load() {
 #[test]
 fn memory64_load_store_apply_memarg_offset() {
     let mut chunk = Chunk::new("test");
-    let pages = chunk.add_constant(Value::I64(1));
-    let base = chunk.add_constant(Value::I64(4));
-    let value = chunk.add_constant(Value::I32(99));
-
-    chunk.emit_op_u16(Op::CONST, pages, 0);
+    chunk.emit_i64_const(1, 0);
     chunk.emit_op(Op::MEMORY_GROW, 0);
     chunk.emit_op(Op::DROP, 0);
 
-    chunk.emit_op_u16(Op::CONST, base, 0);
-    chunk.emit_op_u16(Op::CONST, value, 0);
+    chunk.emit_i64_const(4, 0);
+    chunk.emit_i32_const(99, 0);
     chunk.emit_op(Op::I32_STORE, 0);
     chunk.emit_leb_u32(2, 0); // align
     emit_leb_u64(&mut chunk, 8); // offset: effective address is 12
 
-    chunk.emit_op_u16(Op::CONST, base, 0);
+    chunk.emit_i64_const(4, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
     chunk.emit_leb_u32(2, 0);
     emit_leb_u64(&mut chunk, 8);
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     assert_eq!(result.as_i32(), 99);
@@ -1149,18 +1065,15 @@ fn jspi_resolved_promise_returns_immediately() {
 
     let mut chunk = Chunk::new("<test>");
     let idx = chunk.add_import("test", "fetch_sync");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, 0);
-    chunk.emit(0, 0); // 0 args
+    chunk.emit_call(idx, 0, 0); // 0 args
 
     // The result is a fulfilled promise — JSPI should NOT suspend.
     // It should push the promise object (call_import doesn't auto-unwrap fulfilled).
     // To unwrap, we use promise_suspend opcode.
     {
         let aw = chunk.add_import("jspi", "await");
-        chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
-        chunk.emit(1, 0);
+        chunk.emit_call(aw, 1, 0);
     }
-    chunk.emit_op(Op::HALT, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match &result {
@@ -1181,9 +1094,7 @@ fn jspi_non_promise_passes_through() {
 
     let mut chunk = Chunk::new("<test>");
     let idx = chunk.add_import("test", "compute");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, 0);
-    chunk.emit(0, 0);
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_call(idx, 0, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match result {
@@ -1206,16 +1117,12 @@ fn jspi_pending_promise_suspends() {
 
     let mut chunk = Chunk::new("<test>");
     let idx = chunk.add_import("test", "slow_fetch");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, 0);
-    chunk.emit(0, 0);
+    chunk.emit_call(idx, 0, 0);
     // `await slow_fetch()` — the JSPI suspend point. A non-suspending import
     // returning a pending promise does NOT itself suspend; suspension happens
     // at the explicit `await` (the `jspi.await` suspending import).
     let aw = chunk.add_import("jspi", "await");
-    chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
-    chunk.emit(1, 0);
-    // This should never reach — the await suspends via JSPI
-    chunk.emit_op(Op::HALT, 0);
+    chunk.emit_call(aw, 1, 0);
 
     let result = vm.run(vec![chunk]);
     // Should get a JSPI suspension error
@@ -1261,34 +1168,26 @@ fn jspi_suspend_then_resume() {
     let mut chunk = Chunk::new("<test>");
 
     // Step 1: log "before"
-    let msg1 = chunk.add_constant(Value::String(Arc::from("before")));
-    chunk.emit_op_u16(Op::CONST, msg1, 0);
+    chunk.emit_string_const("before", 0);
     let log_idx = chunk.add_import("test", "log");
-    chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
-    chunk.emit(1, 0);
+    chunk.emit_call(log_idx, 1, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Step 2: `await async_load()` — the JSPI suspend point.
     let load_idx = chunk.add_import("test", "async_load");
-    chunk.emit_op_u16(Op::CALL_IMPORT, load_idx, 0);
-    chunk.emit(0, 0);
+    chunk.emit_call(load_idx, 0, 0);
     let aw = chunk.add_import("jspi", "await");
-    chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
-    chunk.emit(1, 0);
+    chunk.emit_call(aw, 1, 0);
 
     // Step 3: log the result (only reached after resume)
-    chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
-    chunk.emit(1, 0);
+    chunk.emit_call(log_idx, 1, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Step 4: log "after"
-    let msg2 = chunk.add_constant(Value::String(Arc::from("after")));
-    chunk.emit_op_u16(Op::CONST, msg2, 0);
-    chunk.emit_op_u16(Op::CALL_IMPORT, log_idx, 0);
-    chunk.emit(1, 0);
+    chunk.emit_string_const("after", 0);
+    chunk.emit_call(log_idx, 1, 0);
     chunk.emit_op(Op::DROP, 0);
 
-    chunk.emit_op(Op::HALT, 0);
 
     // Run — should suspend at async_load
     let result = vm.run(vec![chunk]);
@@ -1312,30 +1211,20 @@ fn jspi_suspend_then_resume() {
 fn jspi_promise_suspend_opcode() {
     // Test the promise_suspend opcode with a fulfilled promise
     let mut chunk = Chunk::new("<test>");
-    // Create a fulfilled promise manually via constants
-    let type_k = chunk.add_constant(Value::String(Arc::from("__type")));
-    let type_v = chunk.add_constant(Value::String(Arc::from("Promise")));
-    let state_k = chunk.add_constant(Value::String(Arc::from("__state")));
-    let state_v = chunk.add_constant(Value::String(Arc::from("fulfilled")));
-    let value_k = chunk.add_constant(Value::String(Arc::from("__value")));
-    let value_v = chunk.add_constant(Value::I32(99));
-
     // Build object: {__type: "Promise", __state: "fulfilled", __value: 99}
-    chunk.emit_op_u16(Op::CONST, type_k, 0);
-    chunk.emit_op_u16(Op::CONST, type_v, 0);
-    chunk.emit_op_u16(Op::CONST, state_k, 0);
-    chunk.emit_op_u16(Op::CONST, state_v, 0);
-    chunk.emit_op_u16(Op::CONST, value_k, 0);
-    chunk.emit_op_u16(Op::CONST, value_v, 0);
+    chunk.emit_string_const("__type", 0);
+    chunk.emit_string_const("Promise", 0);
+    chunk.emit_string_const("__state", 0);
+    chunk.emit_string_const("fulfilled", 0);
+    chunk.emit_string_const("__value", 0);
+    chunk.emit_i32_const(99, 0);
     chunk.emit_struct_new(0, 3, 0);
 
     // promise_suspend should extract the value
     {
         let aw = chunk.add_import("jspi", "await");
-        chunk.emit_op_u16(Op::CALL_IMPORT, aw, 0);
-        chunk.emit(1, 0);
+        chunk.emit_call(aw, 1, 0);
     }
-    chunk.emit_op(Op::HALT, 0);
 
     let result = run_chunks(vec![chunk]);
     match result {
