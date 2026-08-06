@@ -303,6 +303,11 @@ halt          = { emit = "common:control_flow.exit", min_args = 0, max_args = 1 
 [array_methods]
 reduce        = "__array_reduce"
 
+# Delphi's `Generics.Collections` spellings that are HIGHER-ORDER or search —
+# this table's dispatch only has arms for those. The plain methods carry an
+# emit target and an arity instead, so they live in `[value_methods]` below.
+sort          = "__array_sort"
+
 # ── Object lifecycle ─────────────────────────────────────────────────────────
 
 free          = { emit = "noop",                           min_args = 1, max_args = 1 }
@@ -369,6 +374,12 @@ rightstr = "dup, str_length, swap, to_int, f64_sub, swap, to_int, str_substring"
 free          = { emit = "noop",                           min_args = 0, max_args = 0 }
 tostring      = { emit = "common:pascal.tostring", min_args = 0, max_args = 0 }
 
+# `slot = "len"` says Delphi's `Count` fills the shared Len slot — the same one
+# Dart's `length`, Kotlin's `size` and Python's `len()` fill. A spelling, bound;
+# not a method the common layer has to know the name of.
+count         = { emit = "common:collections.length", min_args = 0, max_args = 0, slot = "len" }
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACE CONSTANTS — identifier-level constants (no function call)
 # ────────────────────────────────────────────────────────────────────────────
@@ -390,8 +401,12 @@ tostring      = { emit = "common:pascal.tostring", min_args = 0, max_args = 0 }
 
 # Namespace-tree roots this language resolves platform types against, and
 # mounts ambiently so unqualified names resolve to their `Type` node.
-type_scopes = ["plib"]
-use_dotnet = false
+# `pascal` is this language's OWN root — the `SysUtils` exception family,
+# registered by `exceptions::register_namespace_tree` through the
+# `LanguageDef.register_tree` hook. Declared here rather than synthesized as
+# source, so `EDivByZero.Create(msg)` reaches `primitives/errors.rs` and the
+# object carries the shared stamps a cross-language `catch` matches on.
+type_scopes = ["plib", "pascal"]
 
 # Which built-in each of this language's type spellings NAMES — step 4a.
 #
@@ -401,6 +416,22 @@ use_dotnet = false
 # `trim().to_lowercase()`, so this is the same predicate, owned by the language.
 [builtin_types]
 set = ["set of *"]
+# `TList` IS the shared ordered-sequence store — the same built-in .NET's
+# `List<T>`, Python's list and a JS Array name. Declared HERE, as this
+# language's spelling for it, rather than registered as a type node under a
+# lexical name: identity is structural, and the trailing `*` prefix-match is
+# what makes `TList<Integer>` the same built-in as `TList` without the shared
+# resolver ever learning what a generic argument list looks like.
+#
+# This replaces 250 lines of synthesized Pascal that re-implemented `push`,
+# `insert` and `remove_at` as grow-and-shift loops.
+array = ["tlist", "tobjectlist"]
+# `TDictionary` IS the shared Map — the same store a PHP array and a Python
+# dict land on. It has to be declared here and not only as a tree type,
+# because `Count` reaches the shared Len slot by SPELLING (see
+# `[value_methods]`), and without a receiver type that lookup answers with the
+# array's length on a Map and reports 0.
+map = ["tdictionary"]
 # Pascal's `char` holds a CHARACTER — its default value is `''`, `Ord`/`Chr`
 # round-trip through it, and `s[i]` yields one of them. The C family's `char` is
 # an 8-bit integer and gets a modular byte coercion the shared compiler used to
@@ -428,3 +459,12 @@ contains = "host:ecma:set:has"
 # ECMA-262 13.10.1) and they declare nothing here, so they are unaffected.
 [builtin_slots.array]
 contains = "common:collections.contains"
+
+# `TDictionary` is an `ObjectKind::Map`, and the platform default for a Map's
+# Len slot is `common:dict.size` — the older Ordinary+`__keys` helper, which
+# answers 0 on a real Map without erroring. `Count` carries `slot = "len"`, so
+# without this override it re-resolves onto exactly that. See the note above
+# the dictionary emitters in `emitter/runtime_adapter.rs`.
+[builtin_slots.map]
+len = "common:pascal.dict_size"
+contains = "common:pascal.dict_has"

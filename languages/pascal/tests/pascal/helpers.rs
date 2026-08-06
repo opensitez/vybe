@@ -35,7 +35,7 @@ pub fn run_pascal(src: &str) -> Vec<String> {
     let out = output.clone();
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
@@ -148,12 +148,29 @@ pub fn run_pascal_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<Str
         .compile(&module)
         .expect("Pascal compile failed");
 
+    // `Plugin::with_gui()` installs the `GuiState` into a process-wide static
+    // and `gui_state()` reads it back, so two tests in flight can swap which
+    // state each one holds. Pre-existing, and invisible while nothing wrote to
+    // that state — it surfaced as a 5-test wobble between identical runs the
+    // moment the document projection started filling it in.
+    let _gui_turn = gui_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let mut vm = VM::new();
     let output: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let out = output.clone();
+    // Each test is its own agent and must start on a blank document — the
+    // thread-local one persists across tests that share a worker thread, and
+    // an inherited control list makes `control_names.len()` depend on which
+    // test ran before it.
+    vybe_platform_web::html::clear_document_listeners(
+        vybe_platform_web::html::active_document(),
+    );
+    vybe_platform_web::html::reset_active_document();
     let gui = vybe_platform_vybe::init_platforms_with_gui(&mut vm);
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();
@@ -163,7 +180,94 @@ pub fn run_pascal_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>, Arc<Mutex<Vec<Str
     );
     vybe_compiler::primitives::platforms::finalize_platforms(&mut vm);
     vm.run(chunks).expect("Pascal run failed");
+    project_document_into(&gui);
     (vm, gui, output)
+}
+
+/// Serialises the GUI tests against the process-wide `GuiState` slot and the
+/// agent's ambient document. Held for the whole run, not just the install.
+fn gui_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Copy what the guest built in the DOM onto the `GuiState` the assertions
+/// read.
+///
+/// A control is now `document.createElement(tag)` and its state lives in the
+/// `vybe_widgets` document, not in `GuiState` — so without this every
+/// `control_names` / `get_property` assertion reads an object nothing writes
+/// to any more. The assertions themselves are unchanged on purpose: they say
+/// what a form is supposed to contain, and that is exactly as true over the
+/// DOM as it was over the old host functions.
+///
+/// `GuiState`'s own vocabulary is preserved, including its lowercasing — it
+/// keyed controls case-insensitively, so `Name := 'txtName'` was always
+/// `"txtname"` here.
+fn project_document_into(gui: &Arc<Mutex<GuiState>>) {
+    let doc = vybe_platform_web::html::active_document();
+    let elements = match vybe_platform_web::engine_widgets::with_document(doc, |d| {
+        d.elements_with_id()
+            .into_iter()
+            .map(|(node, id)| {
+                (
+                    node,
+                    id,
+                    d.text_content(node),
+                    d.value(node),
+                    d.checked(node),
+                    d.style_property(node, "width"),
+                    d.style_property(node, "height"),
+                )
+            })
+            .collect::<Vec<_>>()
+    }) {
+        Some(elements) => elements,
+        None => return };
+
+    // `node → id`, so a listener can be reported against the control name the
+    // assertions use. The document body is the form itself.
+    let node_names: std::collections::HashMap<u64, String> =
+        vybe_platform_web::engine_widgets::with_document(doc, |d| {
+            d.elements_with_id()
+                .into_iter()
+                .map(|(node, id)| (node, id.to_lowercase()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut g = gui.lock().unwrap();
+    for (node, kind, callback) in vybe_platform_web::html::document_listeners(doc) {
+        let control = node_names
+            .get(&node)
+            .cloned()
+            .unwrap_or_else(|| g.resolve_control_name("form1"));
+        g.register_event(&control, &kind, callback);
+    }
+    for (node, id, text, value, checked, width, height) in elements {
+        let name = id.to_lowercase();
+        // The document body IS the form. `GuiState` never counted the form
+        // among its `control_names` — it held that identity separately — so
+        // projecting it as a control makes a two-control form report three.
+        if node == vybe_platform_web::engine::DOCUMENT {
+            g.seed_form_identity(&name, &text);
+            continue;
+        }
+        g.track_live_control_name(&name, &name);
+        // `Text` is the role every language lowers its caption to, so it is
+        // the one property worth mirroring unconditionally; the rest only
+        // when the control actually carries them.
+        let caption = if text.is_empty() { value.clone() } else { text };
+        g.set_property(&name, "Text", &caption);
+        if checked {
+            g.set_property(&name, "Checked", "True");
+        }
+        for (prop, css) in [("Width", width), ("Height", height)] {
+            if let Some(px) = css.strip_suffix("px") {
+                g.set_property(&name, prop, px);
+            }
+        }
+    }
 }
 
 /// Run Pascal source and capture every `ShowMessage(...)` invocation as a

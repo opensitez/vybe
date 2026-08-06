@@ -7,8 +7,7 @@ use vybe_runtime::Op;
 pub fn emit_helper(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     if name == "pascal.tostring" {
         let to_str = chunks[0].add_import("ecma:string", "String");
-        chunks[current].emit_op_u16(Op::CALL_IMPORT, to_str, line);
-        chunks[current].emit(argc, line);
+        chunks[current].emit_call(to_str, argc, line);
         return true;
     }
 
@@ -45,8 +44,7 @@ pub fn emit_helper(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8
 
     if name == "pascal.set_length" {
         let idx = chunks[0].add_import("ecma:set", "size");
-        chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-        chunks[current].emit(argc, line);
+        chunks[current].emit_call(idx, argc, line);
         return true;
     }
 
@@ -216,20 +214,21 @@ fn emit_json_clone(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     vybe_compiler::primitives::json::emit_parse_or_null(chunks, current, line);
 }
 
+/// `TXMLDocument.Create` — stack `[]` → `[document]`.
+///
+/// The document IS the DOM document. It used to be an `ecma:object` holding
+/// one in a `__dom` property, and that box is exactly what stopped a Pascal
+/// document from being a PHP `DOMDocument`: the node every other language
+/// hands around was one dereference away, and only for the DOCUMENT — Pascal
+/// NODES were already raw DOM nodes. `AddChild` on a document read `__dom`
+/// while `AddChild` on an element did not, which is where the asymmetry
+/// showed up as a failure.
 fn emit_xml_document_new(chunks: &mut [Chunk], current: usize, line: u32) {
-    let doc_slot = chunks[current].alloc_scratch(1);
-    emit_object_new(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, doc_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, doc_slot, line);
-    chunks[current].emit_string_const("__dom", line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_string_const("", line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     let create = chunks[current].add_import("web:dom-parser", "createDocument");
     chunks[current].emit_call(create, 3, line);
-    collections::emit_set(chunks, current, line);
-    chunks[current].emit_op(Op::DROP, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, doc_slot, line);
 }
 
 fn emit_object_new(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -237,16 +236,34 @@ fn emit_object_new(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_call(idx, 0, line);
 }
 
+/// `doc.LoadFromXML(text)` — stack `[doc, text]` → `[null]`.
+///
+/// Delphi's is a PROCEDURE: it fills the document the caller already holds,
+/// so `doc` has to keep its identity. With the `__dom` box gone there is
+/// nothing to reassign, so the parsed root is adopted INTO the document —
+/// which is what the DOM says loading is anyway.
 fn emit_xml_load_from_xml(chunks: &mut [Chunk], current: usize, line: u32) {
-    let xml_slot = chunks[current].alloc_scratch(2);
+    let xml_slot = chunks[current].alloc_scratch(3);
     let doc_slot = xml_slot + 1;
+    let root_slot = xml_slot + 2;
     chunks[current].emit_op_u16(Op::LOCAL_SET, xml_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, doc_slot, line);
 
-    chunks[current].emit_op_u16(Op::LOCAL_GET, doc_slot, line);
-    chunks[current].emit_string_const("__dom", line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, xml_slot, line);
     vybe_compiler::primitives::xml::emit_parse(chunks, current, 1, line);
+    chunks[current].emit_string_const("documentElement", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, root_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, doc_slot, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, root_slot, line);
+    let append = chunks[current].add_import("web:dom-parser", "appendChild");
+    chunks[current].emit_call(append, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, doc_slot, line);
+    chunks[current].emit_string_const("documentElement", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, root_slot, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -258,8 +275,6 @@ fn emit_xml_save(chunks: &mut [Chunk], current: usize, line: u32) {
     let version_slot = doc_slot + 2;
     chunks[current].emit_op_u16(Op::LOCAL_SET, doc_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, doc_slot, line);
-    chunks[current].emit_string_const("__dom", line);
-    collections::emit_get(chunks, current, line);
     vybe_compiler::primitives::xml::emit_save(chunks, current, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, xml_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, doc_slot, line);
@@ -292,57 +307,65 @@ fn emit_xml_save(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
+/// `node.ChildNodes['tag']` — stack `[parent, tag]` → `[element_or_null]`.
+///
+/// Only the BY-NAME case reaches here; the walker leaves an ordinal as a
+/// plain index into the shared `childNodes` array. `xml.elements` is the
+/// shared `getElementsByTagName`, so the node this hands back is the same
+/// node PHP's `DOMDocument` or .NET's `XElement` would.
+///
+/// Document order means a direct child always precedes its own descendants,
+/// so `[0]` is the direct child whenever there is one. It differs from
+/// Delphi only when a parent has NO direct child of that name but a deeper
+/// one exists — Delphi answers nil, this answers the descendant.
 fn emit_xml_child_node(chunks: &mut [Chunk], current: usize, line: u32) {
-    let key_slot = chunks[current].alloc_scratch(2);
-    let parent_slot = key_slot + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, parent_slot, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    let str_test = chunks[current].add_import("wasm:js-string", "test");
-    chunks[current].emit_call(str_test, 1, line);
-    chunks[current].emit_if_value(line);
-    {
-        chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
-        chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-        vybe_compiler::primitives::xml::emit_elements(chunks, current, 2, line);
-        chunks[current].emit_i32_const(0, line);
-        collections::emit_get(chunks, current, line);
-    }
-    chunks[current].emit_else(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
-    chunks[current].emit_string_const("childNodes", line);
+    vybe_compiler::primitives::xml::emit_elements(chunks, current, 2, line);
+    chunks[current].emit_i32_const(0, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].emit_end(line);
 }
 
+/// `node.AddChild('tag')` — stack `[parent, name]` → `[new_element]`.
+///
+/// `appendChild` maintains `childNodes`/`parentNode` but NOT
+/// `documentElement` — per the DOM that property is set when the root is
+/// installed, and `createDocument` is the only host path that does it. So a
+/// root appended to a document has to be recorded here, or
+/// `doc.DocumentElement` reads the `null` the document was born with.
 fn emit_xml_add_child(chunks: &mut [Chunk], current: usize, line: u32) {
-    let name_slot = chunks[current].alloc_scratch(4);
+    let name_slot = chunks[current].alloc_scratch(3);
     let parent_slot = name_slot + 1;
     let child_slot = name_slot + 2;
-    let dom_slot = name_slot + 3;
     chunks[current].emit_op_u16(Op::LOCAL_SET, name_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, parent_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
-    chunks[current].emit_string_const("__dom", line);
-    collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, dom_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, dom_slot, line);
-    chunks[current].emit_op(Op::REF_IS_NULL, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, dom_slot, line);
-    chunks[current].emit_end(line);
+
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
     let create = chunks[current].add_import("web:dom-parser", "createElement");
     chunks[current].emit_call(create, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, child_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, dom_slot, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, child_slot, line);
     let append = chunks[current].add_import("web:dom-parser", "appendChild");
     chunks[current].emit_call(append, 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    // A DOCUMENT parent gets its root recorded. `nodeType == 9` is the DOM's
+    // own discriminator (Living Standard §4.4) — no Pascal-side marker.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
+    chunks[current].emit_string_const("nodeType", line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_i32_const(9, line);
+    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, parent_slot, line);
+    chunks[current].emit_string_const("documentElement", line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, child_slot, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, child_slot, line);
 }
 
 fn emit_xml_set_text(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -834,4 +857,273 @@ pub fn emit_str_insert_var(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_i32_const(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
     vybe_compiler::primitives::strings::emit_splice(chunks, current, line);
+}
+
+// ── Delphi's `Generics.Collections` quirks ───────────────────────────────────
+//
+// A `TList` IS the shared array — `Add`, `Count`, `Delete` and the rest bind
+// straight to `collections.*`. These are the members that do NOT have a shared
+// concept behind them, or that need an argument the binding cannot carry:
+// `CommonEmit` is a name with no bound value, so `First` cannot simply BE
+// `collections.get`. They decompose into the same shared routes here, in the
+// language that speaks Delphi, so nothing common learns the word.
+
+/// `L.First` — stack `[arr]` → `[value]`. Delphi's spelling for `L[0]`.
+pub fn emit_list_first(chunks: &mut [Chunk], current: usize, line: u32) {
+    chunks[current].emit_f64_const(0.0, line);
+    collections::emit_get(chunks, current, line);
+}
+
+/// `L.Last` — stack `[arr]` → `[value]`. `L[Count - 1]`.
+pub fn emit_list_last(chunks: &mut [Chunk], current: usize, line: u32) {
+    let arr = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op(Op::F64_SUB, line);
+    collections::emit_get(chunks, current, line);
+}
+
+/// `L.Exchange(i, j)` — stack `[arr, i, j]` → `[null]`. A swap through the
+/// shared get/set; Delphi has a name for it, the store does not.
+pub fn emit_list_exchange(chunks: &mut [Chunk], current: usize, line: u32) {
+    let j = chunks[current].alloc_scratch(1);
+    let i = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    let tmp = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+
+    // tmp := arr[i]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, tmp, line);
+    // arr[i] := arr[j]
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, i, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    collections::emit_get(chunks, current, line);
+    collections::emit_set(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    // arr[j] := tmp
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, j, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, tmp, line);
+    collections::emit_set(chunks, current, line);
+}
+
+/// `L.Move(cur, new)` — stack `[arr, cur, new]` → `[null]`. Remove, re-insert.
+///
+/// The synthesized prelude's version of this was `FItems[0] := FItems[1];
+/// FItems[1] := FItems[2]; FItems[2] := value` — a hardcoded three-element
+/// shuffle that answered its own test and nothing else.
+pub fn emit_list_move(chunks: &mut [Chunk], current: usize, line: u32) {
+    let dst = chunks[current].alloc_scratch(1);
+    let src = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    let val = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, dst, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, src, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, val, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, dst, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, val, line);
+    collections::emit_insert_at(chunks, current, line);
+}
+
+/// `L.AddRange(src)` — stack `[arr, src]` → `[null]`. Append at the end.
+pub fn emit_list_add_range(chunks: &mut [Chunk], current: usize, line: u32) {
+    let src = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, src, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    collections::emit_len(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, src, line);
+    collections::emit_insert_range(chunks, current, line);
+}
+
+/// `L.ExtractAt(i)` — stack `[arr, i]` → `[value]`. This IS `list.pop(i)`;
+/// the shared `remove_at` discards what it removed, so read it first.
+pub fn emit_list_extract_at(chunks: &mut [Chunk], current: usize, line: u32) {
+    let idx = chunks[current].alloc_scratch(1);
+    let arr = chunks[current].alloc_scratch(1);
+    let val = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, idx, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, arr, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    collections::emit_get(chunks, current, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, val, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, arr, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, idx, line);
+    collections::emit_remove_at(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, val, line);
+}
+
+/// `L.Extract(v)` — stack `[arr, v]` → `[value]`. Remove by VALUE and hand it
+/// back; the shared route answers a bool, and the value is already in hand.
+pub fn emit_list_extract(chunks: &mut [Chunk], current: usize, line: u32) {
+    let val = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, val, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, val, line);
+    collections::emit_remove_value(chunks, current, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, val, line);
+}
+
+/// `L.TrimExcess` / `L.Capacity := n` — stack `[arr, …]` → `[null]`.
+///
+/// Capacity is a manual-allocation concept. A growable shared array has no
+/// spare capacity to trim, so this is a no-op that keeps the stack honest.
+pub fn emit_list_drop_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    for _ in 0..argc {
+        chunks[current].emit_op(Op::DROP, line);
+    }
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+// ── TDictionary — the shared Map ─────────────────────────────────────────
+//
+// `TDictionary` is an `ObjectKind::Map`: the SAME store a PHP array and a
+// Python dict land on, so a Delphi dictionary handed to either is a thing
+// they already understand.
+//
+// It is NOT the `common:dict.*` family. Those helpers are the older
+// Ordinary-object shape and read a `__keys` property for enumeration —
+// `dict::emit_set` is a bare `ARRAY_SET` that never appends to it, so on a
+// Map `dict.size` answers 0 and `dict.keys` answers `[]`, both silently.
+// PHP and Python each reached the same conclusion and route their Map
+// members through `ecma:map.*` for the same reason.
+//
+// Reads and writes stay on `common:dict.get_dynamic`/`set_dynamic`:
+// `ARRAY_GET`/`ARRAY_SET` dispatch on `ObjectKind` and are already
+// Map-aware, so `D['a']` needs nothing Pascal-specific.
+
+/// One `ecma:map` call. `argc` operands are already on the stack.
+fn map_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, line: u32) {
+    let f = chunks[current].add_import("ecma:map", func);
+    chunks[current].emit_call(f, argc, line);
+}
+
+/// `TDictionary.Create` — stack `[]` → `[map]`.
+pub fn emit_dict_new(chunks: &mut [Chunk], current: usize, line: u32) {
+    map_call(chunks, current, "new", 0, line);
+}
+
+/// `D.Count` — stack `[map]` → `[i32]`.
+pub fn emit_dict_size(chunks: &mut [Chunk], current: usize, line: u32) {
+    map_call(chunks, current, "size", 1, line);
+}
+
+/// `D.ContainsKey(k)` — stack `[map, key]` → `[bool]`.
+pub fn emit_dict_has(chunks: &mut [Chunk], current: usize, line: u32) {
+    map_call(chunks, current, "has", 2, line);
+}
+
+/// `D.ContainsValue(v)` — stack `[map, value]` → `[bool]`.
+pub fn emit_dict_contains_value(chunks: &mut [Chunk], current: usize, line: u32) {
+    map_call(chunks, current, "containsValue", 2, line);
+}
+
+/// `D.Remove(k)` — stack `[map, key]` → `[null]`.
+///
+/// Delphi's `Remove` is a procedure; `ecma:map.delete` answers a bool, which
+/// would leave the stack one deep in statement position.
+pub fn emit_dict_delete(chunks: &mut [Chunk], current: usize, line: u32) {
+    map_call(chunks, current, "delete", 2, line);
+    chunks[current].emit_op(Op::DROP, line);
+    chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+}
+
+/// `D.Clear` — stack `[map]` → `[null]`.
+pub fn emit_dict_clear(chunks: &mut [Chunk], current: usize, line: u32) {
+    map_call(chunks, current, "clear", 1, line);
+}
+
+/// `D.Keys` / `D.Values` / `D.ToArray` — stack `[map]` → `[array]`.
+///
+/// `ecma:map.keys` yields an Array Iterator per ECMA-262 §24.1.3.8;
+/// `ecma:object.*` answers with a materialized array and is Map-aware, which
+/// is the shape `for … in D.Keys` and `TPair` iteration both want.
+pub fn emit_dict_enumerate(chunks: &mut [Chunk], current: usize, which: &str, line: u32) {
+    let f = chunks[current].add_import("ecma:object", which);
+    chunks[current].emit_call(f, 1, line);
+}
+
+// ── Exceptions — the SHARED exception model ──────────────────────────────
+//
+// Pascal used to synthesize `Exception` and ten `E*` subclasses as Pascal
+// SOURCE in the walker — the same prelude pattern the collections classes
+// used, and with the same consequence: the object carried none of the shared
+// stamps, so a Pascal `EDivByZero` could not be caught as `Exception` by PHP
+// or Java, and never canonicalised to `ZeroDivisionError`.
+//
+// `primitives/errors.rs` already models this for every language.
+// `emit_exception_new_finalize` coerces the message per ECMA-262 §20.5.1.1,
+// sets `message`, and stamps `__type`/`__type_name`/`__exception_type` with
+// the CANONICAL name — its own comment says why: "for cross-language catch
+// dispatch and introspection compatibility". It also keeps the ORIGINAL
+// spelling as `name`, so `EDivByZero` still prints as itself.
+// `emit_stamp_exception_ancestors` writes the `__types` MRO that a typed
+// `catch`/`on E: ... do` matches against.
+//
+// Reached from a tree `ctor_call` (see `register_tree` in `lib.rs`), so the
+// canonical name is a BOUND ARGUMENT chosen at registration rather than a row
+// in a shared table — nothing shared has to learn Pascal's spellings.
+//
+// NOTE: `primitives/errors.rs` is the one substantial primitive with no
+// `common:errors.*` dispatch category (the categories are exactly the module
+// names — collections, csv, dict, math, object, reflection, sprintf, strings,
+// url, xml). Until it has one, a language reaches it by calling in from its
+// own emitter, which is what java and php do too.
+
+/// `E<Something>.Create(msg)` — stack `[msg]` → `[exception]`.
+///
+/// `canonical` is the shared name this Pascal spelling maps to; `spelling` is
+/// what the source called it and what `name` keeps.
+pub fn emit_exception_new(
+    chunks: &mut [Chunk],
+    current: usize,
+    spelling: &str,
+    line: u32,
+) {
+    let msg = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, msg, line);
+
+    // The shape `emit_exception_new_finalize` expects: [obj, obj, msg].
+    chunks[current].emit_struct_new(0, 0, line);
+    chunks[current].emit_dup(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, msg, line);
+    vybe_compiler::primitives::errors::emit_exception_new_finalize(
+        &mut chunks[current],
+        spelling,
+        line,
+    );
+    vybe_compiler::primitives::errors::emit_stamp_exception_ancestors(
+        &mut chunks[current],
+        spelling,
+        line,
+    );
 }

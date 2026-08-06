@@ -597,6 +597,14 @@ end."#
     );
 }
 
+/// A record is a value type and a nested record field is stored INLINE, so
+/// `b := a` duplicates the whole tree — writing `b.I.N` cannot reach `a.I.N`.
+///
+/// This asserted `9` until 2026-08-06, which is the aliasing bug rather than
+/// the language: the name already said `is_deep`, and the expectation had been
+/// recorded from the shallow `Object.assign` copy the emitter was doing. The
+/// same program in `test_records_advanced::nested_record_copy_is_independent`
+/// asserted the opposite, so the two could never both pass.
 #[test]
 fn nested_record_copy_is_deep_for_value_fields() {
     assert_eq!(
@@ -612,7 +620,7 @@ begin
   WriteLn(a.I.N);
 end."#
         ),
-        &["9"]
+        &["1"]
     );
 }
 

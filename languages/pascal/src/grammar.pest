@@ -39,7 +39,22 @@ program_body = { compound_statement }
 
 // ── Declaration Sections ───────────────────────────────────────────────────────
 
+// Two flavours, and the difference is the one thing that keeps the parse from
+// going exponential.
+//
+// `decl_section` is the OUTER one — a unit's interface section, where a routine
+// is declared with no body at all. `local_decl_section` is what a body's own
+// declarations use, and there a nested routine ALWAYS has a body (or `forward`);
+// `procedure Foo;` with nothing after it is not legal Pascal inside a body.
+//
+// Allowing the bodiless form in both is what cost the suite ~180 timeouts. With
+// N sibling signatures, the greedy `procedure_body?` on the first one explores
+// the whole tail, fails, and the enclosing `declaration*` then re-explores that
+// same tail: T(k) = 2·T(k+1). Measured on 24 class method signatures: 58s. The
+// two flavours make the nested reading fail on its first token instead, which
+// is O(N²) worst case and 0.02s in practice.
 decl_section = { declaration* }
+local_decl_section = { local_declaration* }
 
 declaration = _{
     var_section
@@ -54,6 +69,22 @@ declaration = _{
     | operator_decl_or_method
     | procedure_decl_or_method
     | function_decl_or_method
+}
+
+// Same list, minus the bodiless routine — see `local_decl_section` above.
+local_declaration = _{
+    var_section
+    | const_section
+    | type_section
+    | label_section
+    | class_var_decl_impl
+    | class_constructor_method_impl
+    | class_destructor_method_impl
+    | constructor_method_impl
+    | destructor_method_impl
+    | operator_decl_or_method
+    | local_procedure_decl
+    | local_function_decl
 }
 
 label_section = { ^"label" ~ identifier ~ ("," ~ identifier)* ~ ";" }
@@ -311,6 +342,20 @@ function_decl_or_method = {
     (^"class" ~ ^"function" ~ method_impl_func)
     | (^"function" ~ (method_impl_func | standalone_function))
 }
+// The nested readings of the two above: identical, except the standalone form
+// must carry a body.
+local_procedure_decl = {
+    (^"class" ~ ^"operator" ~ method_impl_proc)
+    |
+    (^"class" ~ ^"procedure" ~ method_impl_proc)
+    | (^"procedure" ~ (method_impl_proc | local_standalone_procedure))
+}
+local_function_decl = {
+    (^"class" ~ ^"operator" ~ method_impl_func)
+    |
+    (^"class" ~ ^"function" ~ method_impl_func)
+    | (^"function" ~ (method_impl_func | local_standalone_function))
+}
 operator_decl_or_method = { ^"operator" ~ standalone_operator }
 constructor_method_impl = { ^"constructor" ~ method_impl_body_proc }
 destructor_method_impl = { ^"destructor" ~ method_impl_body_proc }
@@ -319,19 +364,21 @@ class_destructor_method_impl = { ^"class" ~ ^"destructor" ~ method_impl_body_pro
 
 // Method implementation: ClassName.MethodName
 qualified_type_name = _{ identifier ~ generic_args? }
-method_impl_proc = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
-method_impl_func = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
-method_impl_body_proc = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ";" ~ decl_section ~ compound_statement ~ ";"? }
+method_impl_proc = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ";" ~ local_decl_section ~ compound_statement ~ ";"? }
+method_impl_func = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ local_decl_section ~ compound_statement ~ ";"? }
+method_impl_body_proc = { qualified_type_name ~ "." ~ method_name ~ generic_params? ~ param_clause? ~ ";" ~ local_decl_section ~ compound_statement ~ ";"? }
 
 // Standalone procedure
 standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ method_directives ~ (forward_directive | procedure_body)? }
-procedure_body = { decl_section ~ compound_statement ~ ";"? }
+local_standalone_procedure = { identifier ~ generic_params? ~ param_clause? ~ ";" ~ method_directives ~ (forward_directive | procedure_body) }
+procedure_body = { local_decl_section ~ compound_statement ~ ";"? }
 
 // Standalone function — accepts generic type params: `function Max<T>(...)`.
 // Generics are erased at compile time (the dynamic VM doesn't carry type
 // info), so `generic_params` is captured-and-discarded by the walker.
 standalone_function = { identifier ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ method_directives ~ (forward_directive | function_body)? }
-function_body = { decl_section ~ compound_statement ~ ";"? }
+local_standalone_function = { identifier ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ method_directives ~ (forward_directive | function_body) }
+function_body = { local_decl_section ~ compound_statement ~ ";"? }
 standalone_operator = { method_name ~ generic_params? ~ param_clause? ~ ":" ~ type_ref ~ ";" ~ method_directives ~ (forward_directive | function_body)? }
 
 // Pascal / Delphi generic type parameters: `<T>` or `<T, U>`. Constraints
@@ -680,10 +727,10 @@ new_expression = { ^"new" ~ identifier ~ arg_list? }
 type_cast_builtin = { builtin_type_keyword ~ "(" ~ expression ~ ")" }
 
 // Anonymous procedure: `procedure(params) begin ... end`
-lambda_procedure = { ^"procedure" ~ param_clause? ~ decl_section ~ compound_statement }
+lambda_procedure = { ^"procedure" ~ param_clause? ~ local_decl_section ~ compound_statement }
 
 // Anonymous function: `function(params): Type begin ... end`
-lambda_function = { ^"function" ~ param_clause? ~ (":" ~ type_ref)? ~ decl_section ~ compound_statement }
+lambda_function = { ^"function" ~ param_clause? ~ (":" ~ type_ref)? ~ local_decl_section ~ compound_statement }
 
 // Set literal: `[1, 2, 3]` or `[A..D]`
 set_literal = { "[" ~ (set_element ~ ("," ~ set_element)*)? ~ "]" }

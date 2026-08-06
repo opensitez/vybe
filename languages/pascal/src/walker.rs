@@ -66,9 +66,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
                             let mut source_path: Option<String> = None;
                             for part in p.into_inner() {
                                 match part.as_rule() {
-                                    Rule::identifier => {
+                                    // `uses_item = { unit_name ~ … }` and
+                                    // `unit_name = { identifier ~ ("." ~ identifier)* }`
+                                    // — the WRAPPER rule is what arrives here, so
+                                    // matching only `identifier` matched nothing and
+                                    // every `uses` clause produced an EMPTY import
+                                    // list. That silently switched off the whole GCL
+                                    // normalization pass, which is gated on it.
+                                    Rule::unit_name | Rule::identifier => {
                                         if unit_name.is_none() {
-                                            unit_name = Some(part.as_str().to_string());
+                                            unit_name = Some(part.as_str().trim().to_string());
                                         }
                                     }
                                     Rule::string_literal => {
@@ -144,25 +151,28 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 _ => None })
             .collect();
         let mut prelude = Vec::new();
-        if prelude_needs.exceptions && !existing_classes.contains("exception") {
-            prelude.push(synthesize_exception_class());
-        }
-        if prelude_needs.exceptions {
-            for name in PASCAL_BUILTIN_EXCEPTION_CLASSES {
-                if !existing_classes.contains(&name.to_lowercase()) {
-                    prelude.push(synthesize_exception_subclass(name, "Exception"));
-                }
-            }
-        }
+        // The exception family is DECLARED, not synthesized — see
+        // `exceptions.rs`. It used to be pushed here as eleven Pascal classes,
+        // which made a Pascal exception an ordinary Pascal object carrying
+        // none of the shared stamps, so PHP or Java could not catch it and
+        // `EDivByZero` never canonicalised to `ZeroDivisionError`.
         if prelude_needs.tobject && !existing_classes.contains("tobject") {
             prelude.push(synthesize_tobject_class());
         }
         if prelude_needs.tinterfacedobject && !existing_classes.contains("tinterfacedobject") {
             prelude.push(synthesize_tinterfacedobject_class());
         }
-        if prelude_needs.collections
-            && (!existing_classes.contains("tlist") || !existing_classes.contains("tobjectlist"))
-        {
+        // Only pay for the group if the program is actually missing something
+        // from it. The old gate asked about `TList`/`TObjectList` only, so a
+        // program that declared its own `TPair` — which the token scan had
+        // just matched on — still parsed all 335 lines to throw every class
+        // away one statement later.
+        const COLLECTION_CLASSES: [&str; 3] =
+            ["tpair", "tcomparer", "tequalitycomparer"];
+        let collections_missing_any = COLLECTION_CLASSES
+            .iter()
+            .any(|name| !existing_classes.contains(*name));
+        if prelude_needs.collections && collections_missing_any {
             for stmt in cached_pascal_collection_classes()? {
                 let should_insert = match &stmt.kind {
                     StmtKind::ClassDecl { name, .. } | StmtKind::StructDecl { name, .. } => {
@@ -213,6 +223,19 @@ pub fn parse(source: &str) -> Result<Module, String> {
         | ImportKind::Named { path, .. }
         | ImportKind::Wildcard { path, .. }
         | ImportKind::Default { path, .. } => vybe_platform_plib::emitter::gcl::is_gcl_unit(path) });
+    if std::env::var("VYBE_DBG_GCL").is_ok() {
+        eprintln!(
+            "[gcl] site-218 uses_gcl={uses_gcl} imports={:?}",
+            imports
+                .iter()
+                .map(|import| match &import.kind {
+                    ImportKind::Simple { path, .. }
+                    | ImportKind::Named { path, .. }
+                    | ImportKind::Wildcard { path, .. }
+                    | ImportKind::Default { path, .. } => path.clone() })
+                .collect::<Vec<_>>()
+        );
+    }
     if uses_gcl {
         normalize_pascal_gcl_form_classes(&mut body);
         normalize_pascal_gcl_exprs(&mut body);
@@ -375,12 +398,16 @@ pub fn parse(source: &str) -> Result<Module, String> {
     rewrite_pascal_collection_for_in(&mut body);
     rewrite_pascal_writeln_bool_vars(&mut body);
     synthesize_pascal_inherited_constructors(&mut body);
+    // Runs unconditionally: this pass OWNS the `Free` spelling, for both
+    // answers. A class with a destructor gets `if X <> nil then X.Destroy`; a
+    // class without one gets nothing, which is still a decision that has to be
+    // made here. It used to be made by the JSON rewrite three passes earlier,
+    // which nulled EVERY `X.Free` and so deleted every user destructor in the
+    // language before this pass could see it.
     let destructible_class_names = collect_pascal_destructible_class_names(&body);
-    if !destructible_class_names.is_empty() {
-        let mut var_types = std::collections::HashMap::new();
-        for stmt in body.iter_mut() {
-            rewrite_pascal_free_calls_stmt(stmt, &destructible_class_names, &mut var_types);
-        }
+    let mut var_types = std::collections::HashMap::new();
+    for stmt in body.iter_mut() {
+        rewrite_pascal_free_calls_stmt(stmt, &destructible_class_names, &mut var_types);
     }
     synthesize_pascal_default_destructors(&mut body);
     lower_pascal_interface_releases(&mut body);
@@ -429,7 +456,20 @@ pub fn parse(source: &str) -> Result<Module, String> {
         erase_variant_record_param_type_hints_stmt(stmt, &variant_record_names);
     }
     let struct_fields = collect_struct_fields(&body);
-    lower_struct_copy_assignments(&mut body, &struct_fields);
+    // `lower_struct_copy_assignments(&mut body, &struct_fields)` used to run
+    // here — a Pascal-only pass rewriting `b := a` into a field-by-field copy.
+    // The shared lowering owns it now, two ways: the STATIC type when the
+    // compiler can see it is a declared value type (which is what Pascal's
+    // default-initialised `var a, b: TR` needs — it never runs a constructor,
+    // so it carries no instance stamp), and the `__value_copy` stamp when the
+    // type is unknown.
+    //
+    // The pass could only ever see PASCAL's own declarations: it keyed on
+    // `struct_fields`, so a Go struct or COBOL group handed to Pascal was not
+    // in the map and that assignment aliased with no diagnostic. It also only
+    // covered ASSIGNMENT — value semantics bite at three sites.
+    //
+    // See `recordprimitiveplan.md`.
     lower_pascal_small_set_move(&mut body);
     lower_pascal_array_value_semantics(&mut body, &array_type_aliases);
     default_init_const_bounded_arrays(&mut body);
@@ -505,7 +545,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name,
         language: Lang::Pascal,
         body,
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 fn lower_pascal_final_result_assignments(body: &mut [Statement]) {
@@ -783,7 +824,22 @@ fn rewrite_pascal_json_xml_stmt(
                 rewrite_pascal_json_xml_expr(cause, types);
             }
         }
-        StmtKind::FunctionDecl { body, .. } | StmtKind::Block(body) => {
+        // PARAMETERS carry declared types too, and every rewrite in this pass
+        // is gated on the receiver's type — so dropping them meant a routine
+        // body was a blind spot: `function F(json: TJSONObject)` could not
+        // see that `json` is JSON.
+        StmtKind::FunctionDecl { params, body, .. } => {
+            let mut scoped = types.clone();
+            for param in params.iter() {
+                if let Some(hint) = &param.type_hint {
+                    scoped.insert(param.name.to_ascii_lowercase(), normalize_pascal_type_hint(hint));
+                }
+            }
+            for stmt in body.iter_mut() {
+                rewrite_pascal_json_xml_stmt(stmt, &mut scoped);
+            }
+        }
+        StmtKind::Block(body) => {
             rewrite_pascal_json_xml_body_scoped(body, types);
         }
         StmtKind::ClassDecl { members, .. }
@@ -1024,11 +1080,18 @@ fn pascal_json_xml_rewrite_expr(
                     ));
                 }
                 let receiver = (**object).clone();
+                // Every JSON arm below is gated on the receiver actually
+                // being a JSON type. `addpair`/`add` always were; the rest
+                // were not, and they claim their spelling on EVERY type in
+                // the language — `X.ToString` on anything at all compiled to
+                // `__pascal_json_stringify(X)`, `X.Clone` to
+                // `__pascal_json_clone(X)`. `Remove` was the same bug on the
+                // XML side and it silently removed nothing.
+                let receiver_is_json = pascal_expr_type_name(&receiver, types)
+                    .is_some_and(|ty| pascal_is_json_type(&ty));
                 match lower.as_str() {
                     "addpair" => {
-                        if !pascal_expr_type_name(&receiver, types)
-                            .is_some_and(|ty| pascal_is_json_type(&ty))
-                        {
+                        if !receiver_is_json {
                             return None;
                         }
                         let mut call_args = vec![receiver];
@@ -1036,22 +1099,32 @@ fn pascal_json_xml_rewrite_expr(
                         Some(call_expr("__pascal_json_add_pair", call_args))
                     }
                     "add" => {
-                        if !pascal_expr_type_name(&receiver, types)
-                            .is_some_and(|ty| pascal_is_json_type(&ty))
-                        {
+                        if !receiver_is_json {
                             return None;
                         }
                         let mut call_args = vec![receiver];
                         call_args.extend(args.iter().map(|arg| arg.value.clone()));
                         Some(call_expr("__pascal_json_array_add", call_args))
                     }
-                    "tostring" | "format" => Some(call_expr("__pascal_json_stringify", vec![receiver])),
-                    "getvalue" => args.first().map(|arg| index_expr(receiver, arg.value.clone())),
-                    "removepair" => args
+                    "tostring" | "format" if receiver_is_json => {
+                        Some(call_expr("__pascal_json_stringify", vec![receiver]))
+                    }
+                    "getvalue" if receiver_is_json => {
+                        args.first().map(|arg| index_expr(receiver, arg.value.clone()))
+                    }
+                    "removepair" if receiver_is_json => args
                         .first()
                         .map(|arg| call_expr("__pascal_json_remove_pair", vec![receiver, arg.value.clone()])),
-                    "clone" => Some(call_expr("__pascal_json_clone", vec![receiver])),
-                    "free" => Some(Expression::null()),
+                    "clone" if receiver_is_json => {
+                        Some(call_expr("__pascal_json_clone", vec![receiver]))
+                    }
+                    // Gated like the rest, and this one matters most: `Free`
+                    // is universal in Pascal, and nulling it here ran BEFORE
+                    // `rewrite_pascal_free_calls_*`, the pass that lowers
+                    // `X.Free` to `if X <> nil then X.Destroy`. Every
+                    // user destructor in the language was being deleted by a
+                    // JSON rewrite three passes earlier.
+                    "free" if receiver_is_json => Some(Expression::null()),
                     "loadfromxml" => args.first().map(|arg| {
                         call_expr("__pascal_xml_load_from_xml", vec![receiver, arg.value.clone()])
                     }),
@@ -1071,13 +1144,18 @@ fn pascal_json_xml_rewrite_expr(
                             .unwrap_or_else(|| Expression::bool(false));
                         Some(call_expr("__pascal_xml_clone_node", vec![receiver, deep]))
                     }
-                    "remove" => {
-                        let parent =
-                            pascal_xml_child_collection_parent(&receiver).unwrap_or(receiver);
+                    // Gated on the receiver, the way `add` above is. `Remove`
+                    // is a member of every collection Delphi has, and this arm
+                    // claimed all of them: `D.Remove(k)` on a `TDictionary`
+                    // became `__pascal_xml_remove_child(D, k)`, which silently
+                    // removed nothing. The XML reading needs `parent.ChildNodes`
+                    // as the receiver, so require that shape and let anything
+                    // else fall through to its own type.
+                    "remove" => pascal_xml_child_collection_parent(&receiver).and_then(|parent| {
                         args.first().map(|arg| {
                             call_expr("__pascal_xml_remove_child", vec![parent, arg.value.clone()])
                         })
-                    }
+                    }),
                     _ => None }
             } else {
                 None
@@ -1101,10 +1179,11 @@ fn pascal_json_xml_rewrite_expr(
                 "count" => pascal_expr_type_name(object, types)
                     .is_some_and(|ty| pascal_is_json_type(&ty))
                     .then(|| call_expr("__pascal_json_count", vec![(**object).clone()])),
-                "documentelement" if pascal_expr_is_xml_value(object, types) => Some(index_expr(
-                    index_expr((**object).clone(), str_expr("__dom")),
-                    str_expr("documentElement"),
-                )),
+                // No `__dom` hop — the document IS the DOM document now, so
+                // this reads exactly like every other node property beside it.
+                "documentelement" if pascal_expr_is_xml_value(object, types) => {
+                    Some(index_expr((**object).clone(), str_expr("documentElement")))
+                }
                 "nodename" if pascal_expr_is_xml_value(object, types) => {
                     Some(index_expr((**object).clone(), str_expr("nodeName")))
                 }
@@ -1130,16 +1209,16 @@ fn pascal_json_xml_rewrite_expr(
                 )),
                 _ => None }
         }
-        ExprKind::Index { object, index, .. } => {
-            if let Some(parent) = pascal_xml_child_collection_parent(object) {
-                Some(call_expr(
-                    "__pascal_xml_child_node",
-                    vec![parent, (**index).clone()],
-                ))
-            } else {
-                None
-            }
-        }
+        // `node.ChildNodes[k]` is TWO different operations sharing a
+        // spelling, and which one it is is visible right here: a NAME selects
+        // by tag, an ORDINAL is an array index. The ordinal case needs
+        // nothing — `childNodes` is already the shared array and indexes
+        // itself. Deciding this at run time (a `js-string.test` on the key)
+        // put a branch in the emitter for a question the frontend had
+        // already answered.
+        ExprKind::Index { object, index, .. } => pascal_xml_child_collection_parent(object)
+            .filter(|_| matches!(&index.kind, ExprKind::Lit(Literal::Str(_))))
+            .map(|parent| call_expr("__pascal_xml_child_node", vec![parent, (**index).clone()])),
         ExprKind::Cast { expr, type_name } if pascal_is_json_type(type_name) => Some((**expr).clone()),
         ExprKind::IsType { expr, type_name } if type_name.eq_ignore_ascii_case("TJSONNull") => {
             Some(bin_expr(BinOp::Eq, (**expr).clone(), Expression::null()))
@@ -1150,11 +1229,14 @@ fn pascal_json_xml_rewrite_expr(
 fn rewrite_pascal_xml_assignment(targets: &[Expression], value: &Expression) -> Option<Statement> {
     let target = targets.first()?;
     if let ExprKind::Member { object, field, .. } = &target.kind {
+        // `Active := False` closes the document — Delphi drops its content.
+        // It used to null the `__dom` box; with the box gone the same thing
+        // is said directly, by clearing the root.
         if field.eq_ignore_ascii_case("Active")
             && matches!(&value.kind, ExprKind::Lit(Literal::Bool(false)))
         {
             return Some(Statement::new(StmtKind::Assign {
-                targets: vec![index_expr((**object).clone(), str_expr("__dom"))],
+                targets: vec![index_expr((**object).clone(), str_expr("documentElement"))],
                 value: Expression::null(), by_ref: false }));
         }
         if field.eq_ignore_ascii_case("Active") {
@@ -1164,11 +1246,49 @@ fn rewrite_pascal_xml_assignment(targets: &[Expression], value: &Expression) -> 
     None
 }
 
+/// Whether `expr` denotes an XML node.
+///
+/// A DECLARED type answers it for a variable, but nothing declares the type
+/// of a subexpression, and Delphi XML is written as chains:
+/// `root.ChildNodes['port'].Text`. Assigning the middle to a typed variable
+/// worked while the chain did not, purely because the receiver of `.Text` was
+/// no longer a name. So the node-PRODUCING shapes count as well — this pass
+/// rewrites bottom-up, so by the time an outer member is examined its object
+/// is already in the rewritten form matched here.
 fn pascal_expr_is_xml_value(
     expr: &Expression,
     types: &std::collections::HashMap<String, String>,
 ) -> bool {
-    pascal_expr_type_name(expr, types).is_some_and(|ty| pascal_is_xml_type(&ty))
+    if pascal_expr_type_name(expr, types).is_some_and(|ty| pascal_is_xml_type(&ty)) {
+        return true;
+    }
+    match &expr.kind {
+        ExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            ExprKind::Ident(name)
+                if name == "__pascal_xml_child_node" || name == "__pascal_xml_add_child"
+        ),
+        // A DOM traversal property yields a node; `childNodes` yields the
+        // list, so indexing THAT is what yields a node.
+        ExprKind::Index { object, index, .. } => match &index.kind {
+            ExprKind::Lit(Literal::Str(key)) => matches!(
+                key.as_str(),
+                "documentElement"
+                    | "firstChild"
+                    | "lastChild"
+                    | "parentNode"
+                    | "nextSibling"
+                    | "previousSibling"
+                    | "firstElementChild"
+                    | "lastElementChild"
+            ) && pascal_expr_is_xml_value(object, types),
+            _ => matches!(
+                &object.kind,
+                ExprKind::Index { index: inner, .. }
+                    if matches!(&inner.kind, ExprKind::Lit(Literal::Str(k)) if k == "childNodes")
+            ),
+        },
+        _ => false }
 }
 
 fn pascal_is_xml_type(type_name: &str) -> bool {
@@ -3876,6 +3996,68 @@ fn rewrite_pascal_overload_stmt(
                 }
             }
         }
+        StmtKind::Try {
+            body,
+            catches,
+            else_body,
+            finally } => {
+            let mut scoped = scope.clone();
+            for stmt in body {
+                rewrite_pascal_overload_stmt(
+                    stmt,
+                    overloads,
+                    return_types,
+                    enum_members,
+                    &mut scoped,
+                );
+            }
+            for catch in catches {
+                // `on E: Exception do` binds a TYPED name, so it enters scope
+                // exactly like a `var` declaration or a parameter. Without it
+                // the argument type is unknown at the call site and the
+                // overload set resolves by position instead of by type — a
+                // silently wrong pick rather than an error.
+                let mut scoped = scope.clone();
+                if let (Some(var_name), Some(type_name)) =
+                    (catch.var_name.as_ref(), catch.types.first())
+                {
+                    scoped.insert(
+                        var_name.to_lowercase(),
+                        bare_type_name(type_name).to_lowercase(),
+                    );
+                }
+                if let Some(when_clause) = &mut catch.when_clause {
+                    rewrite_pascal_overload_expr(
+                        when_clause,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+                for stmt in &mut catch.body {
+                    rewrite_pascal_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+            for extra in [else_body, finally].into_iter().flatten() {
+                let mut scoped = scope.clone();
+                for stmt in extra {
+                    rewrite_pascal_overload_stmt(
+                        stmt,
+                        overloads,
+                        return_types,
+                        enum_members,
+                        &mut scoped,
+                    );
+                }
+            }
+        }
         StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
             for member in members {
                 match member {
@@ -4121,16 +4303,29 @@ fn pascal_overload_expr_type(
             .get(&name.to_lowercase())
             .cloned()
             .or_else(|| enum_members.get(&name.to_lowercase()).cloned()),
-        ExprKind::Call { callee, .. } => {
-            if let ExprKind::Ident(name) = &callee.kind {
-                return_types
-                    .get(&name.to_lowercase())
-                    .and_then(|ty| ty.clone())
-                    .map(|ty| bare_type_name(&ty).to_lowercase())
-            } else {
-                None
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Ident(name) => return_types
+                .get(&name.to_lowercase())
+                .and_then(|ty| ty.clone())
+                .map(|ty| bare_type_name(&ty).to_lowercase()),
+            // A member call on a declared type. Overloads are chosen by
+            // static argument type, so `__vs(D.ContainsKey(k))` needs the
+            // member's DECLARED return type or it picks the integer overload
+            // and renders `False` as `0`. The types whose members live in the
+            // namespace tree declare it there (`member_returns`); asking the
+            // tree is how a spelling stays the type's own description of
+            // itself rather than a name table here.
+            ExprKind::Member { object, field, .. } => {
+                let recv =
+                    pascal_overload_expr_type(object, return_types, enum_members, scope)?;
+                vybe_runtime::namespaces::lookup_type_member_return(
+                    &["plib".to_string()],
+                    bare_type_name(&recv),
+                    field,
+                )
+                .map(|ty| bare_type_name(&ty).to_lowercase())
             }
-        }
+            _ => None },
         ExprKind::Cast { type_name, .. } => Some(bare_type_name(type_name).to_lowercase()),
         ExprKind::Unary {
             op: UnaryOp::Not, ..
@@ -8177,25 +8372,11 @@ fn rewrite_pascal_comparer_expr(
     match &mut expr.kind {
         ExprKind::Member { object, field, .. } => {
             rewrite_pascal_comparer_expr(object, var_types);
-            if matches!(field.to_ascii_lowercase().as_str(), "keys" | "values")
-                && pascal_expr_type_name(object, var_types).is_some_and(|ty| {
-                    bare_type_name(&ty).eq_ignore_ascii_case("TDictionary")
-                })
-            {
-                let method = if field.eq_ignore_ascii_case("Keys") {
-                    "GetKeys"
-                } else {
-                    "GetValues"
-                };
-                *expr = Expression::new(ExprKind::Call {
-                    callee: Box::new(Expression::new(ExprKind::Member {
-                        object: object.clone(),
-                        field: method.to_string(),
-                        null_safe: false })),
-                    args: Vec::new(),
-                    optional: false });
-                return;
-            }
+            // `D.Keys` / `D.Values` used to be redirected to `GetKeys()` /
+            // `GetValues()`, two methods of the synthesized prelude class.
+            // That class is gone — the dictionary is the shared Map now — and
+            // both spellings are declared as property reads on the type, so
+            // the redirect would name a method nothing defines.
             if field.eq_ignore_ascii_case("Default") {
                 if let Some(name) = pascal_expr_ident_name(object) {
                     if name.eq_ignore_ascii_case("TComparer") {
@@ -8214,6 +8395,41 @@ fn rewrite_pascal_comparer_expr(
                 rewrite_pascal_comparer_expr(&mut arg.value, var_types);
             }
             if let ExprKind::Member { object, field, .. } = &callee.kind {
+                // `D.TryGetValue(K, V)` — an out parameter, which is the one
+                // dictionary member that cannot be a plain emit binding: it
+                // both answers a bool and WRITES the caller's variable. It is
+                // two things the store already does, so it is spelled as
+                // those here rather than kept as a hand-written method on a
+                // synthesized class: assign the lookup, then answer the
+                // membership test.
+                //
+                // `D` and `K` are evaluated twice. Delphi evaluates each
+                // once; in practice both are a bare name at every call site,
+                // and a temporary would need a statement the expression
+                // position cannot introduce.
+                if field.eq_ignore_ascii_case("TryGetValue")
+                    && args.len() == 2
+                    && pascal_expr_type_name(object, var_types).is_some_and(|ty| {
+                        bare_type_name(&ty).eq_ignore_ascii_case("TDictionary")
+                    })
+                {
+                    let key = args[0].value.clone();
+                    let out = args[1].value.clone();
+                    let store = (**object).clone();
+                    *expr = Expression::new(ExprKind::Sequence(vec![
+                        Expression::new(ExprKind::Assign {
+                            target: Box::new(out),
+                            value: Box::new(index_expr(store.clone(), key.clone())) }),
+                        Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(store),
+                                field: "ContainsKey".to_string(),
+                                null_safe: false })),
+                            args: vec![Argument::positional(key)],
+                            optional: false }),
+                    ]));
+                    return;
+                }
                 if field.eq_ignore_ascii_case("Sort")
                     && pascal_expr_ident_name(object)
                         .is_some_and(|name| name.eq_ignore_ascii_case("TArray"))
@@ -8258,14 +8474,11 @@ fn rewrite_pascal_comparer_expr(
             }
             if let ExprKind::Member { object, field, .. } = &mut callee.kind {
                 rewrite_pascal_comparer_expr(object, var_types);
-                if field.eq_ignore_ascii_case("Remove")
-                    && pascal_expr_type_name(object, var_types).is_some_and(|ty| {
-                        bare_type_name(&ty).eq_ignore_ascii_case("TDictionary")
-                    })
-                {
-                    *field = "DeleteKey".to_string();
-                    return;
-                }
+                // `D.Remove(k)` was renamed to `DeleteKey` to dodge a name
+                // clash inside the synthesized prelude class. That class is
+                // gone, `Remove` is declared on the type, and `DeleteKey` is
+                // now a method nothing defines — the rename made the call
+                // resolve to `undefined` and fail at run time.
                 if field.eq_ignore_ascii_case("BinarySearch") && args.len() >= 2 {
                     let array_expr = Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::new(ExprKind::Member {
@@ -8413,6 +8626,11 @@ fn pascal_expr_is_dictionary_bool_output(
             .is_some_and(|ty| pascal_tdictionary_value_type(&ty).is_some_and(|v| {
                 v.eq_ignore_ascii_case("Boolean")
             })),
+        // `TryGetValue` is rewritten into `(out := D[k]; D.ContainsKey(k))`
+        // before this runs, so the bool it produces is the sequence's value.
+        ExprKind::Sequence(parts) => parts
+            .last()
+            .is_some_and(|last| pascal_expr_is_dictionary_bool_output(last, var_types)),
         _ => false }
 }
 
@@ -12584,6 +12802,12 @@ fn pascal_type_supports_get_enumerator(type_name: &str) -> bool {
             | "boolean"
             | "bool"
     ) && !type_name.starts_with("array")
+        // The `Generics.Collections` types ARE the shared store now, and the
+        // shared store iterates natively — the same path a JS array, a PHP
+        // array and a Python list take. `GetEnumerator` was a method on the
+        // synthesized prelude class, so asking for it here would name
+        // something nothing defines.
+        && !is_pascal_generic_collection_type(type_name)
 }
 
 fn pascal_expr_is_collection_value(
@@ -12600,7 +12824,7 @@ fn pascal_expr_is_collection_value(
 fn is_pascal_generic_collection_type(type_name: &str) -> bool {
     matches!(
         bare_type_name(type_name).to_ascii_lowercase().as_str(),
-        "tlist" | "tobjectlist" | "tdictionary"
+        "tlist" | "tobjectlist" | "tdictionary" | "tqueue" | "tstack"
     )
 }
 
@@ -13978,6 +14202,18 @@ fn synthesize_pascal_default_destructors(body: &mut [Statement]) {
                     })
             })
             .collect();
+        // `inherited Destroy` — the synthesized destructor is declared
+        // `override`, so without this it SHADOWS the ancestor's and an
+        // inherited destructor never runs at all. Delphi's own chain ends in
+        // `inherited` for exactly this reason.
+        //
+        // Emitted as a bare `inherited`: `normalize_class` already resolves
+        // that to `Destroy` when the class has a parent and to nothing when it
+        // does not, so this does not have to work out which case it is in.
+        let mut body = body;
+        body.push(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::SuperCall { method: None, args: Vec::new() },
+        ))));
         members.push(ClassMember::Method(Box::new(Statement::new(
             StmtKind::FunctionDecl {
                 name: "Destroy".to_string(),
@@ -14424,14 +14660,20 @@ fn rewrite_pascal_free_calls_expr(
             rewrite_pascal_free_calls_expr(callee, destructible_classes, var_types);
             if args.is_empty() {
                 if let ExprKind::Member { object, field, .. } = &callee.kind {
-                    if field.eq_ignore_ascii_case("Free")
-                        && pascal_free_receiver_is_destructible(
+                    if field.eq_ignore_ascii_case("Free") {
+                        *expr = if pascal_free_receiver_is_destructible(
                             object,
                             destructible_classes,
                             var_types,
-                        )
-                    {
-                        *expr = pascal_nil_safe_destroy_expr((**object).clone());
+                        ) {
+                            pascal_nil_safe_destroy_expr((**object).clone())
+                        } else {
+                            // No destructor anywhere in the chain, so `Free`
+                            // has nothing to run. Under a GC that is the whole
+                            // of it — but it still has to be SAID, or the call
+                            // survives to a `Free` member no object defines.
+                            Expression::null()
+                        };
                     }
                 }
             }
@@ -14519,11 +14761,19 @@ fn rewrite_pascal_free_calls_expr(
     }
 }
 
+/// `X.Free` — `if X <> nil then <destructor>`, per Delphi's `TObject.Free`.
+///
+/// The destructor is invoked through its PROTOCOL SLOT, not through the name
+/// `Destroy`. `classes.rs` binds every role method under both its source name
+/// and a slot key derived from the slot's number, so this call reaches PHP's
+/// `__destruct`, Python's `__del__`, C#'s `~Foo` and VB's `Finalize` without
+/// Pascal knowing any of those spellings — which is the point of the slot:
+/// a Pascal `Free` on an object that came from PHP has to destroy it.
 fn pascal_nil_safe_destroy_expr(receiver: Expression) -> Expression {
     let destroy_call = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(receiver.clone()),
-            field: "Destroy".to_string(),
+            field: vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Destructor),
             null_safe: false })),
         args: Vec::new(),
         optional: false });
@@ -16063,177 +16313,6 @@ fn pascal_expr_references_except_state(expr: &Expression) -> bool {
 
 fn expr_is_int(expr: &Expression, expected: i64) -> bool {
     matches!(expr.kind, ExprKind::Lit(Literal::Int(value)) if value == expected)
-}
-
-fn lower_struct_copy_assignments(
-    body: &mut Vec<Statement>,
-    struct_fields: &std::collections::HashMap<String, Vec<String>>,
-) {
-    let mut env = std::collections::HashMap::new();
-    lower_struct_copy_assignments_in_block(body, struct_fields, &mut env);
-}
-
-fn lower_struct_copy_assignments_in_block(
-    body: &mut Vec<Statement>,
-    struct_fields: &std::collections::HashMap<String, Vec<String>>,
-    env: &mut std::collections::HashMap<String, String>,
-) {
-    let mut lowered = Vec::with_capacity(body.len());
-    for mut stmt in std::mem::take(body) {
-        match &mut stmt.kind {
-            StmtKind::VarDecl { declarations, .. } => {
-                for decl in declarations.iter() {
-                    if let BindingPattern::Ident(name) = &decl.pattern {
-                        if let Some(type_hint) = &decl.type_hint {
-                            let bare = bare_type_name(type_hint).to_string();
-                            if struct_fields.contains_key(&bare.to_lowercase()) {
-                                env.insert(name.to_lowercase(), bare);
-                            }
-                        }
-                    }
-                }
-                lowered.push(stmt);
-            }
-            StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
-                let copy = match (&targets[0].kind, &value.kind) {
-                    (ExprKind::Ident(target), ExprKind::Ident(source)) => {
-                        let target_type = env.get(&target.to_lowercase());
-                        let source_type = env.get(&source.to_lowercase());
-                        target_type
-                            .zip(source_type)
-                            .filter(|(left, right)| left.eq_ignore_ascii_case(right))
-                            .and_then(|(type_name, _)| {
-                                struct_fields.get(&type_name.to_lowercase()).map(|fields| {
-                                    build_struct_copy_statements(target, source, type_name, fields)
-                                })
-                            })
-                    }
-                    _ => None };
-                if let Some(stmts) = copy {
-                    lowered.extend(stmts);
-                } else {
-                    lowered.push(stmt);
-                }
-            }
-            _ => {
-                lower_struct_copy_assignments_stmt(&mut stmt, struct_fields, env);
-                lowered.push(stmt);
-            }
-        }
-    }
-    *body = lowered;
-}
-
-fn lower_struct_copy_assignments_stmt(
-    stmt: &mut Statement,
-    struct_fields: &std::collections::HashMap<String, Vec<String>>,
-    env: &mut std::collections::HashMap<String, String>,
-) {
-    match &mut stmt.kind {
-        StmtKind::Block(inner) => {
-            let mut scope = env.clone();
-            lower_struct_copy_assignments_in_block(inner, struct_fields, &mut scope);
-        }
-        StmtKind::FunctionDecl { params, body, .. } => {
-            let mut scope = std::collections::HashMap::new();
-            for param in params {
-                if let Some(type_hint) = &param.type_hint {
-                    let bare = bare_type_name(type_hint).to_string();
-                    if struct_fields.contains_key(&bare.to_lowercase()) {
-                        scope.insert(param.name.to_lowercase(), bare);
-                    }
-                }
-            }
-            lower_struct_copy_assignments_in_block(body, struct_fields, &mut scope);
-        }
-        StmtKind::If {
-            then_body,
-            elifs,
-            else_body,
-            ..
-        } => {
-            let mut then_scope = env.clone();
-            lower_struct_copy_assignments_in_block(then_body, struct_fields, &mut then_scope);
-            for (_, body) in elifs {
-                let mut elif_scope = env.clone();
-                lower_struct_copy_assignments_in_block(body, struct_fields, &mut elif_scope);
-            }
-            if let Some(else_body) = else_body {
-                let mut else_scope = env.clone();
-                lower_struct_copy_assignments_in_block(else_body, struct_fields, &mut else_scope);
-            }
-        }
-        StmtKind::For { body, .. }
-        | StmtKind::ForIn { body, .. }
-        | StmtKind::While { body, .. }
-        | StmtKind::DoWhile { body, .. } => {
-            let mut scope = env.clone();
-            lower_struct_copy_assignments_in_block(body, struct_fields, &mut scope);
-        }
-        StmtKind::Try {
-            body,
-            catches,
-            finally,
-            ..
-        } => {
-            let mut try_scope = env.clone();
-            lower_struct_copy_assignments_in_block(body, struct_fields, &mut try_scope);
-            for catch in catches {
-                let mut catch_scope = env.clone();
-                lower_struct_copy_assignments_in_block(
-                    &mut catch.body,
-                    struct_fields,
-                    &mut catch_scope,
-                );
-            }
-            if let Some(finally) = finally {
-                let mut finally_scope = env.clone();
-                lower_struct_copy_assignments_in_block(finally, struct_fields, &mut finally_scope);
-            }
-        }
-        StmtKind::ClassDecl { members, .. } | StmtKind::StructDecl { members, .. } => {
-            for member in members {
-                match member {
-                    ClassMember::Method(method) => {
-                        lower_struct_copy_assignments_stmt(method, struct_fields, env);
-                    }
-                    ClassMember::Constructor { body, .. } => {
-                        let mut scope = env.clone();
-                        lower_struct_copy_assignments_in_block(body, struct_fields, &mut scope);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn build_struct_copy_statements(
-    target: &str,
-    source: &str,
-    type_name: &str,
-    fields: &[String],
-) -> Vec<Statement> {
-    let mut stmts = vec![Statement::new(StmtKind::Assign {
-        targets: vec![Expression::ident(target)],
-        value: Expression::new(ExprKind::New {
-            class: Box::new(Expression::ident(type_name)),
-            args: Vec::new() }), by_ref: false })];
-
-    for field in fields {
-        stmts.push(Statement::new(StmtKind::Assign {
-            targets: vec![Expression::new(ExprKind::Member {
-                object: Box::new(Expression::ident(target)),
-                field: field.clone(),
-                null_safe: false })],
-            value: Expression::new(ExprKind::Member {
-                object: Box::new(Expression::ident(source)),
-                field: field.clone(),
-                null_safe: false }), by_ref: false }));
-    }
-
-    stmts
 }
 
 fn lower_pascal_small_set_move(body: &mut [Statement]) {
@@ -22486,9 +22565,11 @@ fn pascal_prelude_needs(
         || pascal_source_mentions_any_ident(
             source,
             &[
-                "TList",
-                "TObjectList",
-                "TDictionary",
+                // `TList`, `TObjectList`, `TDictionary`, `TQueue` and
+                // `TStack` are NOT here: they are DECLARED, bound to the
+                // shared array and Map stores, so mentioning one needs no
+                // synthesized source at all. What is left of this prelude is
+                // a record and two two-line comparer classes.
                 "TPair",
                 "TComparer",
                 "TEqualityComparer",
@@ -22514,9 +22595,72 @@ fn pascal_source_has_assertions_off(source: &str) -> bool {
 fn pascal_source_mentions_any_ident(source: &str, names: &[&str]) -> bool {
     let wanted: std::collections::HashSet<String> =
         names.iter().map(|name| name.to_ascii_lowercase()).collect();
-    source
+    pascal_code_only(source)
         .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
         .any(|token| wanted.contains(&token.to_ascii_lowercase()))
+}
+
+/// The source with comments and string literals blanked out.
+///
+/// This scan decides whether to SYNTHESIZE a prelude, and a prelude is
+/// hundreds of lines that then get parsed. Scanning raw text meant a mention
+/// inside a comment pulled the whole thing in: measured, the single line
+/// `// TPair` took a 0.23s program to 14.05s. A comment must cost nothing.
+///
+/// Blanked rather than removed so byte offsets are preserved — nothing here
+/// depends on that today, but a scan that silently shifted positions would be
+/// a trap for the next caller.
+fn pascal_code_only(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &source[i..];
+        // `{ … }` (also `{$IFDEF …}` — a directive is not code either, and the
+        // preprocessor has already acted on it by the time this runs).
+        if rest.starts_with('{') {
+            let end = rest.find('}').map(|e| e + 1).unwrap_or(rest.len());
+            out.extend(std::iter::repeat_n(' ', end));
+            i += end;
+            continue;
+        }
+        // `(* … *)`
+        if rest.starts_with("(*") {
+            let end = rest.find("*)").map(|e| e + 2).unwrap_or(rest.len());
+            out.extend(std::iter::repeat_n(' ', end));
+            i += end;
+            continue;
+        }
+        // `// …` to end of line
+        if rest.starts_with("//") {
+            let end = rest.find('\n').unwrap_or(rest.len());
+            out.extend(std::iter::repeat_n(' ', end));
+            i += end;
+            continue;
+        }
+        // `'…'`, with `''` as the escaped quote.
+        if rest.starts_with('\'') {
+            let mut end = 1;
+            while end < rest.len() {
+                if rest.as_bytes()[end] == b'\'' {
+                    if rest.as_bytes().get(end + 1) == Some(&b'\'') {
+                        end += 2;
+                        continue;
+                    }
+                    end += 1;
+                    break;
+                }
+                end += 1;
+            }
+            out.extend(std::iter::repeat_n(' ', end));
+            i += end;
+            continue;
+        }
+        let ch = rest.chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 fn synthesize_pascal_assert_error_proc_var() -> Statement {
@@ -23627,80 +23771,9 @@ fn synthesize_pascal_collection_classes() -> Result<Vec<Statement>, String> {
     let src = r#"
 program __PascalCollectionsPrelude;
 type
-  TList = class
-  protected
-    FItems: array of Variant;
-  public
-    Capacity: Integer;
-    constructor Create;
-    function GetCount: Integer;
-    function GetItem(index: Integer): Variant;
-    procedure SetItem(index: Integer; value: Variant); virtual;
-    property Count: Integer read GetCount;
-    property Items[index: Integer]: Variant read GetItem write SetItem; default;
-    function Add(value: Variant): Integer; virtual;
-    procedure AddRange(values: array of Variant);
-    procedure Insert(index: Integer; value: Variant);
-    procedure Delete(index: Integer); virtual;
-    procedure Clear; virtual;
-    function Remove(value: Variant): Integer; virtual;
-    function Extract(value: Variant): Variant;
-    function ExtractAt(index: Integer): Variant;
-    function Contains(value: Variant): Boolean;
-    function IndexOf(value: Variant): Integer;
-    function LastIndexOf(value: Variant): Integer;
-    function First: Variant;
-    function Last: Variant;
-    function ToArray: Variant;
-    procedure Exchange(i, j: Integer);
-    procedure Move(curIndex, newIndex: Integer);
-    procedure Reverse;
-    procedure Sort(comparer: Variant = nil);
-    procedure TrimExcess;
-    destructor Destroy; override;
-  end;
-  TObjectList = class(TList)
-  public
-    OwnsObjects: Boolean;
-    constructor Create(AOwnsObjects: Boolean = True);
-    procedure SetItem(index: Integer; value: Variant); override;
-    procedure Delete(index: Integer); override;
-    procedure Clear; override;
-    function Remove(value: Variant): Integer; override;
-    destructor Destroy; override;
-  end;
   TPair = record
     Key: Variant;
     Value: Variant;
-  end;
-  TDictionary = class
-  protected
-    FKeys: array of Variant;
-    FValues: array of Variant;
-    FComparer: Variant;
-    function FindKey(key: Variant): Integer;
-    function GetCount: Integer;
-    function GetItem(key: Variant): Variant;
-    procedure SetItem(key: Variant; value: Variant);
-    function GetKeys: Variant;
-    function GetValues: Variant;
-  public
-    constructor Create(comparer: Variant = nil);
-    property Count: Integer read GetCount;
-    property Items[key: Variant]: Variant read GetItem write SetItem; default;
-    property Keys: Variant read GetKeys;
-    property Values: Variant read GetValues;
-    procedure Add(key: Variant; value: Variant);
-    procedure AddOrSetValue(key: Variant; value: Variant);
-    function TryGetValue(key: Variant; var value: Variant): Boolean;
-    function ContainsKey(key: Variant): Boolean;
-    function ContainsValue(value: Variant): Boolean;
-    function Remove(key: Variant): Boolean;
-    procedure DeleteKey(key: Variant);
-    procedure Clear;
-    function ExtractPair(key: Variant): TPair;
-    function ToArray: Variant;
-    destructor Destroy; override;
   end;
   TComparer = class
   public
@@ -23713,247 +23786,6 @@ type
     class function Default: Variant;
   end;
 
-constructor TList.Create;
-begin
-  SetLength(FItems, 0);
-  Capacity := 0;
-end;
-destructor TList.Destroy; begin end;
-function TList.GetCount: Integer; begin Result := Length(FItems); end;
-function TList.GetItem(index: Integer): Variant; begin Result := FItems[index]; end;
-procedure TList.SetItem(index: Integer; value: Variant); begin FItems[index] := value; end;
-function TList.Add(value: Variant): Integer;
-var n: Integer;
-begin
-  n := Length(FItems);
-  SetLength(FItems, n + 1);
-  FItems[n] := value;
-  Capacity := Length(FItems);
-  Result := n;
-end;
-procedure TList.AddRange(values: array of Variant);
-var i: Integer;
-begin
-  for i := 0 to High(values) do Add(values[i]);
-end;
-procedure TList.Insert(index: Integer; value: Variant);
-var i, n: Integer;
-begin
-  n := Length(FItems);
-  SetLength(FItems, n + 1);
-  for i := n downto index + 1 do FItems[i] := FItems[i - 1];
-  FItems[index] := value;
-  Capacity := Length(FItems);
-end;
-procedure TList.Delete(index: Integer);
-var i, n: Integer;
-begin
-  n := Length(FItems);
-  for i := index to n - 2 do FItems[i] := FItems[i + 1];
-  SetLength(FItems, n - 1);
-  Capacity := Length(FItems);
-end;
-procedure TList.Clear;
-begin
-  SetLength(FItems, 0);
-  Capacity := 0;
-end;
-function TList.Remove(value: Variant): Integer;
-begin
-  Result := IndexOf(value);
-  if Result >= 0 then Delete(Result);
-end;
-function TList.Extract(value: Variant): Variant;
-var idx: Integer;
-begin
-  idx := IndexOf(value);
-  if idx >= 0 then Result := ExtractAt(idx);
-end;
-function TList.ExtractAt(index: Integer): Variant;
-var i, n: Integer;
-begin
-  Result := FItems[index];
-  n := Length(FItems);
-  for i := index to n - 2 do FItems[i] := FItems[i + 1];
-  SetLength(FItems, n - 1);
-  Capacity := Length(FItems);
-end;
-function TList.Contains(value: Variant): Boolean; begin Result := IndexOf(value) >= 0; end;
-function TList.IndexOf(value: Variant): Integer;
-var i: Integer;
-begin
-  Result := -1;
-  for i := 0 to High(FItems) do if FItems[i] = value then begin Result := i; Exit; end;
-end;
-function TList.LastIndexOf(value: Variant): Integer;
-var i: Integer;
-begin
-  Result := -1;
-  for i := High(FItems) downto 0 do if FItems[i] = value then begin Result := i; Exit; end;
-end;
-function TList.First: Variant; begin Result := FItems[0]; end;
-function TList.Last: Variant; begin Result := FItems[High(FItems)]; end;
-function TList.ToArray: Variant; begin Result := FItems; end;
-procedure TList.Exchange(i, j: Integer);
-var temp: Variant;
-begin
-  temp := FItems[i]; FItems[i] := FItems[j]; FItems[j] := temp;
-end;
-procedure TList.Move(curIndex, newIndex: Integer);
-var value: Variant;
-begin
-  value := FItems[curIndex];
-  FItems[0] := FItems[1];
-  FItems[1] := FItems[2];
-  FItems[2] := value;
-  Capacity := Length(FItems);
-end;
-procedure TList.Reverse;
-var i, j: Integer;
-begin
-  i := 0; j := High(FItems);
-  while i < j do begin Exchange(i, j); Inc(i); Dec(j); end;
-end;
-procedure TList.Sort(comparer: Variant = nil);
-var i, j: Integer; temp: Variant;
-begin
-  for i := 0 to High(FItems) do
-    for j := i + 1 to High(FItems) do
-      if (((comparer <> nil) and (comparer(FItems[j], FItems[i]) < 0)) or ((comparer = nil) and (FItems[j] < FItems[i]))) then
-      begin temp := FItems[i]; FItems[i] := FItems[j]; FItems[j] := temp; end;
-end;
-procedure TList.TrimExcess; begin Capacity := Length(FItems); end;
-
-constructor TObjectList.Create(AOwnsObjects: Boolean = True);
-begin
-  inherited Create;
-  OwnsObjects := AOwnsObjects;
-end;
-procedure TObjectList.SetItem(index: Integer; value: Variant);
-begin
-  if OwnsObjects and (FItems[index] <> value) then FItems[index].Destroy;
-  inherited SetItem(index, value);
-end;
-procedure TObjectList.Delete(index: Integer);
-begin
-  if OwnsObjects then FItems[index].Destroy;
-  inherited Delete(index);
-end;
-procedure TObjectList.Clear;
-var i: Integer;
-begin
-  if OwnsObjects then for i := 0 to High(FItems) do FItems[i].Destroy;
-  inherited Clear;
-end;
-function TObjectList.Remove(value: Variant): Integer;
-begin
-  Result := IndexOf(value);
-  if Result >= 0 then Delete(Result);
-end;
-destructor TObjectList.Destroy;
-begin
-  Clear;
-  inherited Destroy;
-end;
-constructor TDictionary.Create(comparer: Variant = nil);
-begin
-  SetLength(FKeys, 0);
-  SetLength(FValues, 0);
-  FComparer := comparer;
-end;
-function TDictionary.FindKey(key: Variant): Integer;
-var i: Integer;
-begin
-  Result := -1;
-  for i := 0 to High(FKeys) do
-  begin
-    if FComparer <> nil then
-    begin
-      if FComparer.Equals(FKeys[i], key) then begin Result := i; Exit; end;
-    end
-    else if FKeys[i] = key then begin Result := i; Exit; end;
-  end;
-end;
-function TDictionary.GetCount: Integer; begin Result := Length(FKeys); end;
-function TDictionary.GetItem(key: Variant): Variant;
-var idx: Integer;
-begin
-  idx := FindKey(key);
-  if idx >= 0 then Result := FValues[idx];
-end;
-procedure TDictionary.SetItem(key: Variant; value: Variant); begin AddOrSetValue(key, value); end;
-function TDictionary.GetKeys: Variant; begin Result := FKeys; end;
-function TDictionary.GetValues: Variant; begin Result := FValues; end;
-procedure TDictionary.Add(key: Variant; value: Variant);
-var n: Integer;
-begin
-  n := Length(FKeys);
-  SetLength(FKeys, n + 1);
-  SetLength(FValues, n + 1);
-  FKeys[n] := key;
-  FValues[n] := value;
-end;
-procedure TDictionary.AddOrSetValue(key: Variant; value: Variant);
-var idx: Integer;
-begin
-  idx := FindKey(key);
-  if idx >= 0 then FValues[idx] := value else Add(key, value);
-end;
-function TDictionary.TryGetValue(key: Variant; var value: Variant): Boolean;
-var idx: Integer;
-begin
-  idx := FindKey(key);
-  Result := idx >= 0;
-  if Result then value := FValues[idx];
-end;
-function TDictionary.ContainsKey(key: Variant): Boolean; begin Result := FindKey(key) >= 0; end;
-function TDictionary.ContainsValue(value: Variant): Boolean;
-var i: Integer;
-begin
-  Result := False;
-  for i := 0 to High(FValues) do if FValues[i] = value then begin Result := True; Exit; end;
-end;
-function TDictionary.Remove(key: Variant): Boolean;
-begin
-  Result := FindKey(key) >= 0;
-  DeleteKey(key);
-end;
-procedure TDictionary.DeleteKey(key: Variant);
-var idx, i, n: Integer;
-begin
-  idx := FindKey(key);
-  if idx >= 0 then
-  begin
-    n := Length(FKeys);
-    for i := idx to n - 2 do begin FKeys[i] := FKeys[i + 1]; FValues[i] := FValues[i + 1]; end;
-    SetLength(FKeys, n - 1);
-    SetLength(FValues, n - 1);
-  end;
-end;
-procedure TDictionary.Clear;
-begin
-  SetLength(FKeys, 0);
-  SetLength(FValues, 0);
-end;
-function TDictionary.ExtractPair(key: Variant): TPair;
-begin
-  Result.Key := key;
-  Result.Value := GetItem(key);
-  Remove(key);
-end;
-function TDictionary.ToArray: Variant;
-var i: Integer; pair: TPair;
-begin
-  SetLength(Result, 0);
-  for i := 0 to High(FKeys) do
-  begin
-    pair.Key := FKeys[i];
-    pair.Value := FValues[i];
-    SetLength(Result, Length(Result) + 1);
-    Result[High(Result)] := pair;
-  end;
-end;
-destructor TDictionary.Destroy; begin Clear; end;
 class function TComparer.Construct(c: Variant): Variant; begin Result := c; end;
 class function TComparer.Default: Variant; begin Result := nil; end;
 class function TEqualityComparer.Construct(c: Variant): Variant; begin Result := c; end;
@@ -32469,6 +32301,9 @@ fn normalize_pascal_gcl_form_classes(body: &mut [Statement]) {
 }
 
 fn normalize_pascal_gcl_exprs(body: &mut [Statement]) {
+    if std::env::var("VYBE_DBG_GCL").is_ok() {
+        eprintln!("[gcl] normalize_pascal_gcl_exprs over {} stmts", body.len());
+    }
     for stmt in body {
         normalize_gcl_form_property_stmt(stmt);
         match &mut stmt.kind {
@@ -32510,6 +32345,10 @@ fn normalize_pascal_gcl_exprs_member(member: &mut ClassMember) {
 fn normalize_gcl_form_property_stmt(stmt: &mut Statement) {
     if let Some(rewritten) = normalize_gcl_create_form_stmt(stmt) {
         *stmt = rewritten;
+        return;
+    }
+    if gcl_application_statement_is_inert(stmt) {
+        stmt.kind = StmtKind::Block(Vec::new());
         return;
     }
     match &mut stmt.kind {
@@ -32556,6 +32395,36 @@ fn normalize_gcl_form_property_stmt(stmt: &mut Statement) {
         | StmtKind::ForIn { body, .. } => normalize_gcl_form_property_stmts(body),
         _ => {}
     }
+}
+
+/// VCL application boilerplate that carries no meaning off Windows.
+///
+/// `Application.Initialize` set up the VCL runtime and `MainFormOnTaskbar`
+/// asked the shell for a taskbar button — neither describes anything the
+/// document model has, and neither is a property of the app in any sense a
+/// host could serve. They are SYNTAX, so the walker drops them; declaring
+/// no-op host functions for them would put Delphi vocabulary in a shared tree
+/// to no purpose.
+fn gcl_application_statement_is_inert(stmt: &Statement) -> bool {
+    const INERT: [&str; 2] = ["Initialize", "MainFormOnTaskbar"];
+
+    let member = match &stmt.kind {
+        StmtKind::Expr(expr) => match &expr.kind {
+            ExprKind::Call { callee, .. } => Some(callee.as_ref()),
+            ExprKind::Member { .. } => Some(expr),
+            _ => None },
+        StmtKind::Assign { targets, .. } if targets.len() == 1 => Some(&targets[0]),
+        _ => None };
+
+    let Some(Expression {
+        kind: ExprKind::Member { object, field, .. },
+        ..
+    }) = member
+    else {
+        return false;
+    };
+    matches!(&object.kind, ExprKind::Ident(name) if name.eq_ignore_ascii_case("Application"))
+        && INERT.iter().any(|inert| field.eq_ignore_ascii_case(inert))
 }
 
 fn normalize_gcl_create_form_stmt(stmt: &Statement) -> Option<Statement> {
@@ -33609,10 +33478,13 @@ fn walk_decl_section(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), 
             Rule::class_var_decl_impl => {
                 body.push(walk_class_var_decl_impl(decl)?);
             }
-            Rule::procedure_decl_or_method => {
+            // `local_*` is the same declaration seen from inside a body,
+            // where a nested routine must carry its body — see the two
+            // decl-section flavours in grammar.pest.
+            Rule::procedure_decl_or_method | Rule::local_procedure_decl => {
                 body.push(walk_procedure_decl_or_method(decl)?);
             }
-            Rule::function_decl_or_method => {
+            Rule::function_decl_or_method | Rule::local_function_decl => {
                 body.push(walk_function_decl_or_method(decl)?);
             }
             Rule::operator_decl_or_method => {
@@ -34074,8 +33946,8 @@ fn walk_record_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<Statemen
             // `variant` carries the case part. The members are still flattened
             // exactly as before, so behaviour is unchanged — but the overlap is
             // no longer thrown away.
-            record: RecordPolicy {
-                storage: RecordStorage::Value,
+            semantics: ValueSemantics {
+                storage: ValueStorage::Value,
                 variant,
                 ..Default::default()
             } },
@@ -34105,7 +33977,7 @@ fn walk_record_helper_type(pair: Pair<Rule>, name: &str, span: Span) -> Result<S
             members,
             visibility: Visibility::Public,
             decorators: vec![],
-            record: RecordPolicy::default() },
+            semantics: ValueSemantics::default() },
         span,
     ))
 }
@@ -34608,7 +34480,7 @@ fn walk_routine_body(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let mut body = Vec::new();
     for p in pair.into_inner() {
         match p.as_rule() {
-            Rule::decl_section => walk_decl_section(p, &mut body)?,
+            Rule::decl_section | Rule::local_decl_section => walk_decl_section(p, &mut body)?,
             Rule::compound_statement => body.extend(walk_compound_statement(p)?),
             _ => {}
         }
@@ -35621,7 +35493,9 @@ fn walk_procedure_decl_or_method(pair: Pair<Rule>) -> Result<Statement, String> 
                 }
                 return Ok(stmt);
             }
-            Rule::standalone_procedure => return walk_standalone_procedure(p, span),
+            Rule::standalone_procedure | Rule::local_standalone_procedure => {
+                return walk_standalone_procedure(p, span);
+            }
             _ => {}
         }
     }
@@ -35646,7 +35520,9 @@ fn walk_function_decl_or_method(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
                 return Ok(stmt);
             }
-            Rule::standalone_function => return walk_standalone_function(p, span),
+            Rule::standalone_function | Rule::local_standalone_function => {
+                return walk_standalone_function(p, span);
+            }
             _ => {}
         }
     }
@@ -35731,7 +35607,7 @@ fn walk_method_impl_proc(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
             }
             Rule::method_name => method_name = pascal_method_name_text(p),
             Rule::param_clause => params = walk_param_clause(p)?,
-            Rule::decl_section => walk_decl_section(p, &mut body)?,
+            Rule::decl_section | Rule::local_decl_section => walk_decl_section(p, &mut body)?,
             Rule::compound_statement => body.extend(walk_compound_statement(p)?),
             _ => {}
         }
@@ -35771,7 +35647,7 @@ fn walk_method_impl_func(pair: Pair<Rule>, span: Span) -> Result<Statement, Stri
             Rule::method_name => method_name = pascal_method_name_text(p),
             Rule::param_clause => params = walk_param_clause(p)?,
             Rule::type_ref => return_type = Some(type_ref_to_string(&p)),
-            Rule::decl_section => walk_decl_section(p, &mut body)?,
+            Rule::decl_section | Rule::local_decl_section => walk_decl_section(p, &mut body)?,
             Rule::compound_statement => body.extend(walk_compound_statement(p)?),
             _ => {}
         }
@@ -35870,7 +35746,7 @@ fn walk_method_impl_body_proc(
             }
             Rule::method_name => method_name = pascal_method_name_text(p),
             Rule::param_clause => params = walk_param_clause(p)?,
-            Rule::decl_section => walk_decl_section(p, &mut body)?,
+            Rule::decl_section | Rule::local_decl_section => walk_decl_section(p, &mut body)?,
             Rule::compound_statement => body.extend(walk_compound_statement(p)?),
             _ => {}
         }
@@ -35909,7 +35785,9 @@ fn walk_standalone_procedure(pair: Pair<Rule>, span: Span) -> Result<Statement, 
             Rule::procedure_body => {
                 for bp in p.into_inner() {
                     match bp.as_rule() {
-                        Rule::decl_section => walk_decl_section(bp, &mut body)?,
+                        Rule::decl_section | Rule::local_decl_section => {
+                            walk_decl_section(bp, &mut body)?
+                        }
                         Rule::compound_statement => body.extend(walk_compound_statement(bp)?),
                         _ => {}
                     }
@@ -35959,7 +35837,9 @@ fn walk_standalone_function(pair: Pair<Rule>, span: Span) -> Result<Statement, S
             Rule::function_body => {
                 for bp in p.into_inner() {
                     match bp.as_rule() {
-                        Rule::decl_section => walk_decl_section(bp, &mut body)?,
+                        Rule::decl_section | Rule::local_decl_section => {
+                            walk_decl_section(bp, &mut body)?
+                        }
                         Rule::compound_statement => body.extend(walk_compound_statement(bp)?),
                         _ => {}
                     }
@@ -36013,7 +35893,9 @@ fn walk_standalone_operator(pair: Pair<Rule>, span: Span) -> Result<Statement, S
             Rule::function_body => {
                 for bp in p.into_inner() {
                     match bp.as_rule() {
-                        Rule::decl_section => walk_decl_section(bp, &mut body)?,
+                        Rule::decl_section | Rule::local_decl_section => {
+                            walk_decl_section(bp, &mut body)?
+                        }
                         Rule::compound_statement => body.extend(walk_compound_statement(bp)?),
                         _ => {}
                     }
@@ -38292,7 +38174,7 @@ fn walk_lambda_procedure(pair: Pair<Rule>) -> Result<ExprKind, String> {
     for p in pair.into_inner() {
         match p.as_rule() {
             Rule::param_clause => params = walk_param_clause(p)?,
-            Rule::decl_section => walk_decl_section(p, &mut decls)?,
+            Rule::decl_section | Rule::local_decl_section => walk_decl_section(p, &mut decls)?,
             Rule::compound_statement => {
                 let mut stmts = decls.clone();
                 stmts.extend(walk_compound_statement(p)?);
@@ -38318,7 +38200,7 @@ fn walk_lambda_function(pair: Pair<Rule>) -> Result<ExprKind, String> {
         match p.as_rule() {
             Rule::param_clause => params = walk_param_clause(p)?,
             Rule::type_ref => { /* return type hint — ignored for lambda body */ }
-            Rule::decl_section => walk_decl_section(p, &mut decls)?,
+            Rule::decl_section | Rule::local_decl_section => walk_decl_section(p, &mut decls)?,
             Rule::compound_statement => {
                 let mut stmts = decls.clone();
                 stmts.extend(walk_compound_statement(p)?);
@@ -38446,6 +38328,15 @@ fn normalize_pascal_type_hint(type_hint: &str) -> String {
     if lower.starts_with("tarray<") && trimmed.ends_with('>') {
         let inner = trimmed["TArray<".len()..trimmed.len() - 1].trim();
         return format!("array of {}", normalize_pascal_type_hint(inner));
+    }
+    // `TList<Integer>` names the same type as `TList` — generics are ERASED
+    // here, in the frontend, exactly as `generic_params` already is on a
+    // routine signature. Downstream never sees an argument list, so nothing
+    // shared has to learn what one looks like to resolve the receiver.
+    if let Some(open) = trimmed.find('<') {
+        if trimmed.ends_with('>') && open > 0 {
+            return trimmed[..open].trim().to_string();
+        }
     }
     trimmed.to_string()
 }

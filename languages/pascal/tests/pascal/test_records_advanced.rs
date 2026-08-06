@@ -171,6 +171,19 @@ fn record_equal_fields_independent() {
     );
 }
 
+/// A record field that is itself a record must copy too — `b := a` duplicates
+/// the whole tree, not just the outer fields. The flat case above passed for a
+/// long time while this one silently aliased the inner record.
+#[test]
+fn nested_record_copy_is_independent() {
+    assert_eq!(
+        run_pascal(
+            r#"program T; type TIn=record V:Integer; end; type TOut=record I:TIn; N:Integer; end; var a,b:TOut; begin a.I.V:=1; a.N:=10; b:=a; b.I.V:=99; b.N:=77; WriteLn(a.I.V); WriteLn(a.N); end."#
+        ),
+        &["1", "10"]
+    );
+}
+
 #[test]
 fn nested_record_in_case_variant() {
     assert_eq!(

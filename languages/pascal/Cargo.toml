@@ -22,6 +22,8 @@ vybe_platform_plib = { workspace = true }
 vybe_compiler = { workspace = true }
 vybe_runtime = { workspace = true }
 vybe_ast = { workspace = true }
+# Tests observe the DOM the guest actually built — a control IS an element now.
+vybe_platform_web = { workspace = true, features = ["gui"] }
 
 [[test]]
 name = "pascal"

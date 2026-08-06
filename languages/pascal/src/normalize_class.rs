@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
-    Argument, CaseCondition, ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers,
+    ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
     PropertySetter, Span, Statement, StmtKind };
 
 const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";
@@ -109,6 +109,69 @@ fn self_member_expr(name: &str) -> Expression {
         null_safe: false })
 }
 
+/// The message field every exception object carries. `errors.rs` writes it
+/// under this name for a directly-raised `Exception.Create(msg)`, and Pascal
+/// reads it back case-insensitively as `E.Message`.
+const EXCEPTION_MESSAGE_FIELD: &str = "Message";
+
+/// `Exception`'s instance members and their Pascal types, in the source
+/// spelling — Pascal is case-insensitive, so the case here is documentation.
+const EXCEPTION_INHERITED_MEMBERS: &[(&str, &str)] =
+    &[(EXCEPTION_MESSAGE_FIELD, "String"), ("HelpContext", "Integer")];
+
+/// True when the declared base is one of the `SysUtils` exception spellings
+/// pascal registers as TREE TYPES (see `exceptions.rs`).
+///
+/// Those have no compiled class behind them — their `Create` is a
+/// `common:pascal.exc_*` emit reached through the namespace tree — so a
+/// derived class has no parent constructor to inherit or to call. Delphi says
+/// `EMy = class(Exception)` still constructs with `EMy.Create(msg)` and
+/// answers `E.Message`; stating that here is what makes the declaration mean
+/// what the source says.
+///
+/// Only the DIRECT base is tested, and that is sufficient: a user class
+/// deriving from a user exception class gets its `Create` from this same pass,
+/// so by the time the grandchild is normalized its parent IS a compiled class
+/// and the ordinary base-call path applies.
+fn parent_is_builtin_exception(parents: &[String]) -> bool {
+    parents.first().is_some_and(|parent| {
+        let parent = parent.trim();
+        crate::exceptions::EXCEPTION_TYPES
+            .iter()
+            .any(|(spelling, _)| spelling.eq_ignore_ascii_case(parent))
+    })
+}
+
+/// `Self.<field> := <value>` — what an `inherited Create*` call means once the
+/// base has no constructor to run.
+fn assign_self_field(field: &str, value: Expression) -> Statement {
+    Statement::new(StmtKind::Assign {
+        targets: vec![self_member_expr(field)],
+        value,
+        by_ref: false })
+}
+
+/// The body `Exception`'s constructor WOULD have run, inlined.
+///
+/// `Create(msg)` and `CreateHelp(msg, helpCtx)` are the same constructor with
+/// one more argument — Delphi's `Exception` declares both and its whole body is
+/// storing them, in the order `EXCEPTION_INHERITED_MEMBERS` lists. So the base
+/// call is mapped POSITIONALLY onto those members rather than by name: taking
+/// only the first argument is what left `CreateHelp`'s help context on the
+/// floor and printed `ContextualHelpError-0` where fpc prints `-1001`.
+///
+/// Extra arguments beyond the known members cannot occur — the corpus has only
+/// the one- and two-argument spellings — and would be as silently dropped here
+/// as they are at the emitter, so nothing is invented for a shape that does not
+/// exist.
+fn inlined_base_ctor_body(base_args: &[Expression]) -> Vec<Statement> {
+    base_args
+        .iter()
+        .zip(EXCEPTION_INHERITED_MEMBERS)
+        .map(|(value, (field, _))| assign_self_field(field, value.clone()))
+        .collect()
+}
+
 fn rewrite_implicit_self_members_in_methods(
     methods: &mut [NormalMethod],
     member_names: &HashSet<String>,
@@ -156,240 +219,10 @@ fn rewrite_implicit_self_members_in_constructors(
     }
 }
 
-fn static_access_expr(class_name: &str, member_name: &str) -> Expression {
-    Expression::new(ExprKind::StaticAccess {
-        class: Box::new(Expression::ident(class_name)),
-        member: Box::new(Expression::ident(member_name)) })
-}
-
-fn rewrite_static_value_members_in_methods(
-    methods: &mut [NormalMethod],
-    class_name: &str,
-    member_names: &HashSet<String>,
-) {
-    for method in methods {
-        let mut shadowed: HashSet<String> = method
-            .params
-            .iter()
-            .map(|param| param.name.to_ascii_lowercase())
-            .collect();
-        rewrite_static_value_members_in_body(
-            &mut method.body,
-            class_name,
-            member_names,
-            &mut shadowed,
-        );
-    }
-}
-
-fn rewrite_static_value_members_in_constructors(
-    constructors: &mut [NormalConstructor],
-    class_name: &str,
-    member_names: &HashSet<String>,
-) {
-    for constructor in constructors {
-        let mut shadowed: HashSet<String> = constructor
-            .params
-            .iter()
-            .map(|param| param.name.to_ascii_lowercase())
-            .collect();
-        rewrite_static_value_members_in_body(
-            &mut constructor.body,
-            class_name,
-            member_names,
-            &mut shadowed,
-        );
-    }
-}
-
-fn rewrite_static_value_members_in_body(
-    body: &mut [Statement],
-    class_name: &str,
-    member_names: &HashSet<String>,
-    shadowed: &mut HashSet<String>,
-) {
-    for stmt in body {
-        rewrite_static_value_members_stmt(stmt, class_name, member_names, shadowed);
-    }
-}
-
-fn rewrite_static_value_members_stmt(
-    stmt: &mut Statement,
-    class_name: &str,
-    member_names: &HashSet<String>,
-    shadowed: &mut HashSet<String>,
-) {
-    match &mut stmt.kind {
-        StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
-            rewrite_static_value_members_expr(expr, class_name, member_names, shadowed);
-        }
-        StmtKind::VarDecl { declarations, .. } => {
-            for decl in declarations.iter_mut() {
-                if let Some(init) = &mut decl.init {
-                    rewrite_static_value_members_expr(init, class_name, member_names, shadowed);
-                }
-            }
-            for decl in declarations {
-                if let vybe_ast::BindingPattern::Ident(name) = &decl.pattern {
-                    shadowed.insert(name.to_ascii_lowercase());
-                }
-            }
-        }
-        StmtKind::Assign { targets, value , ..} => {
-            for target in targets {
-                rewrite_static_value_members_expr(target, class_name, member_names, shadowed);
-            }
-            rewrite_static_value_members_expr(value, class_name, member_names, shadowed);
-        }
-        StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_static_value_members_expr(target, class_name, member_names, shadowed);
-            rewrite_static_value_members_expr(value, class_name, member_names, shadowed);
-        }
-        StmtKind::Block(body) => {
-            let mut scoped = shadowed.clone();
-            rewrite_static_value_members_in_body(body, class_name, member_names, &mut scoped);
-        }
-        StmtKind::If {
-            cond,
-            then_body,
-            elifs,
-            else_body } => {
-            rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
-            rewrite_static_value_members_in_body(
-                then_body,
-                class_name,
-                member_names,
-                &mut shadowed.clone(),
-            );
-            for (cond, body) in elifs {
-                rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
-                rewrite_static_value_members_in_body(
-                    body,
-                    class_name,
-                    member_names,
-                    &mut shadowed.clone(),
-                );
-            }
-            if let Some(body) = else_body {
-                rewrite_static_value_members_in_body(
-                    body,
-                    class_name,
-                    member_names,
-                    &mut shadowed.clone(),
-                );
-            }
-        }
-        StmtKind::While { cond, body, .. } => {
-            rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
-            rewrite_static_value_members_in_body(
-                body,
-                class_name,
-                member_names,
-                &mut shadowed.clone(),
-            );
-        }
-        StmtKind::For {
-            init,
-            cond,
-            update,
-            body } => {
-            let mut scoped = shadowed.clone();
-            if let Some(init) = init {
-                rewrite_static_value_members_stmt(init, class_name, member_names, &mut scoped);
-            }
-            if let Some(cond) = cond {
-                rewrite_static_value_members_expr(cond, class_name, member_names, &mut scoped);
-            }
-            if let Some(update) = update {
-                rewrite_static_value_members_expr(update, class_name, member_names, &mut scoped);
-            }
-            rewrite_static_value_members_in_body(body, class_name, member_names, &mut scoped);
-        }
-        _ => {}
-    }
-}
-
-fn rewrite_static_value_members_expr(
-    expr: &mut Expression,
-    class_name: &str,
-    member_names: &HashSet<String>,
-    shadowed: &HashSet<String>,
-) {
-    match &mut expr.kind {
-        ExprKind::Ident(name)
-            if member_names.contains(&name.to_ascii_lowercase())
-                && !shadowed.contains(&name.to_ascii_lowercase()) =>
-        {
-            *expr = static_access_expr(class_name, name);
-        }
-        ExprKind::Call { callee, args, .. } => {
-            if let ExprKind::Ident(name) = &callee.kind {
-                if member_names.contains(&name.to_ascii_lowercase())
-                    && !shadowed.contains(&name.to_ascii_lowercase())
-                {
-                    *callee = Box::new(static_access_expr(class_name, name));
-                }
-            } else {
-                rewrite_static_value_members_expr(callee, class_name, member_names, shadowed);
-            }
-            for arg in args {
-                rewrite_static_value_members_expr(
-                    &mut arg.value,
-                    class_name,
-                    member_names,
-                    shadowed,
-                );
-            }
-        }
-        ExprKind::Member { object, .. } => {
-            rewrite_static_value_members_expr(object, class_name, member_names, shadowed);
-        }
-        ExprKind::Index { object, index, .. } => {
-            rewrite_static_value_members_expr(object, class_name, member_names, shadowed);
-            rewrite_static_value_members_expr(index, class_name, member_names, shadowed);
-        }
-        ExprKind::Binary { left, right, .. } => {
-            rewrite_static_value_members_expr(left, class_name, member_names, shadowed);
-            rewrite_static_value_members_expr(right, class_name, member_names, shadowed);
-        }
-        ExprKind::Unary { expr, .. } => {
-            rewrite_static_value_members_expr(expr, class_name, member_names, shadowed);
-        }
-        ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_static_value_members_expr(cond, class_name, member_names, shadowed);
-            rewrite_static_value_members_expr(then, class_name, member_names, shadowed);
-            rewrite_static_value_members_expr(else_, class_name, member_names, shadowed);
-        }
-        ExprKind::Assign { target, value } => {
-            rewrite_static_value_members_expr(target, class_name, member_names, shadowed);
-            rewrite_static_value_members_expr(value, class_name, member_names, shadowed);
-        }
-        ExprKind::New { args, .. } => {
-            for arg in args {
-                rewrite_static_value_members_expr(
-                    &mut arg.value,
-                    class_name,
-                    member_names,
-                    shadowed,
-                );
-            }
-        }
-        ExprKind::Array(elements) => {
-            for element in elements {
-                if let Some(key) = &mut element.key {
-                    rewrite_static_value_members_expr(key, class_name, member_names, shadowed);
-                }
-                rewrite_static_value_members_expr(
-                    &mut element.value,
-                    class_name,
-                    member_names,
-                    shadowed,
-                );
-            }
-        }
-        _ => {}
-    }
-}
+// The static-member rewrite that lived here (6 functions, 219 lines) is
+// DELETED. `bindings.rs::is_class_static_field` does the same job from the
+// `static_fields` this normalizer already registers, and walks the enclosing
+// class chain as well, which this never did.
 
 fn normalize_destructor_inherited_calls(body: &mut [Statement], has_parent: bool) {
     for stmt in body {
@@ -730,583 +563,27 @@ fn rewrite_implicit_self_members_expr(
     }
 }
 
-fn gcl_accessor_property_names(parents: &[String]) -> HashSet<String> {
-    let classes = vybe_platform_plib::emitter::gcl::gcl_classes();
-    let mut names = HashSet::new();
-    let mut pending: Vec<String> = parents.to_vec();
-    while let Some(class_name) = pending.pop() {
-        let Some(class) = classes
-            .iter()
-            .find(|class| class.name.eq_ignore_ascii_case(&class_name))
-        else {
-            continue;
-        };
-        for property in class.properties {
-            let lower = property.to_ascii_lowercase();
-            if !matches!(lower.as_str(), "controls" | "items" | "components") {
-                names.insert(lower);
-            }
-        }
-        if let Some(parent) = class.parent {
-            pending.push(parent.to_string());
-        }
-    }
-    names
-}
+// The GCL PROPERTY-ACCESSOR rewrite that lived here (13 functions, 579
+// lines) is DELETED. It read `plib::emitter::gcl::gcl_classes()`, walked the
+// ancestor chain itself, and rewrote `lbl.Caption := x` into a
+// `lbl["__set_caption"](v)` accessor call.
+//
+// `plib::emitter::tree_register` already registers every GCL class as a tree
+// type whose instance properties are two-target members WITH THE ANCESTRY
+// FLATTENED AT REGISTRATION — "lets the shared resolver answer
+// `lbl.Caption := x` without the compiler knowing Pascal exists". So the
+// common resolver answered it and this answered it differently, which is
+// exactly the split the surviving comment below records: top level reached
+// the DOM, a constructor body reached a null accessor ref.
+//
+// It had already been switched off behind a `VYBE_GCL_ACCESSORS` env var
+// nobody sets. Off-by-default dead code is still a second answer waiting to
+// be switched back on.
 
-fn gcl_accessor_call(
-    object: Expression,
-    prefix: &str,
-    field: &str,
-    args: Vec<Argument>,
-) -> Expression {
-    let key = format!("{}_{}", prefix, field.to_ascii_lowercase());
-    // `this` is NOT passed explicitly: plib's bind_ref stamps
-    // `__vybe_method_receiver` on every accessor ref, and the call path
-    // prepends that receiver. An explicit object arg here doubled the
-    // receiver — setters got (this, this, value) and the value fell off
-    // the arity-2 chunk.
-    let explicit_args = args;
-    Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Index {
-            object: Box::new(object),
-            index: Box::new(Expression::new(ExprKind::Lit(Literal::Str(key)))),
-            null_safe: false })),
-        args: explicit_args,
-        optional: false })
-}
-
-fn rewrite_gcl_property_accessors_in_methods(
-    methods: &mut [NormalMethod],
-    property_names: &HashSet<String>,
-) {
-    for method in methods {
-        rewrite_gcl_property_accessors_in_body(&mut method.body, property_names);
-    }
-}
-
-fn rewrite_gcl_property_accessors_in_constructors(
-    constructors: &mut [NormalConstructor],
-    property_names: &HashSet<String>,
-) {
-    for constructor in constructors {
-        rewrite_gcl_property_accessors_in_body(&mut constructor.body, property_names);
-    }
-}
-
-fn rewrite_gcl_property_accessors_in_body(
-    body: &mut [Statement],
-    property_names: &HashSet<String>,
-) {
-    for stmt in body {
-        rewrite_gcl_property_accessors_stmt(stmt, property_names);
-    }
-}
-
-fn rewrite_gcl_property_accessors_stmt(stmt: &mut Statement, property_names: &HashSet<String>) {
-    let setter_rewrite = match &mut stmt.kind {
-        StmtKind::Assign { targets, value , ..} if targets.len() == 1 => {
-            rewrite_gcl_property_accessors_expr(value, property_names);
-            rewrite_gcl_property_setter_target(&mut targets[0], value.clone(), property_names)
-        }
-        StmtKind::Expr(expr) => {
-            if let ExprKind::Assign { target, value } = &mut expr.kind {
-                rewrite_gcl_property_accessors_expr(value, property_names);
-                rewrite_gcl_property_setter_target(target, (**value).clone(), property_names)
-            } else {
-                rewrite_gcl_property_accessors_expr(expr, property_names);
-                None
-            }
-        }
-        _ => None };
-    if let Some(rewritten) = setter_rewrite {
-        *stmt = Statement::new(StmtKind::Expr(rewritten));
-        return;
-    }
-
-    match &mut stmt.kind {
-        StmtKind::Assign { targets, value , ..} => {
-            for target in targets {
-                rewrite_gcl_property_accessors_target_object(target, property_names);
-            }
-            rewrite_gcl_property_accessors_expr(value, property_names);
-        }
-        StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_gcl_property_accessors_target_object(target, property_names);
-            rewrite_gcl_property_accessors_expr(value, property_names);
-        }
-        StmtKind::Block(stmts) => rewrite_gcl_property_accessors_in_body(stmts, property_names),
-        StmtKind::VarDecl { declarations, .. } => {
-            for decl in declarations {
-                if let Some(init) = &mut decl.init {
-                    rewrite_gcl_property_accessors_expr(init, property_names);
-                }
-                if let Some(bounds) = &mut decl.array_bounds {
-                    for bound in bounds {
-                        rewrite_gcl_property_accessors_expr(bound, property_names);
-                    }
-                }
-            }
-        }
-        StmtKind::If {
-            cond,
-            then_body,
-            elifs,
-            else_body } => {
-            rewrite_gcl_property_accessors_expr(cond, property_names);
-            rewrite_gcl_property_accessors_in_body(then_body, property_names);
-            for (cond, body) in elifs {
-                rewrite_gcl_property_accessors_expr(cond, property_names);
-                rewrite_gcl_property_accessors_in_body(body, property_names);
-            }
-            if let Some(body) = else_body {
-                rewrite_gcl_property_accessors_in_body(body, property_names);
-            }
-        }
-        StmtKind::While {
-            cond,
-            body,
-            else_body,
-            ..
-        } => {
-            rewrite_gcl_property_accessors_expr(cond, property_names);
-            rewrite_gcl_property_accessors_in_body(body, property_names);
-            if let Some(body) = else_body {
-                rewrite_gcl_property_accessors_in_body(body, property_names);
-            }
-        }
-        StmtKind::For {
-            init,
-            cond,
-            update,
-            body,
-            ..
-        } => {
-            if let Some(init) = init {
-                rewrite_gcl_property_accessors_stmt(init, property_names);
-            }
-            if let Some(cond) = cond {
-                rewrite_gcl_property_accessors_expr(cond, property_names);
-            }
-            if let Some(update) = update {
-                rewrite_gcl_property_accessors_expr(update, property_names);
-            }
-            rewrite_gcl_property_accessors_in_body(body, property_names);
-        }
-        StmtKind::ForIn {
-            iter,
-            body,
-            else_body,
-            ..
-        } => {
-            rewrite_gcl_property_accessors_expr(iter, property_names);
-            rewrite_gcl_property_accessors_in_body(body, property_names);
-            if let Some(body) = else_body {
-                rewrite_gcl_property_accessors_in_body(body, property_names);
-            }
-        }
-        StmtKind::DoWhile { body, cond, .. } => {
-            rewrite_gcl_property_accessors_in_body(body, property_names);
-            rewrite_gcl_property_accessors_expr(cond, property_names);
-        }
-        StmtKind::Switch {
-            expr,
-            cases,
-            default } => {
-            rewrite_gcl_property_accessors_expr(expr, property_names);
-            for case in cases {
-                for cond in &mut case.conditions {
-                    match cond {
-                        CaseCondition::Value(expr) => {
-                            rewrite_gcl_property_accessors_expr(expr, property_names);
-                        }
-                        CaseCondition::Range { from, to } => {
-                            rewrite_gcl_property_accessors_expr(from, property_names);
-                            rewrite_gcl_property_accessors_expr(to, property_names);
-                        }
-                        CaseCondition::Comparison { expr, .. } => {
-                            rewrite_gcl_property_accessors_expr(expr, property_names);
-                        }
-                    }
-                }
-                rewrite_gcl_property_accessors_in_body(&mut case.body, property_names);
-            }
-            if let Some(body) = default {
-                rewrite_gcl_property_accessors_in_body(body, property_names);
-            }
-        }
-        StmtKind::Return(Some(expr)) => {
-            rewrite_gcl_property_accessors_expr(expr, property_names);
-        }
-        StmtKind::Throw { expr, cause } => {
-            if let Some(expr) = expr {
-                rewrite_gcl_property_accessors_expr(expr, property_names);
-            }
-            if let Some(cause) = cause {
-                rewrite_gcl_property_accessors_expr(cause, property_names);
-            }
-        }
-        StmtKind::Try {
-            body,
-            catches,
-            else_body,
-            finally } => {
-            rewrite_gcl_property_accessors_in_body(body, property_names);
-            for catch in catches {
-                if let Some(when_clause) = &mut catch.when_clause {
-                    rewrite_gcl_property_accessors_expr(when_clause, property_names);
-                }
-                rewrite_gcl_property_accessors_in_body(&mut catch.body, property_names);
-            }
-            if let Some(body) = else_body {
-                rewrite_gcl_property_accessors_in_body(body, property_names);
-            }
-            if let Some(body) = finally {
-                rewrite_gcl_property_accessors_in_body(body, property_names);
-            }
-        }
-        StmtKind::Using { resource, body, .. } => {
-            rewrite_gcl_property_accessors_expr(resource, property_names);
-            rewrite_gcl_property_accessors_in_body(body, property_names);
-        }
-        StmtKind::With { items, body, .. } => {
-            for item in &mut *items {
-                rewrite_gcl_property_accessors_expr(&mut item.expr, property_names);
-            }
-            if let Some(item) = items.first_mut() {
-                let receiver = item
-                    .var
-                    .get_or_insert_with(|| "__gcl_with_target".to_string())
-                    .clone();
-                rewrite_gcl_with_receiver_body(body, &receiver, property_names);
-                rewrite_gcl_property_accessors_in_body(body, property_names);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn gcl_with_receiver_member(receiver: &str, name: &str) -> Expression {
-    Expression::new(ExprKind::Member {
-        object: Box::new(Expression::ident(receiver)),
-        field: name.to_string(),
-        null_safe: false })
-}
-
-fn rewrite_gcl_with_receiver_body(
-    body: &mut [Statement],
-    receiver: &str,
-    property_names: &HashSet<String>,
-) {
-    for stmt in body {
-        rewrite_gcl_with_receiver_stmt(stmt, receiver, property_names);
-    }
-}
-
-fn rewrite_gcl_with_receiver_stmt(
-    stmt: &mut Statement,
-    receiver: &str,
-    property_names: &HashSet<String>,
-) {
-    match &mut stmt.kind {
-        StmtKind::Expr(expr) => {
-            rewrite_gcl_with_receiver_expr(expr, receiver, property_names, false)
-        }
-        StmtKind::Assign { targets, value , ..} => {
-            for target in targets {
-                rewrite_gcl_with_receiver_expr(target, receiver, property_names, true);
-            }
-            rewrite_gcl_with_receiver_expr(value, receiver, property_names, false);
-        }
-        StmtKind::CompoundAssign { target, value, .. } => {
-            rewrite_gcl_with_receiver_expr(target, receiver, property_names, true);
-            rewrite_gcl_with_receiver_expr(value, receiver, property_names, false);
-        }
-        StmtKind::Block(stmts) => rewrite_gcl_with_receiver_body(stmts, receiver, property_names),
-        StmtKind::VarDecl { declarations, .. } => {
-            for decl in declarations {
-                if let Some(init) = &mut decl.init {
-                    rewrite_gcl_with_receiver_expr(init, receiver, property_names, false);
-                }
-                if let Some(bounds) = &mut decl.array_bounds {
-                    for bound in bounds {
-                        rewrite_gcl_with_receiver_expr(bound, receiver, property_names, false);
-                    }
-                }
-            }
-        }
-        StmtKind::If {
-            cond,
-            then_body,
-            elifs,
-            else_body } => {
-            rewrite_gcl_with_receiver_expr(cond, receiver, property_names, false);
-            rewrite_gcl_with_receiver_body(then_body, receiver, property_names);
-            for (cond, body) in elifs {
-                rewrite_gcl_with_receiver_expr(cond, receiver, property_names, false);
-                rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            }
-            if let Some(body) = else_body {
-                rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            }
-        }
-        StmtKind::While {
-            cond,
-            body,
-            else_body } => {
-            rewrite_gcl_with_receiver_expr(cond, receiver, property_names, false);
-            rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            if let Some(body) = else_body {
-                rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            }
-        }
-        StmtKind::For {
-            init,
-            cond,
-            update,
-            body } => {
-            if let Some(init) = init {
-                rewrite_gcl_with_receiver_stmt(init, receiver, property_names);
-            }
-            if let Some(cond) = cond {
-                rewrite_gcl_with_receiver_expr(cond, receiver, property_names, false);
-            }
-            if let Some(update) = update {
-                rewrite_gcl_with_receiver_expr(update, receiver, property_names, false);
-            }
-            rewrite_gcl_with_receiver_body(body, receiver, property_names);
-        }
-        StmtKind::ForIn {
-            iter,
-            body,
-            else_body,
-            ..
-        } => {
-            rewrite_gcl_with_receiver_expr(iter, receiver, property_names, false);
-            rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            if let Some(body) = else_body {
-                rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            }
-        }
-        StmtKind::DoWhile { body, cond, .. } => {
-            rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            rewrite_gcl_with_receiver_expr(cond, receiver, property_names, false);
-        }
-        StmtKind::Switch {
-            expr,
-            cases,
-            default } => {
-            rewrite_gcl_with_receiver_expr(expr, receiver, property_names, false);
-            for case in cases {
-                for cond in &mut case.conditions {
-                    match cond {
-                        CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => {
-                            rewrite_gcl_with_receiver_expr(expr, receiver, property_names, false);
-                        }
-                        CaseCondition::Range { from, to } => {
-                            rewrite_gcl_with_receiver_expr(from, receiver, property_names, false);
-                            rewrite_gcl_with_receiver_expr(to, receiver, property_names, false);
-                        }
-                    }
-                }
-                rewrite_gcl_with_receiver_body(&mut case.body, receiver, property_names);
-            }
-            if let Some(body) = default {
-                rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            }
-        }
-        StmtKind::Return(Some(expr)) => {
-            rewrite_gcl_with_receiver_expr(expr, receiver, property_names, false);
-        }
-        StmtKind::Throw { expr, cause } => {
-            if let Some(expr) = expr {
-                rewrite_gcl_with_receiver_expr(expr, receiver, property_names, false);
-            }
-            if let Some(cause) = cause {
-                rewrite_gcl_with_receiver_expr(cause, receiver, property_names, false);
-            }
-        }
-        StmtKind::Try {
-            body,
-            catches,
-            else_body,
-            finally } => {
-            rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            for catch in catches {
-                if let Some(when_clause) = &mut catch.when_clause {
-                    rewrite_gcl_with_receiver_expr(when_clause, receiver, property_names, false);
-                }
-                rewrite_gcl_with_receiver_body(&mut catch.body, receiver, property_names);
-            }
-            if let Some(body) = else_body {
-                rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            }
-            if let Some(body) = finally {
-                rewrite_gcl_with_receiver_body(body, receiver, property_names);
-            }
-        }
-        StmtKind::Using { resource, body, .. } => {
-            rewrite_gcl_with_receiver_expr(resource, receiver, property_names, false);
-            rewrite_gcl_with_receiver_body(body, receiver, property_names);
-        }
-        StmtKind::With { items, .. } => {
-            for item in items {
-                rewrite_gcl_with_receiver_expr(&mut item.expr, receiver, property_names, false);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn rewrite_gcl_with_receiver_expr(
-    expr: &mut Expression,
-    receiver: &str,
-    property_names: &HashSet<String>,
-    assignment_target: bool,
-) {
-    match &mut expr.kind {
-        ExprKind::Ident(name) if property_names.contains(&name.to_ascii_lowercase()) => {
-            *expr = gcl_with_receiver_member(receiver, name);
-        }
-        ExprKind::Call { callee, args, .. } => {
-            if !matches!(&callee.kind, ExprKind::Ident(_)) {
-                rewrite_gcl_with_receiver_expr(callee, receiver, property_names, false);
-            }
-            for arg in args {
-                rewrite_gcl_with_receiver_expr(&mut arg.value, receiver, property_names, false);
-            }
-        }
-        ExprKind::Member { object, .. } => {
-            rewrite_gcl_with_receiver_expr(object, receiver, property_names, false);
-        }
-        ExprKind::Index { object, index, .. } => {
-            rewrite_gcl_with_receiver_expr(object, receiver, property_names, assignment_target);
-            rewrite_gcl_with_receiver_expr(index, receiver, property_names, false);
-        }
-        ExprKind::Binary { left, right, .. } => {
-            rewrite_gcl_with_receiver_expr(left, receiver, property_names, false);
-            rewrite_gcl_with_receiver_expr(right, receiver, property_names, false);
-        }
-        ExprKind::Unary { expr, .. } => {
-            rewrite_gcl_with_receiver_expr(expr, receiver, property_names, false);
-        }
-        ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_gcl_with_receiver_expr(cond, receiver, property_names, false);
-            rewrite_gcl_with_receiver_expr(then, receiver, property_names, false);
-            rewrite_gcl_with_receiver_expr(else_, receiver, property_names, false);
-        }
-        ExprKind::Assign { target, value } => {
-            rewrite_gcl_with_receiver_expr(target, receiver, property_names, true);
-            rewrite_gcl_with_receiver_expr(value, receiver, property_names, false);
-        }
-        ExprKind::New { args, .. } => {
-            for arg in args {
-                rewrite_gcl_with_receiver_expr(&mut arg.value, receiver, property_names, false);
-            }
-        }
-        ExprKind::Array(elements) => {
-            for element in elements {
-                if let Some(key) = &mut element.key {
-                    rewrite_gcl_with_receiver_expr(key, receiver, property_names, false);
-                }
-                rewrite_gcl_with_receiver_expr(&mut element.value, receiver, property_names, false);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn rewrite_gcl_property_setter_target(
-    target: &mut Expression,
-    value: Expression,
-    property_names: &HashSet<String>,
-) -> Option<Expression> {
-    let ExprKind::Member { object, field, .. } = &mut target.kind else {
-        rewrite_gcl_property_accessors_target_object(target, property_names);
-        return None;
-    };
-    rewrite_gcl_property_accessors_expr(object, property_names);
-    if !property_names.contains(&field.to_ascii_lowercase()) {
-        return None;
-    }
-    Some(gcl_accessor_call(
-        (**object).clone(),
-        "__set",
-        field,
-        vec![Argument::positional(value)],
-    ))
-}
-
-fn rewrite_gcl_property_accessors_target_object(
-    target: &mut Expression,
-    property_names: &HashSet<String>,
-) {
-    match &mut target.kind {
-        ExprKind::Member { object, .. } => {
-            rewrite_gcl_property_accessors_expr(object, property_names)
-        }
-        ExprKind::Index { object, index, .. } => {
-            rewrite_gcl_property_accessors_expr(object, property_names);
-            rewrite_gcl_property_accessors_expr(index, property_names);
-        }
-        _ => rewrite_gcl_property_accessors_expr(target, property_names) }
-}
-
-fn rewrite_gcl_property_accessors_expr(expr: &mut Expression, property_names: &HashSet<String>) {
-    match &mut expr.kind {
-        ExprKind::Member { object, field, .. } => {
-            rewrite_gcl_property_accessors_expr(object, property_names);
-            if property_names.contains(&field.to_ascii_lowercase()) {
-                let object_expr = (**object).clone();
-                let field_name = field.clone();
-                *expr = gcl_accessor_call(object_expr, "__get", &field_name, Vec::new());
-            }
-        }
-        ExprKind::Call { callee, args, .. } => {
-            rewrite_gcl_property_accessors_expr(callee, property_names);
-            for arg in args {
-                rewrite_gcl_property_accessors_expr(&mut arg.value, property_names);
-            }
-        }
-        ExprKind::Index { object, index, .. } => {
-            rewrite_gcl_property_accessors_expr(object, property_names);
-            rewrite_gcl_property_accessors_expr(index, property_names);
-        }
-        ExprKind::Binary { left, right, .. } => {
-            rewrite_gcl_property_accessors_expr(left, property_names);
-            rewrite_gcl_property_accessors_expr(right, property_names);
-        }
-        ExprKind::Unary { expr, .. } => rewrite_gcl_property_accessors_expr(expr, property_names),
-        ExprKind::Ternary { cond, then, else_ } => {
-            rewrite_gcl_property_accessors_expr(cond, property_names);
-            rewrite_gcl_property_accessors_expr(then, property_names);
-            rewrite_gcl_property_accessors_expr(else_, property_names);
-        }
-        ExprKind::Assign { target, value } => {
-            rewrite_gcl_property_accessors_expr(value, property_names);
-            if let Some(rewritten) =
-                rewrite_gcl_property_setter_target(target, (**value).clone(), property_names)
-            {
-                *expr = rewritten;
-            }
-        }
-        ExprKind::New { args, .. } => {
-            for arg in args {
-                rewrite_gcl_property_accessors_expr(&mut arg.value, property_names);
-            }
-        }
-        ExprKind::Array(elements) => {
-            for element in elements {
-                if let Some(key) = &mut element.key {
-                    rewrite_gcl_property_accessors_expr(key, property_names);
-                }
-                rewrite_gcl_property_accessors_expr(&mut element.value, property_names);
-            }
-        }
-        _ => {}
-    }
-}
-
+/// The synthesized method that calls a `TForm`'s `FormCreate` handler.
+/// Pushed into `NormalClass.auto_init_methods`, which `classes.rs` invokes
+/// after construction — the shared mechanism for "run this on every new
+/// instance", so the form hook needs no Pascal-specific call site.
 const GCL_FORM_CREATE_AUTOINIT: &str = "__gcl_form_create_autoinit";
 
 fn call_self_form_create_body() -> Vec<Statement> {
@@ -1454,7 +731,25 @@ pub fn normalize_class(
                 _ => None },
             _ => None })
         .collect();
-    let mut implicit_self_member_names = instance_field_names.clone();
+    // Pascal declares `implicit_self_fields: true`, and `classes.rs` ALREADY
+    // answers that declaration everywhere it can:
+    //
+    // | member       | who resolves the bare name |
+    // |--------------|----------------------------|
+    // | field        | `bindings.rs:115`/`:581` → `is_class_field` → `visible_instance_field_storage_name_for_class` (walks the parent chain) |
+    // | property     | same — `classes.rs:1873` registers properties in `field_storage_names` |
+    // | method CALL  | `calls.rs:9256` — "Inside a class: bare method call → Me.method(args)" |
+    //
+    // All three were running underneath this pass, which had already
+    // rewritten the same names first. What is left is the ONE case the shared
+    // resolver cannot see: a property inherited from a plib GCL ancestor
+    // (`TForm`, `TButton`). Those live in the namespace TREE, not in
+    // `pending_classes`, so nothing registers them as fields.
+    //
+    // `extend_gcl_member_names` below is now the only thing that fills this
+    // set. When the GCL classes become real classes, the whole pass goes.
+    let mut implicit_self_member_names: HashSet<String> = HashSet::new();
+    let _ = &instance_field_names;
 
     for member in members {
         match member {
@@ -1473,7 +768,8 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility.clone()),
-                    readonly: m.is_readonly };
+                    readonly: m.is_readonly,
+                    value_type: None };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -1553,12 +849,12 @@ pub fn normalize_class(
                         canonical_name: canonical,
                         source_name: src_name.clone() });
                 }
-                // An instance method's name is what a bare identifier inside
-                // another method can resolve to as `Self.<name>` — a Pascal
-                // rule, so it is stated here rather than in the router.
-                if !m.is_static {
-                    implicit_self_member_names.insert(src_name.to_ascii_lowercase());
-                }
+                // An instance method's name used to be added here so a bare
+                // identifier could resolve to `Self.<name>`. `calls.rs:9256`
+                // already does exactly that from the `implicit_self_fields`
+                // declaration — "Inside a class: bare method call →
+                // Me.method(args)" — so stating it twice only meant this pass
+                // got there first.
                 out.push_method(m.is_static, method);
             }
             ClassMember::Constructor {
@@ -1574,6 +870,26 @@ pub fn normalize_class(
                 let suppress_base_call = body.first().is_some_and(is_pascal_no_base_ctor_marker);
                 if suppress_base_call {
                     body.remove(0);
+                }
+                // `inherited Create(msg)` / `inherited CreateHelp(msg, ctx)`
+                // where the base is a tree-registered exception spelling. There
+                // is no parent constructor to run — VB reaches one because its
+                // `Exception` IS a compiled class, so `parent_ctor_is_bound`
+                // holds and `MyBase.New` calls it — so run what that
+                // constructor's body would have been and drop the call, rather
+                // than leave the arguments to be discarded silently at the
+                // emitter.
+                if parent_is_builtin_exception(parents) {
+                    if let Some(args) = base_args.as_ref() {
+                        body.splice(0..0, inlined_base_ctor_body(args));
+                    }
+                    out.push_constructor(NormalConstructor {
+                        span: span.clone(),
+                        params: params.clone(),
+                        body,
+                        base_call: BaseCall::None,
+                        named_name: None });
+                    continue;
                 }
                 out.push_constructor(NormalConstructor {
                     span: span.clone(),
@@ -1622,7 +938,13 @@ pub fn normalize_class(
                 modifiers: m,
                 ..
             } => {
-                implicit_self_member_names.insert(pname.to_ascii_lowercase());
+                // A property's name is NOT added to the implicit-self set.
+                // `classes.rs:1873` registers every property in
+                // `field_storage_names`, and
+                // `visible_instance_field_storage_name_for_class` walks the
+                // parent chain, so `bindings.rs` already resolves a bare
+                // property read to `Self.<prop>` from the
+                // `implicit_self_fields: true` this class declares.
                 let (canonical, _) = crate::protocol::canonical_method(pname);
                 let getter_method = getter.as_ref().map(|body| {
                     build_normal_method(
@@ -1676,30 +998,41 @@ pub fn normalize_class(
     }
 
     extend_gcl_member_names(&mut implicit_self_member_names, parents);
-    if !static_value_member_names.is_empty() {
-        rewrite_static_value_members_in_methods(
-            &mut out.instance_methods,
-            name,
-            &static_value_member_names,
-        );
-        rewrite_static_value_members_in_methods(
-            &mut out.static_methods,
-            name,
-            &static_value_member_names,
-        );
-        rewrite_static_value_members_in_constructors(
-            &mut out.constructors,
-            name,
-            &static_value_member_names,
-        );
-        if let Some(destructor) = out.destructor.as_mut() {
-            rewrite_static_value_members_in_methods(
-                std::slice::from_mut(destructor),
-                name,
-                &static_value_member_names,
+    // `Exception`'s own instance members, DECLARED on the first user class
+    // that derives from it. They are inherited from a TREE type, so nothing
+    // registers them as fields and a bare `Message` inside a method resolved
+    // to an undefined global — `e.Message` read from outside was correct and
+    // `Result := 'x' + Message` inside was `NaN`, which is the tell.
+    //
+    // Declaring them beats listing them in `implicit_self_member_names`
+    // because that is what reaches DESCENDANTS: the shared resolver already
+    // walks the parent chain for declared fields, so `EB = class(EA)` needs
+    // no second mechanism and no cross-class table this pass cannot see.
+    if parent_is_builtin_exception(parents) {
+        for (field_name, type_hint) in EXCEPTION_INHERITED_MEMBERS {
+            out.push_field(
+                false,
+                NormalField {
+                    span: span.clone(),
+                    name: field_name.to_string(),
+                    type_hint: Some(type_hint.to_string()),
+                    init: None,
+                    array_bounds: None,
+                    access: Access::Public,
+                    readonly: false,
+                    value_type: None },
             );
         }
     }
+    // The static-member rewrite is GONE — `classes.rs` owns it.
+    // `bindings.rs::is_class_static_field` is documented as "used by
+    // `emit_var_get` / `emit_var_set` to rewrite bare references to
+    // `ClassName.name` so static state lives on the class struct", and it
+    // walks BOTH the ancestor chain and the enclosing-class chain, which is
+    // more than the pass here did. `static_fields` is registered from
+    // `NormalClass` at `classes.rs:2002`, so the declaration this normalizer
+    // already makes is the whole input the shared resolver needs.
+    let _ = &static_value_member_names;
     rewrite_implicit_self_members_in_methods(
         &mut out.instance_methods,
         &implicit_self_member_names,
@@ -1708,17 +1041,13 @@ pub fn normalize_class(
         &mut out.constructors,
         &implicit_self_member_names,
     );
-    let gcl_accessor_property_names = gcl_accessor_property_names(parents);
-    if !gcl_accessor_property_names.is_empty() {
-        rewrite_gcl_property_accessors_in_methods(
-            &mut out.instance_methods,
-            &gcl_accessor_property_names,
-        );
-        rewrite_gcl_property_accessors_in_constructors(
-            &mut out.constructors,
-            &gcl_accessor_property_names,
-        );
-    }
+    // A control property inside a method or constructor is the SAME statement
+    // it is at top level — `lbl.Caption := 'x'` — and the shared GUI lowering
+    // in `primitives/gui.rs` now answers it there. Rewriting it here into a
+    // `lbl["__set_caption"](v)` call to a plib GCL accessor chunk made the two
+    // positions take different paths: top level reached the DOM, a
+    // constructor body reached a null accessor ref. Opt out of the rewrite so
+    // both speak the one vocabulary.
 
     out.instance_methods = lower_pascal_method_overloads(out.instance_methods, &span);
     out.static_methods = lower_pascal_method_overloads(out.static_methods, &span);
@@ -1762,6 +1091,36 @@ pub fn normalize_class(
         out.instance_methods.push(auto_init);
         out.auto_init_methods
             .push(GCL_FORM_CREATE_AUTOINIT.to_string());
+    }
+
+    // `EMy = class(Exception);` declares no constructor and still constructs
+    // with `EMy.Create(msg)` — Delphi inherits `Create` from the base. The
+    // base here is a tree type with no compiled constructor to inherit, so
+    // the inherited one is stated: one parameter, stored as the message.
+    //
+    // `CreateFmt(fmt, [args])` needs no second constructor — the walker
+    // already folds it to `Create(Format(fmt, args…))` before this pass runs
+    // (`pascal_constructor_args`), so both spellings arrive here as the same
+    // one-argument call.
+    if parent_is_builtin_exception(parents) && out.constructors.is_empty() {
+        out.push_constructor(NormalConstructor {
+            span: span.clone(),
+            params: vec![Param {
+                name: "AMessage".to_string(),
+                type_hint: None,
+                default: None,
+                pass_by: PassBy::Value,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: false,
+                is_nullable: false }],
+            body: vec![assign_self_field(
+                EXCEPTION_MESSAGE_FIELD,
+                Expression::ident("AMessage"),
+            )],
+            base_call: BaseCall::None,
+            named_name: None });
+        out.resync_constructor_view();
     }
 
     // Pascal's implicit root: every class descends from TObject, so `is
