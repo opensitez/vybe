@@ -30,7 +30,17 @@ uses_common_resolver = true
 # Java + on strings concatenates (auto-coercion via toString())
 dynamic_add        = true
 materialize_bool_results = true
-has_ecma_bigint    = true
+# BigInt needs no flag: the `__java_bigint` builtin below reaches
+# `ecma:bigint`, and the shared compiler derives the capability from it.
+
+[builtin_types]
+# Java's `char` VALUE holds a character (a one-char string in the value
+# model — it renders as `Z` and concatenates as `"A" + 'Z'`), same as
+# Pascal's declaration. Without this row the inferred `char` hint falls
+# through to the platform width table's `char -> U8` entry and a char
+# local gets a modular BYTE coercion — `char c = 'Z'` stored NaN. The
+# walker owns the JLS §5.6.2 numeric contexts (`__java_char_ord`).
+string = ["char"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # BUILTINS — bare global function calls (after walker normalisation)
@@ -161,35 +171,37 @@ __java_zone_hash_code = { emit = "common:jvm.java.zone_hash_code", min_args = 1,
 __java_string_value_of   = { emit = "common:java.string_value_of", min_args = 1, max_args = 1 }
 __java_string_concat     = { emit = "common:java.string_concat",   min_args = 2, max_args = 2 }
 __j_char_code_at         = { emit = "host:wasm:js-string:charCodeAt", min_args = 2, max_args = 2 }
-__j_from_char_code       = { emit = "host:ecma:string:fromCharCode", min_args = 1, max_args = 1 }
+# NOT plain fromCharCode: a lone surrogate stays a NUMBER (the string host
+# renders it empty) — same model as the walker's `'\uD800'` literal rule.
+__j_from_char_code       = { emit = "common:java.from_char_code", min_args = 1, max_args = 1 }
 __j_from_code_point      = { emit = "host:ecma:string:fromCodePoint", min_args = 1, max_args = 1 }
 __java_char_ord          = { emit = "common:java.char_ord", min_args = 1, max_args = 1 }
 __java_to_char_array     = { emit = "common:java.to_char_array",   min_args = 1, max_args = 1 }
 __java_trunc_cast        = { emit = "common:java.trunc_cast",      min_args = 1, max_args = 1 }
 __java_bigint            = { emit = "host:ecma:bigint:BigInt",     min_args = 1, max_args = 1 }
-__java_bigint_to_string  = { emit = "common:java.bigint_to_string", min_args = 1, max_args = 1 }
-__java_bigint_add        = { emit = "common:java.bigint_add",      min_args = 2, max_args = 2 }
-__java_bigint_subtract   = { emit = "common:java.bigint_sub",      min_args = 2, max_args = 2 }
-__java_bigint_multiply   = { emit = "common:java.bigint_mul",      min_args = 2, max_args = 2 }
-__java_bigint_mod        = { emit = "common:java.bigint_rem",      min_args = 2, max_args = 2 }
-__java_bigint_pow        = { emit = "common:java.bigint_pow",      min_args = 2, max_args = 2 }
-__java_bigint_and        = { emit = "common:java.bigint_and",      min_args = 2, max_args = 2 }
-__java_bigint_or         = { emit = "common:java.bigint_or",       min_args = 2, max_args = 2 }
-__java_bigint_xor        = { emit = "common:java.bigint_xor",      min_args = 2, max_args = 2 }
-__java_bigint_shift_left = { emit = "common:java.bigint_shl",      min_args = 2, max_args = 2 }
-__java_bigint_shift_right = { emit = "common:java.bigint_shr",     min_args = 2, max_args = 2 }
-__java_bigint_negate     = { emit = "common:java.bigint_neg",      min_args = 1, max_args = 1 }
-__java_bigint_not        = { emit = "common:java.bigint_not",      min_args = 1, max_args = 1 }
-__java_bigint_abs        = { emit = "common:java.bigint_abs",      min_args = 1, max_args = 1 }
-__java_bigint_compare_to = { emit = "common:java.bigint_compare_to", min_args = 2, max_args = 2 }
-__java_bigint_signum     = { emit = "common:java.bigint_signum",   min_args = 1, max_args = 1 }
-__java_bigint_max        = { emit = "common:java.bigint_max",      min_args = 2, max_args = 2 }
-__java_bigint_min        = { emit = "common:java.bigint_min",      min_args = 2, max_args = 2 }
-__java_bigint_bit_length = { emit = "common:java.bigint_bit_length", min_args = 1, max_args = 1 }
-__java_bigint_test_bit   = { emit = "common:java.bigint_test_bit", min_args = 2, max_args = 2 }
-__java_bigint_gcd        = { emit = "common:java.bigint_gcd",      min_args = 2, max_args = 2 }
-__java_bigint_is_probable_prime = { emit = "common:java.bigint_is_probable_prime", min_args = 2, max_args = 2 }
-__java_bigint_next_probable_prime = { emit = "common:java.bigint_next_probable_prime", min_args = 1, max_args = 1 }
+__java_bigint_to_string  = { emit = "common:jvm.java.bigint_to_string", min_args = 1, max_args = 1 }
+__java_bigint_add        = { emit = "common:jvm.java.bigint_add",      min_args = 2, max_args = 2 }
+__java_bigint_subtract   = { emit = "common:jvm.java.bigint_sub",      min_args = 2, max_args = 2 }
+__java_bigint_multiply   = { emit = "common:jvm.java.bigint_mul",      min_args = 2, max_args = 2 }
+__java_bigint_mod        = { emit = "common:jvm.java.bigint_rem",      min_args = 2, max_args = 2 }
+__java_bigint_pow        = { emit = "common:jvm.java.bigint_pow",      min_args = 2, max_args = 2 }
+__java_bigint_and        = { emit = "common:jvm.java.bigint_and",      min_args = 2, max_args = 2 }
+__java_bigint_or         = { emit = "common:jvm.java.bigint_or",       min_args = 2, max_args = 2 }
+__java_bigint_xor        = { emit = "common:jvm.java.bigint_xor",      min_args = 2, max_args = 2 }
+__java_bigint_shift_left = { emit = "common:jvm.java.bigint_shl",      min_args = 2, max_args = 2 }
+__java_bigint_shift_right = { emit = "common:jvm.java.bigint_shr",     min_args = 2, max_args = 2 }
+__java_bigint_negate     = { emit = "common:jvm.java.bigint_neg",      min_args = 1, max_args = 1 }
+__java_bigint_not        = { emit = "common:jvm.java.bigint_not",      min_args = 1, max_args = 1 }
+__java_bigint_abs        = { emit = "common:jvm.java.bigint_abs",      min_args = 1, max_args = 1 }
+__java_bigint_compare_to = { emit = "common:jvm.java.bigint_compare_to", min_args = 2, max_args = 2 }
+__java_bigint_signum     = { emit = "common:jvm.java.bigint_signum",   min_args = 1, max_args = 1 }
+__java_bigint_max        = { emit = "common:jvm.java.bigint_max",      min_args = 2, max_args = 2 }
+__java_bigint_min        = { emit = "common:jvm.java.bigint_min",      min_args = 2, max_args = 2 }
+__java_bigint_bit_length = { emit = "common:jvm.java.bigint_bit_length", min_args = 1, max_args = 1 }
+__java_bigint_test_bit   = { emit = "common:jvm.java.bigint_test_bit", min_args = 2, max_args = 2 }
+__java_bigint_gcd        = { emit = "common:jvm.java.bigint_gcd",      min_args = 2, max_args = 2 }
+__java_bigint_is_probable_prime = { emit = "common:jvm.java.bigint_is_probable_prime", min_args = 2, max_args = 2 }
+__java_bigint_next_probable_prime = { emit = "common:jvm.java.bigint_next_probable_prime", min_args = 1, max_args = 1 }
 __java_set_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 2 }
 __java_set_remove = { emit = "common:jvm.java.list_remove_value", min_args = 2, max_args = 2 }
 __java_queue_add = { emit = "common:jvm.java.add", min_args = 2, max_args = 2 }
@@ -818,7 +830,6 @@ path = "jvm.java.io"
 to_string = "common:jvm.java.to_string"
 
 [namespaces]
-use_dotnet = false
 
 # Namespace-tree roots this language resolves platform types against, and mounts
 # ambiently so an unqualified type name resolves to its `Type` node. Java's own

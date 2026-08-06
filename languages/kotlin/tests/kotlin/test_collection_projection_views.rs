@@ -115,7 +115,10 @@ fn test_distinct_and_union_projection() {
         }
     "#,
     );
-    assert_eq!(out, &["1,2,3", "1,2,2,3,4"]);
+    // Real Kotlin agrees: `union` returns a SET — "a set containing all
+    // distinct elements from both collections" — so the duplicate 2 cannot
+    // survive; kotlinc prints [1, 2, 3, 4].
+    assert_eq!(out, &["1,2,3", "1,2,3,4"]);
 }
 
 #[test]

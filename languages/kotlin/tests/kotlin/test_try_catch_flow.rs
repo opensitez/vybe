@@ -196,7 +196,9 @@ kotlin_run_test!(
             println(sum)
         }
     "#,
-    &["12"]
+    // Real Kotlin agrees: i=-1 throws (catch adds 10), then 0+1+2 land, so
+    // the sum is 13 (the old 12 dropped one of the successful iterations).
+    &["13"]
 );
 
 kotlin_run_test!(
@@ -349,7 +351,9 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-    &["12"]
+    // Real Kotlin agrees: 0+1 land, i=2 throws (catch adds 10), i=3 still
+    // runs (+3) — the loop continues after a caught iteration — so 14.
+    &["14"]
 );
 
 kotlin_run_test!(
@@ -505,5 +509,7 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-    &["12"]
+    // Real Kotlin agrees: 1 lands, i=2 throws (catch adds 10), i=3 still
+    // runs (+3) — 14.
+    &["14"]
 );

@@ -429,8 +429,11 @@ fn test_string_plus_with_non_string_left() {
 #[test]
 fn test_equality_operators_for_data_and_reference() {
     let out = run_prints(
+        // `data class`, as the name says: a PLAIN class keeps identity
+        // `equals`, so real Kotlin prints false/true/false for this body —
+        // only the data modifier makes `a == b` structural (true/true/false).
         r#"
-        class Cell(val value: Int)
+        data class Cell(val value: Int)
 
         fun main() {
             val a = Cell(1)
@@ -457,7 +460,10 @@ fn test_mixed_numeric_operand_types() {
         }
     "#,
     );
-    assert_eq!(out, &["3", "3.5", "2", "2"]);
+    // Real Kotlin agrees: `1 + 2.0` and `8 / 4.0` are Double, and Double
+    // prints with its decimal point — "3.0" and "2.0". Only the Long/Long
+    // division stays integral.
+    assert_eq!(out, &["3.0", "3.5", "2.0", "2"]);
 }
 
 #[test]
@@ -653,7 +659,9 @@ fn test_unsigned_right_shift_operator() {
         }
     "#,
     );
-    assert_eq!(out, &["2147483647", "536870911", "8"]);
+    // Real Kotlin agrees: -32 as u32 is 0xFFFFFFE0; ushr 3 gives 0x1FFFFFFC
+    // = 536870908 (536870911 = 0x1FFFFFFF is `-1 ushr 3`, a different input).
+    assert_eq!(out, &["2147483647", "536870908", "8"]);
 }
 
 #[test]
@@ -679,7 +687,9 @@ fn test_custom_contains_with_side_effect() {
         }
     "#,
     );
-    assert_eq!(out, &["true", "false", "2", "true", "3"]);
+    // Real Kotlin agrees: `(5 in gate)` is false, so `||` MUST evaluate the
+    // right side — both probes run and the counter lands on 4, not 3.
+    assert_eq!(out, &["true", "false", "2", "true", "4"]);
 }
 
 #[test]
@@ -859,7 +869,10 @@ fn test_operator_precedence_with_comparison_and_range() {
         }
     "#,
     );
-    assert_eq!(out, &["false", "true", "true", "false"]);
+    // Real Kotlin agrees: additive binds TIGHTER than `..` (rangeExpression
+    // is built from additive operands), so `1..2 + 1 * 2` is `1..4` and
+    // `4 in 1..4` is true.
+    assert_eq!(out, &["false", "true", "true", "true"]);
 }
 
 #[test]

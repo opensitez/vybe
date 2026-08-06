@@ -136,7 +136,10 @@ fn test_running_reduce_sequence() {
         }
     "#,
     );
-    assert_eq!(out, &["2,6,24", "err"]);
+    // Real Kotlin agrees: `runningReduce` on an empty collection returns an
+    // EMPTY LIST (only `reduce` throws), so the catch never fires and the
+    // second println emits the empty join.
+    assert_eq!(out, &["2,6,24", ""]);
 }
 
 #[test]

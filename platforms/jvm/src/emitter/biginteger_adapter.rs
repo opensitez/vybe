@@ -1,4 +1,10 @@
-//! Java `BigInteger` adapters backed by the existing ECMA BigInt runtime.
+//! `java.math.BigInteger` — backed by the ECMA BigInt runtime.
+//!
+//! Lives in the JVM PLATFORM so the namespace tree can bind the type's
+//! constructor and methods for every JVM-family language (Java and Kotlin
+//! both resolve `java.math.BigInteger` through the tree). Everything here
+//! composes `ecma:bigint` host fns; nothing is language-specific.
+
 
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
@@ -6,6 +12,19 @@ use vybe_compiler::primitives::instructions::host;
 
 pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:bigint", "toString", 1, line);
+}
+
+
+/// `new java.math.BigInteger(s)` / `(s, radix)`.
+///
+/// The 1-arg form IS the ecma constructor — exact at any width. The radix
+/// form parses through `parseInt`, which is exact to 2^53; a wider non-decimal
+/// literal is not representable on this path yet.
+pub fn emit_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
+    if argc >= 2 {
+        host::emit(&mut chunks[current], "ecma:number", "parseInt", 2, line);
+    }
+    host::emit(&mut chunks[current], "ecma:bigint", "BigInt", 1, line);
 }
 
 pub fn emit_binary(chunks: &mut [Chunk], current: usize, op: &'static str, line: u32) {

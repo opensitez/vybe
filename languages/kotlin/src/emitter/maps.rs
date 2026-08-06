@@ -10,7 +10,7 @@
 //! `ecma:array.isArray`, because one Kotlin spelling covers both.
 
 use std::sync::Arc;
-use vybe_compiler::primitives::{collections as common_collections, dict, loops, ops, strings};
+use vybe_compiler::primitives::{collections as common_collections, dict, loops, ops};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_runtime::Chunk;
 use vybe_runtime::Value;
@@ -693,12 +693,14 @@ pub fn emit_dict_delete_full(chunks: &mut Vec<Chunk>, current: usize, _argc: u8,
 pub fn emit_remove_any(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
     if argc >= 3 {
         // map.remove(k, v): only when current value equals v. Map keys are
-        // stored stringified — normalize the lookup key to match.
+        // stored stringified — normalize the lookup key with KOTLIN's
+        // tostring, the renderer that stored them (structural for data
+        // classes, where the shared coercion says `[object Box]`).
         let v = chunks[current].alloc_scratch(1);
         let k = chunks[current].alloc_scratch(1);
         let m = chunks[current].alloc_scratch(1);
         set(chunks, current, v, line);
-        strings::emit_to_string(&mut chunks[current], line);
+        crate::emitter::tostring::emit_to_string(chunks, current, line);
         set(chunks, current, k, line);
         set(chunks, current, m, line);
         get(chunks, current, m, line);
@@ -745,13 +747,14 @@ pub fn emit_remove_any(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     ops::emit_i32_to_bool(&mut chunks[current], line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
-    // Dict-backed receiver. Keys are stored stringified — normalize. A SET
-    // answers a Boolean (was the element there?); a MAP answers the previous
-    // value or null.
+    // Dict-backed receiver. Keys are stored stringified — normalize with
+    // KOTLIN's tostring, the same renderer `kotlin_key_expr` stored them
+    // with: a data-class element's key is its structural `Box(v=1)`, which
+    // the shared `String()` coercion would miss (`[object Box]`).
     let prev = chunks[current].alloc_scratch(1);
     let had = chunks[current].alloc_scratch(1);
     get(chunks, current, x, line);
-    strings::emit_to_string(&mut chunks[current], line);
+    crate::emitter::tostring::emit_to_string(chunks, current, line);
     set(chunks, current, x, line);
     get(chunks, current, recv, line);
     get(chunks, current, x, line);

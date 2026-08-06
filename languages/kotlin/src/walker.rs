@@ -100,6 +100,10 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
     static KOTLIN_SIMPLE_FUNCTIONS: std::cell::RefCell<std::collections::HashMap<String, (Vec<String>, Vec<Statement>)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// `(class, property) -> mangled slot` for properties that SHADOW an
+    /// ancestor's — Kotlin keeps both backing fields, ours collided on one.
+    static KOTLIN_SHADOWED_PROPS: std::cell::RefCell<std::collections::HashMap<(String, String), String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     static KOTLIN_SEQUENCE_SOURCES: std::cell::RefCell<std::collections::HashMap<String, Expression>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static KOTLIN_STATIC_VALUES: std::cell::RefCell<std::collections::HashMap<String, Expression>> =
@@ -287,6 +291,14 @@ fn collect_user_member_names(root: &Pair<Rule>) {
         owner: Option<&str>,
     ) {
         let rule = pair.as_rule();
+        // An enum ENTRY's body holds per-constant overrides (`ADD { override
+        // fun apply … }`) — attached to the one instance at static init, not
+        // class members. Registering them made `apply` look like THREE
+        // declarations, so the overload resolver `$sig`-mangled the class
+        // method and every call site while the attach wrote the plain name.
+        if rule == Rule::enum_entry {
+            return;
+        }
         // The class this subtree belongs to, so its members can be recorded
         // against it by name.
         let owner_here = if matches!(rule, Rule::class_decl | Rule::interface_decl) {
@@ -723,6 +735,7 @@ pub fn parse(source: &str) -> Result<Module, String> {
     }
     kotlin_lower_elvis_returns(&mut body);
     kotlin_unlift_try_inits(&mut body);
+    kotlin_mangle_shadowed_properties(&mut body);
     {
         // Seed with builtin FREE-call spellings the emitter intercepts by
         // name: a local `val toString = { … }` must shadow the builtin (its
@@ -776,7 +789,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".to_string(),
         language: Lang::Kotlin,
         body,
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 fn collect_kotlin_simple_functions(stmts: &[Statement]) {
@@ -874,7 +888,22 @@ fn kotlin_rename_shadowed_decls(
             StmtKind::FunctionDecl { name, params, body, .. } => {
                 bound.insert(name.clone());
                 let mut inner = bound.clone();
-                for p in params.iter() {
+                for p in params.iter_mut() {
+                    // A PARAMETER shadowing a builtin free-call spelling
+                    // (`check: (Int) -> Boolean`) must rename, or every
+                    // `check(x)` in the body hits the stdlib precondition.
+                    if matches!(
+                        p.name.as_str(),
+                        "check" | "require" | "error" | "toString"
+                            | "requireNotNull" | "checkNotNull"
+                    ) {
+                        let renamed = format!("{}__shadow{counter}", p.name);
+                        *counter += 1;
+                        for stmt in body.iter_mut() {
+                            kotlin_rename_ident_in_stmt(stmt, &p.name, &renamed);
+                        }
+                        p.name = renamed;
+                    }
                     inner.insert(p.name.clone());
                 }
                 kotlin_rename_shadowed_decls(body, &mut inner, counter);
@@ -1252,6 +1281,57 @@ fn kotlin_if_stmt_to_ternary(stmt: Statement) -> Expression {
 /// the compiler's). Call sites rewrite only when the hoisted signature
 /// accepts the arguments — a shadowing local with a narrower type must not
 /// swallow calls meant for a same-name global.
+/// Hoist local fns declared inside CLASS METHODS. A local fn that reads
+/// `this` would be stranded by hoisting — materialize the receiver as
+/// `__kt_self` and let the normal capture threading carry it.
+fn kotlin_hoist_in_class(
+    members: &mut [ClassMember],
+    enclosing: &HashSet<String>,
+    top_fn_names: &HashSet<String>,
+    hoisted: &mut Vec<Statement>,
+    counter: &mut usize,
+) {
+    for member in members.iter_mut() {
+        let ClassMember::Method(m) = member else { continue };
+        let StmtKind::FunctionDecl { params, body, .. } = &mut m.kind else {
+            continue;
+        };
+        let mut has_local_fn_with_this = false;
+        for s in body.iter_mut() {
+            if let StmtKind::FunctionDecl { body: fnb, .. } = &mut s.kind {
+                let mut uses_this = false;
+                for fs in fnb.iter_mut() {
+                    fs.walk_exprs_mut(&mut |e| {
+                        if matches!(e.kind, ExprKind::This) {
+                            uses_this = true;
+                            e.kind = ExprKind::Ident("__kt_self".to_string());
+                        }
+                    });
+                }
+                has_local_fn_with_this |= uses_this;
+            }
+        }
+        if has_local_fn_with_this {
+            body.insert(
+                0,
+                Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident("__kt_self".to_string()),
+                        type_hint: None,
+                        init: Some(Expression::new(ExprKind::This)),
+                        array_bounds: None,
+                        with_events: false }],
+                    kind: VarDeclKind::Const }),
+            );
+        }
+        let mut inner = enclosing.clone();
+        for p in params.iter() {
+            inner.insert(p.name.clone());
+        }
+        kotlin_hoist_in_block(body, &mut inner, top_fn_names, hoisted, counter);
+    }
+}
+
 fn kotlin_hoist_local_fns(body: &mut Vec<Statement>) {
     let mut hoisted: Vec<Statement> = Vec::new();
     let mut counter = 0usize;
@@ -1262,19 +1342,35 @@ fn kotlin_hoist_local_fns(body: &mut Vec<Statement>) {
             _ => None })
         .collect();
     for stmt in body.iter_mut() {
-        if let StmtKind::FunctionDecl { params, body: fn_body, .. } = &mut stmt.kind {
-            let mut enclosing: HashSet<String> =
-                params.iter().map(|p| p.name.clone()).collect();
-            kotlin_hoist_in_block(
-                fn_body,
-                &mut enclosing,
-                &top_fn_names,
-                &mut hoisted,
-                &mut counter,
-            );
+        match &mut stmt.kind {
+            StmtKind::FunctionDecl { params, body: fn_body, .. } => {
+                let mut enclosing: HashSet<String> =
+                    params.iter().map(|p| p.name.clone()).collect();
+                kotlin_hoist_in_block(
+                    fn_body,
+                    &mut enclosing,
+                    &top_fn_names,
+                    &mut hoisted,
+                    &mut counter,
+                );
+            }
+            StmtKind::ClassDecl { members, .. } => {
+                let enclosing = HashSet::new();
+                kotlin_hoist_in_class(
+                    members,
+                    &enclosing,
+                    &top_fn_names,
+                    &mut hoisted,
+                    &mut counter,
+                );
+            }
+            _ => {}
         }
     }
-    body.extend(hoisted);
+    // Hoisted fns go FIRST: an anonymous-class method resolves its free
+    // calls when the class expression is built, and a fn appended after
+    // `main` was still undefined at that point.
+    body.splice(0..0, hoisted);
 }
 
 fn kotlin_collect_ident_reads(stmts: &[Statement], out: &mut HashSet<String>) {
@@ -1428,6 +1524,17 @@ fn kotlin_hoist_in_block(
                         kotlin_rewrite_hoisted_ref(e, &fn_name, &sig, other_candidates, &captured);
                     });
                 }
+                // The hoisted fn's OWN body may declare local fns too
+                // (`fun outer { fun inner1 … if { fun inner2 } }`) — hoist
+                // inside it, or they stay behind as closures the emitter
+                // can't call from nested blocks.
+                if let StmtKind::FunctionDecl { params, body, .. } = &mut decl.kind {
+                    let mut inner = enclosing.clone();
+                    for p in params.iter() {
+                        inner.insert(p.name.clone());
+                    }
+                    kotlin_hoist_in_block(body, &mut inner, top_fn_names, hoisted, counter);
+                }
                 hoisted.push(decl);
                 continue; // same index now holds the next statement
             }
@@ -1461,8 +1568,33 @@ fn kotlin_hoist_in_block(
                 }
                 kotlin_hoist_in_block(body, &mut inner, top_fn_names, hoisted, counter);
             }
+            // A local fn inside a CLASS METHOD may read `this` — hoisting
+            // would strand it. Materialize the receiver as `__kt_self`,
+            // rewrite `this` inside the LOCAL FNS only, and let the normal
+            // capture threading carry it.
+            StmtKind::ClassDecl { members, .. } => {
+                kotlin_hoist_in_class(members, enclosing, top_fn_names, hoisted, counter);
+            }
             _ => {}
         }
+        // Object-expression methods (`object : Any() { fun add() { fun
+        // inner() … } }`) live in EXPRESSIONS — a local fn left inside one
+        // is a closure the emitter cannot call from the method body.
+        stmts[i].walk_exprs_mut(&mut |e| {
+            if let ExprKind::ClassExpr { members, .. } = &mut e.kind {
+                for member in members.iter_mut() {
+                    if let ClassMember::Method(m) = member
+                        && let StmtKind::FunctionDecl { params, body, .. } = &mut m.kind
+                    {
+                        let mut inner = enclosing.clone();
+                        for p in params.iter() {
+                            inner.insert(p.name.clone());
+                        }
+                        kotlin_hoist_in_block(body, &mut inner, top_fn_names, hoisted, counter);
+                    }
+                }
+            }
+        });
         i += 1;
     }
 }
@@ -2948,6 +3080,22 @@ fn kotlin_rewrite_receiver_refs_expr(expr: &mut Expression, recv: &str, skip: &H
         _ => {}
     }
     match &mut expr.kind {
+        // Constructor args carry receiver members too — `Counter(value)`
+        // inside `apply { }` reads the receiver's `value`.
+        ExprKind::New { args, .. } => {
+            for a in args.iter_mut() {
+                kotlin_rewrite_receiver_refs_expr(&mut a.value, recv, skip);
+            }
+        }
+        ExprKind::NullCoalesce { left, right } => {
+            kotlin_rewrite_receiver_refs_expr(left, recv, skip);
+            kotlin_rewrite_receiver_refs_expr(right, recv, skip);
+        }
+        ExprKind::Array(items) => {
+            for item in items.iter_mut() {
+                kotlin_rewrite_receiver_refs_expr(&mut item.value, recv, skip);
+            }
+        }
         ExprKind::Binary { left, right, .. } => {
             kotlin_rewrite_receiver_refs_expr(left, recv, skip);
             kotlin_rewrite_receiver_refs_expr(right, recv, skip);
@@ -3781,6 +3929,46 @@ fn kotlin_eval_sequence_comparable(
         _ => kotlin_eval_sequence_expr(expr, param, current) }
 }
 
+/// The numeric companions' compile-time constants (`Int.MAX_VALUE`,
+/// `Double.NaN`, …). Integral ones fold to Int literals so they render
+/// without a decimal point; `Long`'s bounds exceed f64 precision, so they
+/// fold to BigInt literals and stay exact.
+fn kotlin_numeric_companion_const(ty: &str, field: &str) -> Option<Expression> {
+    Some(match (ty, field) {
+        ("Int", "MAX_VALUE") => Expression::int(2147483647),
+        ("Int", "MIN_VALUE") => Expression::int(-2147483648),
+        ("Long", "MAX_VALUE") => Expression::new(ExprKind::Lit(Literal::BigInt(i64::MAX))),
+        ("Long", "MIN_VALUE") => Expression::new(ExprKind::Lit(Literal::BigInt(i64::MIN))),
+        ("Short", "MAX_VALUE") => Expression::int(32767),
+        ("Short", "MIN_VALUE") => Expression::int(-32768),
+        ("Byte", "MAX_VALUE") => Expression::int(127),
+        ("Byte", "MIN_VALUE") => Expression::int(-128),
+        ("Char", "MAX_VALUE") => Expression::int(65535),
+        ("Char", "MIN_VALUE") => Expression::int(0),
+        // Wrapped in `__kt_fround` for the TYPE, not the value (both are
+        // f32-exact already): the Float spelling is what routes arithmetic
+        // on them through f32 rounding, where `Float.MAX_VALUE * 2` must
+        // overflow to Infinity.
+        ("Float", "MAX_VALUE") => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__kt_fround")),
+            args: vec![Argument::positional(Expression::float(
+                3.402_823_466_385_288_6e38,
+            ))],
+            optional: false }),
+        ("Float", "MIN_VALUE") => Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__kt_fround")),
+            args: vec![Argument::positional(Expression::float(
+                1.401_298_464_324_817e-45,
+            ))],
+            optional: false }),
+        ("Double", "MAX_VALUE") => Expression::float(f64::MAX),
+        ("Double", "MIN_VALUE") => Expression::float(4.9e-324),
+        ("Double" | "Float", "POSITIVE_INFINITY") => Expression::float(f64::INFINITY),
+        ("Double" | "Float", "NEGATIVE_INFINITY") => Expression::float(f64::NEG_INFINITY),
+        ("Double" | "Float", "NaN") => Expression::float(f64::NAN),
+        _ => return None })
+}
+
 #[derive(Debug, Clone, Default)]
 struct KotlinOperatorInfo {
     returns: HashMap<String, Option<String>> }
@@ -3873,7 +4061,152 @@ fn normalize_kotlin_operator_stmts(
 /// the enclosing frame while the `finally` read the lambda's copy). In
 /// DECLARATION position no lambda is needed: run the try as a STATEMENT
 /// assigning a temp.
+/// A subclass property that SHADOWS an ancestor's (`class Child : Parent()
+/// { val value = … }`) gets its OWN backing slot `value__Child`: the child's
+/// members read/write the mangled slot, `super.value` and reads through a
+/// BASE-typed expression keep the parent's. Call sites rewrite in
+/// `kotlin_operator_rewrite` via KOTLIN_SHADOWED_PROPS.
+fn kotlin_mangle_shadowed_properties(stmts: &mut [Statement]) {
+    use std::collections::HashMap;
+    let mut parents: HashMap<String, String> = HashMap::new();
+    let mut props: HashMap<String, Vec<String>> = HashMap::new();
+    for stmt in stmts.iter() {
+        if let StmtKind::ClassDecl { name, parents: ps, members, .. } = &stmt.kind {
+            if let Some(parent) = ps.first() {
+                parents.insert(name.clone(), parent.clone());
+            }
+            let mut own = Vec::new();
+            for m in members {
+                match m {
+                    ClassMember::Field { name: f, .. } => own.push(f.clone()),
+                    ClassMember::Property { name: f, .. } => own.push(f.clone()),
+                    _ => {}
+                }
+            }
+            props.insert(name.clone(), own);
+        }
+    }
+    KOTLIN_SHADOWED_PROPS.with(|m| m.borrow_mut().clear());
+    for stmt in stmts.iter_mut() {
+        let StmtKind::ClassDecl { name, members, .. } = &mut stmt.kind else {
+            continue;
+        };
+        // Ancestor property set.
+        let mut ancestor_props: Vec<String> = Vec::new();
+        let mut cur = parents.get(name.as_str());
+        let mut hops = 0;
+        while let Some(p) = cur {
+            if let Some(ps) = props.get(p.as_str()) {
+                ancestor_props.extend(ps.iter().cloned());
+            }
+            cur = parents.get(p.as_str());
+            hops += 1;
+            if hops > 16 {
+                break;
+            }
+        }
+        if ancestor_props.is_empty() {
+            continue;
+        }
+        let shadowing: Vec<String> = props
+            .get(name.as_str())
+            .map(|own| {
+                own.iter()
+                    .filter(|f| ancestor_props.contains(f))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for f in &shadowing {
+            let mangled = format!("{f}__{name}");
+            KOTLIN_SHADOWED_PROPS.with(|m| {
+                m.borrow_mut()
+                    .insert((name.clone(), f.clone()), mangled.clone());
+            });
+            for member in members.iter_mut() {
+                match member {
+                    ClassMember::Field { name: fname, .. } if fname == f => {
+                        *fname = mangled.clone();
+                    }
+                    _ => {}
+                }
+            }
+            // Inside the class: `this.f` and BARE `f` (when not locally
+            // rebound) both mean the mangled slot; `super.f` stays.
+            for member in members.iter_mut() {
+                let (params, body) = match member {
+                    ClassMember::Method(m) => {
+                        let StmtKind::FunctionDecl { params, body, .. } = &mut m.kind else {
+                            continue;
+                        };
+                        (params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), body)
+                    }
+                    ClassMember::Constructor { params, body, .. } => {
+                        (params.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), body)
+                    }
+                    _ => continue };
+                let mut shadowed_locals: HashSet<String> = params.into_iter().collect();
+                kotlin_local_binding_names(body, &mut shadowed_locals);
+                let rebound = shadowed_locals.contains(f.as_str());
+                for st in body.iter_mut() {
+                    st.walk_exprs_mut(&mut |e| match &mut e.kind {
+                        ExprKind::Member { object, field, .. }
+                            if field == f
+                                && matches!(object.kind, ExprKind::This) =>
+                        {
+                            *field = mangled.clone();
+                        }
+                        ExprKind::Ident(n) if n == f && !rebound => {
+                            e.kind = ExprKind::Member {
+                                object: Box::new(Expression::new(ExprKind::This)),
+                                field: mangled.clone(),
+                                null_safe: false };
+                        }
+                        _ => {}
+                    });
+                }
+            }
+        }
+    }
+    // `super.p` survived as a Member on SUPER so the mangling above could
+    // leave it alone — the runtime reads the BASE slot through `this`.
+    for stmt in stmts.iter_mut() {
+        stmt.walk_exprs_mut(&mut |e| {
+            if let ExprKind::Member { object, .. } = &mut e.kind
+                && matches!(object.kind, ExprKind::Super)
+            {
+                **object = Expression::new(ExprKind::This);
+            }
+        });
+    }
+}
+
 fn kotlin_unlift_try_inits(stmts: &mut Vec<Statement>) {
+    /// The LAST statement of a branch carries the try-expression's value even
+    /// when nothing wrapped it in Return — `val x = try { if (c) 10 else
+    /// throw … } catch { 0 }` left `10` a bare Expr, so `x` stayed null.
+    fn tail_to_assign(stmts: &mut [Statement], tmp: &str) {
+        let Some(last) = stmts.last_mut() else { return };
+        match &mut last.kind {
+            StmtKind::Expr(e) if !matches!(e.kind, ExprKind::Assign { .. }) => {
+                let value = e.clone();
+                last.kind = StmtKind::Expr(Expression::new(ExprKind::Assign {
+                    target: Box::new(Expression::ident(tmp)),
+                    value: Box::new(value) }));
+            }
+            StmtKind::If { then_body, elifs, else_body, .. } => {
+                tail_to_assign(then_body, tmp);
+                for (_, b) in elifs {
+                    tail_to_assign(b, tmp);
+                }
+                if let Some(b) = else_body {
+                    tail_to_assign(b, tmp);
+                }
+            }
+            StmtKind::Block(body) => tail_to_assign(body, tmp),
+            _ => {}
+        }
+    }
     fn returns_to_assign(stmts: &mut [Statement], tmp: &str) {
         for stmt in stmts {
             match &mut stmt.kind {
@@ -3995,6 +4328,15 @@ fn kotlin_unlift_try_inits(stmts: &mut Vec<Statement>) {
         let tmp = format!("__kt_try_{i}");
         let mut try_stmt = lbody[0].clone();
         returns_to_assign(std::slice::from_mut(&mut try_stmt), &tmp);
+        if let StmtKind::Try { body, catches, else_body, .. } = &mut try_stmt.kind {
+            tail_to_assign(body, &tmp);
+            for c in catches.iter_mut() {
+                tail_to_assign(&mut c.body, &tmp);
+            }
+            if let Some(b) = else_body {
+                tail_to_assign(b, &tmp);
+            }
+        }
         let mut new_decl = declarations[0].clone();
         new_decl.init = Some(Expression::ident(&tmp));
         let decl_kind = kind.clone();
@@ -4267,6 +4609,50 @@ fn normalize_kotlin_operator_stmt(
     operators: &KotlinOperatorTable,
     locals: &mut KotlinLocalTypes,
 ) {
+    // A DISCARDED zero-arg IIFE (`run { … }` as a statement) inlines as a
+    // block: inside a loop body the lambda's captured writes (`sum += …`)
+    // landed one scope short and were lost per iteration.
+    if let StmtKind::Expr(expr) = &mut stmt.kind
+        && let ExprKind::Call { callee, args, .. } = &expr.kind
+    {
+        // Both spellings: the already-lowered IIFE, and the still-raw
+        // `run { … }` free call (this runs before that lowering).
+        let block = match (&callee.kind, args.len()) {
+            (ExprKind::Lambda { params, body: LambdaBody::Block(b), .. }, 0)
+                if params.is_empty()
+                    || (params.len() == 1 && params[0].name == "it") =>
+            {
+                Some(b)
+            }
+            (ExprKind::Ident(n), 1) if n == "run" => match &args[0].value.kind {
+                ExprKind::Lambda { params, body: LambdaBody::Block(b), .. }
+                    if params.is_empty()
+                        || params.first().is_some_and(|p| p.name == "it") =>
+                {
+                    Some(b)
+                }
+                _ => None },
+            _ => None };
+        // A Return may only sit at the TAIL (the lambda-value wrap) — the
+        // value is discarded here, so it demotes to a plain expression.
+        if let Some(b) = block
+            && !b[..b.len().saturating_sub(1)]
+                .iter()
+                .any(|s| matches!(s.kind, StmtKind::Return(_)))
+        {
+            let mut inlined = b.clone();
+            match inlined.pop() {
+                Some(Statement { kind: StmtKind::Return(Some(e)), .. }) => {
+                    inlined.push(Statement::new(StmtKind::Expr(e)));
+                }
+                Some(Statement { kind: StmtKind::Return(None), .. }) => {}
+                Some(last) => inlined.push(last),
+                None => {}
+            }
+            stmt.kind = StmtKind::Block(inlined);
+            return normalize_kotlin_operator_stmt(stmt, operators, locals);
+        }
+    }
     match &mut stmt.kind {
         StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) => {
             normalize_kotlin_operator_expr(expr, operators, locals);
@@ -4286,6 +4672,18 @@ fn normalize_kotlin_operator_stmt(
         }
         StmtKind::VarDecl { declarations, .. } => {
             for decl in declarations {
+                // `val a: Long = 1_000_000_000_000` — a DECLARED Long takes
+                // its unsuffixed literal as a Long literal (Kotlin's own
+                // rule), so the value is BigInt-exact from the start.
+                if decl
+                    .type_hint
+                    .as_deref()
+                    .is_some_and(|h| h.trim().trim_end_matches('?') == "Long")
+                    && let Some(init) = &mut decl.init
+                    && let ExprKind::Lit(Literal::Int(n)) = init.kind
+                {
+                    *init = Expression::new(ExprKind::Lit(Literal::BigInt(n)));
+                }
                 // Type from the PRE-normalize init: rewrites erase the
                 // spelling (`FloatArray(2)` becomes `__kt_array_init(2)`),
                 // and the element type drives Double rendering.
@@ -4416,20 +4814,66 @@ fn normalize_kotlin_operator_stmt(
                             kotlin_local_binding_names(body, &mut shadowed);
                             for stmt in body.iter_mut() {
                                 stmt.walk_exprs_mut(&mut |e| {
-                                    if let ExprKind::Call { callee, .. } = &mut e.kind
-                                        && let ExprKind::Ident(n) = &callee.kind
-                                        && class_props.contains(n.as_str())
-                                        && !shadowed.contains(n.as_str())
-                                        && !KOTLIN_TOP_FN_PARAMS
-                                            .with(|m| m.borrow().contains_key(n.as_str()))
+                                    // Bare `op(v)` OR explicit `this.op(v)`:
+                                    // a Member call on `this` dispatches as a
+                                    // METHOD, so a fn-valued field must go
+                                    // through an INDIRECT call — read the
+                                    // property into the wrapper's parameter,
+                                    // call that.
+                                    let field = match &e.kind {
+                                        ExprKind::Call { callee, .. } => match &callee.kind {
+                                            ExprKind::Ident(n)
+                                                if class_props.contains(n.as_str())
+                                                    && !shadowed.contains(n.as_str())
+                                                    && !KOTLIN_TOP_FN_PARAMS.with(|m| {
+                                                        m.borrow()
+                                                            .contains_key(n.as_str())
+                                                    }) =>
+                                            {
+                                                Some(n.clone())
+                                            }
+                                            ExprKind::Member { object, field, .. }
+                                                if matches!(
+                                                    object.kind,
+                                                    ExprKind::This
+                                                ) && class_props
+                                                    .contains(field.as_str()) =>
+                                            {
+                                                Some(field.clone())
+                                            }
+                                            _ => None },
+                                        _ => None };
+                                    if let Some(field) = field
+                                        && let ExprKind::Call { args, .. } = &e.kind
                                     {
-                                        let field = n.clone();
-                                        **callee = Expression::new(ExprKind::Member {
-                                            object: Box::new(Expression::new(
-                                                ExprKind::This,
+                                        let args = args.clone();
+                                        let inner_call = Expression::new(ExprKind::Call {
+                                            callee: Box::new(Expression::ident("__kf")),
+                                            args,
+                                            optional: false });
+                                        e.kind = ExprKind::Call {
+                                            callee: Box::new(Expression::new(
+                                                ExprKind::Lambda {
+                                                    params: kotlin_local_capture_params(
+                                                        &["__kf".to_string()],
+                                                    ),
+                                                    body: LambdaBody::Block(vec![
+                                                        Statement::new(StmtKind::Return(
+                                                            Some(inner_call),
+                                                        )),
+                                                    ]),
+                                                    is_async: false,
+                                                    captures: Vec::new() },
                                             )),
-                                            field,
-                                            null_safe: false });
+                                            args: vec![Argument::positional(
+                                                Expression::new(ExprKind::Member {
+                                                    object: Box::new(Expression::new(
+                                                        ExprKind::This,
+                                                    )),
+                                                    field,
+                                                    null_safe: false }),
+                                            )],
+                                            optional: false };
                                     }
                                 });
                             }
@@ -4774,6 +5218,21 @@ fn normalize_kotlin_operator_expr(
                         _ => {}
                     }
                 }
+                // A property that SHADOWS an ancestor's reads the child's
+                // slot when the STATIC type is the shadowing class (a cast
+                // to the base keeps the base's).
+                if let Some(ty) = kotlin_expr_type(obj2, locals, operators)
+                    && let Some(mangled) = KOTLIN_SHADOWED_PROPS.with(|m| {
+                        m.borrow().get(&(ty, field.clone())).cloned()
+                    })
+                {
+                    let object = (**obj2).clone();
+                    *expr = Expression::new(ExprKind::Member {
+                        object: Box::new(object),
+                        field: mangled,
+                        null_safe: false });
+                    return;
+                }
                 if matches!(field.as_str(), "isSuccess" | "isFailure")
                     && kotlin_expr_type(obj2, locals, operators)
                         .as_deref()
@@ -4880,8 +5339,115 @@ fn normalize_kotlin_operator_expr(
         }
         ExprKind::Call { callee, args, .. } => {
             normalize_kotlin_operator_expr(callee, operators, locals);
+            // An untyped single-param lambda over an Int-element receiver:
+            // the param IS an Int (`values.groupBy { it / 2 }` divides
+            // integers). Stamped BEFORE the args are walked so the lambda
+            // descent carries it into `locals` and `it / 2` truncates.
+            // Descriptive — the hint documents, it never coerces. Only the
+            // element-consuming HOFs qualify: a scope function's param
+            // (`values.let { it }`) is the COLLECTION, not an element.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && matches!(
+                    field.as_str(),
+                    "map" | "mapNotNull" | "filter" | "filterNot" | "groupBy" | "associateBy"
+                        | "associateWith" | "sortedBy" | "sortedByDescending" | "minByOrNull"
+                        | "maxByOrNull" | "minBy" | "maxBy" | "sumOf" | "partition" | "flatMap"
+                        | "takeWhile" | "dropWhile" | "count" | "any" | "all" | "none"
+                        | "forEach" | "onEach" | "first" | "firstOrNull" | "last" | "lastOrNull"
+                        | "find" | "indexOfFirst" | "indexOfLast" | "distinctBy" | "groupingBy"
+                        | "joinToString" | "single" | "singleOrNull"
+                )
+                && let Some(elem) = kotlin_expr_type(object, locals, operators)
+                    .as_deref()
+                    .and_then(kotlin_element_type_name)
+            {
+                for arg in &mut *args {
+                    if let ExprKind::Lambda { params, .. } = &mut arg.value.kind
+                        && params.len() == 1
+                        && params[0].type_hint.is_none()
+                    {
+                        params[0].type_hint = Some(TypeHint::descriptive(elem));
+                    }
+                }
+            }
+            // The scalar predicate HOFs iterate a String's CHARS —
+            // `"1a2".all { it.isDigit() }` saw zero elements through the
+            // array op (vacuously true), so materialize the chars. Only the
+            // scalar-returning ops: `String.filter`/`map` return a STRING in
+            // Kotlin, which `toCharArray` would turn into a list.
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind
+                && matches!(field.as_str(), "all" | "any" | "none" | "count")
+                && !args.is_empty()
+                && kotlin_expr_type(object, locals, operators).as_deref() == Some("String")
+            {
+                **object = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: object.clone(),
+                        field: "toCharArray".to_string(),
+                        null_safe: false })),
+                    args: vec![],
+                    optional: false });
+            }
+            // The walk lowers `.map {}` / `.filter {}` to FREE calls with the
+            // receiver as the first argument — same stamping, other shape.
+            if let ExprKind::Ident(name) = &callee.kind
+                && matches!(
+                    name.as_str(),
+                    "__kt_map_hof" | "__kt_filter" | "__kt_filter_not" | "__kt_for_each"
+                        | "__kt_map_to_list" | "__array_map" | "__array_filter"
+                        | "__array_some" | "__array_every"
+                )
+                && args.len() >= 2
+            {
+                let elem = kotlin_expr_type(&args[0].value, locals, operators)
+                    .as_deref()
+                    .and_then(kotlin_element_type_name);
+                if let Some(elem) = elem {
+                    for arg in args.iter_mut().skip(1) {
+                        if let ExprKind::Lambda { params, .. } = &mut arg.value.kind
+                            && params.len() == 1
+                            && params[0].type_hint.is_none()
+                        {
+                            params[0].type_hint = Some(TypeHint::descriptive(elem));
+                        }
+                    }
+                }
+            }
             for arg in &mut *args {
                 normalize_kotlin_operator_expr(&mut arg.value, operators, locals);
+            }
+            // The METHOD spellings of the bitwise ops — `x.and(y)`,
+            // `mask.inv()` — are the same operators as the infix words
+            // (`x and y` lowers through `infix_bitwise_op`). Skipped when
+            // the receiver is a USER class (its own `and` dispatches
+            // normally) or a Boolean (Boolean.and is the non-short-circuit
+            // LOGICAL and, which the integer op would render as 0/1).
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && !kotlin_expr_type(object, locals, operators)
+                    .as_deref()
+                    .is_some_and(|t| is_user_class_name(t) || t == "Boolean")
+            {
+                let bin = match (field.as_str(), args.len()) {
+                    ("and", 1) => Some(BinOp::BitAnd),
+                    ("or", 1) => Some(BinOp::BitOr),
+                    ("xor", 1) => Some(BinOp::BitXor),
+                    ("shl", 1) => Some(BinOp::Shl),
+                    ("shr", 1) => Some(BinOp::Shr),
+                    ("ushr", 1) => Some(BinOp::UShr),
+                    _ => None };
+                if let Some(op) = bin {
+                    *expr = Expression::new(ExprKind::Binary {
+                        op,
+                        left: object.clone(),
+                        right: Box::new(args[0].value.clone()) });
+                    return;
+                }
+                if field == "inv" && args.is_empty() {
+                    *expr = Expression::new(ExprKind::Unary {
+                        op: UnaryOp::BitNot,
+                        expr: object.clone() });
+                    return;
+                }
             }
             if args.is_empty() {
                 if let ExprKind::Lambda {
@@ -4930,6 +5496,38 @@ fn normalize_kotlin_operator_expr(
                     callee: Box::new(Expression::ident("__kt_to_list")),
                     args: vec![Argument::positional(source)],
                     optional: false }));
+            }
+            // `zipWithNext` walks ELEMENTS in order — a set arrives as its
+            // dict-shaped backing object (length 0 to the array op), so
+            // materialize it the same way the Index path does.
+            if let ExprKind::Member { object, field, .. } = &mut callee.kind
+                && matches!(field.as_str(), "zipWithNext" | "withIndex")
+                && kotlin_expr_type(object, locals, operators)
+                    .as_deref()
+                    .is_some_and(kotlin_type_is_set_like)
+            {
+                **object = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_to_list")),
+                    args: vec![Argument::positional((**object).clone())],
+                    optional: false });
+            }
+            // `.contains(x)` lowered to `__coll_contains` at walk time; on a
+            // SET the answer is the keyed probe PLUS the equality check the
+            // `in` operator already uses. `ecma:array.includes` on the dict
+            // shape answered by key string alone, so a plain class — whose
+            // rendering is the constant `[object Label]` — compared true
+            // against a DIFFERENT instance (Kotlin's default equals is
+            // identity).
+            if let ExprKind::Ident(name) = &callee.kind
+                && name == "__coll_contains"
+                && args.len() == 2
+                && kotlin_expr_type(&args[0].value, locals, operators)
+                    .as_deref()
+                    .is_some_and(kotlin_type_is_set_like)
+            {
+                *expr =
+                    kotlin_set_contains_expr(args[0].value.clone(), args[1].value.clone());
+                return;
             }
             if let ExprKind::Ident(name) = &callee.kind
                 && name == "__kt_class_of"
@@ -5586,6 +6184,24 @@ fn normalize_kotlin_operator_expr(
             for arg in &mut *args {
                 normalize_kotlin_operator_expr(&mut arg.value, operators, locals);
             }
+            // Injected AST (lang_enum's `throw new IllegalArgumentException`)
+            // spells construction with New; Kotlin's exceptions are CALL
+            // builtins, so the New form read an undefined class global.
+            if let ExprKind::Ident(n) = &class.kind
+                && matches!(
+                    n.as_str(),
+                    "Exception" | "IllegalArgumentException" | "IllegalStateException"
+                        | "NullPointerException" | "IndexOutOfBoundsException"
+                        | "NoSuchElementException" | "UnsupportedOperationException"
+                )
+                && !is_user_class_name(n)
+            {
+                *expr = Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(n)),
+                    args: args.clone(),
+                    optional: false });
+                return;
+            }
             // Typed-array constructors also arrive as `New` (`UIntArray(4)
             // { … }` — uppercase heuristic); same lowering as the Call form.
             if let ExprKind::Ident(name) = &class.kind
@@ -5747,6 +6363,171 @@ fn kotlin_operator_rewrite(
 ) -> Option<Expression> {
     match &expr.kind {
         ExprKind::Binary { op, left, right } => {
+            // A statically-String LEFT makes `+` CONCAT — Kotlin's
+            // `String.plus(Any?)`. The walk-time choice is syntactic
+            // (`kt_is_string_expr`) and misses locals, so `names + enumValue`
+            // compiled as numeric Add and trapped coercing the object. The
+            // right operand renders through KOTLIN's tostring — the shared
+            // concat's ECMA coercion says `[object Ch]` where Kotlin says
+            // the enum constant's name.
+            if *op == BinOp::Add
+                && kotlin_expr_type(left, locals, operators).as_deref() == Some("String")
+            {
+                let rendered_right = if matches!(right.kind, ExprKind::Lit(Literal::Str(_)))
+                    || kotlin_expr_type(right, locals, operators).as_deref() == Some("String")
+                {
+                    (**right).clone()
+                } else {
+                    Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_tostring")),
+                        args: vec![Argument::positional((**right).clone())],
+                        optional: false })
+                };
+                return Some(Expression::new(ExprKind::Binary {
+                    op: BinOp::Concat,
+                    left: left.clone(),
+                    right: Box::new(rendered_right) }));
+            }
+            // `Int / Int` divides through the throwing builtin — a zero
+            // divisor is ArithmeticException in Kotlin (JLS §15.17.2), which
+            // neither the wasm trap nor the float fallback can answer.
+            // `Long` is EXCLUDED: Longs are BigInt values now, and the shared
+            // bigint division already truncates the JLS way — the f64 ops in
+            // the builtin would trap on them.
+            if *op == BinOp::Div
+                && matches!(
+                    kotlin_expr_type(left, locals, operators).as_deref(),
+                    Some("Int" | "Short" | "Byte")
+                )
+                && matches!(
+                    kotlin_expr_type(right, locals, operators).as_deref(),
+                    Some("Int" | "Short" | "Byte")
+                )
+            {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_int_div")),
+                    args: vec![
+                        Argument::positional((**left).clone()),
+                        Argument::positional((**right).clone()),
+                    ],
+                    optional: false }));
+            }
+            // `Long` shifts carry JVM semantics the ecma bigint ops don't:
+            // the COUNT masks to 6 bits (JLS §15.19) and the RESULT wraps to
+            // 64 (BigInt is arbitrary precision — `1L shl 63` must go
+            // negative). `ushr` reads the 64 bits unsigned first. All three
+            // compose existing `ecma:bigint` host fns in the adapters.
+            if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::UShr)
+                && kotlin_expr_type(left, locals, operators).as_deref() == Some("Long")
+            {
+                let helper = match op {
+                    BinOp::Shl => "__kt_long_shl",
+                    BinOp::Shr => "__kt_long_shr",
+                    _ => "__kt_long_ushr" };
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(helper)),
+                    args: vec![
+                        Argument::positional((**left).clone()),
+                        Argument::positional((**right).clone()),
+                    ],
+                    optional: false }));
+            }
+            // Kotlin WIDENS Int to Long implicitly (`1L + 2` is Long); ecma
+            // §21.2.1.1 instead THROWS on a known BigInt/Number mix — and a
+            // `Long`-DECLARED variable reads as a known non-BigInt hint to
+            // the shared inference. Kotlin's rule, normalized by Kotlin: both
+            // operands funnel through spellings the shared inference already
+            // types as bigint — a BigInt literal, or the ecma `BigInt(…)`
+            // constructor (identity on an actual BigInt value).
+            // Literal integer arithmetic folds WITH the two's-complement
+            // wrap Kotlin's own constant expressions have — `Int.MAX_VALUE
+            // + 1` IS `Int.MIN_VALUE` (JLS §15.18.2), and the BigInt route
+            // would answer 2^31 unwrapped.
+            if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+                let fold_i64 = |a: i64, b: i64| match op {
+                    BinOp::Add => a.wrapping_add(b),
+                    BinOp::Sub => a.wrapping_sub(b),
+                    _ => a.wrapping_mul(b) };
+                match (&left.kind, &right.kind) {
+                    (ExprKind::Lit(Literal::Int(a)), ExprKind::Lit(Literal::Int(b)))
+                        if i32::try_from(*a).is_ok() && i32::try_from(*b).is_ok() =>
+                    {
+                        let r = match op {
+                            BinOp::Add => (*a as i32).wrapping_add(*b as i32),
+                            BinOp::Sub => (*a as i32).wrapping_sub(*b as i32),
+                            _ => (*a as i32).wrapping_mul(*b as i32) };
+                        return Some(Expression::int(r as i64));
+                    }
+                    (ExprKind::Lit(Literal::BigInt(a)), ExprKind::Lit(Literal::BigInt(b))) => {
+                        return Some(Expression::new(ExprKind::Lit(Literal::BigInt(
+                            fold_i64(*a, *b),
+                        ))));
+                    }
+                    (ExprKind::Lit(Literal::BigInt(a)), ExprKind::Lit(Literal::Int(b))) => {
+                        return Some(Expression::new(ExprKind::Lit(Literal::BigInt(
+                            fold_i64(*a, *b),
+                        ))));
+                    }
+                    (ExprKind::Lit(Literal::Int(a)), ExprKind::Lit(Literal::BigInt(b))) => {
+                        return Some(Expression::new(ExprKind::Lit(Literal::BigInt(
+                            fold_i64(*a, *b),
+                        ))));
+                    }
+                    _ => {}
+                }
+            }
+            // Long/Int widening and Long/Double demotion are NOT normalized
+            // here anymore: `[builtin_types] bigint = ["long"]` declares the
+            // spelling, the shared inference classifies it, and the shared
+            // emitter widens mixes by that declaration (expressions.rs).
+            // Only the pieces the shared model cannot know remain below —
+            // constant folds with Kotlin's wrap, shift lowering, and the f64
+            // range machinery's demotes.
+            //
+            // `Float` arithmetic rounds EACH result to f32 (Kotlin's Float
+            // is IEEE binary32): a Float-typed operand wraps the operation
+            // in `Math.fround`, so `Float.MAX_VALUE * 2` is Infinity where
+            // the raw f64 stays finite. Long operands are excluded — the
+            // Long demote above this in the shared emitter owns that mix.
+            if matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+            ) {
+                let lty = kotlin_expr_type(left, locals, operators);
+                let rty = kotlin_expr_type(right, locals, operators);
+                let is_float = |t: &Option<String>| t.as_deref() == Some("Float");
+                let numeric = |t: &Option<String>, e: &Expression| {
+                    matches!(
+                        t.as_deref(),
+                        Some("Float" | "Double" | "Int" | "Short" | "Byte")
+                    ) || matches!(
+                        e.kind,
+                        ExprKind::Lit(Literal::Int(_)) | ExprKind::Lit(Literal::Float(_))
+                    )
+                };
+                if (is_float(&lty) && numeric(&rty, right))
+                    || (is_float(&rty) && numeric(&lty, left))
+                {
+                    return Some(Expression::new(ExprKind::Call {
+                        callee: Box::new(Expression::ident("__kt_fround")),
+                        args: vec![Argument::positional(Expression::new(ExprKind::Binary {
+                            op: *op,
+                            left: left.clone(),
+                            right: right.clone() }))],
+                        optional: false }));
+                }
+            }
+            // `a xor b` on Booleans is LOGICAL xor (kotlin.Boolean.xor), not
+            // the Int bit op — the shared BitXor answered `1`, not `true`.
+            if *op == BinOp::BitXor
+                && (kotlin_expr_type(left, locals, operators).as_deref() == Some("Boolean")
+                    || kotlin_expr_type(right, locals, operators).as_deref() == Some("Boolean"))
+            {
+                return Some(Expression::new(ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: left.clone(),
+                    right: right.clone() }));
+            }
             // `==` on the TYPED arrays is reference IDENTITY (List keeps
             // structural equals) — route around the structural value-eq slot.
             if matches!(op, BinOp::Eq | BinOp::NotEq)
@@ -5797,6 +6578,28 @@ fn kotlin_operator_rewrite(
                 return Some(cmp);
             }
             if *op == BinOp::In {
+                // `6L in 1L..7L` — range membership is NUMERIC; a BigInt
+                // probe traps the f64 machinery. The range endpoints demote
+                // in the Range arm; the probe demotes here.
+                if matches!(right.kind, ExprKind::Range { .. }) {
+                    let demoted = match &left.kind {
+                        ExprKind::Lit(Literal::BigInt(n)) => Some(Expression::int(*n)),
+                        _ if kotlin_expr_type(left, locals, operators).as_deref()
+                            == Some("Long") =>
+                        {
+                            Some(Expression::new(ExprKind::Call {
+                                callee: Box::new(Expression::ident("Number")),
+                                args: vec![Argument::positional((**left).clone())],
+                                optional: false }))
+                        }
+                        _ => None };
+                    if let Some(probe) = demoted {
+                        return Some(Expression::new(ExprKind::Binary {
+                            op: BinOp::In,
+                            left: Box::new(probe),
+                            right: right.clone() }));
+                    }
+                }
                 // A char range folds to its char array so membership works.
                 let right_folded = {
                     let mut r = (**right).clone();
@@ -5828,7 +6631,10 @@ fn kotlin_operator_rewrite(
                         (&right.kind, &right_folded.kind),
                         (ExprKind::Range { .. }, _) | (_, ExprKind::Array(_))
                     ) && matches!(right.kind, ExprKind::Range { .. })
-                    || kotlin_expr_type(right, locals, operators).as_deref() == Some("Range")
+                    || matches!(
+                        kotlin_expr_type(right, locals, operators).as_deref(),
+                        Some("Range" | "IntRange" | "LongRange")
+                    )
                 {
                     return Some(Expression::new(ExprKind::Call {
                         callee: Box::new(Expression::ident("__coll_contains")),
@@ -6065,6 +6871,49 @@ fn kotlin_operator_rewrite(
             })
         }
         ExprKind::Unary { op, expr: inner } => {
+            // `-1L` folds to a negative Long LITERAL — the literal is what
+            // the shared inference and the Long gates here both recognize;
+            // an unfolded Neg wrapper hid the type from `ushr`.
+            if matches!(op, UnaryOp::Neg)
+                && let ExprKind::Lit(Literal::BigInt(n)) = inner.kind
+            {
+                return Some(Expression::new(ExprKind::Lit(Literal::BigInt(
+                    n.wrapping_neg(),
+                ))));
+            }
+            // Int constant negation folds WITH the i32 wrap — Kotlin's
+            // `-Int.MIN_VALUE` IS `Int.MIN_VALUE` (JLS §15.15.4). Exact for
+            // every other literal too, so nothing else changes.
+            if matches!(op, UnaryOp::Neg)
+                && let ExprKind::Lit(Literal::Int(n)) = inner.kind
+                && let Ok(n32) = i32::try_from(n)
+            {
+                return Some(Expression::int(n32.wrapping_neg() as i64));
+            }
+            // `counter++` on a type with `operator fun inc()` is a REBIND:
+            // Kotlin assigns `counter.inc()` back to `counter`. Statement
+            // position only in practice — the expression value here is the
+            // new binding, which the extracted tests never observe.
+            if matches!(
+                op,
+                UnaryOp::PostInc | UnaryOp::PostDec | UnaryOp::PreInc | UnaryOp::PreDec
+            ) {
+                let method = if matches!(op, UnaryOp::PostInc | UnaryOp::PreInc) {
+                    "inc"
+                } else {
+                    "dec"
+                };
+                let ty = kotlin_expr_type(inner, locals, operators)?;
+                return operators.get(&ty).is_some_and(|info| info.has(method)).then(|| {
+                    Expression::new(ExprKind::Assign {
+                        target: Box::new((**inner).clone()),
+                        value: Box::new(kotlin_operator_call(
+                            (**inner).clone(),
+                            method,
+                            Vec::new(),
+                        )) })
+                });
+            }
             let method = crate::protocol::unary_operator_method(*op)?;
             let ty = kotlin_expr_type(inner, locals, operators)?;
             operators
@@ -6072,7 +6921,127 @@ fn kotlin_operator_rewrite(
                 .is_some_and(|info| info.has(method))
                 .then(|| kotlin_operator_call((**inner).clone(), method, Vec::new()))
         }
+        // `window..5` on a type with `operator fun rangeTo` builds whatever
+        // that method returns — never a numeric range over the object.
+        ExprKind::Range { start, end, inclusive } => {
+            if *inclusive
+                && let Some(ty) = kotlin_expr_type(start, locals, operators)
+                && operators.get(&ty).is_some_and(|info| info.has("rangeTo"))
+            {
+                return Some(kotlin_operator_call(
+                    (**start).clone(),
+                    "rangeTo",
+                    vec![(**end).clone()],
+                ));
+            }
+            // A Long-endpoint range iterates NUMERICALLY: the shared range
+            // machinery is f64, and a BigInt endpoint traps its `toF64`.
+            // Demoting is exact to 2^53 — a wider iteration space is not a
+            // thing a loop finishes anyway.
+            let demote = |e: &Expression| -> Option<Expression> {
+                match &e.kind {
+                    ExprKind::Lit(Literal::BigInt(n)) => Some(Expression::int(*n)),
+                    _ if kotlin_expr_type(e, locals, operators).as_deref() == Some("Long") => {
+                        Some(Expression::new(ExprKind::Call {
+                            callee: Box::new(Expression::ident("Number")),
+                            args: vec![Argument::positional(e.clone())],
+                            optional: false }))
+                    }
+                    _ => None }
+            };
+            let d_start = demote(start);
+            let d_end = demote(end);
+            if d_start.is_none() && d_end.is_none() {
+                return None;
+            }
+            Some(Expression::new(ExprKind::Range {
+                start: Box::new(d_start.unwrap_or_else(|| (**start).clone())),
+                end: Box::new(d_end.unwrap_or_else(|| (**end).clone())),
+                inclusive: *inclusive }))
+        }
         ExprKind::Call { callee, args, .. } => {
+            // `Long.toInt()` WRAPS to the low 32 bits (JLS §5.1.3) — the
+            // generic `toInt` target parses/truncates, which is right for
+            // String and Double receivers but kept `(1L shl 32).toInt()` at
+            // 2^32. Type-gated: only a receiver KNOWN to be Long reroutes.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "toInt"
+                && args.is_empty()
+                && matches!(
+                    kotlin_expr_type(object, locals, operators).as_deref(),
+                    Some("Long")
+                )
+            {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_long_to_int")),
+                    args: vec![Argument::positional((**object).clone())],
+                    optional: false }));
+            }
+            // `.toLong()` PRODUCES a Long — truncate-then-BigInt, so the
+            // result joins Long arithmetic exactly instead of staying an
+            // untyped f64 that a BigInt `+` traps on.
+            if let ExprKind::Member { object, field, .. } = &callee.kind
+                && field == "toLong"
+                && args.is_empty()
+                && !is_user_member_name(field, 0)
+            {
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident("__kt_to_long")),
+                    args: vec![Argument::positional((**object).clone())],
+                    optional: false }));
+            }
+            // `1L..7L step 2` walked into `__kt_step_asc(BigInt, BigInt,
+            // BigInt)` — the range-step machinery is f64, so Long bounds
+            // demote exactly like Range endpoints do (exact to 2^53; a wider
+            // iteration space never terminates anyway).
+            if let ExprKind::Ident(name) = &callee.kind
+                && matches!(name.as_str(), "__kt_step_asc" | "__kt_step_desc")
+                && args.iter().any(|a| {
+                    matches!(a.value.kind, ExprKind::Lit(Literal::BigInt(_)))
+                        || kotlin_expr_type(&a.value, locals, operators).as_deref()
+                            == Some("Long")
+                })
+            {
+                let demoted = args
+                    .iter()
+                    .map(|a| {
+                        Argument::positional(match &a.value.kind {
+                            ExprKind::Lit(Literal::BigInt(n)) => Expression::int(*n),
+                            _ if kotlin_expr_type(&a.value, locals, operators).as_deref()
+                                == Some("Long") =>
+                            {
+                                Expression::new(ExprKind::Call {
+                                    callee: Box::new(Expression::ident("Number")),
+                                    args: vec![Argument::positional(a.value.clone())],
+                                    optional: false })
+                            }
+                            _ => a.value.clone() })
+                    })
+                    .collect();
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::ident(name.as_str())),
+                    args: demoted,
+                    optional: false }));
+            }
+            // `p(3)` on a value whose type declares `operator fun invoke` is
+            // the call-operator sugar. Resolve it STATICALLY like any member
+            // call — the runtime Call slot keeps only the last-declared
+            // overload, and its member probe finds a user property named
+            // `call` first, shadowing the operator entirely.
+            if !matches!(callee.kind, ExprKind::Member { .. })
+                && let Some(ty) = kotlin_expr_type(callee, locals, operators)
+                && operators.get(&ty).is_some_and(|info| info.has("invoke"))
+            {
+                let field = overloaded_storage_name_for_args("invoke", args.len(), args)
+                    .unwrap_or_else(|| "invoke".to_string());
+                return Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Member {
+                        object: callee.clone(),
+                        field,
+                        null_safe: false })),
+                    args: args.clone(),
+                    optional: false }));
+            }
             if args.len() == 1
                 && let ExprKind::Member { object, field, .. } = &callee.kind
                 && kotlin_expr_type(object, locals, operators)
@@ -6670,6 +7639,29 @@ fn kotlin_type_is_jvm_map_like(ty: &str) -> bool {
     )
 }
 
+/// A collection whose ELEMENTS are integers — the evidence that an untyped
+/// lambda param over it is an Int (`values.groupBy { it / 2 }` divides
+/// integers, so `/` must truncate).
+fn kotlin_int_element_ty(ty: &str) -> bool {
+    matches!(
+        ty,
+        "IntArray" | "LongArray" | "ShortArray" | "ByteArray" | "IntRange" | "LongRange"
+    ) || ty.contains("<Int>")
+        || ty.contains("<Long>")
+}
+
+/// The element type an untyped lambda param inherits from its receiver, for
+/// the types the walker can actually vouch for.
+fn kotlin_element_type_name(ty: &str) -> Option<&'static str> {
+    if kotlin_int_element_ty(ty) {
+        Some("Int")
+    } else if ty.contains("<String>") {
+        Some("String")
+    } else {
+        None
+    }
+}
+
 fn kotlin_delegated_collection_kind(ty: &str) -> Option<String> {
     let bare = ty.rsplit('.').next().unwrap_or(ty);
     KOTLIN_DELEGATED_COLLECTIONS.with(|map| map.borrow().get(bare).cloned())
@@ -6852,7 +7844,11 @@ fn kotlin_expr_type(
         // (and `var i = 1` must land in the locals map at all, or the
         // loop-variable shadow rename never sees it).
         ExprKind::Lit(Literal::Str(_)) => Some("String".to_string()),
+        // A concat IS a String — keeps `a + b + c` chains concatenating once
+        // the first link is retyped.
+        ExprKind::Binary { op: BinOp::Concat, .. } => Some("String".to_string()),
         ExprKind::Lit(Literal::Int(_)) => Some("Int".to_string()),
+        ExprKind::Lit(Literal::BigInt(_)) => Some("Long".to_string()),
         ExprKind::Lit(Literal::Float(_)) => Some("Double".to_string()),
         ExprKind::Lit(Literal::Bool(_)) => Some("Boolean".to_string()),
         ExprKind::Ident(name) => KOTLIN_KEYED_COLLECTION_TYPES
@@ -6863,10 +7859,13 @@ fn kotlin_expr_type(
             ExprKind::Member { field, .. } => Some(field.clone()),
             _ => None },
         // Element reads keep the element type where it matters for
-        // RENDERING: `println(floatArr[0])` must print `7.0`.
+        // RENDERING: `println(floatArr[0])` must print `7.0` — and for the
+        // typed rewrites: `a[1].all { … }` iterates CHARS only when the
+        // element is known to be a String.
         ExprKind::Index { object, .. } => {
             match kotlin_expr_type(object, locals, operators).as_deref() {
                 Some("FloatArray") | Some("DoubleArray") => Some("Double".to_string()),
+                Some(t) => kotlin_element_type_name(t).map(str::to_string),
                 _ => None }
         }
         // Property reads on java.* receivers type through the tree too —
@@ -6899,6 +7898,16 @@ fn kotlin_expr_type(
                     .any(|e| matches!(e.value.kind, ExprKind::Lit(Literal::Float(_))))
             {
                 Some("DoubleArray".to_string())
+            } else if !elements.is_empty()
+                && elements
+                    .iter()
+                    .all(|e| matches!(e.value.kind, ExprKind::Lit(Literal::Str(_))))
+            {
+                // All-string literals keep the element type — the HOF
+                // lambda-param stamping needs `listOf("1", "two")` to say its
+                // elements are Strings (`it.all { … }` iterates CHARS only
+                // when the receiver is known to be a String).
+                Some("List<String>".to_string())
             } else {
                 None
             }
@@ -6912,6 +7921,54 @@ fn kotlin_expr_type(
                 // renders `2.0` (the Double-print rewrite needs a type).
                 if matches!(field.as_str(), "average" | "toDouble" | "toFloat") {
                     return Some("Double".to_string());
+                }
+                // A copied map IS a map — without the type, `copied["z"] = 3`
+                // fell through to a plain property write (the entry never
+                // landed, so `size` stayed at the original's count).
+                if matches!(field.as_str(), "toMutableMap" | "toMap") {
+                    return Some("MutableMap".to_string());
+                }
+                // `count()` is an Int everywhere, and `fold` returns its
+                // SEED's type — an Int-literal seed types the whole fold
+                // (real Kotlin rejects a lambda producing anything else
+                // against an Int accumulator), so `total / values.size`
+                // truncates like Kotlin's `Int / Int`.
+                if field == "count" {
+                    return Some("Int".to_string());
+                }
+                // The walk-time rewrite swaps `fold(seed) { … }` to JS reduce
+                // order `[lambda, seed]`, so the Int-literal seed may sit at
+                // EITHER position depending on which pass asks. NOT on a
+                // Grouping receiver — `groupingBy{}.fold(seed)` returns a
+                // MAP of per-key folds, and the Int answer sent `sums[key]`
+                // down a non-dict path.
+                if matches!(field.as_str(), "fold" | "foldRight" | "foldIndexed")
+                    && let ExprKind::Call { args, .. } = &expr.kind
+                    && args.iter().any(|a| matches!(a.value.kind, ExprKind::Lit(Literal::Int(_))))
+                    && args.iter().any(|a| matches!(a.value.kind, ExprKind::Lambda { .. }))
+                {
+                    return Some(
+                        if kotlin_expr_type(object, locals, operators).as_deref()
+                            == Some("Grouping")
+                        {
+                            "Map".to_string()
+                        } else {
+                            "Int".to_string()
+                        },
+                    );
+                }
+                // Materializing an Int range keeps the element type — the
+                // lambda-param stamping below needs `(0..6).toList()` to
+                // stay recognizably Int-elemented.
+                if matches!(
+                    field.as_str(),
+                    "toList" | "toMutableList" | "toSet" | "toMutableSet" | "sorted"
+                        | "reversed" | "distinct" | "shuffled"
+                ) && kotlin_expr_type(object, locals, operators)
+                    .as_deref()
+                    .is_some_and(kotlin_int_element_ty)
+                {
+                    return Some("List<Int>".to_string());
                 }
                 if field == "toDuration" {
                     return Some("Duration".to_string());
@@ -6953,6 +8010,64 @@ fn kotlin_expr_type(
                 if name == "__kt_as_double" {
                     return Some("Double".to_string());
                 }
+                // The size builtins are Ints (mirrors the profile's
+                // `[builtin_return_types]`, which types the SHARED gate; this
+                // types the walker's own rewrites).
+                if matches!(
+                    name.as_str(),
+                    "__coll_length" | "__len__" | "__dict_size" | "__kt_set_size"
+                        | "__jvm_map_size"
+                ) {
+                    return Some("Int".to_string());
+                }
+                // The Long shift/widen helpers RETURN Longs — chained ops
+                // (`(1L shl 32).toInt()`) must keep the Long gates firing.
+                if matches!(
+                    name.as_str(),
+                    "__kt_long_shl" | "__kt_long_shr" | "__kt_long_ushr" | "__kt_to_long"
+                        | "BigInt"
+                ) {
+                    return Some("Long".to_string());
+                }
+                // The f32-rounding wrapper PRODUCES a Float — the typing is
+                // its whole purpose (see the companion-constant fold).
+                if name == "__kt_fround" {
+                    return Some("Float".to_string());
+                }
+                // `.toList()` lowers to `__kt_map_entry_list` at walk time —
+                // an Int-element source keeps its element type so the HOF
+                // lambda-param stamping sees `(0..6).toList()`.
+                if matches!(name.as_str(), "__kt_map_entry_list" | "__kt_to_list" | "__kt_to_set")
+                    && let ExprKind::Call { args, .. } = &expr.kind
+                {
+                    let int_elems = args.first().is_some_and(|a| {
+                        kotlin_expr_type(&a.value, locals, operators)
+                            .as_deref()
+                            .is_some_and(kotlin_int_element_ty)
+                    });
+                    // `__kt_to_set` BUILDS a set (computed-key `setOf(…)`
+                    // lowers through it) — the receiver must keep set-like
+                    // typing or every set-gated rewrite goes dark.
+                    if name == "__kt_to_set" {
+                        return Some(if int_elems {
+                            "Set<Int>".to_string()
+                        } else {
+                            "Set".to_string()
+                        });
+                    }
+                    if int_elems {
+                        return Some("List<Int>".to_string());
+                    }
+                }
+                // `fold` reversed to the JS reduce shape — the Int-literal
+                // seed still types the result.
+                if name == "__array_reduce"
+                    && let ExprKind::Call { args, .. } = &expr.kind
+                    && args.iter().any(|a| matches!(a.value.kind, ExprKind::Lit(Literal::Int(_))))
+                    && args.iter().any(|a| matches!(a.value.kind, ExprKind::Lambda { .. }))
+                {
+                    return Some("Int".to_string());
+                }
                 if name == "runCatching" || name == "__kt_as_result" {
                     return Some("Result".to_string());
                 }
@@ -6970,14 +8085,54 @@ fn kotlin_expr_type(
                 {
                     return Some("Double".to_string());
                 }
+                // The element reads keep the element type generally —
+                // `a[1]` lowers here, and `a[1].all { … }` iterates CHARS
+                // only when the element is known to be a String.
+                if matches!(name.as_str(), "__coll_get" | "__kt_get_throwing")
+                    && let ExprKind::Call { args, .. } = &expr.kind
+                    && let Some(elem) = args.first().and_then(|a| {
+                        kotlin_expr_type(&a.value, locals, operators)
+                            .as_deref()
+                            .and_then(kotlin_element_type_name)
+                    })
+                {
+                    return Some(elem.to_string());
+                }
+                // The factory's LITERAL arguments carry the element type —
+                // `val a = listOf("1", "two")` stays a Call here (only a
+                // factory in RECEIVER position is erased to a literal), and a
+                // bare "List" answer starved the lambda-param stamping.
+                let literal_elems = || {
+                    if let ExprKind::Call { args, .. } = &expr.kind
+                        && !args.is_empty()
+                    {
+                        if args
+                            .iter()
+                            .all(|a| matches!(a.value.kind, ExprKind::Lit(Literal::Str(_))))
+                        {
+                            return Some("String");
+                        }
+                        if args
+                            .iter()
+                            .all(|a| matches!(a.value.kind, ExprKind::Lit(Literal::Int(_))))
+                        {
+                            return Some("Int");
+                        }
+                    }
+                    None
+                };
                 return match name.as_str() {
                     "mapOf" | "mutableMapOf" | "linkedMapOf" | "hashMapOf" | "buildMap"
                     | "emptyMap" => Some("Map".to_string()),
                     "setOf" | "mutableSetOf" | "linkedSetOf" | "hashSetOf" | "buildSet"
                     | "emptySet" | "__kt_to_set" | "__kt_set_union" | "__kt_set_intersect"
-                    | "__kt_set_subtract" => Some("Set".to_string()),
+                    | "__kt_set_subtract" => Some(match literal_elems() {
+                        Some(elem) => format!("Set<{elem}>"),
+                        None => "Set".to_string() }),
                     "__kt_to_list" | "listOf" | "mutableListOf" | "arrayListOf"
-                    | "emptyList" | "buildList" => Some("List".to_string()),
+                    | "emptyList" | "buildList" => Some(match literal_elems() {
+                        Some(elem) => format!("List<{elem}>"),
+                        None => "List".to_string() }),
                     // The ctor spellings arrive as plain CALLS too.
                     "IntArray" | "LongArray" | "DoubleArray" | "FloatArray" | "BooleanArray"
                     | "CharArray" | "ByteArray" | "ShortArray" | "UIntArray" | "UByteArray"
@@ -7073,6 +8228,13 @@ fn kotlin_expr_type(
                 }
             }
             if let ExprKind::Member { object, field, .. } = &callee.kind {
+                // `.toLong()` PRODUCES a Long whatever the receiver — typed
+                // here (pre-normalize) so `val widened = source.toLong()`
+                // stamps its local Long before the rewrite erases the
+                // spelling.
+                if field == "toLong" && !is_user_member_name(field, 0) {
+                    return Some("Long".to_string());
+                }
                 let receiver_ty = kotlin_expr_type(object, locals, operators)?;
                 if receiver_ty == "Vector" && matches!(field.as_str(), "iterator" | "listIterator")
                 {
@@ -7098,6 +8260,32 @@ fn kotlin_expr_type(
                     | BinOp::StrictNotEq
             ) {
                 return Some("Boolean".to_string());
+            }
+            // Long arithmetic STAYS Long (JLS §5.6.2 widens the Int side),
+            // so `longValue + 1` keeps the Long gates firing in enclosing
+            // comparisons and chains. The bit ops keep it too — Kotlin only
+            // defines them Long-with-Long.
+            if matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Mod
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+            ) {
+                let l = kotlin_expr_type(left, locals, operators);
+                let r = kotlin_expr_type(right, locals, operators);
+                let integral = |t: &Option<String>| {
+                    matches!(t.as_deref(), Some("Long" | "Int" | "Short" | "Byte"))
+                };
+                if (l.as_deref() == Some("Long") && integral(&r))
+                    || (r.as_deref() == Some("Long") && integral(&l))
+                {
+                    return Some("Long".to_string());
+                }
             }
             let method = crate::protocol::binary_operator_method(*op)?;
             let receiver_ty = kotlin_expr_type(left, locals, operators)?;
@@ -7135,11 +8323,33 @@ fn kotlin_expr_type(
             {
                 return Some(receiver_ty);
             }
+            // Negating a number KEEPS its type — `(-0.0).toString()` must
+            // stay on the Double renderer (the sign of zero is only visible
+            // there).
+            if matches!(op, UnaryOp::Neg | UnaryOp::Pos)
+                && matches!(
+                    receiver_ty.as_str(),
+                    "Double" | "Float" | "Int" | "Long" | "Short" | "Byte"
+                )
+            {
+                return Some(receiver_ty);
+            }
             operators
                 .get(&receiver_ty)
                 .and_then(|info| info.return_type(method))
         }
-        ExprKind::Range { .. } => Some("Range".to_string()),
+        // An Int-endpoint range is an IntRange — its ELEMENTS are Ints, which
+        // the HOF lambda-param stamping and the `toList` materializers read.
+        // Everything that consumes the bare "Range" answer accepts both.
+        ExprKind::Range { start, end, .. } => {
+            if kotlin_expr_type(start, locals, operators).as_deref() == Some("Int")
+                && kotlin_expr_type(end, locals, operators).as_deref() == Some("Int")
+            {
+                Some("IntRange".to_string())
+            } else {
+                Some("Range".to_string())
+            }
+        }
         ExprKind::Object(props) => {
             if props.iter().any(|prop| {
                 matches!(
@@ -7260,6 +8470,7 @@ fn walk_callable_ref(pair: Pair<Rule>) -> Expression {
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
+            Rule::this_kw => qualifier = Some("this".to_string()),
             Rule::dotted_name => qualifier = Some(inner.as_str().to_string()),
             Rule::identifier | Rule::class_kw => name = Some(inner.as_str().to_string()),
             _ => {}
@@ -7269,6 +8480,58 @@ fn walk_callable_ref(pair: Pair<Rule>) -> Expression {
     let Some(name) = name else {
         return Expression::null();
     };
+    // `this::method` — a BOUND reference. Overloaded methods live under
+    // `$sig` storage names, so the wrapper dispatches on the RUNTIME
+    // argument type.
+    if qualifier.as_deref() == Some("this") {
+        let arg = || Expression::ident("__kt_ref_arg");
+        let call_stored = |stored: &str| {
+            Expression::new(ExprKind::Call {
+                callee: Box::new(Expression::new(ExprKind::Member {
+                    object: Box::new(Expression::new(ExprKind::This)),
+                    field: stored.to_string(),
+                    null_safe: false })),
+                args: vec![Argument::positional(arg())],
+                optional: false })
+        };
+        let sigs = USER_METHOD_OVERLOADS.with(|m| {
+            m.borrow()
+                .get(&name)
+                .and_then(|by_arity| by_arity.get(&1))
+                .cloned()
+        });
+        let body = match sigs {
+            Some(sigs) if sigs.len() >= 2 => {
+                // Non-string/bool sig is the fallback arm.
+                let stored_of = |sig: &Vec<String>| format!("{name}$sig{}", sig.join("$"));
+                let fallback = sigs
+                    .iter()
+                    .find(|sig| {
+                        !matches!(sig[0].as_str(), "String" | "Boolean")
+                    })
+                    .unwrap_or(&sigs[0]);
+                let mut expr = call_stored(&stored_of(fallback));
+                for sig in sigs.iter().filter(|s| *s != fallback) {
+                    let check = match sig[0].as_str() {
+                        "String" => "string",
+                        "Boolean" => "boolean",
+                        _ => continue };
+                    expr = Expression::new(ExprKind::Ternary {
+                        cond: Box::new(Expression::new(ExprKind::IsType {
+                            expr: Box::new(arg()),
+                            type_name: check.to_string() })),
+                        then: Box::new(call_stored(&stored_of(sig))),
+                        else_: Box::new(expr) });
+                }
+                expr
+            }
+            _ => call_stored(&name) };
+        return Expression::new(ExprKind::Lambda {
+            params: kotlin_local_capture_params(&["__kt_ref_arg".to_string()]),
+            body: LambdaBody::Expr(Box::new(body)),
+            is_async: false,
+            captures: Vec::new() });
+    }
     if name == "class" {
         if let Some(qualifier) = qualifier {
             let is_type = qualifier
@@ -7683,6 +8946,7 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Option<Statement> {
     let mut body_members = Vec::new();
     let mut decorators = Vec::new();
     let mut entry_idx = 0i64;
+    let mut entry_overrides: HashMap<String, Vec<Statement>> = HashMap::new();
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -7690,6 +8954,91 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Option<Statement> {
             Rule::identifier => {
                 if name.is_empty() {
                     name = inner.as_str().to_string();
+                }
+            }
+            // `enum class Planet(val order: Int)` — the payload constructor.
+            // The grammar always parsed it; the walker DROPPED it, so
+            // `Planet.VENUS.order` read `undefined`. Synthesized here as an
+            // ordinary Constructor member — `lang_enum::install` then
+            // prepends the implicit `__name`/`__ordinal` params (JLS §8.9.2)
+            // and `install_constants` already passes the entry's args after
+            // them.
+            Rule::primary_constructor => {
+                let mut ctor_params = Vec::new();
+                let mut ctor_body = Vec::new();
+                for param in inner.into_inner() {
+                    if param.as_rule() != Rule::class_parameter {
+                        continue;
+                    }
+                    let mut is_prop = false;
+                    let mut is_readonly = false;
+                    let mut pname = String::new();
+                    let mut type_hint = None;
+                    let mut is_nullable = false;
+                    let mut default = None;
+                    for p in param.into_inner() {
+                        match p.as_rule() {
+                            Rule::val_kw => {
+                                is_prop = true;
+                                is_readonly = true;
+                            }
+                            Rule::var_kw => {
+                                is_prop = true;
+                                is_readonly = false;
+                            }
+                            Rule::identifier => pname = p.as_str().to_string(),
+                            Rule::type_ref => {
+                                let (hint, nullable) = kotlin_nullable_type_hint(p.as_str());
+                                is_nullable = nullable;
+                                type_hint = hint;
+                            }
+                            Rule::expr => default = Some(walk_expr(p.clone())),
+                            _ => {}
+                        }
+                    }
+                    if pname.is_empty() {
+                        continue;
+                    }
+                    let is_optional = default.is_some();
+                    ctor_params.push(Param {
+                        name: pname.clone(),
+                        type_hint: type_hint.clone().map(Into::into),
+                        default,
+                        pass_by: PassBy::Value,
+                        is_rest: false,
+                        is_kwargs: false,
+                        is_optional,
+                        is_nullable });
+                    if is_prop {
+                        body_members.push(ClassMember::Field {
+                            name: pname.clone(),
+                            type_hint,
+                            init: None,
+                            modifiers: Modifiers {
+                                visibility: Visibility::Public,
+                                is_readonly,
+                                ..Default::default()
+                            },
+                            with_events: false,
+                            array_bounds: None });
+                        ctor_body.push(Statement::new(StmtKind::Expr(Expression::new(
+                            ExprKind::Assign {
+                                target: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::new(ExprKind::This)),
+                                    field: pname.clone(),
+                                    null_safe: false })),
+                                value: Box::new(Expression::ident(&pname)) },
+                        ))));
+                    }
+                }
+                if !ctor_params.is_empty() {
+                    body_members.push(ClassMember::Constructor {
+                        name: None,
+                        params: ctor_params,
+                        body: ctor_body,
+                        base_args: None,
+                        initializer_target: ConstructorInitializerTarget::Base,
+                        visibility: Visibility::Public });
                 }
             }
             Rule::enum_entry => {
@@ -7704,6 +9053,25 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Option<Statement> {
                                     if e.as_rule() == Rule::expr {
                                         ctor_args.push(walk_expr(e));
                                     }
+                                }
+                            }
+                        }
+                        // `ADD { override fun apply(a, b) = a + b }` — the
+                        // entry's own overrides (JLS §8.9.1's optional class
+                        // body). Collected here; attached AFTER install as
+                        // instance properties on the constant, which shadow
+                        // the class's (abstract) method at lookup.
+                        Rule::class_body => {
+                            for cb in esub.into_inner() {
+                                if cb.as_rule() == Rule::class_member
+                                    && let Some(im) = cb.into_inner().next()
+                                    && im.as_rule() == Rule::function_decl
+                                    && let Some(stmt) = walk_function_decl(im)
+                                {
+                                    entry_overrides
+                                        .entry(em_name.clone())
+                                        .or_insert_with(Vec::new)
+                                        .push(stmt);
                                 }
                             }
                         }
@@ -7725,10 +9093,19 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Option<Statement> {
             }
             Rule::class_member => {
                 if let Some(inner_member) = inner.into_inner().next() {
-                    if inner_member.as_rule() == Rule::function_decl {
-                        if let Some(stmt) = walk_function_decl(inner_member) {
-                            body_members.push(ClassMember::Method(Box::new(stmt)));
+                    match inner_member.as_rule() {
+                        Rule::function_decl => {
+                            if let Some(stmt) = walk_function_decl(inner_member) {
+                                body_members.push(ClassMember::Method(Box::new(stmt)));
+                            }
                         }
+                        // A body property (`val level: Int get() = …`, or a
+                        // stored `val label = …`) — dropped before, so every
+                        // accessor read `undefined`.
+                        Rule::var_decl => {
+                            body_members.extend(walk_class_property(inner_member));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -7763,6 +9140,77 @@ fn walk_enum_decl(pair: Pair<Rule>) -> Option<Statement> {
         &mut body_members,
         vybe_platform_jvm::lang_enum::Accessors::Properties,
     );
+
+    // Entry-body overrides become instance PROPERTIES on the constant,
+    // assigned in the same static init that constructs it — an instance
+    // field shadows the class's declared (abstract) method at lookup, and
+    // the fn-valued-property call convention invokes it without a receiver.
+    if !entry_overrides.is_empty() {
+        let mut attach: Vec<Statement> = Vec::new();
+        for m in &members {
+            let Some(fns) = entry_overrides.remove(&m.name) else {
+                continue;
+            };
+            for stmt in fns {
+                if let StmtKind::FunctionDecl {
+                    name: fname,
+                    mut params,
+                    body: mut fbody,
+                    ..
+                } = stmt.kind
+                {
+                    // Assigning a fn to an object property stamps
+                    // `__vybe_method_receiver`, and the member-call dispatch
+                    // passes the receiver as arg0 for stamped fns — so the
+                    // attached override takes it as a leading param, and
+                    // `this` in the body reads it.
+                    for fs in fbody.iter_mut() {
+                        fs.walk_exprs_mut(&mut |e| {
+                            if matches!(e.kind, ExprKind::This) {
+                                e.kind = ExprKind::Ident("__kt_recv".to_string());
+                            }
+                        });
+                    }
+                    params.insert(
+                        0,
+                        Param {
+                            name: "__kt_recv".to_string(),
+                            type_hint: None,
+                            default: None,
+                            pass_by: PassBy::Value,
+                            is_rest: false,
+                            is_kwargs: false,
+                            is_optional: false,
+                            is_nullable: false },
+                    );
+                    attach.push(Statement::new(StmtKind::Expr(Expression::new(
+                        ExprKind::Assign {
+                            target: Box::new(Expression::new(ExprKind::Member {
+                                object: Box::new(Expression::new(ExprKind::Member {
+                                    object: Box::new(Expression::ident(&name)),
+                                    field: m.name.clone(),
+                                    null_safe: false })),
+                                field: fname,
+                                null_safe: false })),
+                            value: Box::new(Expression::new(ExprKind::Lambda {
+                                params,
+                                body: LambdaBody::Block(fbody),
+                                captures: Vec::new(),
+                                is_async: false })) },
+                    ))));
+                }
+            }
+        }
+        for member in body_members.iter_mut() {
+            if let ClassMember::Method(stmt) = member
+                && let StmtKind::FunctionDecl { name: mname, body: mbody, .. } = &mut stmt.kind
+                && mname == vybe_platform_jvm::lang_enum::STATIC_INIT
+            {
+                mbody.extend(attach.drain(..));
+                break;
+            }
+        }
+    }
 
     Some(Statement::new(StmtKind::ClassDecl {
         name,
@@ -8170,7 +9618,30 @@ fn walk_var_decl(pair: Pair<Rule>) -> Option<Statement> {
     if type_hint.is_none() {
         if let Some(ref expr) = init {
             match expr.kind {
-                ExprKind::Array(_) => type_hint = Some("Array".to_string()),
+                // All-literal elements refine the spelling: the hint WINS
+                // over inference downstream, and a bare "Array" starved the
+                // element-typed rewrites (`values.groupBy { it.all { … } }`
+                // never learned `it` was a String). Same bare-head answers
+                // for every `*_like` helper, so no gate changes meaning.
+                ExprKind::Array(ref elements) => {
+                    type_hint = Some(
+                        if !elements.is_empty()
+                            && elements
+                                .iter()
+                                .all(|e| matches!(e.value.kind, ExprKind::Lit(Literal::Str(_))))
+                        {
+                            "List<String>".to_string()
+                        } else if !elements.is_empty()
+                            && elements
+                                .iter()
+                                .all(|e| matches!(e.value.kind, ExprKind::Lit(Literal::Int(_))))
+                        {
+                            "List<Int>".to_string()
+                        } else {
+                            "Array".to_string()
+                        },
+                    );
+                }
                 ExprKind::Object(_) => {
                     type_hint = kotlin_literal_keyed_collection_type(expr).map(str::to_string);
                 }
@@ -9285,7 +10756,13 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                                         initializer_target: s_target,
                                         visibility: Visibility::Public });
                                 }
-                                Rule::class_decl | Rule::object_decl | Rule::interface_decl => {
+                                Rule::class_decl | Rule::object_decl | Rule::interface_decl
+                                | Rule::enum_decl => {
+                                    // `enum_decl` too: `class Traffic { enum
+                                    // class Light { … } }` DROPPED the enum,
+                                    // so `Traffic.Light.GREEN` read
+                                    // `undefined` (the static-init collector
+                                    // already recurses into NestedType).
                                     if let Some(stmt) = walk_statement(inner_member) {
                                         members.push(ClassMember::NestedType(Box::new(stmt)));
                                     }
@@ -9735,6 +11212,36 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
         });
     }
 
+    // `class AppError(msg: String) : Exception(msg)` — the base is an emit
+    // BUILTIN, not a class, so no base constructor ever ran and `e.message`
+    // read `undefined`. The base argument IS the message; stamp it in the
+    // subclass's own constructor.
+    if parents.first().map(String::as_str).is_some_and(|p| {
+        matches!(
+            p,
+            "Exception" | "RuntimeException" | "IllegalArgumentException"
+                | "IllegalStateException" | "NullPointerException"
+                | "IndexOutOfBoundsException" | "NoSuchElementException"
+                | "UnsupportedOperationException" | "Throwable" | "Error"
+        )
+    }) {
+        for member in &mut members {
+            if let ClassMember::Constructor { body, base_args, .. } = member
+                && let Some(bargs) = base_args
+                && let Some(first) = bargs.first()
+            {
+                body.push(Statement::new(StmtKind::Expr(Expression::new(
+                    ExprKind::Assign {
+                        target: Box::new(Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::new(ExprKind::This)),
+                            field: "message".to_string(),
+                            null_safe: false })),
+                        value: Box::new(first.clone()) },
+                ))));
+            }
+        }
+    }
+
     Some(Statement::new(StmtKind::ClassDecl {
         name,
         parents,
@@ -9758,6 +11265,20 @@ fn walk_class_decl(pair: Pair<Rule>) -> Option<Statement> {
                 ClassKind::Record
             } else {
                 ClassKind::Class
+            },
+            // Storage stays Reference — a `data class` aliases on assignment
+            // like any other class. What it gains is VALUE equality, from the
+            // `equals` normalization derives. `kind` says WHAT was declared;
+            // `semantics` says how it BEHAVES, and the two are independent:
+            // a Pascal record copies and has no `equals`, a `data class` has
+            // `equals` and does not copy.
+            semantics: ValueSemantics {
+                equality: if is_data {
+                    ValueEquality::Structural
+                } else {
+                    ValueEquality::Identity
+                },
+                ..Default::default()
             },
             ..Default::default()
         },
@@ -13027,13 +14548,13 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                 .as_ref()
                                 .is_some_and(|q| parent.as_deref() != Some(q.as_str()));
                             if !next_is_call {
-                                // A stored `override val` shares the base's slot
-                                // and initializers run base-first, so at the
-                                // point the override's initializer runs, the
-                                // field still holds the BASE's value. That is
-                                // exactly what `super.p` names.
+                                // KEEP `Super` as the object here: the
+                                // shadowed-property pass must tell `super.p`
+                                // (the base slot) from `this.p` (possibly a
+                                // mangled child slot). It lowers the
+                                // survivors to `this.p` itself.
                                 current = Expression::new(ExprKind::Member {
-                                    object: Box::new(Expression::new(ExprKind::This)),
+                                    object: Box::new(Expression::new(ExprKind::Super)),
                                     field: field_id,
                                     null_safe: false });
                             } else if qualifies_interface {
@@ -13057,7 +14578,26 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     method: Some(field_id),
                                     args: vec![] });
                             }
-                        } else if !next_is_call && field_id == "code" {
+                        } else if !next_is_call
+                            && matches!(&current.kind, ExprKind::Ident(tyname)
+                                if kotlin_numeric_companion_const(tyname, &field_id).is_some())
+                        {
+                            // `Int.MAX_VALUE` — the numeric companions are
+                            // COMPILE-TIME constants in Kotlin; fold them here
+                            // (there is no Int object to read a member from).
+                            let tyname = match &current.kind {
+                                ExprKind::Ident(t) => t.clone(),
+                                _ => unreachable!() };
+                            current =
+                                kotlin_numeric_companion_const(&tyname, &field_id).unwrap();
+                        } else if !next_is_call
+                            && field_id == "code"
+                            && !is_user_property_name(&field_id)
+                        {
+                            // `Char.code` — but ONLY when no class in this
+                            // source declares a `code` property: the spelling
+                            // match ate `enum class Level(val code: Int)`'s
+                            // member and answered the char-coded NAME.
                             current = Expression::new(ExprKind::Call {
                                 callee: Box::new(Expression::ident("__kt_char_code")),
                                 args: vec![Argument::positional(current)],
@@ -13456,6 +14996,12 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                                 _ => {}
                                             }
                                         }
+                                        // `Any` is Kotlin's implicit root —
+                                        // there is no runtime class behind
+                                        // it, and a super call to it throws.
+                                        if parent_name == "Any" {
+                                            continue;
+                                        }
                                         if !parent_name.is_empty() {
                                             if calls_constructor
                                                 && matches!(
@@ -13520,12 +15066,38 @@ fn walk_expr(pair: Pair<Rule>) -> Expression {
                                     }
                                 }
                                 members.extend(body_members);
-                                if !inits.is_empty() {
+                                // The parent's ctor args (`object :
+                                // Base("base")`) arrive as NEW args — the
+                                // synthesized ctor forwards them to super, or
+                                // the base's properties never initialize.
+                                if !inits.is_empty() || !ctor_args.is_empty() {
+                                    let fwd_params: Vec<Param> = (0..ctor_args.len())
+                                        .map(|k| Param {
+                                            name: format!("__kt_a{k}"),
+                                            type_hint: None,
+                                            default: None,
+                                            pass_by: PassBy::Value,
+                                            is_rest: false,
+                                            is_kwargs: false,
+                                            is_optional: false,
+                                            is_nullable: false })
+                                        .collect();
+                                    let base_args = if ctor_args.is_empty() {
+                                        None
+                                    } else {
+                                        Some(
+                                            (0..ctor_args.len())
+                                                .map(|k| {
+                                                    Expression::ident(&format!("__kt_a{k}"))
+                                                })
+                                                .collect::<Vec<_>>(),
+                                        )
+                                    };
                                     members.push(ClassMember::Constructor {
                                         name: None,
-                                        params: Vec::new(),
+                                        params: fwd_params,
                                         body: inits,
-                                        base_args: None,
+                                        base_args,
                                         initializer_target: ConstructorInitializerTarget::Base,
                                         visibility: Visibility::Public });
                                 }
@@ -13720,6 +15292,9 @@ fn infix_bitwise_op(op: &str) -> Option<BinOp> {
         "xor" => Some(BinOp::BitXor),
         "shl" => Some(BinOp::Shl),
         "shr" => Some(BinOp::Shr),
+        // `UShr` exists in the shared model now (`>>>` semantics), so the
+        // member-call fallback this comment used to promise is gone.
+        "ushr" => Some(BinOp::UShr),
         _ => None }
 }
 
@@ -13748,7 +15323,18 @@ fn walk_literal(pair: Pair<Rule>) -> Expression {
         Rule::null_kw => Expression::null(),
         Rule::true_kw => Expression::bool(true),
         Rule::false_kw => Expression::bool(false),
-        Rule::int_literal => Expression::int(parse_int_literal(inner.as_str())),
+        Rule::int_literal => {
+            // The `L` suffix picks kotlin.Long — an ecma BigInt literal, so
+            // the value stays exact past 2^53 and the shared bigint routing
+            // (JVM long semantics) applies. Plain and `u` literals stay Int.
+            let raw = inner.as_str();
+            let n = parse_int_literal(raw);
+            if raw.trim_end_matches(['u', 'U']).ends_with(['L', 'l']) {
+                Expression::new(ExprKind::Lit(Literal::BigInt(n)))
+            } else {
+                Expression::int(n)
+            }
+        }
         Rule::float_literal => {
             let s: String = inner
                 .as_str()
@@ -14024,6 +15610,24 @@ fn create_map_expr(props: Vec<ObjectProperty>) -> Expression {
 /// [`SET_MARKER`] because a `Set` and a `Map` are the same runtime shape and
 /// render differently: `[1, 2, 3]` versus `{a=1}`.
 fn create_kotlin_set_expr(elems: Vec<Expression>) -> Expression {
+    // A COMPUTED key (a data-class element, a nested collection) can only be
+    // deduplicated at runtime — the Object-literal path pushed every
+    // duplicate into `__keys`, so `setOf(Box(1), Box(1))` answered size 2.
+    // `__kt_to_set` runs the same tostring-keyed `set_add` loop the adapters
+    // use, which also keeps the FIRST occurrence like Kotlin does.
+    if elems
+        .iter()
+        .any(|elem| !matches!(kotlin_key_expr(elem.clone()).kind, ExprKind::Lit(Literal::Str(_))))
+    {
+        let items = elems
+            .into_iter()
+            .map(|value| ArrayElement { key: None, value, spread: false, by_ref: false })
+            .collect();
+        return Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::ident("__kt_to_set")),
+            args: vec![Argument::positional(Expression::new(ExprKind::Array(items)))],
+            optional: false });
+    }
     let mut props = vec![ObjectProperty::KeyValue {
         key: Expression::new(ExprKind::Lit(Literal::Str(SET_MARKER.to_string()))),
         value: Expression::bool(true) }];

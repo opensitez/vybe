@@ -410,7 +410,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Java,
         body,
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 fn java_body_references_prelude(body: &[Statement], prelude: &[Statement]) -> bool {
@@ -2525,8 +2526,8 @@ fn walk_record(pair: Pair<Rule>) -> Result<StmtKind, String> {
             // holding the same component is **false**, `r1.equals(r2)` is
             // **true**. `equality` states whether value-equality compares
             // FIELDS; which syntax reaches it is the language's business.
-            record: RecordPolicy {
-                equality: RecordEquality::Structural,
+            semantics: ValueSemantics {
+                equality: ValueEquality::Structural,
                 ..Default::default()
             },
             ..into_class_modifiers(pm)
@@ -4320,6 +4321,23 @@ fn java_binary_with_string_concat(op: BinOp, left: Expression, right: Expression
             args: vec![Argument::positional(left), Argument::positional(right)],
             optional: false })
     } else {
+        // JLS §5.6.2 binary numeric promotion: a char operand in ARITHMETIC
+        // promotes to its code unit — `'A' + 1` is 66, `'a' + 'b'` is 195.
+        // String `+` is already handled above, so only numeric pairs land
+        // here.
+        let (left, right) = if matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+        ) && (matches!(left.kind, ExprKind::Lit(Literal::Char(_)))
+            || matches!(right.kind, ExprKind::Lit(Literal::Char(_))))
+        {
+            (
+                java_char_numeric_cast_expr(left),
+                java_char_numeric_cast_expr(right),
+            )
+        } else {
+            (left, right)
+        };
         let effective_op = if op == BinOp::Div
             && !is_java_double_arithmetic_expr(&left)
             && !is_java_double_arithmetic_expr(&right)
@@ -7793,10 +7811,14 @@ fn collect_member_chain<'a>(expr: &'a Expression, parts: &mut Vec<&'a str>) -> O
 
 fn java_character_prelude_fn(method: &str) -> Option<&'static str> {
     match method {
-        "isDigit" => Some("__j_char_is_digit"),
-        "isLetter" => Some("__j_char_is_letter"),
-        "isLetterOrDigit" => Some("__j_char_is_alnum"),
-        "isWhitespace" => Some("__j_char_is_space"),
+        // isDigit/isLetter/isLetterOrDigit/isWhitespace/isUpperCase/isLowerCase
+        // are NOT here on purpose: they fall through to the jvm tree
+        // (`lang.character.is* → jvm.java.char_is_*`), which guards the char
+        // model and delegates to the shared Unicode classifiers in
+        // `primitives/strings.rs`. The prelude's `__j_char_is_*` fns still
+        // exist for format_runtime's internal ASCII scans — mapping the
+        // Character.* surface onto those ASCII bodies made
+        // `Character.isLetter('É')` false.
         "getNumericValue" => Some("__j_char_numeric"),
         "toChars" => Some("__j_char_to_chars"),
         "toCodePoint" => Some("__j_char_to_code_point"),
@@ -8097,10 +8119,16 @@ fn java_functional_static_call(
 }
 
 fn java_arg_is_char_array(arg: &Argument) -> bool {
-    matches!(
-        &arg.value.kind,
-        ExprKind::Ident(name) if JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow().contains(name.as_str()))
-    )
+    match &arg.value.kind {
+        ExprKind::Ident(name) => {
+            JAVA_CHAR_ARRAY_VARS.with(|vars| vars.borrow().contains(name.as_str()))
+        }
+        // `Character.toChars(cp)` IS a char[] — so `new String(...)` over it
+        // routes through the chars-to-string copy, not Object stringify.
+        ExprKind::Call { callee, .. } => {
+            matches!(&callee.kind, ExprKind::Ident(name) if name == "__j_char_to_chars")
+        }
+        _ => false }
 }
 
 fn java_arg_is_byte_array(arg: &Argument) -> bool {
@@ -9676,7 +9704,18 @@ fn walk_literal(pair: Pair<Rule>) -> Result<Expression, String> {
                     return Ok(Expression::int(code as i64));
                 }
             }
-            Ok(Expression::string(&unescape_java_string(content)))
+            // A char literal IS a char (JLS §3.10.4) — walked as
+            // `Literal::Char`, so the numeric contexts
+            // (`java_char_numeric_cast_expr`, overload typing, binary
+            // promotion) match the Char arms they always had instead of
+            // guessing from one-char strings. The value level still
+            // renders it as a one-char string.
+            let text = unescape_java_string(content);
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Ok(Expression::new(ExprKind::Lit(Literal::Char(c)))),
+                _ => Ok(Expression::string(&text)),
+            }
         }
         Rule::string_literal => {
             let s = inner.as_str();
@@ -12678,7 +12717,7 @@ fn rewrite_java_double_field_prints(stmts: &mut [Statement], double_fields: &Has
         let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
             continue;
         };
-        if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "println" || name == "print")
+        if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "println" || name == "print" || name == "__p" || name == "__pr")
             || args.len() != 1
         {
             continue;
@@ -12705,7 +12744,7 @@ fn rewrite_java_double_method_prints(stmts: &mut [Statement], double_methods: &H
         let ExprKind::Call { callee, args, .. } = &mut expr.kind else {
             continue;
         };
-        if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "println" || name == "print")
+        if !matches!(callee.kind, ExprKind::Ident(ref name) if name == "println" || name == "print" || name == "__p" || name == "__pr")
             || args.len() != 1
         {
             continue;
@@ -17724,7 +17763,7 @@ fn normalize_java_expr(
             }
             if matches!(
                 &callee.kind,
-                ExprKind::Ident(name) if matches!(name.as_str(), "__j_print" | "__j_println" | "__java_print" | "__java_println")
+                ExprKind::Ident(name) if matches!(name.as_str(), "__j_print" | "__j_println" | "__java_print" | "__java_println" | "__p" | "__pr")
             ) {
                 if let Some(first) = args.get_mut(0) {
                     *first = java_print_arg(first.clone());

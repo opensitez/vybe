@@ -63,7 +63,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
                 // which reaches the object's ToString slot.
                 super::string_adapter::emit_value_of(chunks, current, line);
             }
-            host::emit(&mut chunks[current], "wasi:logging/logging", "log", 1, line);
+            host::emit(&mut chunks[current], "web:console", "log", 1, line);
             emit_print_stream_sentinel(&mut chunks[current], line);
         }
         "java.print_no_newline" => {
@@ -301,75 +301,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
             core_wasm::i32_const(&mut chunks[current], line, 1);
             chunks[current].emit_op(Op::I32_SHR_U, line);
             chunks[current].emit_op(Op::I32_SUB, line);
-        }
-        "java.bigint_to_string" => {
-            super::biginteger_adapter::emit_to_string(chunks, current, line);
-        }
-        "java.bigint_add" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "add", line);
-        }
-        "java.bigint_sub" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "sub", line);
-        }
-        "java.bigint_mul" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "mul", line);
-        }
-        "java.bigint_rem" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "rem", line);
-        }
-        "java.bigint_pow" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "pow", line);
-        }
-        "java.bigint_and" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "and", line);
-        }
-        "java.bigint_or" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "or", line);
-        }
-        "java.bigint_xor" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "xor", line);
-        }
-        "java.bigint_shl" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "shl", line);
-        }
-        "java.bigint_shr" => {
-            super::biginteger_adapter::emit_binary(chunks, current, "shr", line);
-        }
-        "java.bigint_neg" => {
-            super::biginteger_adapter::emit_unary(chunks, current, "neg", line);
-        }
-        "java.bigint_not" => {
-            super::biginteger_adapter::emit_unary(chunks, current, "not", line);
-        }
-        "java.bigint_abs" => {
-            super::biginteger_adapter::emit_abs(chunks, current, line);
-        }
-        "java.bigint_compare_to" => {
-            super::biginteger_adapter::emit_compare_to(chunks, current, line);
-        }
-        "java.bigint_signum" => {
-            super::biginteger_adapter::emit_signum(chunks, current, line);
-        }
-        "java.bigint_max" => {
-            super::biginteger_adapter::emit_min_max(chunks, current, false, line);
-        }
-        "java.bigint_min" => {
-            super::biginteger_adapter::emit_min_max(chunks, current, true, line);
-        }
-        "java.bigint_bit_length" => {
-            super::biginteger_adapter::emit_bit_length(chunks, current, line);
-        }
-        "java.bigint_test_bit" => {
-            super::biginteger_adapter::emit_test_bit(chunks, current, line);
-        }
-        "java.bigint_gcd" => {
-            super::biginteger_adapter::emit_gcd(chunks, current, line);
-        }
-        "java.bigint_is_probable_prime" => {
-            super::biginteger_adapter::emit_is_probable_prime(chunks, current, line);
-        }
-        "java.bigint_next_probable_prime" => {
-            super::biginteger_adapter::emit_next_probable_prime(chunks, current, line);
         }
         "java.is_infinite" => {
             host::emit(&mut chunks[current], "ecma:number", "isFinite", 1, line);
@@ -903,23 +834,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
 
         // ── Character helpers ─────────────────────────────────────────────
+        // `ecma:char` was never a registered host module — these arms
+        // panicked at compile time. Shared with kotlin via the jvm
+        // platform's guards over the tier-3 `strings::emit_is_*` primitives.
         "java.char_is_digit" => {
-            host::emit(&mut chunks[current], "ecma:char", "isDigit", 1, line);
+            vybe_platform_jvm::emitter::string_adapter::emit_char_is_digit(chunks, current, line);
         }
         "java.char_is_letter" => {
-            host::emit(&mut chunks[current], "ecma:char", "isLetter", 1, line);
+            vybe_platform_jvm::emitter::string_adapter::emit_char_is_letter(chunks, current, line);
         }
         "java.char_is_alnum" => {
-            host::emit(&mut chunks[current], "ecma:char", "isAlnum", 1, line);
+            vybe_platform_jvm::emitter::string_adapter::emit_char_is_alnum(chunks, current, line);
         }
         "java.char_is_upper" => {
-            host::emit(&mut chunks[current], "ecma:char", "isUpper", 1, line);
+            vybe_platform_jvm::emitter::string_adapter::emit_char_is_upper(chunks, current, line);
         }
         "java.char_is_lower" => {
-            host::emit(&mut chunks[current], "ecma:char", "isLower", 1, line);
+            vybe_platform_jvm::emitter::string_adapter::emit_char_is_lower(chunks, current, line);
         }
         "java.char_is_space" => {
-            host::emit(&mut chunks[current], "ecma:char", "isSpace", 1, line);
+            vybe_platform_jvm::emitter::string_adapter::emit_char_is_space(chunks, current, line);
         }
         "java.char_to_upper" => {
             strings::emit_to_upper(&mut chunks[current], line);
@@ -929,6 +863,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "java.char_numeric" => {
             host::emit(&mut chunks[current], "ecma:number", "parseInt", 1, line);
+        }
+        "java.from_char_code" => {
+            super::string_adapter::emit_from_char_code(chunks, current, line);
         }
 
         // ── Array helpers ─────────────────────────────────────────────────

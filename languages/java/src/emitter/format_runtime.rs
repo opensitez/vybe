@@ -4841,29 +4841,82 @@ fn string_fns() -> Vec<Statement> {
             )),
         ],
     ));
+    // A surrogate PAIR combines into one real code point before appending —
+    // the pair is representable as a string where the lone halves are not
+    // (a lone half stays a NUMBER, see `__j_from_char_code`), so
+    // `new String(Character.toChars(0x1F600))` round-trips.
     out.push(function_stmt(
         "__j_array_chars_to_string",
         vec!["a", "off", "cnt"],
         vec![
             var_decl("out", str_lit("")),
             var_decl("i", int_lit(0)),
+            var_decl("n", int_lit(0)),
             while_stmt(
                 binary(BinOp::Lt, ident("i"), ident("cnt")),
                 vec![
                     assign(
-                        ident("out"),
-                        add(
-                            ident("out"),
-                            call(
-                                "__j_from_char_code",
-                                vec![call(
-                                    "__java_char_ord",
-                                    vec![index_expr(ident("a"), add(ident("off"), ident("i")))],
-                                )],
-                            ),
+                        ident("n"),
+                        call(
+                            "__java_char_ord",
+                            vec![index_expr(ident("a"), add(ident("off"), ident("i")))],
                         ),
                     ),
-                    assign(ident("i"), add(ident("i"), int_lit(1))),
+                    if_stmt(
+                        binary(
+                            BinOp::And,
+                            call("__j_char_is_high_surrogate", vec![ident("n")]),
+                            binary(
+                                BinOp::And,
+                                binary(BinOp::Lt, add(ident("i"), int_lit(1)), ident("cnt")),
+                                call(
+                                    "__j_char_is_low_surrogate",
+                                    vec![call(
+                                        "__java_char_ord",
+                                        vec![index_expr(
+                                            ident("a"),
+                                            add(add(ident("off"), ident("i")), int_lit(1)),
+                                        )],
+                                    )],
+                                ),
+                            ),
+                        ),
+                        vec![
+                            assign(
+                                ident("out"),
+                                add(
+                                    ident("out"),
+                                    call(
+                                        "__j_from_code_point",
+                                        vec![call(
+                                            "__j_char_to_code_point",
+                                            vec![
+                                                ident("n"),
+                                                call(
+                                                    "__java_char_ord",
+                                                    vec![index_expr(
+                                                        ident("a"),
+                                                        add(
+                                                            add(ident("off"), ident("i")),
+                                                            int_lit(1),
+                                                        ),
+                                                    )],
+                                                ),
+                                            ],
+                                        )],
+                                    ),
+                                ),
+                            ),
+                            assign(ident("i"), add(ident("i"), int_lit(2))),
+                        ],
+                        Some(vec![
+                            assign(
+                                ident("out"),
+                                add(ident("out"), call("__j_from_char_code", vec![ident("n")])),
+                            ),
+                            assign(ident("i"), add(ident("i"), int_lit(1))),
+                        ]),
+                    ),
                 ],
             ),
             ret(ident("out")),

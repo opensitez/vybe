@@ -27,11 +27,44 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::stream_adapter as stream;
     use crate::emitter::string_adapter;
     use crate::emitter::stringbuilder_adapter as sb;
+    use crate::emitter::biginteger_adapter as bigint;
     use crate::emitter::stringtokenizer_adapter as st;
     use crate::emitter::system_adapter as system;
     use crate::emitter::url_adapter as url;
     use crate::emitter::uuid_adapter as uuid;
     match name {
+        // ── java.math.BigInteger (ecma:bigint-backed; tree-bound so every
+        // JVM-family language resolves it) ──
+        "jvm.java.bigint_new" => bigint::emit_new(chunks, current, argc, line),
+        "jvm.java.bigint_to_string" => bigint::emit_to_string(chunks, current, line),
+        "jvm.java.bigint_add" => bigint::emit_binary(chunks, current, "add", line),
+        "jvm.java.bigint_sub" => bigint::emit_binary(chunks, current, "sub", line),
+        "jvm.java.bigint_mul" => bigint::emit_binary(chunks, current, "mul", line),
+        "jvm.java.bigint_div" => bigint::emit_binary(chunks, current, "div", line),
+        "jvm.java.bigint_rem" => bigint::emit_binary(chunks, current, "rem", line),
+        "jvm.java.bigint_pow" => bigint::emit_binary(chunks, current, "pow", line),
+        "jvm.java.bigint_and" => bigint::emit_binary(chunks, current, "and", line),
+        "jvm.java.bigint_or" => bigint::emit_binary(chunks, current, "or", line),
+        "jvm.java.bigint_xor" => bigint::emit_binary(chunks, current, "xor", line),
+        "jvm.java.bigint_eq" => bigint::emit_binary(chunks, current, "eq", line),
+        "jvm.java.bigint_shl" => bigint::emit_binary(chunks, current, "shl", line),
+        "jvm.java.bigint_shr" => bigint::emit_binary(chunks, current, "shr", line),
+        "jvm.java.bigint_neg" => bigint::emit_unary(chunks, current, "neg", line),
+        "jvm.java.bigint_not" => bigint::emit_unary(chunks, current, "not", line),
+        "jvm.java.bigint_abs" => bigint::emit_abs(chunks, current, line),
+        "jvm.java.bigint_compare_to" => bigint::emit_compare_to(chunks, current, line),
+        "jvm.java.bigint_signum" => bigint::emit_signum(chunks, current, line),
+        "jvm.java.bigint_max" => bigint::emit_min_max(chunks, current, false, line),
+        "jvm.java.bigint_min" => bigint::emit_min_max(chunks, current, true, line),
+        "jvm.java.bigint_bit_length" => bigint::emit_bit_length(chunks, current, line),
+        "jvm.java.bigint_test_bit" => bigint::emit_test_bit(chunks, current, line),
+        "jvm.java.bigint_gcd" => bigint::emit_gcd(chunks, current, line),
+        "jvm.java.bigint_is_probable_prime" => {
+            bigint::emit_is_probable_prime(chunks, current, line)
+        }
+        "jvm.java.bigint_next_probable_prime" => {
+            bigint::emit_next_probable_prime(chunks, current, line)
+        }
         // ── java.util.EnumSet ──
         "jvm.java.enum_set_none_of" => enum_set::emit_none_of(chunks, current, line),
         "jvm.java.enum_set_all_of" => enum_set::emit_all_of(chunks, current, line),
@@ -439,23 +472,26 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.floor_div" => math::emit_floor_div(chunks, current, line),
         "jvm.java.floor_mod" => math::emit_floor_mod(chunks, current, line),
         "jvm.java.identity" => {}
+        // `ecma:char` was never a registered host module — these arms
+        // panicked at compile time. The classifiers are the shared tier-3
+        // string primitives behind a jvm char-model guard in `string_adapter`.
         "jvm.java.char_is_digit" => {
-            host::emit(&mut chunks[current], "ecma:char", "isDigit", 1, line);
+            string_adapter::emit_char_is_digit(chunks, current, line);
         }
         "jvm.java.char_is_letter" => {
-            host::emit(&mut chunks[current], "ecma:char", "isLetter", 1, line);
+            string_adapter::emit_char_is_letter(chunks, current, line);
         }
         "jvm.java.char_is_alnum" => {
-            host::emit(&mut chunks[current], "ecma:char", "isAlnum", 1, line);
+            string_adapter::emit_char_is_alnum(chunks, current, line);
         }
         "jvm.java.char_is_upper" => {
-            host::emit(&mut chunks[current], "ecma:char", "isUpper", 1, line);
+            string_adapter::emit_char_is_upper(chunks, current, line);
         }
         "jvm.java.char_is_lower" => {
-            host::emit(&mut chunks[current], "ecma:char", "isLower", 1, line);
+            string_adapter::emit_char_is_lower(chunks, current, line);
         }
         "jvm.java.char_is_space" => {
-            host::emit(&mut chunks[current], "ecma:char", "isSpace", 1, line);
+            string_adapter::emit_char_is_space(chunks, current, line);
         }
         "jvm.java.char_to_upper" => strings::emit_to_upper(&mut chunks[current], line),
         "jvm.java.char_to_lower" => strings::emit_to_lower(&mut chunks[current], line),
@@ -476,6 +512,38 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "jvm.java.int_bit_count" => {
             chunks[current].emit_op(vybe_runtime::opcode::Op::I32_POPCNT, line);
+        }
+        "jvm.java.int_compare_unsigned" => {
+            // Integer.compareUnsigned(a, b): both read as u32
+            // (F64_CONVERT_I32_U after the i32 wrap), then a three-way f64
+            // compare — -1/0/1.
+            use vybe_runtime::opcode::Op;
+            let to_i32 = chunks[current].add_import("wasm:js-number", "toI32");
+            let b = chunks[current].alloc_scratch(1);
+            let a = chunks[current].alloc_scratch(1);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, b, line);
+            chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
+            for slot in [a, b] {
+                chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+                chunks[current].emit_call(to_i32, 1, line);
+                chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
+                chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
+            }
+            chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+            chunks[current].emit_op(Op::F64_LT, line);
+            chunks[current].emit_if_value(line);
+            chunks[current].emit_f64_const(-1.0, line);
+            chunks[current].emit_else(line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+            chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+            chunks[current].emit_op(Op::F64_GT, line);
+            chunks[current].emit_if_value(line);
+            chunks[current].emit_f64_const(1.0, line);
+            chunks[current].emit_else(line);
+            chunks[current].emit_f64_const(0.0, line);
+            chunks[current].emit_end(line);
+            chunks[current].emit_end(line);
         }
         "jvm.java.int_leading_zeros" => {
             chunks[current].emit_op(vybe_runtime::opcode::Op::I32_CLZ, line);

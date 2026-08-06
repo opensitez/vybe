@@ -470,7 +470,6 @@ pub fn emit_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) 
     } else {
         emit_to_string(chunks, current, line);
     }
-    let log = chunks[current].add_import("wasi:logging/logging", "log");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, log, line);
-    chunks[current].emit(1, line);
+    let log = chunks[current].add_import("web:console", "log");
+    chunks[current].emit_call(log, 1, line);
 }

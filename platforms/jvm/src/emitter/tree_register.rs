@@ -314,6 +314,7 @@ fn java_type_ctor_target(qualified: &str) -> Option<NamespaceNode> {
         "java.util.concurrent.ConcurrentHashMap" => "jvm.java.concurrent_hash_map_new",
         "java.util.IdentityHashMap" => "jvm.java.identity_hash_map_new",
         "java.util.LinkedHashMap" => "jvm.java.linked_hash_map_new",
+        "java.math.BigInteger" => "jvm.java.bigint_new",
         "java.util.BitSet" => "jvm.java.bitset_new",
         "java.util.UUID" => "jvm.java.uuid_new",
         "java.util.Random" | "java.util.SplittableRandom" => "jvm.java.random_new",
@@ -408,6 +409,11 @@ fn insert_java_lang_core_statics(root: &mut Subtree) {
         ),
         ("lang.integer", "tohexstring", "jvm.java.to_hex_string"),
         ("lang.integer", "bitcount", "jvm.java.int_bit_count"),
+        (
+            "lang.integer",
+            "compareunsigned",
+            "jvm.java.int_compare_unsigned",
+        ),
         (
             "lang.integer",
             "numberofleadingzeros",
@@ -557,6 +563,64 @@ fn insert_java_lang_core_statics(root: &mut Subtree) {
     ] {
         insert_host_static(root, type_path, member, module, func);
     }
+}
+
+/// `java.math.BigInteger` instance methods — TREE-bound (never a walker
+/// name-table), so Java's qualified spellings and Kotlin's interop both
+/// resolve them. Every target composes `ecma:bigint` in the platform's
+/// biginteger adapter. `mod` maps to `rem` deliberately for now: Java's
+/// `mod` is the non-negative variant, and the rem-shaped answer is what the
+/// Java surface already gave.
+fn insert_java_math_biginteger_methods(root: &mut Subtree) {
+    const SPECS: &[(&str, &str, &str, u8, u8)] = &[
+        ("math.biginteger", "tostring", "jvm.java.bigint_to_string", 0, 0),
+        ("math.biginteger", "add", "jvm.java.bigint_add", 1, 1),
+        ("math.biginteger", "subtract", "jvm.java.bigint_sub", 1, 1),
+        ("math.biginteger", "multiply", "jvm.java.bigint_mul", 1, 1),
+        ("math.biginteger", "divide", "jvm.java.bigint_div", 1, 1),
+        ("math.biginteger", "remainder", "jvm.java.bigint_rem", 1, 1),
+        ("math.biginteger", "mod", "jvm.java.bigint_rem", 1, 1),
+        ("math.biginteger", "pow", "jvm.java.bigint_pow", 1, 1),
+        ("math.biginteger", "gcd", "jvm.java.bigint_gcd", 1, 1),
+        ("math.biginteger", "and", "jvm.java.bigint_and", 1, 1),
+        ("math.biginteger", "or", "jvm.java.bigint_or", 1, 1),
+        ("math.biginteger", "xor", "jvm.java.bigint_xor", 1, 1),
+        ("math.biginteger", "equals", "jvm.java.bigint_eq", 1, 1),
+        ("math.biginteger", "not", "jvm.java.bigint_not", 0, 0),
+        ("math.biginteger", "negate", "jvm.java.bigint_neg", 0, 0),
+        ("math.biginteger", "abs", "jvm.java.bigint_abs", 0, 0),
+        ("math.biginteger", "shiftleft", "jvm.java.bigint_shl", 1, 1),
+        ("math.biginteger", "shiftright", "jvm.java.bigint_shr", 1, 1),
+        ("math.biginteger", "compareto", "jvm.java.bigint_compare_to", 1, 1),
+        ("math.biginteger", "signum", "jvm.java.bigint_signum", 0, 0),
+        ("math.biginteger", "min", "jvm.java.bigint_min", 1, 1),
+        ("math.biginteger", "max", "jvm.java.bigint_max", 1, 1),
+        ("math.biginteger", "testbit", "jvm.java.bigint_test_bit", 1, 1),
+        ("math.biginteger", "bitlength", "jvm.java.bigint_bit_length", 0, 0),
+        (
+            "math.biginteger",
+            "isprobableprime",
+            "jvm.java.bigint_is_probable_prime",
+            1,
+            1,
+        ),
+        (
+            "math.biginteger",
+            "nextprobableprime",
+            "jvm.java.bigint_next_probable_prime",
+            0,
+            0,
+        ),
+    ];
+    let mut methods = Subtree::new();
+    for (_, member, emit, min_args, max_args) in SPECS {
+        methods.insert(
+            (*member).to_string(),
+            common_method(emit, *min_args, *max_args),
+        );
+    }
+    ensure_type_node(root, "math.biginteger");
+    merge_type_methods(root, "math.biginteger", methods);
 }
 
 fn insert_java_util_collection_methods(root: &mut Subtree) {
@@ -3013,6 +3077,7 @@ pub fn register_namespace_tree() {
         insert_java_stream_statics(&mut root);
         insert_java_net_url_uri(&mut root);
         insert_java_util_collection_methods(&mut root);
+        insert_java_math_biginteger_methods(&mut root);
         insert_java_util_collection_statics(&mut root);
         insert_java_util_enum_set(&mut root);
         insert_java_io_methods(&mut root);

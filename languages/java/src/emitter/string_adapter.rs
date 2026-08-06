@@ -12,6 +12,29 @@ pub fn emit_index_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
     host::emit(&mut chunks[current], "ecma:string", "indexOf", argc, line);
 }
 
+/// `(char)n` — `String.fromCharCode`, EXCEPT a lone surrogate stays a
+/// NUMBER: the string host cannot hold one (it renders empty), which then
+/// breaks every downstream `charCodeAt`. Mirrors the walker's rule for a
+/// `'\uD800'` literal, so both spellings of a lone surrogate share one
+/// model.
+pub fn emit_from_char_code(chunks: &mut [Chunk], current: usize, line: u32) {
+    let n = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, n, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_f64_const(55296.0, line);
+    chunks[current].emit_op(Op::F64_GE, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_f64_const(57344.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_op(Op::I32_AND, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, n, line);
+    host::emit(&mut chunks[current], "ecma:string", "fromCharCode", 1, line);
+    chunks[current].emit_end(line);
+}
+
 pub fn emit_last_index_of(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let chunk = &mut chunks[current];
     let arg_count = argc.saturating_sub(1);

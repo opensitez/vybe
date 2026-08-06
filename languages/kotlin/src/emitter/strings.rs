@@ -443,39 +443,6 @@ pub fn emit_to_boolean_strict_or_null(chunks: &mut Vec<Chunk>, current: usize, _
     chunks[current].emit_end(line);
 }
 
-/// Char classification on one-char strings. `isDigit` is a range test;
-/// `isLetter` is "case-folding changes it OR it is a letter-ish non-cased
-/// char" — approximated as the two case folds differing, which covers the
-/// bicameral scripts the corpus uses.
-pub fn emit_is_digit(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let c = chunks[current].alloc_scratch(1);
-    set(chunks, current, c, line);
-    get(chunks, current, c, line);
-    chunks[current].emit_string_const("0", line);
-    ops::emit_dyn_ge(&mut chunks[current], line);
-    truthy(chunks, current, line);
-    chunks[current].emit_if_value(line);
-    get(chunks, current, c, line);
-    chunks[current].emit_string_const("9", line);
-    ops::emit_dyn_le(&mut chunks[current], line);
-    truthy(chunks, current, line);
-    chunks[current].emit_else(line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    chunks[current].emit_end(line);
-    bool_out(chunks, current, line);
-}
-
-pub fn emit_is_letter(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
-    let c = chunks[current].alloc_scratch(1);
-    set(chunks, current, c, line);
-    get(chunks, current, c, line);
-    strings::emit_to_lower(&mut chunks[current], line);
-    get(chunks, current, c, line);
-    strings::emit_to_upper(&mut chunks[current], line);
-    ops::emit_dyn_ne(&mut chunks[current], line);
-    bool_out(chunks, current, line);
-}
-
 /// `trimIndent()` — drop a first/last blank line, remove the common leading
 /// whitespace of the non-blank lines.
 pub fn emit_trim_indent(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {

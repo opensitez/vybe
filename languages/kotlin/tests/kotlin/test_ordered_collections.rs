@@ -78,7 +78,10 @@ fn test_map_iteration_over_entries_order() {
         }
     "#,
     );
-    assert_eq!(out, &["first,second,third", "1,2,3"]);
+    // Real Kotlin agrees: the source passes ";" as the separator, so
+    // kotlinc prints semicolon-joined lines (the comma expectation
+    // contradicted the test's own source; insertion order is the point).
+    assert_eq!(out, &["first;second;third", "1;2;3"]);
 }
 
 #[test]

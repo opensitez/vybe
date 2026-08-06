@@ -2134,6 +2134,12 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
 
     let mut worker = create_function_chunk("__java_thread_worker", 1);
     let target_key = worker.add_constant(Value::String(Arc::from("__target")));
+    // Slot 0 arrives as the thread object's TABLE INDEX (the wasi-threads
+    // record's user_arg is an i32; objects cross via funcref table 0).
+    worker.emit_op_u16(Op::LOCAL_GET, 0, line);
+    worker.emit_op(Op::TABLE_GET, line);
+    worker.emit(0u8, line);
+    worker.emit_op_u16(Op::LOCAL_SET, 0, line);
     worker.emit_op_u16(Op::LOCAL_GET, 0, line);
     vybe_compiler::primitives::globals::emit_write(&mut worker, "__j_current_thread", line);
     vybe_compiler::primitives::globals::emit_read(&mut worker, "__j_runnable_run", line);
@@ -2145,10 +2151,14 @@ pub fn emit_java_thread_start_with(chunks: &mut Vec<Chunk>, current: usize, line
     chunks.push(worker);
     let worker_idx = chunks.len() - 1;
 
+    // [thread_obj] → table 0 (index = user_arg), then the wasi spawn.
     get(&mut chunks[current], thread, line);
+    chunks[current].emit_i32_const(1, line);
+    chunks[current].emit_op(Op::TABLE_GROW, line);
+    chunks[current].emit(0u8, line);
     chunks[current].emit_op_u16(Op::REF_FUNC, worker_idx as u16, line);
     chunks[current].emit(0, line);
-    chunks[current].emit_op(Op::THREAD_SPAWN, line);
+    vybe_compiler::primitives::threading::emit_thread_spawn(chunks, current, line);
     set(&mut chunks[current], task, line);
 
     get(&mut chunks[current], thread, line);

@@ -14,7 +14,9 @@ fn test_enum_class_simple() {
         }
     "#,
     );
-    assert_eq!(out, &["0"]);
+    // Real Kotlin agrees: printing an enum entry gives its NAME
+    // (`Enum.toString` is the name), never the ordinal.
+    assert_eq!(out, &["NORTH"]);
 }
 
 #[test]
@@ -27,7 +29,8 @@ fn test_enum_class_matching() {
 
         fun main() {
             val s = Status.APPROVED
-            if (s == 1) {
+            // Was `s == 1` — kotlinc rejects comparing an enum to Int.
+            if (s == Status.APPROVED) {
                 println("Approved Status")
             } else {
                 println("Other Status")
@@ -51,7 +54,8 @@ fn test_enum_all_entries() {
         }
     "#,
     );
-    assert_eq!(out, &["0", "1", "2"]);
+    // Real Kotlin agrees: names, not ordinals.
+    assert_eq!(out, &["LOW", "MEDIUM", "HIGH"]);
 }
 
 #[test]
@@ -215,7 +219,8 @@ fn test_enum_iteration_with_for() {
         }
     "#,
     );
-    assert_eq!(out, &["0,1,2,"]);
+    // Real Kotlin agrees: string concatenation renders the NAMES.
+    assert_eq!(out, &["RED,GREEN,BLUE,"]);
 }
 
 #[test]
@@ -257,7 +262,8 @@ fn test_enum_to_int_ordinal_like_behavior() {
         }
     "#,
     );
-    assert_eq!(out, &["0", "2"]);
+    // Real Kotlin agrees: names, not ordinals.
+    assert_eq!(out, &["ONE", "THREE"]);
 }
 
 #[test]
@@ -352,7 +358,7 @@ enum class Grade { A, B, C }; fun rank(g: Grade): Int { return when (g) { Grade.
 fn test_enum_array_iteration_sum() {
     let out = run_prints(
         r#"
-enum class Digit { D0, D1, D2, D3 }; fun main() { var n = 0; for (d in arrayOf(Digit.D0, Digit.D1, Digit.D2, Digit.D3)) { n += d }; println(n) }
+enum class Digit { D0, D1, D2, D3 }; fun main() { var n = 0; for (d in arrayOf(Digit.D0, Digit.D1, Digit.D2, Digit.D3)) { n += d.ordinal }; println(n) }
 "#,
     );
     assert_eq!(out, &["6"]);
@@ -402,7 +408,7 @@ enum class Tag { ONE, TWO }; fun describe(t: Tag): String { return when (t) { Ta
 fn test_enum_multiple_values_and_sum() {
     let out = run_prints(
         r#"
-enum class Piece { A, B, C, D }; fun main() { var total = 0; for (p in arrayOf(Piece.A, Piece.B, Piece.C, Piece.D)) { total += p }; println(total) }
+enum class Piece { A, B, C, D }; fun main() { var total = 0; for (p in arrayOf(Piece.A, Piece.B, Piece.C, Piece.D)) { total += p.ordinal }; println(total) }
 "#,
     );
     assert_eq!(out, &["6"]);

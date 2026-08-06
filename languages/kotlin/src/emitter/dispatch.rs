@@ -58,8 +58,8 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "kotlin.last_index_of_any" => { crate::emitter::strings::emit_index_of_any(chunks, current, argc, true, line); true }
         "kotlin.to_boolean" => { crate::emitter::strings::emit_to_boolean(chunks, current, argc, line); true }
         "kotlin.to_boolean_strict_or_null" => { crate::emitter::strings::emit_to_boolean_strict_or_null(chunks, current, argc, line); true }
-        "kotlin.is_digit" => { crate::emitter::strings::emit_is_digit(chunks, current, argc, line); true }
-        "kotlin.is_letter" => { crate::emitter::strings::emit_is_letter(chunks, current, argc, line); true }
+        "kotlin.is_digit" => { vybe_platform_jvm::emitter::string_adapter::emit_char_is_digit(chunks, current, line); true }
+        "kotlin.is_letter" => { vybe_platform_jvm::emitter::string_adapter::emit_char_is_letter(chunks, current, line); true }
         "kotlin.trim_indent" => { crate::emitter::strings::emit_trim_indent(chunks, current, argc, line); true }
         "kotlin.trim_margin" => { crate::emitter::strings::emit_trim_margin(chunks, current, argc, line); true }
         "kotlin.slice_any" => { crate::emitter::hof::emit_slice_any(chunks, current, argc, line); true }
@@ -146,6 +146,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "kotlin.to_short_wrap" => { crate::emitter::numbers::emit_wrap_int(chunks, current, 16, true, line); true }
         "kotlin.to_ubyte" => { crate::emitter::numbers::emit_wrap_int(chunks, current, 8, false, line); true }
         "kotlin.to_ushort" => { crate::emitter::numbers::emit_wrap_int(chunks, current, 16, false, line); true }
+        "kotlin.to_uint" => { crate::emitter::numbers::emit_to_uint32(chunks, current, line); true }
+        "kotlin.long_to_int" => { crate::emitter::numbers::emit_long_to_int32(chunks, current, line); true }
+        "kotlin.to_long" => { crate::emitter::numbers::emit_to_long(chunks, current, line); true }
+        "kotlin.long_shl" => { crate::emitter::numbers::emit_long_shift(chunks, current, vybe_compiler::primitives::bigint::ShiftKind::Shl, line); true }
+        "kotlin.long_shr" => { crate::emitter::numbers::emit_long_shift(chunks, current, vybe_compiler::primitives::bigint::ShiftKind::Shr, line); true }
+        "kotlin.long_ushr" => { crate::emitter::numbers::emit_long_shift(chunks, current, vybe_compiler::primitives::bigint::ShiftKind::Ushr, line); true }
         "kotlin.double_str" => { crate::emitter::numbers::emit_double_to_string(chunks, current, line); true }
         "kotlin.tuple_prop" => { crate::emitter::maps::emit_tuple_prop(chunks, current, argc, line); true }
         "kotlin.list_get_throwing" => { crate::emitter::maps::emit_list_get_throwing(chunks, current, argc, line); true }
@@ -234,6 +240,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // Identity at RUNTIME — the marker's whole job is carrying the
         // Double static type out of the erased `toDouble(unit)` call.
         "kotlin.as_double" => true,
+        "kotlin.int_div" => {
+            crate::emitter::numbers::emit_int_div(chunks, current, argc, line);
+            true
+        }
         "kotlin.duration_whole" => {
             crate::emitter::time::emit_duration_whole(chunks, current, argc, line);
             true

@@ -932,7 +932,9 @@ fn test_nested_scoping_functions_show_receiver_visibility() {
         }
     "#,
     );
-    assert_eq!(out, &["7"]);
+    // Real Kotlin agrees: after `this.value += 1` the receiver holds 2, so
+    // `local` starts at 2, `also` raises it to 6, and 2 + 6 = 8.
+    assert_eq!(out, &["8"]);
 }
 
 #[test]

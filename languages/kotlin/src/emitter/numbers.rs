@@ -27,9 +27,8 @@ pub fn emit_print_double(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line
     } else {
         emit_double_to_string(chunks, current, line);
     }
-    let log = chunks[current].add_import("wasi:logging/logging", "log");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, log, line);
-    chunks[current].emit(1, line);
+    let log = chunks[current].add_import("web:console", "log");
+    chunks[current].emit_call(log, 1, line);
 }
 
 /// Kotlin `Double.toString()`. Stack: `[value]` → `[string]`.
@@ -40,6 +39,29 @@ pub fn emit_print_double(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line
 pub fn emit_double_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let text = chunks[current].alloc_scratch(1);
 
+    // Negative zero: ECMA's ToString renders it "0" (§6.1.6.1.20), Kotlin
+    // renders the sign — "-0.0". Detected the only way f64 allows: it
+    // compares equal to zero while 1/x is -Infinity. Emitted INLINE, so the
+    // shape is one value-if with the ordinary rendering in its else arm.
+    let v = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, v, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_EQ, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_f64_const(1.0, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    chunks[current].emit_f64_const(0.0, line);
+    chunks[current].emit_op(Op::F64_LT, line);
+    chunks[current].emit_if_value(line);
+    chunks[current].emit_string_const("-0.0", line);
+    chunks[current].emit_else(line);
+    chunks[current].emit_string_const("0.0", line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_else(line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, v, line);
     let to_str = chunks[current].add_import("ecma:string", "String");
     chunks[current].emit_call(to_str, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, text, line);
@@ -53,6 +75,8 @@ pub fn emit_double_to_string(chunks: &mut Vec<Chunk>, current: usize, line: u32)
     chunks[current].emit_string_const(".0", line);
     chunks[current].emit_end(line);
     vybe_compiler::primitives::strings::emit_concat(&mut chunks[current], 2, line);
+
+    chunks[current].emit_end(line);
 }
 
 /// Push i32 `1` when the rendered number already shows a fraction or exponent
@@ -253,4 +277,71 @@ pub fn emit_wrap_int(
         chunk.emit_i32_const(mask, line);
         chunk.emit_op(Op::I32_AND, line);
     }
+}
+
+/// Kotlin `toUInt` — the SAME 32 bits read unsigned: `(-1).toUInt()` is
+/// 4294967295. Plain truncation kept the sign, which is only right for
+/// values already in range.
+///
+/// Stack: `[value]` → `[f64]`.
+pub fn emit_to_uint32(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    let chunk = &mut chunks[current];
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+    let to_i32 = chunk.add_import("wasm:js-number", "toI32");
+    chunk.emit_call(to_i32, 1, line);
+    chunk.emit_op(Op::F64_CONVERT_I32_U, line);
+}
+
+/// Kotlin `Long.toInt()` — the shared width primitive at 32 bits, handed
+/// back as a NUMBER (Kotlin `Int` lives in the number model).
+///
+/// Stack: `[value]` → `[f64 in i32 range]`.
+pub fn emit_long_to_int32(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    vybe_compiler::primitives::bigint::emit_as_int_n_number(&mut chunks[current], 32, line);
+}
+
+/// Kotlin `toLong()` — the shared truncate-then-BigInt widening.
+///
+/// Stack: `[value]` → `[bigint]`.
+pub fn emit_to_long(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
+    vybe_compiler::primitives::bigint::emit_to_bigint_trunc(&mut chunks[current], line);
+}
+
+/// The three Kotlin `Long` shifts — the shared width primitive at 64 bits
+/// (count masks &63 per JLS §15.19, result wraps, `ushr` reads unsigned).
+///
+/// Stack: `[value, count]` → `[bigint]`.
+pub fn emit_long_shift(
+    chunks: &mut Vec<Chunk>,
+    current: usize,
+    kind: vybe_compiler::primitives::bigint::ShiftKind,
+    line: u32,
+) {
+    vybe_compiler::primitives::bigint::emit_wrapped_shift(&mut chunks[current], 64, kind, line);
+}
+
+/// Kotlin `Int / Int` — truncating division that THROWS ArithmeticException
+/// on a zero divisor (JLS §15.17.2), where the raw wasm op would trap
+/// uncatchably and the float fallback answered `Infinity`.
+///
+/// Stack: `[a, b]` → `[quotient]`.
+pub fn emit_int_div(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
+    let b = chunks[current].alloc_scratch(1);
+    let a = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, b, line);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    chunks[current].emit_f64_const(0.0, line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if(line);
+    chunks[current].emit_string_const("/ by zero", line);
+    crate::emitter::nullability::emit_exception(chunks, current, 1, "ArithmeticException", line);
+    vybe_compiler::primitives::errors::emit_throw(&mut chunks[current], line);
+    chunks[current].emit_end(line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, a, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, b, line);
+    chunks[current].emit_op(Op::F64_DIV, line);
+    vybe_compiler::primitives::math::emit_trunc(&mut chunks[current], line);
 }

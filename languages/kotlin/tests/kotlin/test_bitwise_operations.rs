@@ -57,7 +57,9 @@ fn test_inv_for_simple_values() {
         }
     "#,
     );
-    assert_eq!(out, &["-1", "0", "-256", "-1024"]);
+    // Real Kotlin agrees: `inv()` is bitwise NOT, so `1.inv()` is ~1 = -2 in
+    // two's complement (the old `0` expectation was a logical-not answer).
+    assert_eq!(out, &["-1", "-2", "-256", "-1024"]);
 }
 
 #[test]
@@ -173,7 +175,9 @@ fn test_flags_with_union_and_intersection() {
         }
     "#,
     );
-    assert_eq!(out, &["1", "0", "7", "-8", "2", "4"]);
+    // Real Kotlin agrees: `withExec and canRead.inv()` is 7 & ~1 = 6 —
+    // clearing one bit of a 3-bit mask cannot go negative (-8 is ~7).
+    assert_eq!(out, &["1", "0", "7", "6", "2", "4"]);
 }
 
 #[test]
@@ -256,7 +260,10 @@ fn test_long_unsigned_shift_right() {
     );
     assert_eq!(
         out,
-        &["9223372036854775807", "2305843009213693950", "7", "0"]
+        // Real Kotlin agrees: -16L is 0xFFFF_FFFF_FFFF_FFF0; ushr 2 gives
+        // 0x3FFF_FFFF_FFFF_FFFC = 2^62 - 4 = 4611686018427387900 (the old
+        // value was `ushr 3`'s answer).
+        &["9223372036854775807", "4611686018427387900", "7", "0"]
     );
 }
 
@@ -272,7 +279,10 @@ fn test_bitwise_precedence_with_arithmetic() {
         }
     "#,
     );
-    assert_eq!(out, &["9", "3", "16", "32"]);
+    // Real Kotlin agrees: additive binds tighter than the named infix ops,
+    // and same-level infix chains are LEFT-associative — `1 or 2 + 4 and 8`
+    // is `(1 or 6) and 8` = 0, and `2 shl 3 + 1` is `2 shl 4` = 32.
+    assert_eq!(out, &["0", "3", "32", "32"]);
 }
 
 #[test]
@@ -304,7 +314,9 @@ fn test_bitwise_filters_using_shifted_masks() {
         }
     "#,
     );
-    assert_eq!(out, &["0,1,2,3,0,1,2,3,0,3,0,3", "8,15"]);
+    // Real Kotlin agrees: 31 = 0b11111 has bit 3 set, so the flags filter
+    // keeps 8, 15 AND 31.
+    assert_eq!(out, &["0,1,2,3,0,1,2,3,0,3,0,3", "8,15,31"]);
 }
 
 #[test]
@@ -356,7 +368,11 @@ fn test_bitwise_counting_subset_flags() {
         }
     "#,
     );
-    assert_eq!(out, &["3", "3", "10"]);
+    // Real Kotlin agrees: infix `and` binds tighter than `==`, so
+    // `it and 1 == 0` keeps only the even values 0b1010 and 0b1000 — 2. The
+    // pair filter `(it and 0b0110) == 0b0010` passes BOTH 0b1010 (10) and
+    // 0b0011 (3).
+    assert_eq!(out, &["3", "2", "10,3"]);
 }
 
 #[test]
@@ -428,7 +444,10 @@ fn test_bitwise_identity_with_self_xor() {
         }
     "#,
     );
-    assert_eq!(out, &["0,0,0,0,0", "0,1,2,3,255"]);
+    // Real Kotlin agrees: `(it xor 0) xor it` is `it xor it` = 0 for every
+    // value — round-tripping back to the input needs a nonzero key on both
+    // sides, which this body never uses.
+    assert_eq!(out, &["0,0,0,0,0", "0,0,0,0,0"]);
 }
 
 #[test]
@@ -540,7 +559,9 @@ fn test_unsigned_right_shift_of_negative_masks_with_and() {
         }
     "#,
     );
-    assert_eq!(out, &["1073741822", "2"]);
+    // Real Kotlin agrees: 0x3FFFFFFE & 0x3FFFFFFF keeps every set bit —
+    // 1073741822 again, not 2.
+    assert_eq!(out, &["1073741822", "1073741822"]);
 }
 
 #[test]
@@ -592,7 +613,9 @@ fn test_isolate_least_significant_set_bit() {
         }
     "#,
     );
-    assert_eq!(out, &["8", "88"]);
+    // Real Kotlin agrees: `value and (value - 1)` CLEARS the lowest set bit
+    // — 0b1011000 & 0b1010111 = 0b1010000 = 80.
+    assert_eq!(out, &["8", "80"]);
 }
 
 #[test]
@@ -627,7 +650,9 @@ fn test_bitwise_with_java_long_bitcount_and_number_of_leading_zeros() {
         }
     "#,
     );
-    assert_eq!(out, &["2", "28", "1", "32"]);
+    // Real Java agrees: 0b10010 = 18 occupies 5 bits, so
+    // numberOfLeadingZeros is 32 - 5 = 27, not 28.
+    assert_eq!(out, &["2", "27", "1", "32"]);
 }
 
 #[test]
@@ -661,5 +686,7 @@ fn test_bitwise_is_equivalent_between_inline_and_functional_calls() {
         }
     "#,
     );
-    assert_eq!(out, &["25", "25", "201"]);
+    // Real Kotlin agrees: 0b11011001 & 0b00001111 = 0b1001 = 9 for both the
+    // inline and functional forms; only the inv-mask line was right.
+    assert_eq!(out, &["9", "9", "201"]);
 }

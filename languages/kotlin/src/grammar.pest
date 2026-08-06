@@ -135,8 +135,11 @@ type_ref = !{
     dotted_name ~ type_args? ~ "." ~ "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
   | "(" ~ eat_terminators ~ (type_ref ~ (eat_terminators ~ "," ~ eat_terminators ~ type_ref)*)? ~ eat_terminators ~ ")" ~ "->" ~ type_ref
   // `((Int) -> Int)?` — a PARENTHESIZED type with its own nullability.
-  | "(" ~ eat_terminators ~ type_ref ~ eat_terminators ~ ")" ~ "?"?
-  | dotted_name ~ type_args? ~ "?"?
+  // The nullability marker refuses an adjacent `:` — in `x as? String ?: y`
+  // that `?` is the ELVIS token, not `String?` (measured: the greedy match
+  // left a stray `:` and failed the whole declaration).
+  | "(" ~ eat_terminators ~ type_ref ~ eat_terminators ~ ")" ~ ("?" ~ !":")?
+  | dotted_name ~ type_args? ~ ("?" ~ !":")?
 }
 
 // A type ARGUMENT is not a type: `List<*>` is a star projection and
@@ -191,8 +194,13 @@ destructuring_decl = !{
 }
 
 // Enums
+// Between ENTRIES only newlines may be eaten: the `;` is the separator
+// Kotlin requires between the last entry and the body members, and
+// `eat_terminators` (which eats `;` too) swallowed it — `abstract fun …`
+// then parsed as another ENTRY named `abstract` and failed at `fun`.
+eat_newlines = _{ NEWLINE* }
 enum_decl = {
-    annotation* ~ modifier* ~ enum_kw ~ class_kw ~ identifier ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ "{" ~ eat_terminators ~ (enum_entry ~ (","? ~ eat_terminators ~ enum_entry)* ~ ","?)? ~ eat_terminators ~ (";" ~ eat_terminators ~ (class_member ~ eat_terminators)*)? ~ "}"
+    annotation* ~ modifier* ~ enum_kw ~ class_kw ~ identifier ~ primary_constructor? ~ (":" ~ inheritance_list)? ~ "{" ~ eat_newlines ~ (enum_entry ~ (","? ~ eat_newlines ~ enum_entry)* ~ ","?)? ~ eat_newlines ~ (";" ~ eat_terminators ~ (class_member ~ eat_terminators)*)? ~ "}"
 }
 // An entry may override members for itself — `A { override fun f() = 1 }`.
 enum_entry = { annotation* ~ identifier ~ ("(" ~ eat_terminators ~ arg_list? ~ eat_terminators ~ ")")? ~ class_body? }
@@ -401,7 +409,7 @@ primary = {
   | super_expr
 }
 
-callable_ref = { dotted_name? ~ "::" ~ (identifier | class_kw) }
+callable_ref = { (this_kw | dotted_name)? ~ "::" ~ (identifier | class_kw) }
 
 // `this@Outer` reaches an outer receiver from an inner class or a scope
 // function; `super<Base>.f()` picks WHICH supertype's default implementation to

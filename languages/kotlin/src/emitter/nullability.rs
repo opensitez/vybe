@@ -3,6 +3,89 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
+/// The JVM ancestor chain a typed catch may name — `catch (e:
+/// RuntimeException)` must match a thrown `IllegalArgumentException`
+/// (JLS §11.2's hierarchy). The shared `exception_ancestors` table is the
+/// Python-shaped tree and canonicalizes `RuntimeException` away, so the JVM
+/// spelling is stamped here, by the language that means it.
+fn jvm_exception_chain(exc_name: &str) -> Vec<&'static str> {
+    match exc_name {
+        "NumberFormatException" => vec![
+            "NumberFormatException",
+            "IllegalArgumentException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "IllegalArgumentException" => vec![
+            "IllegalArgumentException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "IllegalStateException" => vec![
+            "IllegalStateException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "NullPointerException" => vec![
+            "NullPointerException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "IndexOutOfBoundsException" => vec![
+            "IndexOutOfBoundsException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "NoSuchElementException" => vec![
+            "NoSuchElementException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "UnsupportedOperationException" => vec![
+            "UnsupportedOperationException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "ArithmeticException" => vec![
+            "ArithmeticException",
+            "RuntimeException",
+            "RuntimeError",
+            "Exception",
+            "Throwable",
+        ],
+        "RuntimeException" => vec!["RuntimeException", "RuntimeError", "Exception", "Throwable"],
+        _ => vec!["Exception", "Throwable"],
+    }
+}
+
+/// Stamp `__types` with the JVM chain. Stack: `[obj]` → `[obj]`.
+fn emit_stamp_jvm_chain(chunk: &mut Chunk, exc_name: &str, line: u32) {
+    let chain = jvm_exception_chain(exc_name);
+    chunk.emit_dup(line);
+    for name in &chain {
+        chunk.emit_string_const(name, line);
+    }
+    chunk.emit_array_new_fixed(0, chain.len() as u16, line);
+    let key = chunk.add_constant(vybe_runtime::Value::String(std::sync::Arc::from(
+        vybe_compiler::primitives::reflection::FIELD_TYPES,
+    )));
+    chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
+}
+
 fn emit_exception_throw(chunk: &mut Chunk, exc_name: &str, message_slot: Option<u16>, line: u32) {
     chunk.emit_struct_new(0, 0, line);
     chunk.emit_dup(line);
@@ -13,6 +96,7 @@ fn emit_exception_throw(chunk: &mut Chunk, exc_name: &str, message_slot: Option<
         chunk.emit_string_const(exc_name, line);
     }
     vybe_compiler::primitives::errors::emit_exception_new_finalize(chunk, exc_name, line);
+    emit_stamp_jvm_chain(chunk, exc_name, line);
     vybe_compiler::primitives::errors::emit_throw(chunk, line);
 }
 
@@ -42,6 +126,7 @@ pub fn emit_exception(
         exc_name,
         line,
     );
+    emit_stamp_jvm_chain(&mut chunks[current], exc_name, line);
 }
 
 /// Kotlin `x!!`.

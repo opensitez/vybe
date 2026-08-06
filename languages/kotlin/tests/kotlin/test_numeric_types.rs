@@ -101,7 +101,12 @@ fn test_remainder_with_floating_values() {
         }
     "#,
     );
-    assert_eq!(out, &["1.5", "0.2", "-1.5"]);
+    // Real Kotlin agrees: IEEE 8.2 is not exactly 8.2, so `8.2 % 2.0`
+    // prints its shortest round-trip form "0.19999999999999929" — never
+    // "0.2". (Currently still red: the host's Number→String stops at
+    // "0.1999999999999993", an ecma shortest-repr deviation reported
+    // upstream — platforms/ecma is not edited from language work.)
+    assert_eq!(out, &["1.5", "0.19999999999999929", "-1.5"]);
 }
 
 #[test]
@@ -120,7 +125,9 @@ fn test_long_basic_arithmetic() {
     );
     assert_eq!(
         out,
-        &["1000000000250", "999999999750", "2000000000000", "4000000"]
+        // Real Kotlin agrees: 1_000_000_000_000 / 250 is 4_000_000_000 —
+        // the old value dropped three zeros.
+        &["1000000000250", "999999999750", "2000000000000", "4000000000"]
     );
 }
 
@@ -154,7 +161,9 @@ fn test_int_and_double_mix_rounds_through_double() {
         }
     "#,
     );
-    assert_eq!(out, &["7.5", "7.5", "2.5", "3.5"]);
+    // Real Kotlin agrees: `10 / 4` is INTEGER division (2), so the last
+    // line is 2.5 — 3.5 would need `10 / 4.0`.
+    assert_eq!(out, &["7.5", "7.5", "2.5", "2.5"]);
 }
 
 #[test]
@@ -519,5 +528,8 @@ fn test_numeric_zero_rules() {
         }
     "#,
     );
-    assert_eq!(out, &["0", "0", "0", "0", "0", "0", "true"]);
+    // Real Kotlin agrees: Doubles print with their decimal point and
+    // negative zero KEEPS its sign — `println(0.0)` is "0.0" and
+    // `println(-0.0)` is "-0.0" (only the Int lines render bare).
+    assert_eq!(out, &["0", "0", "0", "0", "0.0", "-0.0", "true"]);
 }

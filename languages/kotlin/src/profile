@@ -29,6 +29,11 @@ dynamic_add = true
 # stayed on the stack. `"x=" + this.n` then concatenated the RECEIVER with the
 # field (`[object C]A`), and any arithmetic use trapped in `toF64`.
 supports_spread_arguments = true
+# Kotlin `Long` IS ecma BigInt — declared below as `[builtin_types] bigint =
+# ["long"]`, which the shared emitter derives EVERYTHING from: the capability
+# itself, the hint classification (a Long variable/param reads as bigint),
+# and the mixing policy (declared integer spellings WIDEN — `1L + 2` is Long,
+# `1L + 2.0` is Double — where ECMA's distinct-type BigInt throws). No flag.
 ecma_array_method_dispatch = false
 ecma_in_operator = true
 has_undefined_value = true
@@ -44,6 +49,25 @@ integer_division_on_slash = true
 has_ecma_globals = true
 ecma_object_literals = true
 tuple_literals_tagged = true
+
+# Free-call builtins with a KNOWN integer result — `values.size / 2` must
+# truncate (Kotlin `Int / Int` is an Int), and the shared gate only trusts
+# what it can type. `.size`/`.length` lower to `__coll_length` at walk time,
+# so naming these here types every read without a walker rewrite.
+[builtin_return_types]
+__kt_int_div = "int"
+__kt_long_to_int = "int"
+# Long-producing helpers: "bigint" is the SHARED inference's spelling, so
+# unary minus and mixed ops on their results route through ecma:bigint.
+__kt_to_long = "bigint"
+__kt_long_shl = "bigint"
+__kt_long_shr = "bigint"
+__kt_long_ushr = "bigint"
+__coll_length = "int"
+__len__ = "int"
+__dict_size = "int"
+__kt_set_size = "int"
+__jvm_map_size = "int"
 
 [array_methods]
 map          = "__array_map"
@@ -141,6 +165,22 @@ __kt_remove_if     = { emit = "common:kotlin.remove_if", min_args = 2, max_args 
 __kt_sort_range    = { emit = "common:kotlin.sort_range", min_args = 3, max_args = 3 }
 __kt_double_str    = { emit = "common:kotlin.double_str", min_args = 1, max_args = 1 }
 __kt_dur_whole     = { emit = "common:kotlin.duration_whole", min_args = 3, max_args = 3 }
+__kt_int_div       = { emit = "common:kotlin.int_div", min_args = 2, max_args = 2 }
+__kt_long_to_int   = { emit = "common:kotlin.long_to_int", min_args = 1, max_args = 1 }
+# `Math.fround` (ECMA-262 §21.3.2.17) IS f32: Kotlin `Float` arithmetic
+# rounds each result to f32, so `Float.MAX_VALUE * 2` overflows to Infinity
+# where the f64 value would stay finite.
+__kt_fround        = { emit = "host:ecma:math:fround", min_args = 1, max_args = 1 }
+# The ecma BigInt constructor, spelled the way the SHARED inference types as
+# bigint — the Long-widening normalize wraps operands in it (never user code).
+BigInt             = { emit = "host:ecma:bigint:BigInt", min_args = 1, max_args = 1 }
+# `Number` is the demotion the same normalize uses for Long-into-Double
+# arithmetic and Long range endpoints.
+Number             = { emit = "host:ecma:number:Number", min_args = 1, max_args = 1 }
+__kt_to_long       = { emit = "common:kotlin.to_long", min_args = 1, max_args = 1 }
+__kt_long_shl      = { emit = "common:kotlin.long_shl", min_args = 2, max_args = 2 }
+__kt_long_shr      = { emit = "common:kotlin.long_shr", min_args = 2, max_args = 2 }
+__kt_long_ushr     = { emit = "common:kotlin.long_ushr", min_args = 2, max_args = 2 }
 __kt_as_double     = { emit = "common:kotlin.as_double", min_args = 1, max_args = 1 }
 __kt_as_result     = { emit = "common:kotlin.as_double", min_args = 1, max_args = 1 }
 __kt_duration_str  = { emit = "common:kotlin.duration_str", min_args = 1, max_args = 1 }
@@ -392,11 +432,12 @@ toLongOrNull     = { emit = "common:kotlin.to_int_or_null_radix", min_args = 0, 
 toShortOrNull    = { emit = "common:kotlin.to_short_or_null", min_args = 0, max_args = 0 }
 toByte           = { emit = "common:kotlin.to_byte_wrap", min_args = 0, max_args = 0 }
 toShort          = { emit = "common:kotlin.to_short_wrap", min_args = 0, max_args = 0 }
-# Unsigned casts mask to the width; toUInt/toULong just truncate (values
-# beyond 2^31 would need a real unsigned representation).
+# Unsigned casts mask to the width; toUInt reads the 32 bits unsigned
+# (f64 holds 2^32 exactly). toULong still truncates — 2^64-wide values
+# would need a real unsigned representation.
 toUByte          = { emit = "common:kotlin.to_ubyte", min_args = 0, max_args = 0 }
 toUShort         = { emit = "common:kotlin.to_ushort", min_args = 0, max_args = 0 }
-toUInt           = { emit = "host:ecma:math:trunc", min_args = 0, max_args = 0 }
+toUInt           = { emit = "common:kotlin.to_uint", min_args = 0, max_args = 0 }
 toULong          = { emit = "host:ecma:math:trunc", min_args = 0, max_args = 0 }
 hashCode         = { emit = "common:object.hash_code", min_args = 0, max_args = 0 }
 equals           = { emit = "common:kotlin.equals_ic", min_args = 1, max_args = 2 }
@@ -547,6 +588,12 @@ string = ["charsequence", "char"]
 # platform table already carries `int`/`long`/`short`/`byte`/`uint`/`ulong`/
 # `ushort`; only Kotlin's unsigned byte is missing from it.
 int    = ["ubyte"]
+# Kotlin `Long` IS ecma BigInt — the DECLARATION the shared inference reads,
+# so a Long-typed variable or parameter classifies bigint and the shared
+# operator routing carries it (no walker conversion dance). Declaring an
+# integer spelling here also means mixes WIDEN (Kotlin's rule) instead of
+# throwing (ECMA's §21.2.1.1, which is about a distinct user-visible type).
+bigint = ["long"]
 array  = [
     "list", "list<*", "mutablelist", "mutablelist<*",
     "array", "array<*", "collection", "collection<*", "iterable", "iterable<*",

@@ -54,7 +54,11 @@ kotlin_run_test!(
             println(acc)
         }
     "#,
-    &["36"]
+    // Real Kotlin agrees: each outer pass adds 1 (j=0) before the unlabeled
+    // break fires at j=1, then 10 after the inner loop — (1+10)*3 = 33.
+    // 36 would need the j=1 iteration to add before breaking, which it never
+    // reaches. The outer loop running all 3 passes is the point of the test.
+    &["33"]
 );
 
 kotlin_run_test!(
@@ -136,7 +140,9 @@ kotlin_run_test!(
             println(x)
         }
     "#,
-    &["4"]
+    // Real Kotlin agrees: i=0 adds at j=0 and j=1 then break@inner at j=2;
+    // i=1 hits continue@outer immediately at j=0 — x ends at 2, not 4.
+    &["2"]
 );
 
 kotlin_run_test!(
@@ -155,7 +161,9 @@ kotlin_run_test!(
             println(out)
         }
     "#,
-    &["a1|a2|a3|c1|c2|c3|"]
+    // Real Kotlin agrees: `continue@outer` fires at (b, 2) — AFTER (b, 1)
+    // already appended "b1|". Only b2 and b3 are skipped.
+    &["a1|a2|a3|b1|c1|c2|c3|"]
 );
 
 kotlin_run_test!(

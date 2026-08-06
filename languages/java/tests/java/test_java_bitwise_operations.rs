@@ -32,10 +32,12 @@ jt!(
 jt!(bit_clear, "int v = 7; v &= ~2; System.out.println(v);", "5");
 jt!(bit_set, "int v = 1; v |= 8; System.out.println(v);", "9");
 jt!(bit_toggle, "int v = 5; v ^= 1; System.out.println(v);", "4");
+// Real Java agrees: (7 << 1) & 10 is 14 & 10 = 0b1110 & 0b1010 = 0b1010
+// = 10 (the old value has no derivation).
 jt!(
     mixed_bitwise_ops,
     "int v = 7; int w = (v << 1) & 10; System.out.println(w);",
-    "6"
+    "10"
 );
 jt!(
     bit_mask_and_shift,
@@ -74,12 +76,15 @@ jt!(
     "15"
 );
 jt!(bitwise_and_chain, "System.out.println((15 & 14 & 7));", "6");
-jt!(bitwise_xor_chain, "System.out.println((15 ^ 10 ^ 3));", "4");
+// Real Java agrees: 15 ^ 10 = 5, 5 ^ 3 = 6.
+jt!(bitwise_xor_chain, "System.out.println((15 ^ 10 ^ 3));", "6");
 jt!(shift_then_mask, "System.out.println((1 << 3) & 15);", "8");
+// Real Java agrees: 13 is 0b1101 — bit 1 is CLEAR, so (13 & 2) == 0 is
+// true.
 jt!(
     mask_parity,
     "int v = 13; System.out.println((v & 2) == 0);",
-    "false"
+    "true"
 );
 jt!(
     ternary_with_bitops,
@@ -91,8 +96,10 @@ jt!(
     "int a = 1; a <<= 2; a |= 1; System.out.println(a);",
     "5"
 );
+// Real Java agrees: 12 >> 2 is 3, 3 << 2 is 12 — the round trip only
+// loses bits BELOW the shift width, and 12 has none set there.
 jt!(
     double_shift_back,
     "int a = 12; a >>= 2; a <<= 2; System.out.println(a);",
-    "8"
+    "12"
 );

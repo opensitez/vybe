@@ -9,7 +9,6 @@
 //! routes those names to the `emit_*` functions in this module.
 
 pub mod arrays_adapter;
-pub mod biginteger_adapter;
 pub mod bitset_adapter;
 pub mod dispatch;
 pub mod format_runtime;

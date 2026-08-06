@@ -70,7 +70,12 @@ pub fn emit_add(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {
     chunks[current].emit_else(line);
 
     get(&mut chunks[current], collection, line);
+    // The KEY is the element's Kotlin rendering — the same key the set's
+    // construction and `contains` use. Passing the raw value keyed the entry
+    // by object reference, so `add(Box(3))` stored an element `contains`
+    // could never find.
     get(&mut chunks[current], value, line);
+    crate::emitter::tostring::emit_to_string(chunks, current, line);
     get(&mut chunks[current], value, line);
     emit_set_add(chunks, current, 3, line);
 
