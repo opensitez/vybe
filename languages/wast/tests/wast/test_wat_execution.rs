@@ -9,7 +9,7 @@ fn i32_add_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 30
     i32.const 12
@@ -25,7 +25,7 @@ fn i32_mul_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 6
     i32.const 7
@@ -41,7 +41,7 @@ fn i32_sub_negative_result() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 3
     i32.const 10
@@ -57,7 +57,7 @@ fn i32_div_s_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 100
     i32.const 4
@@ -73,7 +73,7 @@ fn i32_rem_s_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 17
     i32.const 5
@@ -89,7 +89,7 @@ fn i32_bitwise_and_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 0xFF
     i32.const 0x0F
@@ -105,7 +105,7 @@ fn i32_bitwise_or_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 0xF0
     i32.const 0x0F
@@ -121,7 +121,7 @@ fn i32_shl_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 1
     i32.const 3
@@ -137,7 +137,7 @@ fn i32_shr_u_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 128
     i32.const 2
@@ -155,7 +155,7 @@ fn i32_eqz_true() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 0
     i32.eqz
@@ -170,7 +170,7 @@ fn i32_eqz_false() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 5
     i32.eqz
@@ -185,7 +185,7 @@ fn i32_lt_s_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 3
     i32.const 10
@@ -201,7 +201,7 @@ fn i32_gt_s_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 10
     i32.const 3
@@ -217,7 +217,7 @@ fn i32_eq_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 42
     i32.const 42
@@ -233,7 +233,7 @@ fn i32_ne_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 1
     i32.const 2
@@ -251,7 +251,7 @@ fn f64_add_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const 1.5
     f64.const 2.5
@@ -267,7 +267,7 @@ fn f64_mul_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const 3.0
     f64.const 4.0
@@ -283,7 +283,7 @@ fn f64_sqrt_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const 9.0
     f64.sqrt
@@ -298,7 +298,7 @@ fn f64_neg_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const 5.0
     f64.neg
@@ -313,7 +313,7 @@ fn f64_abs_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const -7.0
     f64.abs
@@ -328,7 +328,7 @@ fn f64_min_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const 3.0
     f64.const 8.0
@@ -344,7 +344,7 @@ fn f64_max_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const 3.0
     f64.const 8.0
@@ -362,7 +362,7 @@ fn local_set_get_roundtrip() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     (local $x i32)
     i32.const 99
@@ -379,7 +379,7 @@ fn local_tee_pushes_and_sets() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     (local $x i32)
     i32.const 55
@@ -395,7 +395,7 @@ fn multiple_locals_independent() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     (local $a i32)
     (local $b i32)
@@ -419,7 +419,7 @@ fn global_mut_increment() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (global $g (mut i32) (i32.const 0))
   (func (export "_start")
     global.get $g
@@ -444,7 +444,7 @@ fn global_immutable_read() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (global $c i32 (i32.const 42))
   (func (export "_start")
     global.get $c
@@ -461,7 +461,7 @@ fn if_then_branch_taken() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 1
     if
@@ -478,7 +478,7 @@ fn if_else_false_branch() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 0
     if
@@ -498,7 +498,7 @@ fn block_br_skips_rest() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     block $b
       i32.const 7
@@ -517,7 +517,7 @@ fn loop_countdown() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     (local $i i32)
     i32.const 3
@@ -546,7 +546,7 @@ fn br_if_skips_when_false() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     block $b
       i32.const 0
@@ -568,7 +568,7 @@ fn direct_call_add() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func $add (param $a i32) (param $b i32) (result i32)
     local.get $a local.get $b i32.add)
   (func (export "_start")
@@ -586,7 +586,7 @@ fn recursive_factorial() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func $fact (param $n i32) (result i32)
     local.get $n
     i32.const 1
@@ -615,7 +615,7 @@ fn recursive_fibonacci() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func $fib (param $n i32) (result i32)
     local.get $n
     i32.const 2
@@ -641,7 +641,7 @@ fn multi_return_values_used() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func $divmod (param $a i32) (param $b i32) (result i32 i32)
     local.get $a local.get $b i32.div_u
     local.get $a local.get $b i32.rem_u)
@@ -663,7 +663,7 @@ fn i32_to_f64_convert() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     i32.const 7
     f64.convert_i32_s
@@ -678,7 +678,7 @@ fn f64_to_i32_trunc() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     f64.const 3.9
     i32.trunc_f64_s
@@ -693,7 +693,7 @@ fn f32_to_f64_promote() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f32.const 2.0
     f64.promote_f32
@@ -710,7 +710,7 @@ fn select_picks_first_when_true() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 10
     i32.const 20
@@ -727,7 +727,7 @@ fn select_picks_second_when_false() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 10
     i32.const 20
@@ -746,7 +746,7 @@ fn br_table_dispatch() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func $dispatch (param $x i32) (result i32)
     block $default (result i32)
       block $c2 (result i32)
@@ -780,7 +780,7 @@ fn memory_store_load_i32() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (memory 1)
   (func (export "_start")
     i32.const 0     ;; address
@@ -799,7 +799,7 @@ fn memory_store_load_i8() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (memory 1)
   (func (export "_start")
     i32.const 4
@@ -818,7 +818,7 @@ fn memory_store_multiple_addresses() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (memory 1)
   (func (export "_start")
     i32.const 0  i32.const 1 i32.store
@@ -839,7 +839,7 @@ fn folded_add_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     (call $log (i32.add (i32.const 19) (i32.const 23)))))
 "#,
@@ -852,7 +852,7 @@ fn folded_nested_if_executed() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     (call $log
       (if (result i32) (i32.const 1)
@@ -868,7 +868,7 @@ fn folded_local_tee_in_expr() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     (local $x i32)
     (call $log (i32.add (local.tee $x (i32.const 10)) (i32.const 5)))))
@@ -884,7 +884,7 @@ fn nop_is_transparent() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     nop
     nop
@@ -901,7 +901,7 @@ fn drop_discards_value() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 999
     drop
@@ -919,7 +919,7 @@ fn named_param_used_in_body() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func $square (param $n i32) (result i32)
     local.get $n local.get $n i32.mul)
   (func (export "_start")
@@ -938,7 +938,7 @@ fn multiple_log_calls_in_order() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const 1 call $log
     i32.const 2 call $log
@@ -955,7 +955,7 @@ fn function_call_chain_values() {
     let out = run_wast(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func $inc (param $x i32) (result i32) local.get $x i32.const 1 i32.add)
   (func $double (param $x i32) (result i32) local.get $x i32.const 2 i32.mul)
   (func (export "_start")

@@ -75,7 +75,7 @@ pub fn run_wast_result(src: &str) -> Result<Vec<String>, String> {
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     let out_cloned = out.clone();
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(wasm_render).collect();
@@ -205,10 +205,10 @@ macro_rules! wat_exec {
                 let wrapped_src = format!(
                     r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
-  (import "wasi:logging/logging" "log" (func $log_i64 (param i64)))
-  (import "wasi:logging/logging" "log" (func $log_f32 (param f32)))
-  (import "wasi:logging/logging" "log" (func $log_f64 (param f64)))
+  (import "web:console" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log_i64 (param i64)))
+  (import "web:console" "log" (func $log_f32 (param f32)))
+  (import "web:console" "log" (func $log_f64 (param f64)))
   {}
 )
 "#,

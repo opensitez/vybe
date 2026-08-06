@@ -67,7 +67,7 @@ fn test_i32_rem_s_negative_operand() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const -5
     i32.const 3
@@ -84,7 +84,7 @@ fn test_i32_rem_u_negative_operand() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     i32.const -5
     i32.const 3
@@ -103,7 +103,7 @@ fn test_float_rounding_nearest() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f32)))
+  (import "web:console" "log" (func $log (param f32)))
   (func (export "_start")
     f32.const 1.5
     f32.nearest
@@ -118,7 +118,7 @@ fn test_float_rounding_ceil() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const -1.5
     f64.ceil
@@ -133,7 +133,7 @@ fn test_float_rounding_floor() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const -1.2
     f64.floor
@@ -149,7 +149,7 @@ fn test_float_copysign_zero() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param f64)))
+  (import "web:console" "log" (func $log (param f64)))
   (func (export "_start")
     f64.const 1.0
     f64.const -0.0
@@ -183,7 +183,7 @@ fn test_conversion_trunc_sat() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     f32.const 3e10
     i32.trunc_sat_f32_s
@@ -199,7 +199,7 @@ fn test_conversion_trunc_sat_negative() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (func (export "_start")
     f32.const -3e10
     i32.trunc_sat_f32_s
@@ -238,7 +238,7 @@ fn test_memory_store_load_offsets() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (memory 1)
   (func (export "_start")
     i32.const 8
@@ -257,7 +257,7 @@ fn test_memory_load_alignments() {
     let out = run_wast_one(
         r#"
 (module
-  (import "wasi:logging/logging" "log" (func $log (param i32)))
+  (import "web:console" "log" (func $log (param i32)))
   (memory 1)
   (func (export "_start")
     i32.const 0

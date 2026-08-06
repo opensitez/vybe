@@ -23,21 +23,21 @@ wat_exec! {
         local.get $a local.get $b i32.xor local.set $a
         local.get $a call $log)"#, "12" },
     test_global_assignment => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (global $g (mut i32) (i32.const 0))
         (func (export "_start") i32.const 88 global.set $g global.get $g call $log))"#, "88" },
     test_global_compound_update => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (global $g (mut i32) (i32.const 100))
         (func (export "_start")
           global.get $g i32.const 50 i32.sub global.set $g global.get $g call $log))"#, "50" },
     test_memory_assignment => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (memory 1)
         (func (export "_start")
           i32.const 0 i32.const 1234 i32.store i32.const 0 i32.load call $log))"#, "1234" },
     test_memory_read_modify_write => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (memory 1)
         (func (export "_start")
           i32.const 0 i32.const 10 i32.store
@@ -56,7 +56,7 @@ wat_exec! {
         if i32.const 100 local.set $x else i32.const 200 local.set $x end
         local.get $x call $log)"#, "100" },
     test_accumulate_into_memory_cell => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (memory 1)
         (func $add (param $n i32) i32.const 0 i32.const 0 i32.load local.get $n i32.add i32.store)
         (func (export "_start")

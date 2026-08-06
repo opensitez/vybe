@@ -799,7 +799,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::Unknown,
         body,
-        imports: Vec::new() })
+        imports: Vec::new(),
+        directives: Default::default() })
 }
 
 // ── Script commands ───────────────────────────────────────────────────────────
@@ -4015,6 +4016,47 @@ fn to_span(pair: &Pair<Rule>) -> Span {
 /// Peek the plain-instruction keyword of an `instr`/`plain_instr` pair without
 /// consuming it. Returns None for folded instructions (which carry no linear
 /// `block`/`loop`/`if`/`else`/`end` tokens).
+/// The folded instructions a `block`/`loop`/`if` OPENER swallowed.
+///
+/// `plain_instr = instr_name ~ instr_arg*`, and `instr_arg` accepts a
+/// `folded_instr`. So in the UNFOLDED form
+///
+/// ```wat
+/// if (result i32)
+///   (i32.const 5)
+/// else
+/// ```
+///
+/// the `(i32.const 5)` parses as an ARGUMENT of the `if`, not as the first
+/// instruction of its branch. `find_matching_end` then slices an EMPTY branch
+/// body and the branch's result temp keeps its `null` initialiser.
+///
+/// Measured 2026-08-06: the folded form yields `null` where the plain form
+/// yields `5` — for EVERY instruction, silently, exit 0. It looked like an
+/// `unreachable` bug because a folded `(unreachable)` stopped trapping, but the
+/// instruction never reached any lowering at all.
+///
+/// Give them back to the branch. `block_type` (`(result i32)`) and `id`
+/// (`$label`) are genuinely the opener's own arguments and stay put; only
+/// folded instructions move.
+fn opener_folded_instrs<'a>(pair: &Pair<'a, Rule>) -> Vec<Pair<'a, Rule>> {
+    let inner = if pair.as_rule() == Rule::instr {
+        match pair.clone().into_inner().next() {
+            Some(p) => p,
+            None => return Vec::new() }
+    } else {
+        pair.clone()
+    };
+    if inner.as_rule() != Rule::plain_instr {
+        return Vec::new();
+    }
+    inner
+        .into_inner()
+        .filter(|c| c.as_rule() == Rule::instr_arg)
+        .filter_map(|arg| arg.into_inner().find(|x| x.as_rule() == Rule::folded_instr))
+        .collect()
+}
+
 fn peek_plain_name(pair: &Pair<Rule>) -> Option<String> {
     let inner = if pair.as_rule() == Rule::instr {
         pair.clone().into_inner().next()?
@@ -4185,12 +4227,20 @@ fn fold_instructions_seeded(
                         };
                         preserve_stack_across_block(&mut stack, &mut statements);
                         let then_end = else_idx.unwrap_or(end_idx);
-                        let then_pairs: Vec<Pair<Rule>> = pairs[i + 1..then_end].to_vec();
+                        // Anything the opener swallowed belongs to the THEN
+                        // branch, ahead of what follows the opener token.
+                        let mut then_pairs: Vec<Pair<Rule>> = opener_folded_instrs(&pairs[i]);
+                        then_pairs.extend(pairs[i + 1..then_end].iter().cloned());
                         labels.push(label.clone(), LabelKind::Block, Vec::new());
                         let mut then_body =
                             fold_instructions_seeded(then_pairs, labels, seed.clone())?;
                         let mut else_body = if let Some(ei) = else_idx {
-                            let else_pairs: Vec<Pair<Rule>> = pairs[ei + 1..end_idx].to_vec();
+                            // `else` is a `plain_instr` too, so it swallows the
+                            // first folded instruction of ITS branch the same
+                            // way the opener does.
+                            let mut else_pairs: Vec<Pair<Rule>> =
+                                opener_folded_instrs(&pairs[ei]);
+                            else_pairs.extend(pairs[ei + 1..end_idx].iter().cloned());
                             Some(fold_instructions_seeded(else_pairs, labels, seed)?)
                         } else {
                             None
@@ -4245,7 +4295,10 @@ fn fold_instructions_seeded(
                             Vec::new()
                         };
                         preserve_stack_across_block(&mut stack, &mut statements);
-                        let body_pairs: Vec<Pair<Rule>> = pairs[i + 1..end_idx].to_vec();
+                        // Same for `block`/`loop`: a folded instruction written
+                        // first in the body parses as an opener argument.
+                        let mut body_pairs: Vec<Pair<Rule>> = opener_folded_instrs(&pairs[i]);
+                        body_pairs.extend(pairs[i + 1..end_idx].iter().cloned());
                         // A `loop (param …)` threads its operand-stack params
                         // across iterations. Model each with a synthetic local:
                         // initialise it from the entry value, let the body read it

@@ -6,14 +6,14 @@ wat_exec! {
         block block block i32.const 9 call $log br 2 i32.const 99 call $log end
         i32.const 88 call $log end end)"#, "9" },
     test_br_to_inner_block_only => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (func (export "_start")
           block block i32.const 1 call $log br 0 i32.const 2 call $log end
           i32.const 3 call $log end))"#, "1" },
     test_br_if_true_takes_branch => { r#"(func (export "_start")
         block i32.const 7 call $log i32.const 1 br_if 0 i32.const 8 call $log end)"#, "7" },
     test_br_if_false_falls_through => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (func (export "_start")
           block i32.const 1 call $log i32.const 0 br_if 0 i32.const 2 call $log end))"#, "1" },
     test_nested_loop_accumulate => { r#"(func (export "_start")

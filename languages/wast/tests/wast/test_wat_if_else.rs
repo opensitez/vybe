@@ -175,5 +175,45 @@ wat_exec! {
   end
   call $log
 )
-"#, "42" } // any non-zero is true
+"#, "42" }, // any non-zero is true
+
+    // `plain_instr = instr_name ~ instr_arg*` and `instr_arg` accepts a
+    // `folded_instr`, so the `if` opener SWALLOWED the first folded instruction
+    // of its branch. The branch body was then sliced empty and the result temp
+    // kept its null initialiser: this printed `null`, where the identical test
+    // written unfolded (`test_if_negative_condition` above) prints the value.
+    // Silent, and exit 0. Every instruction, not just `unreachable`.
+    test_if_result_folded_then => { r#"
+(func (export "_start")
+  i32.const 1
+  if (result i32)
+    (i32.const 42)
+  else
+    i32.const 99
+  end
+  call $log
+)
+"#, "42" },
+
+    test_if_result_folded_else => { r#"
+(func (export "_start")
+  i32.const 0
+  if (result i32)
+    i32.const 42
+  else
+    (i32.const 99)
+  end
+  call $log
+)
+"#, "99" },
+
+    // Same swallow on a `block` opener.
+    test_block_result_folded_first => { r#"
+(func (export "_start")
+  block (result i32)
+    (i32.const 7)
+  end
+  call $log
+)
+"#, "7" }
 }

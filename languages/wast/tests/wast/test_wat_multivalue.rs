@@ -4,7 +4,7 @@ use crate::wat_exec;
 
 wat_exec! {
     test_func_returns_two_values => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (func $pair (result i32 i32) i32.const 11 i32.const 22)
         (func (export "_start") call $pair call $log call $log))"#, "22" },
     test_block_result_value => { r#"(func (export "_start")
@@ -16,17 +16,17 @@ wat_exec! {
     test_loop_result_value => { r#"(func (export "_start")
         block (result i32) loop (result i32) i32.const 42 br 1 end end call $log)"#, "42" },
     test_block_two_results => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (func (export "_start")
           block (result i32 i32) i32.const 7 i32.const 8 end i32.add call $log))"#, "15" },
     test_swap_via_multivalue_block => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (func (export "_start")
           i32.const 10 i32.const 20
           block (param i32 i32) (result i32 i32) end
           i32.sub call $log))"#, "-10" },
     test_func_multi_return_used_in_arithmetic => { r#"(module
-        (import "wasi:logging/logging" "log" (func $log (param i32)))
+        (import "web:console" "log" (func $log (param i32)))
         (func $divmod (param i32 i32) (result i32 i32)
           local.get 0 local.get 1 i32.div_u
           local.get 0 local.get 1 i32.rem_u)
