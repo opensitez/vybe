@@ -51,8 +51,7 @@ fn emit_host_call(
 ) {
     let idx = chunks[current].add_import(module, name);
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(idx, argc, line);
 }
 
 fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32) -> u16 {
@@ -102,7 +101,6 @@ fn set_handle_map_null(
     lget(chunk, handle_slot, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn load_next_input_record(
@@ -132,13 +130,11 @@ fn load_next_input_record(
     lget(chunk, handle_slot, line);
     lget(chunk, values_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     lget(chunk, next_map_slot, line);
     lget(chunk, handle_slot, line);
     lget(chunk, idx_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 pub fn emit_vb_filecopy(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -228,13 +224,11 @@ pub fn emit_vb_fileopen(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
         lget(chunk, handle_slot, line);
         lget(chunk, path_slot, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, eof_map_slot, line);
         lget(chunk, handle_slot, line);
         push_const(chunk, Value::Bool(false), line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     set_handle_map_null(chunks, current, VB_RECORD_ROWS_BY_HANDLE, handle_slot, line);
@@ -273,13 +267,11 @@ pub fn emit_vb_fileclose(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         lget(chunk, handle_slot, line);
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, eof_map_slot, line);
         lget(chunk, handle_slot, line);
         push_const(chunk, Value::Bool(false), line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     set_handle_map_null(chunks, current, VB_RECORD_ROWS_BY_HANDLE, handle_slot, line);
@@ -381,7 +373,6 @@ pub fn emit_vb_input_value(chunks: &mut [Chunk], current: usize, _argc: u8, line
         lget(chunk, handle_slot, line);
         lget(chunk, idx_slot, line);
         chunk.emit_op(Op::ARRAY_SET, line);
-        chunk.emit_op(Op::DROP, line);
 
         lget(chunk, result_slot, line);
     }
@@ -520,8 +511,7 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         let chunk = &mut chunks[current];
         lset(chunk, path_slot, line);
         lget(chunk, path_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, exists, line);
-        chunk.emit(1, line);
+        chunk.emit_call(exists, 1, line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     }
 
@@ -529,8 +519,7 @@ pub fn emit_vb_dir(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     {
         let chunk = &mut chunks[current];
         lget(chunk, path_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, file_name, line);
-        chunk.emit(1, line);
+        chunk.emit_call(file_name, 1, line);
     }
     chunks[current].emit_else(line);
     push_const(&mut chunks[current], Value::String(Arc::from("")), line);
@@ -549,8 +538,7 @@ pub fn emit_vb_filedatetime(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
         let chunk = &mut chunks[current];
         lset(chunk, path_slot, line);
         lget(chunk, path_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, stat, line);
-        chunk.emit(1, line);
+        chunk.emit_call(stat, 1, line);
         core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
@@ -600,8 +588,7 @@ pub fn emit_vb_lof(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     chunks[current].emit_else(line);
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op_u16(Op::CALL_IMPORT, stat, line);
-        chunk.emit(1, line);
+        chunk.emit_call(stat, 1, line);
         core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);
     }
@@ -734,8 +721,7 @@ pub fn emit_vb_shell_pid(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         push_const(chunk, Value::String(Arc::from("-c")), line);
         lget(chunk, command_slot, line);
         chunk.emit_array_new_fixed(0, 2, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, spawn_sync, line);
-        chunk.emit(2, line);
+        chunk.emit_call(spawn_sync, 2, line);
         chunk.emit_struct_field_op(Op::STRUCT_GET, 0, pid_key, line);
         core_wasm::dup(chunk, line);
         chunk.emit_op(Op::REF_IS_NULL, line);

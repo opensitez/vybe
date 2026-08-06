@@ -12,8 +12,7 @@ use vybe_compiler::primitives::loops;
 pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> bool {
     if name == "dotnet.tostring" {
         let to_str = chunks[current].add_import("ecma:string", "String");
-        chunks[current].emit_op_u16(Op::CALL_IMPORT, to_str, line);
-        chunks[current].emit(argc, line);
+        chunks[current].emit_call(to_str, argc, line);
         return true;
     }
 
@@ -86,6 +85,11 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
     collections::emit_runtime_helper_call(chunks, current, global, argc, line);
     true
 }
+
+// `char` → code point moved OUT of this adapter to
+// `vybe_compiler::primitives::strings::emit_char_code`, reachable as
+// `common:strings.char_code`. It is a number conversion, not a .NET surface, and
+// the languages bind it through the `char`/`int` coercion slot.
 
 /// .NET `CChar` / `Convert.ToChar`.
 ///

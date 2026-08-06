@@ -21,7 +21,6 @@ fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_alias_from_field(chunk: &mut Chunk, obj_slot: u16, src: &str, dest: &str, line: u32) {
@@ -48,8 +47,7 @@ fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
     is_base_of.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
     is_base_of.emit_op_u16(Op::LOCAL_GET, 0, line);
     is_base_of.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
-    is_base_of.emit_op_u16(Op::CALL_IMPORT, starts_with_idx, line);
-    is_base_of.emit(2, line);
+    is_base_of.emit_call(starts_with_idx, 2, line);
     is_base_of.emit_op(Op::RETURN, line);
     is_base_of.local_count = 2;
     chunks.push(is_base_of);
@@ -65,15 +63,13 @@ fn bind_uri_methods(chunks: &mut Vec<Chunk>, current: usize, obj_slot: u16, line
     make_relative.emit_op_u16(Op::LOCAL_GET, 0, line);
     make_relative.emit_struct_field_op(Op::STRUCT_GET, 0, href_key, line);
     push_str(&mut make_relative, "", line);
-    make_relative.emit_op_u16(Op::CALL_IMPORT, replace_idx, line);
-    make_relative.emit(3, line);
+    make_relative.emit_call(replace_idx, 3, line);
     make_relative.emit_op_u16(Op::LOCAL_SET, relative_slot, line);
     make_relative.emit_struct_new(0, 0, line);
     make_relative.emit_op_u16(Op::LOCAL_SET, uri_slot, line);
     make_relative.emit_op_u16(Op::LOCAL_GET, uri_slot, line);
     make_relative.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
     make_relative.emit_struct_field_op(Op::STRUCT_SET, 0, href_key, line);
-    make_relative.emit_op(Op::DROP, line);
     emit_bind_method_with_slot(
         &mut make_relative,
         uri_slot,
@@ -200,8 +196,7 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
             chunk.emit_op_u16(Op::LOCAL_GET, relative_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, base_slot, line);
             struct_get(chunk, "href", line);
-            chunk.emit_op_u16(Op::CALL_IMPORT, url_idx, line);
-            chunk.emit(2, line);
+            chunk.emit_call(url_idx, 2, line);
         }
         _ => {
             for _ in 1..argc {
@@ -232,8 +227,7 @@ pub fn emit_uri_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
             vybe_compiler::primitives::errors::emit_throw(chunk, line);
             chunk.emit_end(line);
             chunk.emit_op_u16(Op::LOCAL_GET, input_slot, line);
-            chunk.emit_op_u16(Op::CALL_IMPORT, url_idx, line);
-            chunk.emit(1, line);
+            chunk.emit_call(url_idx, 1, line);
         }
     }
     emit_finalize_uri(chunks, current, line);
@@ -297,8 +291,7 @@ pub fn emit_uri_try_create(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
             chunk.emit_op_u16(Op::LOCAL_GET, kind_slot, line);
             chunk.emit_op(Op::DROP, line);
             let url_idx = chunk.add_import("node:url", "URL");
-            chunk.emit_op_u16(Op::CALL_IMPORT, url_idx, line);
-            chunk.emit(1, line);
+            chunk.emit_call(url_idx, 1, line);
             emit_finalize_uri(chunks, current, line);
             chunks[current].emit_else(line);
             chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);

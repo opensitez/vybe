@@ -59,7 +59,6 @@ fn emit_random_unit_from_receiver(
     chunk.emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, state_slot, line);
     push_const(chunk, Value::F64(2147483648.0), line);
@@ -87,7 +86,6 @@ pub fn emit_random_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_op_u16(Op::LOCAL_GET, seed_slot, line);
     let key = state_key(chunk);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 pub fn emit_random_next(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -179,7 +177,6 @@ pub fn emit_random_next_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);

@@ -32,7 +32,6 @@ fn reserve_slot(chunk: &mut Chunk) -> u16 {
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let key = chunk.add_constant(Value::String(Arc::from(field)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_local_field_from_value(
@@ -312,11 +311,9 @@ pub fn emit_process_start_info_new(chunks: &mut [Chunk], current: usize, argc: u
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, cmd_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, filename_key, line);
-    chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, args_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, args_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// `new Process()` — empty Process object. Most users actually call
@@ -334,7 +331,6 @@ pub fn emit_process_new(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);
 }
 
@@ -407,8 +403,7 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     // Stack: [filename_str, argv_array]
 
     // Call spawnSync(filename, []) → raw host result on stack
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, spawn_idx, line);
-    chunks[current].emit(2, line);
+    chunks[current].emit_call(spawn_idx, 2, line);
     // Stack: [raw_result]
 
     // Stash the raw result
@@ -428,13 +423,11 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Process")), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     // HasExited = true (spawnSync is synchronous; process is always done)
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::Bool(true), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, he_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     // ExitCode = raw_result.status ?? 0
     core_wasm::dup(chunk, line);
@@ -450,7 +443,6 @@ pub fn emit_process_start(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.patch_block(status_fallback);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, ec_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_SET, process_slot, line);
     chunk.emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, process_slot, line);

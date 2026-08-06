@@ -24,7 +24,6 @@ fn set_field_from_slot(chunk: &mut Chunk, obj_slot: u16, name: &str, value_slot:
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_field_const(chunk: &mut Chunk, obj_slot: u16, name: &str, val: Value, line: u32) {
@@ -32,7 +31,6 @@ fn set_field_const(chunk: &mut Chunk, obj_slot: u16, name: &str, val: Value, lin
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     push_const(chunk, val, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_field_with_stack_value(chunk: &mut Chunk, obj_slot: u16, name: &str, line: u32) {
@@ -109,8 +107,7 @@ pub fn emit_file_write_all_bytes(chunks: &mut [Chunk], current: usize, line: u32
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, write, line);
-    chunk.emit(2, line);
+    chunk.emit_call(write, 2, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -127,8 +124,7 @@ pub fn emit_file_read_all_bytes(chunks: &mut [Chunk], current: usize, line: u32)
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     push_const(chunk, Value::String(Arc::from("utf8")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, read, line);
-    chunk.emit(2, line);
+    chunk.emit_call(read, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
 
     collections::emit_array_new(chunks, current, 0, line);
@@ -156,7 +152,6 @@ pub fn emit_file_read_all_bytes(chunks: &mut [Chunk], current: usize, line: u32)
         line,
     );
     chunks[current].emit_op(Op::ARRAY_SET, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunks[current].emit_i32_const(1, line);
     chunks[current].emit_op(Op::I32_ADD, line);
@@ -177,8 +172,7 @@ pub fn emit_file_create(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, content_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, write, line);
-    chunk.emit(2, line);
+    chunk.emit_call(write, 2, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_struct_new(0, 0, line);
@@ -206,8 +200,7 @@ pub fn emit_file_open_read(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     push_const(chunk, Value::String(Arc::from("utf8")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, read, line);
-    chunk.emit(2, line);
+    chunk.emit_call(read, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, content_slot, line);
     emit_file_stream_object(chunks, current, path_slot, content_slot, line);
 }
@@ -234,21 +227,18 @@ pub fn emit_file_stream_write_byte(chunks: &mut [Chunk], current: usize, line: u
     host::emit(chunk, "wasm:js-string", "fromCharCode", 1, line);
     host::emit(chunk, "ecma:string", "concat", 2, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buf_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
     host::emit(chunk, "wasm:js-string", "length", 1, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, length_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     chunk.emit_op_u16(Op::LOCAL_GET, stream_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, buf_key, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, write, line);
-    chunk.emit(2, line);
+    chunk.emit_call(write, 2, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -274,20 +264,16 @@ pub fn emit_file_info_new(chunks: &mut [Chunk], current: usize, line: u32) {
     );
     set_field_from_slot(chunk, obj_slot, "FullName", path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, basename, line);
-    chunk.emit(1, line);
+    chunk.emit_call(basename, 1, line);
     set_field_with_stack_value(chunk, obj_slot, "Name", line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, extname, line);
-    chunk.emit(1, line);
+    chunk.emit_call(extname, 1, line);
     set_field_with_stack_value(chunk, obj_slot, "Extension", line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, exists, line);
-    chunk.emit(1, line);
+    chunk.emit_call(exists, 1, line);
     set_field_with_stack_value(chunk, obj_slot, "Exists", line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, size, line);
-    chunk.emit(1, line);
+    chunk.emit_call(size, 1, line);
     set_field_with_stack_value(chunk, obj_slot, "Length", line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
 }
@@ -301,8 +287,7 @@ pub fn emit_file_read_all_lines(chunks: &mut [Chunk], current: usize, line: u32)
 
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     push_const(chunk, Value::String(Arc::from("utf8")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, read_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(read_idx, 2, line);
     push_const(chunk, Value::String(Arc::from("\n")), line);
     host::emit(chunk, "ecma:string", "split", 2, line);
 }
@@ -324,8 +309,7 @@ pub fn emit_file_write_all_lines(chunks: &mut [Chunk], current: usize, line: u32
 
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, write_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(write_idx, 2, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -353,8 +337,7 @@ pub fn emit_path_get_directory_name(chunks: &mut [Chunk], current: usize, line: 
     emit_normalized_path(chunks, current, line);
     let dirname = chunks[current].add_import("node:path", "dirname");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, dirname, line);
-    chunk.emit(1, line);
+    chunk.emit_call(dirname, 1, line);
 }
 
 pub fn emit_path_get_file_name_without_extension(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -366,20 +349,17 @@ pub fn emit_path_get_file_name_without_extension(chunks: &mut [Chunk], current: 
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_SET, path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, extname, line);
-    chunk.emit(1, line);
+    chunk.emit_call(extname, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, ext_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ext_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, basename, line);
-    chunk.emit(2, line);
+    chunk.emit_call(basename, 2, line);
 }
 
 pub fn emit_path_combine(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let combine = chunks[current].add_import("wasi:filesystem", "pathCombine");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, combine, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(combine, argc, line);
 }
 
 pub fn emit_path_change_extension(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -400,15 +380,13 @@ pub fn emit_path_change_extension(chunks: &mut [Chunk], current: usize, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, ext_slot, line);
     chunk.emit_end(line);
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, change, line);
-    chunk.emit(2, line);
+    chunk.emit_call(change, 2, line);
 }
 
 pub fn emit_path_get_full_path(chunks: &mut [Chunk], current: usize, line: u32) {
     let resolve = chunks[current].add_import("node:path", "resolve");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, resolve, line);
-    chunk.emit(1, line);
+    chunk.emit_call(resolve, 1, line);
 }
 
 pub fn emit_path_get_path_root(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -416,8 +394,7 @@ pub fn emit_path_get_path_root(chunks: &mut [Chunk], current: usize, line: u32) 
     let parse = chunks[current].add_import("node:path", "parse");
     let chunk = &mut chunks[current];
     let root_key = chunk.add_constant(Value::String(Arc::from("root")));
-    chunk.emit_op_u16(Op::CALL_IMPORT, parse, line);
-    chunk.emit(1, line);
+    chunk.emit_call(parse, 1, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, root_key, line);
 }
 
@@ -427,8 +404,7 @@ pub fn emit_path_get_temp_file_name(chunks: &mut [Chunk], current: usize, line: 
     let chunk = &mut chunks[current];
     let path_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, temp, line);
-    chunk.emit(0, line);
+    chunk.emit_call(temp, 0, line);
     push_const(chunk, Value::String(Arc::from("/")), line);
     host::emit(chunk, "ecma:string", "concat", 2, line);
     push_const(chunk, Value::String(Arc::from("vybe-dotnet-")), line);
@@ -445,8 +421,7 @@ pub fn emit_path_get_temp_file_name(chunks: &mut [Chunk], current: usize, line: 
 
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
     push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, write, line);
-    chunk.emit(2, line);
+    chunk.emit_call(write, 2, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, path_slot, line);
@@ -495,8 +470,7 @@ pub fn emit_path_is_path_rooted(chunks: &mut [Chunk], current: usize, line: u32)
 pub fn emit_path_get_relative_path(chunks: &mut [Chunk], current: usize, line: u32) {
     let relative = chunks[current].add_import("node:path", "relative");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, relative, line);
-    chunk.emit(2, line);
+    chunk.emit_call(relative, 2, line);
 }
 
 pub fn emit_path_trim_ending_directory_separator(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -559,8 +533,7 @@ fn emit_directory_entries(
     chunk.emit_op_u16(Op::LOCAL_SET, root_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, root_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, list_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(list_idx, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, entries_slot, line);
 
     collections::emit_array_new(chunks, current, 0, line);
@@ -575,13 +548,11 @@ fn emit_directory_entries(
 
     chunk.emit_op_u16(Op::LOCAL_GET, root_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, resolve_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(resolve_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, full_path_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, full_path_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, is_dir_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(is_dir_idx, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     if !want_directories {
         vybe_compiler::primitives::ops::emit_dyn_not(chunk, line);
@@ -648,6 +619,5 @@ pub fn emit_directory_delete(chunks: &mut [Chunk], current: usize, argc: u8, lin
         chunk.emit_op(Op::DROP, line);
     }
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, remove_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(remove_idx, 1, line);
 }

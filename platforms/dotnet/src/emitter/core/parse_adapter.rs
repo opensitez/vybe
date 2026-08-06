@@ -22,8 +22,7 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
 pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     let number_idx = chunks[current].add_import("ecma:number", "Number");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(number_idx, 1, line);
     let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
 
@@ -55,8 +54,7 @@ pub fn emit_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
     let number_idx = chunks[current].add_import("ecma:number", "Number");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(number_idx, 1, line);
     let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
 
@@ -77,8 +75,7 @@ pub fn emit_try_parse_int(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_parse_double(chunks: &mut [Chunk], current: usize, line: u32) {
     let number_idx = chunks[current].add_import("ecma:number", "Number");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, number_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(number_idx, 1, line);
     let result = alloc_local(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
 

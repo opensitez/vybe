@@ -47,8 +47,7 @@ fn emit_parse_number_from_slot(chunks: &mut [Chunk], current: usize, text_slot: 
     let parse_int_idx = chunks[current].add_import("ecma:number", "parseInt");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, parse_int_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(parse_int_idx, 1, line);
     chunk.emit_op(Op::F64_FLOOR, line);
 }
 
@@ -251,34 +250,28 @@ fn emit_build_version_from_slots(
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Version")), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Version")), line);
     push_const(chunk, Value::String(Arc::from("Object")), line);
     chunk.emit_array_new_fixed(0, 2, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, types_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, major_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, major_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, minor_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, minor_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, build_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, build_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, revision_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, revision_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, revision_slot, line);
@@ -287,7 +280,6 @@ fn emit_build_version_from_slots(
     chunk.emit_op(Op::I32_SHR_U, line);
     chunk.emit_op(Op::F64_CONVERT_I32_U, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, major_revision_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, revision_slot, line);
@@ -296,7 +288,6 @@ fn emit_build_version_from_slots(
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op(Op::F64_CONVERT_I32_U, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, minor_revision_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     let obj_slot = reserve_slot(chunk);
     chunk.emit_op_u16(Op::LOCAL_SET, obj_slot, line);
@@ -316,8 +307,7 @@ fn emit_append_version_part(chunk: &mut Chunk, obj_slot: u16, out_slot: u16, key
     push_const(chunk, Value::String(Arc::from(".")), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     emit_version_part(chunk, obj_slot, key, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str_idx, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 }
@@ -330,8 +320,7 @@ fn push_version_tostring_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     let out_slot = 1;
 
     emit_version_part(&mut method, obj_slot, MAJOR_KEY, line);
-    method.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    method.emit(1, line);
+    method.emit_call(to_str_idx, 1, line);
     method.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 
     emit_append_version_part(&mut method, obj_slot, out_slot, MINOR_KEY, line);
@@ -472,8 +461,7 @@ pub fn emit_version_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let build_slot = reserve_slot(chunk);
     let revision_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str_idx, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
 
     emit_version_parts_from_string(
@@ -514,8 +502,7 @@ pub fn emit_version_try_parse(chunks: &mut Vec<Chunk>, current: usize, line: u32
     let build_slot = reserve_slot(chunk);
     let revision_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str_idx, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
 
     emit_version_parts_from_string(
@@ -654,16 +641,14 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
     }
 
     emit_version_part(chunk, obj_slot, MAJOR_KEY, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str_idx, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, out_slot, line);
     push_const(chunk, Value::String(Arc::from(".")), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     emit_version_part(chunk, obj_slot, MINOR_KEY, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str_idx, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
 
@@ -682,8 +667,7 @@ pub fn emit_version_to_string(chunks: &mut [Chunk], current: usize, argc: u8, li
         push_const(chunk, Value::String(Arc::from(".")), line);
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         emit_version_part(chunk, obj_slot, key, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-        chunk.emit(1, line);
+        chunk.emit_call(to_str_idx, 1, line);
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
         chunk.emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunk.emit_end(line);

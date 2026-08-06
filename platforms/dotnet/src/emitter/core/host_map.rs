@@ -37,7 +37,7 @@ pub fn static_method_mappings() -> &'static [DotnetStaticMethodMapping] {
 
 pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
     match prefix {
-        "system.console" => Some("wasi:logging/logging"),
+        "system.console" => Some("web:console"),
         "system.math" => Some("ecma:math"),
         // System.Convert.* lowers via the emitter's convert opcodes;
         // fall through to the type registry / walker rewrites.
@@ -74,7 +74,7 @@ pub fn namespace_to_host_module(prefix: &str) -> Option<&'static str> {
         "system.diagnostics.process" => None,
         "system.diagnostics.stopwatch" => Some("wasi:clocks/monotonic-clock"),
         "system.diagnostics.debug" | "system.diagnostics.trace" | "system.diagnostics" => {
-            Some("wasi:logging/logging")
+            Some("web:console")
         }
         // System.Net has no single backing host module: `wasi:http` is a WASI
         // *package*, not an interface (the interfaces are `wasi:http/types`,

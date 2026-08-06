@@ -1,6 +1,6 @@
 //! Shared .NET JSON adapters.
 
-use vybe_runtime::{opcode::Op, Chunk};
+use vybe_runtime::Chunk;
 
 fn call_import(
     chunks: &mut [Chunk],
@@ -12,8 +12,7 @@ fn call_import(
 ) {
     let idx = chunks[current].add_import(module, name);
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(idx, argc, line);
 }
 
 pub fn emit_json_serialize(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

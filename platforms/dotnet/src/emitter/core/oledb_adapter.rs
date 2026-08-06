@@ -1,4 +1,3 @@
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
 
 fn call_import(
@@ -10,8 +9,7 @@ fn call_import(
     line: u32,
 ) {
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 pub fn emit_oledb_connection_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

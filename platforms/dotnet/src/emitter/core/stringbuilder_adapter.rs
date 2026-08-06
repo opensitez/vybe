@@ -30,7 +30,6 @@ fn emit_set_field_const_i32(chunk: &mut Chunk, key: &str, value: i32, line: u32)
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::I32(value), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_set_field_from_slot(
@@ -44,7 +43,6 @@ fn emit_set_field_from_slot(
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
@@ -116,11 +114,9 @@ fn emit_update_capacity_from_buffer(chunk: &mut Chunk, sb_slot: u16, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, len_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_lower_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
 }
@@ -144,16 +140,13 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
             push_const(chunk, Value::String(Arc::from("")), line);
             // STRUCT_SET pops [obj, val] and pushes [val]; we then drop val.
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-            chunk.emit_op(Op::DROP, line);
             core_wasm::dup(chunk, line);
             push_const(chunk, Value::I32(16), line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-            chunk.emit_op(Op::DROP, line);
             emit_set_field_const_i32(chunk, CAPACITY_LOWER_KEY, 16, line);
             core_wasm::dup(chunk, line);
             push_const(chunk, Value::I32(i32::MAX), line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, max_capacity_key, line);
-            chunk.emit_op(Op::DROP, line);
             emit_set_field_const_i32(chunk, MAX_CAPACITY_LOWER_KEY, i32::MAX, line);
         }
         _ => {
@@ -182,16 +175,13 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
             chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
             push_const(chunk, Value::String(Arc::from("")), line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, init_slot, line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-            chunk.emit_op(Op::DROP, line);
             emit_set_field_from_slot(chunk, obj_slot, CAPACITY_LOWER_KEY, init_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, max_slot, line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, max_capacity_key, line);
-            chunk.emit_op(Op::DROP, line);
             emit_set_field_from_slot(chunk, obj_slot, MAX_CAPACITY_LOWER_KEY, max_slot, line);
 
             chunk.emit_else(line);
@@ -200,16 +190,13 @@ pub fn emit_string_builder_new(chunks: &mut [Chunk], current: usize, argc: u8, l
             chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, init_slot, line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-            chunk.emit_op(Op::DROP, line);
             chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
             push_const(chunk, Value::I32(16), line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-            chunk.emit_op(Op::DROP, line);
             emit_set_field_const_i32(chunk, CAPACITY_LOWER_KEY, 16, line);
             chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, max_slot, line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, max_capacity_key, line);
-            chunk.emit_op(Op::DROP, line);
             emit_set_field_from_slot(chunk, obj_slot, MAX_CAPACITY_LOWER_KEY, max_slot, line);
 
             chunk.emit_end(line);
@@ -290,7 +277,6 @@ pub fn emit_sb_append(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     }
     // STRUCT_SET pops [sb, buffer+s], pushes [buffer+s]; drop it.
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -319,7 +305,6 @@ pub fn emit_sb_append_line(chunks: &mut [Chunk], current: usize, argc: u8, line:
     push_const(chunk, Value::String(Arc::from("\n")), line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -383,7 +368,6 @@ pub fn emit_sb_append_format(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunk.emit_op_u16(Op::LOCAL_GET, formatted_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -411,7 +395,6 @@ pub fn emit_sb_append_join(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, joined_slot, line);
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -452,7 +435,6 @@ pub fn emit_sb_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     push_const(chunk, Value::String(Arc::from("")), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
@@ -485,7 +467,6 @@ pub fn emit_sb_set_capacity(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_lower_key, line);
@@ -527,7 +508,6 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, new_len_slot, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_else(line);
 
@@ -557,7 +537,6 @@ pub fn emit_sb_set_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
@@ -586,11 +565,9 @@ pub fn emit_sb_ensure_capacity(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, desired_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, desired_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, capacity_lower_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_end(line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
@@ -650,7 +627,6 @@ pub fn emit_sb_copy_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, target_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     push_const(chunk, Value::I32(1), line);
@@ -732,7 +708,6 @@ pub fn emit_sb_insert(chunks: &mut [Chunk], current: usize, line: u32) {
 
     // sb.__buffer = full
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -772,7 +747,6 @@ pub fn emit_sb_remove(chunks: &mut [Chunk], current: usize, line: u32) {
 
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     emit_update_capacity_from_buffer(chunk, sb_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
@@ -834,7 +808,6 @@ pub fn emit_sb_index_set(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
@@ -883,8 +856,7 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         host::emit(chunk, "wasm:js-string", "substring", 3, line);
         chunk.emit_op_u16(Op::LOCAL_GET, old_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, new_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, replace_idx, line);
-        chunk.emit(3, line);
+        chunk.emit_call(replace_idx, 3, line);
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, buf_slot, line);
@@ -897,7 +869,6 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
         vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
 
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-        chunk.emit_op(Op::DROP, line);
         chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
         return;
     }
@@ -910,11 +881,9 @@ pub fn emit_sb_replace(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     chunk.emit_op_u16(Op::LOCAL_GET, new_slot, line);
 
     // ecma:string.replaceAll(buf, old, new) → replaced
-    chunk.emit_op_u16(Op::CALL_IMPORT, replace_idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(replace_idx, 3, line);
     // Stack: [sb, replaced]
 
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, buffer_key, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }

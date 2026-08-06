@@ -3,25 +3,20 @@ use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
 pub fn register(vm: &mut VM) {
-    // wasi:logging/logging.log — WASI logging proposal
-    // Signature: log(level: level, context: string, message: string)
-    // Flexible arity: 1 arg = (info, "", msg); 2 args = (level, msg);
-    // 3 args = (level, context, msg); N>3 args = (info, "", joined).
-    // info/debug/trace → stdout; warn/error/critical → stderr.
+    // wasi:logging/logging.log — the WASI logging proposal, STRICT:
+    // `log(level: level, context: string, message: string)`. Exactly one
+    // signature, no arity heuristics — the old sniffing treated 2- and
+    // 3-arg CONSOLE calls as (level, msg)/(level, ctx, msg) and silently
+    // dropped arguments (`console.log("a","b")` printed only `b`).
+    // Console/print-shaped variadic output lives at `web:console.log`
+    // (WHATWG — variadic by spec). info/debug/trace → stdout;
+    // warn/error/critical → stderr.
     vm.register_host_fn(
         "wasi:logging/logging",
         "log",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let (level, message) = match args.len() {
-                0 => ("info".to_string(), String::new()),
-                1 => ("info".to_string(), format!("{}", args[0])),
-                2 => (format!("{}", args[0]), format!("{}", args[1])),
-                3 => (format!("{}", args[0]), format!("{}", args[2])),
-                _ => {
-                    let parts: Vec<String> = args.iter().map(|v| format!("{}", v)).collect();
-                    ("info".to_string(), parts.join(" "))
-                }
-            };
+            let level = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let message = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
             match level.as_str() {
                 "warn" | "error" | "critical" => eprintln!("{}", message),
                 _ => println!("{}", message),

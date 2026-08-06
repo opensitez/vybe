@@ -1,12 +1,11 @@
 //! Shared WinForms-to-vybe GUI adapter leaves.
 
-use vybe_runtime::{opcode::Op, Chunk};
+use vybe_runtime::Chunk;
 
 fn emit_gui_call(chunks: &mut [Chunk], current: usize, name: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import("vybe:gui", name);
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(idx, argc, line);
 }
 
 pub fn emit_message_box_show(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {

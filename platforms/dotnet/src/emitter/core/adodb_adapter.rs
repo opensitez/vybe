@@ -38,8 +38,7 @@ fn call_import(
     line: u32,
 ) {
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 fn set_const_prop(chunk: &mut Chunk, key: &str, value: Value, line: u32) {
@@ -47,7 +46,6 @@ fn set_const_prop(chunk: &mut Chunk, key: &str, value: Value, line: u32) {
     core_wasm::dup(chunk, line);
     push_const(chunk, value, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_local_prop(chunk: &mut Chunk, key: &str, local: u16, line: u32) {
@@ -55,7 +53,6 @@ fn set_local_prop(chunk: &mut Chunk, key: &str, local: u16, line: u32) {
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, local, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_object_local_prop(chunk: &mut Chunk, object_local: u16, key: &str, local: u16, line: u32) {
@@ -63,7 +60,6 @@ fn set_object_local_prop(chunk: &mut Chunk, object_local: u16, key: &str, local:
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, local, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_object_const_prop(chunk: &mut Chunk, object_local: u16, key: &str, value: Value, line: u32) {
@@ -71,7 +67,6 @@ fn set_object_const_prop(chunk: &mut Chunk, object_local: u16, key: &str, value:
     chunk.emit_op_u16(Op::LOCAL_GET, object_local, line);
     push_const(chunk, value, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn get_prop_to_local(

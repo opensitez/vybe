@@ -36,8 +36,7 @@ fn load_or_create_env_overrides(chunks: &mut [Chunk], current: usize, line: u32)
 
     let object_new = chunks[current].add_import("ecma:object", "new");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, object_new, line);
-    chunk.emit(0, line);
+    chunk.emit_call(object_new, 0, line);
     core_wasm::dup(chunk, line);
     vybe_compiler::primitives::globals::emit_write(chunk, ENV_OVERRIDES_GLOBAL, line);
     chunk.emit_end(line);
@@ -52,8 +51,7 @@ pub fn emit_environment_username(chunks: &mut [Chunk], current: usize, line: u32
     let user_info = chunks[current].add_import("node:os", "userInfo");
     let chunk = &mut chunks[current];
     let username_key = chunk.add_constant(Value::String(Arc::from("username")));
-    chunk.emit_op_u16(Op::CALL_IMPORT, user_info, line);
-    chunk.emit(0, line);
+    chunk.emit_call(user_info, 0, line);
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, username_key, line);
 }
 
@@ -89,23 +87,20 @@ pub fn emit_environment_set_exit_code(chunks: &mut [Chunk], current: usize, line
 pub fn emit_environment_system_directory(chunks: &mut [Chunk], current: usize, line: u32) {
     let cwd = chunks[current].add_import("node:process", "cwd");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, cwd, line);
-    chunk.emit(0, line);
+    chunk.emit_call(cwd, 0, line);
 }
 
 pub fn emit_environment_get_command_line_args(chunks: &mut [Chunk], current: usize, line: u32) {
     let get_args = chunks[current].add_import("wasi:cli/environment", "get-arguments");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, get_args, line);
-    chunk.emit(0, line);
+    chunk.emit_call(get_args, 0, line);
 }
 
 pub fn emit_environment_get_folder_path(chunks: &mut [Chunk], current: usize, line: u32) {
     let cwd = chunks[current].add_import("node:process", "cwd");
     let chunk = &mut chunks[current];
     chunk.emit_op(Op::DROP, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, cwd, line);
-    chunk.emit(0, line);
+    chunk.emit_call(cwd, 0, line);
 }
 
 pub fn emit_environment_special_folder(
@@ -121,16 +116,14 @@ pub fn emit_environment_special_folder(
 pub fn emit_environment_processor_count(chunks: &mut [Chunk], current: usize, line: u32) {
     let cpus = chunks[current].add_import("node:os", "cpus");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, cpus, line);
-    chunk.emit(0, line);
+    chunk.emit_call(cpus, 0, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);
 }
 
 pub fn emit_environment_tick_count(chunks: &mut [Chunk], current: usize, line: u32) {
     let uptime = chunks[current].add_import("node:process", "uptime");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, uptime, line);
-    chunk.emit(0, line);
+    chunk.emit_call(uptime, 0, line);
     push_const(chunk, Value::F64(1000.0), line);
     chunk.emit_op(Op::F64_MUL, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
@@ -179,8 +172,7 @@ pub fn emit_environment_get(chunks: &mut [Chunk], current: usize, argc: u8, line
     // `list<tuple<string, string>>` (wasi-cli `wit/environment.wit`). Keying it
     // by name is this adapter's job, not the interface's, so the pairs become a
     // map and the lookup happens here.
-    chunk.emit_op_u16(Op::CALL_IMPORT, get_env, line);
-    chunk.emit(0, line);
+    chunk.emit_call(get_env, 0, line);
     host::emit(chunk, "ecma:map", "fromEntries", 1, line);
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
     collections::emit_get(chunks, current, line);
@@ -225,8 +217,7 @@ pub fn emit_environment_get_all(chunks: &mut [Chunk], current: usize, argc: u8, 
     if argc > 0 {
         chunk.emit_op(Op::DROP, line);
     }
-    chunk.emit_op_u16(Op::CALL_IMPORT, get_env, line);
-    chunk.emit(0, line);
+    chunk.emit_call(get_env, 0, line);
     host::emit(chunk, "ecma:map", "fromEntries", 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, map_slot, line);
 
@@ -289,8 +280,7 @@ pub fn emit_environment_expand(chunks: &mut [Chunk], current: usize, line: u32) 
     let token_slot = reserve_slot(chunk);
 
     chunk.emit_op_u16(Op::LOCAL_SET, input_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, get_env, line);
-    chunk.emit(0, line);
+    chunk.emit_call(get_env, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, env_slot, line);
 
     let state = vybe_compiler::primitives::loops::emit_for_in_start(

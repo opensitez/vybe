@@ -1058,8 +1058,7 @@ pub fn emit_string_from_chars(chunks: &mut [Chunk], current: usize, argc: u8, li
 
     let string_test_idx = chunks[current].add_import("wasm:js-string", "test");
     chunks[current].emit_op_u16(Op::LOCAL_GET, chars_slot, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, string_test_idx, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(string_test_idx, 1, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, chars_slot, line);
     chunks[current].emit_else(line);
@@ -1098,14 +1097,12 @@ fn emit_char_array_to_string(chunks: &mut [Chunk], current: usize, chars_slot: u
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, units_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, string_test_idx, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(string_test_idx, 1, line);
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     host::emit(&mut chunks[current], "ecma:string", "String", 1, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, char_code_idx, line);
-    chunks[current].emit(2, line);
+    chunks[current].emit_call(char_code_idx, 2, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_end(line);
@@ -1122,6 +1119,5 @@ fn emit_char_array_to_string(chunks: &mut [Chunk], current: usize, chars_slot: u
     core_wasm::i32_const(&mut chunks[current], line, 0);
     chunks[current].emit_op_u16(Op::LOCAL_GET, units_slot, line);
     chunks[current].emit_op(Op::ARRAY_LENGTH, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, from_chars_idx, line);
-    chunks[current].emit(3, line);
+    chunks[current].emit_call(from_chars_idx, 3, line);
 }

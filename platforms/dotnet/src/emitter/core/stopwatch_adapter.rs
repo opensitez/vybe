@@ -27,13 +27,11 @@ fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_monotonic_now(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "now");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(0u8, line);
+    chunks[current].emit_call(idx, 0u8, line);
 }
 
 fn emit_stopwatch_elapsed_ns_value(chunks: &mut [Chunk], current: usize, line: u32) {

@@ -44,8 +44,7 @@ pub fn emit_format_picture(chunks: &mut [Chunk], current: usize, argc: u8, line:
     if argc == 1 {
         // Bare value — toString and return.
         let to_str = chunk.add_import("ecma:string", "String");
-        chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
-        chunk.emit(1, line);
+        chunk.emit_call(to_str, 1, line);
         return;
     }
 

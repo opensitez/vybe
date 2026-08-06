@@ -52,6 +52,7 @@ pub mod window;
 pub mod builtin_types; // TypeRegistry vtables for the web surface; run in Plugin::finalize
 pub mod crypto;
 pub mod dom_parser;
+pub mod console;
 pub mod encoding;
 pub mod fetch;
 pub mod timers;
@@ -67,6 +68,7 @@ pub fn register(vm: &mut VM) {
     #[cfg(feature = "gui")]
     engine_widgets::install();
 
+    console::register(vm);
     crypto::register(vm);
     url::register(vm);
     encoding::register(vm);

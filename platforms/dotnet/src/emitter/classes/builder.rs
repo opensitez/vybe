@@ -90,9 +90,8 @@ pub fn build_setter_chunk(
     push_string_const(&mut chunk, prop_pascal, line);
     // [this, "PropName", value]
     chunk.emit_op_u16(Op::LOCAL_GET, 1, line);
-    // [this, "PropName", value] → call_import controlSetProperty(3) → [result]
-    chunk.emit_op_u16(Op::CALL_IMPORT, set_property_import_idx, line);
-    chunk.emit(3, line);
+    // [this, "PropName", value] → spec `call` controlSetProperty(3) → [result]
+    chunk.emit_call(set_property_import_idx, 3, line);
     // drop the host return value
     chunk.emit_op(Op::DROP, line);
     // return null
@@ -114,8 +113,7 @@ pub fn build_getter_chunk(
 
     chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
     push_string_const(&mut chunk, prop_pascal, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, get_property_import_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(get_property_import_idx, 2, line);
     chunk.emit_op(Op::RETURN, line);
 
     chunk.local_count = 1;
@@ -184,12 +182,11 @@ pub fn build_method_thunk_chunk(
 
     match method.target {
         MethodTarget::Host { .. } => {
-            // Push this + each user arg in order, then call_import.
+            // Push this + each user arg in order, then spec `call`.
             for slot in 0..method.arity as u16 {
                 chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
             }
-            chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-            chunk.emit(method.arity, line);
+            chunk.emit_call(import_idx, method.arity, line);
             // Result of the host call is on the stack — return it. For
             // void methods (most setters / `Show` / `DrawLine`) the host
             // fn returns `Value::Null`, which is fine.
@@ -343,8 +340,7 @@ fn compile_body_offset(
                 );
                 let idx = body_imports[import_cursor];
                 import_cursor += 1;
-                chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-                chunk.emit(argc, line);
+                chunk.emit_call(idx, argc, line);
             }
             MethodOp::NewDotnet { class, argc } => {
                 vybe_compiler::primitives::globals::emit_read(chunk, class, line);
@@ -559,8 +555,7 @@ pub fn build_constructor_chunk(
             for i in 0..arity {
                 chunk.emit_op_u16(Op::LOCAL_GET, i, line);
             }
-            chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-            chunk.emit(arity as u8, line);
+            chunk.emit_call(import_idx, arity as u8, line);
             chunk.emit_op(Op::RETURN, line);
             chunk.local_count = arity;
             return chunk;
@@ -585,7 +580,6 @@ pub fn build_constructor_chunk(
         push_string_const(&mut chunk, class.name, line);
         let type_key = chunk.add_constant(Value::String(Arc::from("__type")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     // ── Step 3: bind setters for THIS class's properties ────────────────────
@@ -605,7 +599,6 @@ pub fn build_constructor_chunk(
             chunk.emit(0, line); // 0 upvalues
             let key = chunk.add_constant(Value::String(Arc::from(set_name.as_str())));
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-            chunk.emit_op(Op::DROP, line);
         }
     }
 
@@ -617,7 +610,6 @@ pub fn build_constructor_chunk(
             chunk.emit(0, line);
             let key = chunk.add_constant(Value::String(Arc::from(get_name.as_str())));
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-            chunk.emit_op(Op::DROP, line);
         }
     }
 
@@ -637,28 +629,23 @@ pub fn build_constructor_chunk(
             chunk.emit(0, line); // 0 upvalues
             let key = chunk.add_constant(Value::String(Arc::from(name.as_str())));
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-            chunk.emit_op(Op::DROP, line);
         }
     }
 
     if class.name == "Control" {
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, new_controls_collection_import_idx, line);
-        chunk.emit(1, line);
+        chunk.emit_call(new_controls_collection_import_idx, 1, line);
         let key = chunk.add_constant(Value::String(Arc::from("controls")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     if class.name == "Form" {
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, new_components_collection_import_idx, line);
-        chunk.emit(1, line);
+        chunk.emit_call(new_components_collection_import_idx, 1, line);
         let key = chunk.add_constant(Value::String(Arc::from("components")));
         chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key, line);
-        chunk.emit_op(Op::DROP, line);
     }
 
     // ── Step 5: concrete leaf — wire backing object ────────────────────────
@@ -675,8 +662,7 @@ pub fn build_constructor_chunk(
         for i in 0..arity {
             chunk.emit_op_u16(Op::LOCAL_GET, i, line);
         }
-        chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, line);
-        chunk.emit(arity as u8, line);
+        chunk.emit_call(import_idx, arity as u8, line);
         chunk.emit_op_u16(Op::LOCAL_SET, widget_slot, line);
 
         // Copy backing identity fields: this.<f> = widget.<f>.
@@ -689,7 +675,6 @@ pub fn build_constructor_chunk(
             chunk.emit_op_u16(Op::LOCAL_GET, widget_slot, line);
             chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key_idx, line);
             chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-            chunk.emit_op(Op::DROP, line);
         }
     }
 

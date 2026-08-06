@@ -43,6 +43,9 @@ impl GclMethodTarget {
 }
 
 pub fn is_gcl_unit(path: &str) -> bool {
+    // Delphi unit scope names are a namespace prefix — `Vcl.Forms` IS `Forms`.
+    // Match on the last segment so both spellings answer the same.
+    let path = path.rsplit('.').next().unwrap_or(path);
     matches!(
         path.to_ascii_lowercase().as_str(),
         "forms"
@@ -192,173 +195,173 @@ static CLASSES: &[GclClass] = &[
     widget_class!(
         "TForm",
         "TWinControl",
-        "new_Form",
+        "body",
         FORM_PROPERTIES,
         SHOW_METHODS
     ),
-    widget_class!("TButton", "TWinControl", "new_Button", &[], EMPTY_METHODS),
-    widget_class!("TLabel", "TControl", "new_Label", &[], EMPTY_METHODS),
+    widget_class!("TButton", "TWinControl", "button", &[], EMPTY_METHODS),
+    widget_class!("TLabel", "TControl", "label", &[], EMPTY_METHODS),
     widget_class!(
         "TEdit",
         "TWinControl",
-        "new_TextBox",
+        "input:text",
         TEXT_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TMemo",
         "TWinControl",
-        "new_RichTextBox",
+        "textarea",
         TEXT_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TCheckBox",
         "TWinControl",
-        "new_CheckBox",
+        "input:checkbox",
         CHECK_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TRadioButton",
         "TWinControl",
-        "new_RadioButton",
+        "input:radio",
         CHECK_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TRadioGroup",
         "TWinControl",
-        "new_GroupBox",
+        "fieldset",
         LIST_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TComboBox",
         "TWinControl",
-        "new_ComboBox",
+        "select",
         LIST_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TListBox",
         "TWinControl",
-        "new_ListBox",
+        "ul",
         LIST_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TGroupBox",
         "TWinControl",
-        "new_GroupBox",
+        "fieldset",
         &[],
         EMPTY_METHODS
     ),
-    widget_class!("TPanel", "TWinControl", "new_Panel", &[], EMPTY_METHODS),
-    widget_class!("TImage", "TControl", "new_PictureBox", &[], EMPTY_METHODS),
+    widget_class!("TPanel", "TWinControl", "div", &[], EMPTY_METHODS),
+    widget_class!("TImage", "TControl", "vybe-picturebox", &[], EMPTY_METHODS),
     widget_class!(
         "TShape",
         "TControl",
-        "new_Panel",
+        "vybe-shape",
         &["Shape", "Brush", "Pen"],
         EMPTY_METHODS
     ),
     widget_class!(
         "TBevel",
         "TControl",
-        "new_Panel",
+        "vybe-bevel",
         &["Shape", "Style"],
         EMPTY_METHODS
     ),
-    widget_class!("TSplitter", "TControl", "new_Panel", &[], EMPTY_METHODS),
+    widget_class!("TSplitter", "TControl", "vybe-splitter", &[], EMPTY_METHODS),
     widget_class!(
         "TPageControl",
         "TWinControl",
-        "new_TabControl",
+        "vybe-tabcontrol",
         PAGE_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TTabSheet",
         "TWinControl",
-        "new_TabPage",
+        "vybe-tabpage",
         PAGE_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TTimer",
         "TComponent",
-        "new_Timer",
+        "vybe-timer",
         &["Interval", "Enabled", "OnTimer"],
         EMPTY_METHODS
     ),
     widget_class!(
         "TStringGrid",
         "TWinControl",
-        "new_DataGridView",
+        "table",
         GRID_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TTrackBar",
         "TWinControl",
-        "new_TrackBar",
+        "input:range",
         RANGE_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TProgressBar",
         "TWinControl",
-        "new_ProgressBar",
+        "progress",
         RANGE_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TSpinEdit",
         "TWinControl",
-        "new_NumericUpDown",
+        "input:number",
         SPIN_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
         "TListView",
         "TWinControl",
-        "new_ListView",
+        "ul",
         &["ViewStyle", "Items"],
         EMPTY_METHODS
     ),
     widget_class!(
         "TTreeView",
         "TWinControl",
-        "new_TreeView",
+        "ul",
         &["Items"],
         EMPTY_METHODS
     ),
     widget_class!(
         "TColorDialog",
         "TComponent",
-        "new_ColorDialog",
+        "vybe-colordialog",
         &["Color"],
         EMPTY_METHODS
     ),
     widget_class!(
         "TMainMenu",
         "TComponent",
-        "new_MenuStrip",
+        "vybe-menustrip",
         MENU_PROPERTIES,
         ADD_METHODS
     ),
     widget_class!(
         "TPopupMenu",
         "TComponent",
-        "new_ContextMenuStrip",
+        "vybe-menustrip",
         MENU_PROPERTIES,
         ADD_METHODS
     ),
     widget_class!(
         "TMenuItem",
         "TComponent",
-        "new_MenuStrip",
+        "vybe-menustrip",
         MENU_PROPERTIES,
         ADD_METHODS
     ),

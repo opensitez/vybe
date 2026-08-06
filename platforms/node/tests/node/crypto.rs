@@ -28,19 +28,39 @@ use vybe_runtime::{Chunk, Op, VM};
 use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
+static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn call_crypto(name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<node-crypto-test>");
     let import_idx = chunk.add_import("node:crypto", name);
     let argc = args.len() as u8;
+    let mut arg_globals: Vec<(String, Value)> = Vec::new();
     for value in args {
-        let c = chunk.add_constant(value);
-        chunk.emit_op_u16(Op::CONST, c, 0);
+        match value {
+            Value::I32(n) => chunk.emit_i32_const(n, 0),
+            Value::I64(n) => chunk.emit_i64_const(n, 0),
+            Value::F32(f) => chunk.emit_f32_const(f, 0),
+            Value::F64(f) => chunk.emit_f64_const(f, 0),
+            Value::Bool(b) => chunk.emit_bool_const(b, 0),
+            Value::String(s) => chunk.emit_string_const(&s, 0),
+            other => {
+                let name = format!(
+                    "__test_arg_{}",
+                    TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+                let ci = chunk.intern_string_constant(&name);
+                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                arg_globals.push((name, other));
+            }
+        }
     }
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
-    chunk.emit(argc, 0);
+    chunk.emit_call(import_idx, argc, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
+    for (name, value) in arg_globals {
+        vm.globals.insert(name, value);
+    }
     register_platforms(&mut vm, &Capabilities::all());
     vm.run(vec![chunk]).expect("VM run failed")
 }
@@ -71,19 +91,48 @@ fn prop(v: &Value, key: &str) -> Value {
 fn call_method(receiver: &Value, method: &str, args: Vec<Value>) -> Value {
     let fn_val = prop(receiver, method);
     let mut chunk = Chunk::new("<crypto-method>");
-    let fn_c = chunk.add_constant(fn_val);
-    chunk.emit_op_u16(Op::CONST, fn_c, 0);
-    let recv_c = chunk.add_constant(receiver.clone());
-    chunk.emit_op_u16(Op::CONST, recv_c, 0);
+    let mut arg_globals: Vec<(String, Value)> = Vec::new();
+    let fn_name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let fn_ci = chunk.intern_string_constant(&fn_name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, fn_ci, 0);
+    arg_globals.push((fn_name, fn_val));
+    let recv_name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let recv_ci = chunk.intern_string_constant(&recv_name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, recv_ci, 0);
+    arg_globals.push((recv_name, receiver.clone()));
     let mut argc = 1usize;
     for arg in args {
-        let c = chunk.add_constant(arg);
-        chunk.emit_op_u16(Op::CONST, c, 0);
+        match arg {
+            Value::I32(n) => chunk.emit_i32_const(n, 0),
+            Value::I64(n) => chunk.emit_i64_const(n, 0),
+            Value::F32(f) => chunk.emit_f32_const(f, 0),
+            Value::F64(f) => chunk.emit_f64_const(f, 0),
+            Value::Bool(b) => chunk.emit_bool_const(b, 0),
+            Value::String(s) => chunk.emit_string_const(&s, 0),
+            other => {
+                let name = format!(
+                    "__test_arg_{}",
+                    TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+                let ci = chunk.intern_string_constant(&name);
+                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                arg_globals.push((name, other));
+            }
+        }
         argc += 1;
     }
     chunk.emit_op_u8(Op::CALL_REF, argc as u8, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
+    for (name, value) in arg_globals {
+        vm.globals.insert(name, value);
+    }
     register_platforms(&mut vm, &Capabilities::all());
     vm.run(vec![chunk]).expect("method call failed")
 }

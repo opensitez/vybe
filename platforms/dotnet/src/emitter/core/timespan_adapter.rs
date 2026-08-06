@@ -44,7 +44,6 @@ fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
 
 fn struct_set_field(chunk: &mut Chunk, key_idx: u16, line: u32) {
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
@@ -56,8 +55,7 @@ fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     push_const(chunk, Value::String(Arc::from(key)), line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let idx = chunk.add_import("ecma:object", "set");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(idx, 3, line);
     chunk.emit_op(Op::DROP, line);
 }
 
@@ -71,8 +69,7 @@ fn emit_parse_number_from_slot(chunks: &mut [Chunk], current: usize, text_slot: 
     let parse_int_idx = chunks[current].add_import("ecma:number", "parseInt");
     let chunk = &mut chunks[current];
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, parse_int_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(parse_int_idx, 1, line);
     chunk.emit_op(Op::F64_FLOOR, line);
 }
 
@@ -96,8 +93,7 @@ fn emit_total_ms_from_obj(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     push_const(chunk, Value::String(Arc::from("TotalMilliseconds")), line);
     let idx = chunk.add_import("ecma:object", "get");
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(idx, 2, line);
 }
 
 /// Build the TimeSpan object given the total milliseconds on the stack.
@@ -165,8 +161,7 @@ pub(crate) fn emit_build_timespan_from_total_ms(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, seconds_slot, line);
 
     let object_new = chunk.add_import("ecma:object", "new");
-    chunk.emit_op_u16(Op::CALL_IMPORT, object_new, line);
-    chunk.emit(0, line);
+    chunk.emit_call(object_new, 0, line);
 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("TimeSpan")), line);
@@ -308,8 +303,7 @@ pub fn emit_timespan_parse(chunks: &mut [Chunk], current: usize, line: u32) {
     let minutes_slot = text_slot + 3;
     let seconds_slot = text_slot + 4;
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str_idx, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);

@@ -17,21 +17,38 @@ use vybe_runtime::{Chunk, Op, VM};
 
 /// Call a host fn with `args` already-built as constants, inside one VM whose
 /// registry the test also inspects directly.
+static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn call(vm_setup: impl FnOnce() -> Vec<Value>, name: &str) -> Value {
     let args = vm_setup();
     let mut chunk = Chunk::new("<wasi-http-server-test>");
     let import_idx = chunk.add_import("wasi:http/types", name);
     let argc = args.len() as u8;
-    for value in args {
-        let constant = chunk.add_constant(value);
-        chunk.emit_op_u16(Op::CONST, constant, 0);
-    }
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
-    chunk.emit(argc, 0);
-    chunk.emit_op(Op::RETURN, 0);
-
     let mut vm = VM::new();
     register_platforms(&mut vm, &Capabilities::all());
+    for value in args {
+        match value {
+            Value::I32(n) => chunk.emit_i32_const(n, 0),
+            Value::I64(n) => chunk.emit_i64_const(n, 0),
+            Value::F32(f) => chunk.emit_f32_const(f, 0),
+            Value::F64(f) => chunk.emit_f64_const(f, 0),
+            Value::Bool(b) => chunk.emit_bool_const(b, 0),
+            Value::String(text) => chunk.emit_string_const(&text, 0),
+            Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0),
+            other => {
+                let global_name = format!(
+                    "__test_arg_{}",
+                    TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+                vm.globals.insert(global_name.clone(), other);
+                let ci = chunk.intern_string_constant(&global_name);
+                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+            }
+        }
+    }
+    chunk.emit_call(import_idx, argc, 0);
+    chunk.emit_op(Op::RETURN, 0);
+
     vm.run(vec![chunk]).expect("VM run failed")
 }
 

@@ -79,12 +79,9 @@ fn emit_wrap_guid_from_slot(chunks: &mut Vec<Chunk>, current: usize, text_slot: 
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
-    chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::DROP, line);
 
     bind_guid_to_string(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -109,16 +106,12 @@ fn emit_wrap_guid_with_bytes_from_slots(
     core_wasm::dup(chunk, line);
     push_const(chunk, Value::String(Arc::from("Guid")), line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, type_key, line);
-    chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
-    chunk.emit_op(Op::DROP, line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, bytes_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, bytes_key, line);
-    chunk.emit_op(Op::DROP, line);
-    chunk.emit_op(Op::DROP, line);
 
     bind_guid_to_string(chunks, current, obj_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_slot, line);
@@ -128,8 +121,7 @@ fn emit_validate_guid_text(chunk: &mut Chunk, test_idx: u16, text_slot: u16, lin
     let ok_block = chunk.emit_block(line);
     push_const(chunk, Value::String(Arc::from(GUID_PATTERN)), line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(test_idx, 2, line);
     chunk.emit_br_if(0, line);
     emit_throw_guid_format_exception(chunk, line);
     chunk.emit_end(line);
@@ -153,76 +145,57 @@ fn emit_build_guid_from_stack(
     let chunk = &mut chunks[current];
     let text_slot = reserve_slot(chunk);
 
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str_idx, 1, line);
     push_const(chunk, Value::String(Arc::from("{")), line);
     push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, replace_all_idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(replace_all_idx, 3, line);
     push_const(chunk, Value::String(Arc::from("}")), line);
     push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, replace_all_idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(replace_all_idx, 3, line);
     push_const(chunk, Value::String(Arc::from("(")), line);
     push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, replace_all_idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(replace_all_idx, 3, line);
     push_const(chunk, Value::String(Arc::from(")")), line);
     push_const(chunk, Value::String(Arc::from("")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, replace_all_idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(replace_all_idx, 3, line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
 
     push_const(chunk, Value::String(Arc::from(GUID_N_PATTERN)), line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, test_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(test_idx, 2, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     push_const(chunk, Value::F64(0.0), line);
     push_const(chunk, Value::F64(8.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, substr_idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(substr_idx, 3, line);
     push_const(chunk, Value::String(Arc::from("-")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(concat_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     push_const(chunk, Value::F64(8.0), line);
     push_const(chunk, Value::F64(4.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, substr_idx, line);
-    chunk.emit(3, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(substr_idx, 3, line);
+    chunk.emit_call(concat_idx, 2, line);
     push_const(chunk, Value::String(Arc::from("-")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(concat_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     push_const(chunk, Value::F64(12.0), line);
     push_const(chunk, Value::F64(4.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, substr_idx, line);
-    chunk.emit(3, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(substr_idx, 3, line);
+    chunk.emit_call(concat_idx, 2, line);
     push_const(chunk, Value::String(Arc::from("-")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(concat_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     push_const(chunk, Value::F64(16.0), line);
     push_const(chunk, Value::F64(4.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, substr_idx, line);
-    chunk.emit(3, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(substr_idx, 3, line);
+    chunk.emit_call(concat_idx, 2, line);
     push_const(chunk, Value::String(Arc::from("-")), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(concat_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
     push_const(chunk, Value::F64(20.0), line);
     push_const(chunk, Value::F64(12.0), line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, substr_idx, line);
-    chunk.emit(3, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(substr_idx, 3, line);
+    chunk.emit_call(concat_idx, 2, line);
     chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
     chunk.emit_end(line);
 
@@ -232,8 +205,7 @@ fn emit_build_guid_from_stack(
 
     if normalize {
         chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
-        chunk.emit(1, line);
+        chunk.emit_call(lower_idx, 1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
     }
 
@@ -251,8 +223,7 @@ pub fn emit_guid_empty(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
 pub fn emit_guid_new_guid(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     let random_uuid_idx = chunks[current].add_import("web:crypto", "randomUUID");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, random_uuid_idx, line);
-    chunk.emit(0, line);
+    chunk.emit_call(random_uuid_idx, 0, line);
     emit_build_guid_from_stack(chunks, current, true, true, line);
 }
 
@@ -271,13 +242,11 @@ pub fn emit_guid_new(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u3
             let text_slot = reserve_slot(chunk);
             chunk.emit_op_u16(Op::LOCAL_SET, value_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-            chunk.emit_op_u16(Op::CALL_IMPORT, is_array_idx, line);
-            chunk.emit(1, line);
+            chunk.emit_call(is_array_idx, 1, line);
             chunk.emit_if_value(line);
             chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
             push_const(chunk, Value::String(Arc::from(",")), line);
-            chunk.emit_op_u16(Op::CALL_IMPORT, join_idx, line);
-            chunk.emit(2, line);
+            chunk.emit_call(join_idx, 2, line);
             chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
             emit_wrap_guid_with_bytes_from_slots(chunks, current, text_slot, value_slot, line);
             chunks[current].emit_else(line);
@@ -307,8 +276,7 @@ pub fn emit_guid_get_hash_code(chunks: &mut [Chunk], current: usize, line: u32) 
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, value_key, line);
     push_const(chunk, Value::F64(0.0), line);
     let char_code_idx = chunk.add_import("ecma:string", "charCodeAt");
-    chunk.emit_op_u16(Op::CALL_IMPORT, char_code_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(char_code_idx, 2, line);
 }
 
 pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) {
@@ -334,8 +302,7 @@ pub fn emit_guid_to_string(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
         push_const(chunk, Value::String(Arc::from("-")), line);
         push_const(chunk, Value::String(Arc::from("")), line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, replace_all_idx, line);
-        chunk.emit(3, line);
+        chunk.emit_call(replace_all_idx, 3, line);
         chunk.emit_else(line);
         chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunk.emit_end(line);
@@ -355,19 +322,16 @@ pub fn emit_guid_try_parse(chunks: &mut Vec<Chunk>, current: usize, argc: u8, li
         }
 
         text_slot = reserve_slot(chunk);
-        chunk.emit_op_u16(Op::CALL_IMPORT, to_str_idx, line);
-        chunk.emit(1, line);
+        chunk.emit_call(to_str_idx, 1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
 
         push_const(chunk, Value::String(Arc::from(GUID_PATTERN)), line);
         chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, test_idx, line);
-        chunk.emit(2, line);
+        chunk.emit_call(test_idx, 2, line);
         chunk.emit_if(line);
 
         chunk.emit_op_u16(Op::LOCAL_GET, text_slot, line);
-        chunk.emit_op_u16(Op::CALL_IMPORT, lower_idx, line);
-        chunk.emit(1, line);
+        chunk.emit_call(lower_idx, 1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, text_slot, line);
     }
     emit_wrap_guid_from_slot(chunks, current, text_slot, line);

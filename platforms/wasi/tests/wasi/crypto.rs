@@ -8,11 +8,18 @@ fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
     let import_idx = chunk.add_import(module, name);
     let argc = args.len() as u8;
     for value in args {
-        let constant = chunk.add_constant(value);
-        chunk.emit_op_u16(Op::CONST, constant, 0);
+        match value {
+            Value::I32(n) => chunk.emit_i32_const(n, 0),
+            Value::I64(n) => chunk.emit_i64_const(n, 0),
+            Value::F32(f) => chunk.emit_f32_const(f, 0),
+            Value::F64(f) => chunk.emit_f64_const(f, 0),
+            Value::Bool(b) => chunk.emit_bool_const(b, 0),
+            Value::String(text) => chunk.emit_string_const(&text, 0),
+            Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0),
+            other => panic!("no spec const emitter for test argument {other:?}"),
+        }
     }
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
-    chunk.emit(argc, 0);
+    chunk.emit_call(import_idx, argc, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();

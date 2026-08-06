@@ -30,8 +30,7 @@ fn call_import(
     // which is exactly what happened once the .NET prelude stopped padding
     // chunk[0]'s import prefix. A local index always resolves correctly.
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
@@ -1513,13 +1512,11 @@ fn emit_linked_list_node_from_index(
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let value_key = chunks[current].add_constant(Value::String(Arc::from("Value")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     core_wasm::dup(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let lower_value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, lower_value_key, line);
-    chunks[current].emit_op(Op::DROP, line);
 
     if include_next {
         let next_index_slot = chunks[current].alloc_scratch(1);
@@ -1540,7 +1537,6 @@ fn emit_linked_list_node_from_index(
         chunks[current].emit_end(line);
         let next_key = chunks[current].add_constant(Value::String(Arc::from("Next")));
         chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, next_key, line);
-        chunks[current].emit_op(Op::DROP, line);
     }
 }
 
@@ -1590,7 +1586,6 @@ pub fn emit_linked_list_find(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     let value_key = chunks[current].add_constant(Value::String(Arc::from("value")));
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, value_key, line);
-    chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
 }
 

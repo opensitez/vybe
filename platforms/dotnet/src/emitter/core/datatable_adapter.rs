@@ -27,7 +27,6 @@ fn set_field(chunk: &mut Chunk, key: &str, val_fn: impl FnOnce(&mut Chunk, u32),
     core_wasm::dup(chunk, line);
     val_fn(chunk, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 /// Reserve a local scratch slot.
@@ -143,8 +142,7 @@ pub fn emit_datatable_add_row(chunks: &mut [Chunk], current: usize, line: u32) {
     let push_idx = chunks[current].add_import("ecma:array", "push");
     {
         let chunk = &mut chunks[current];
-        chunk.emit_op_u16(Op::CALL_IMPORT, push_idx, line);
-        chunk.emit(2u8, line);
+        chunk.emit_call(push_idx, 2u8, line);
         chunk.emit_op(Op::DROP, line); // drop new-length return value
         chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // void return
     }
@@ -177,8 +175,7 @@ pub fn emit_dataset_tables(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_datarow_item(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx = chunks[current].add_import("ecma:object", "get");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(2u8, line);
+    chunk.emit_call(idx, 2u8, line);
 }
 
 /// `row.IsNull(key)` — true if `row[key]` is null.
@@ -186,7 +183,6 @@ pub fn emit_datarow_item(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_datarow_is_null(chunks: &mut [Chunk], current: usize, line: u32) {
     let idx = chunks[current].add_import("ecma:object", "get");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(2u8, line);
+    chunk.emit_call(idx, 2u8, line);
     chunk.emit_op(Op::REF_IS_NULL, line);
 }

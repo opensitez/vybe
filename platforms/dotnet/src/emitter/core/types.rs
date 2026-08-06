@@ -19,19 +19,18 @@ const KNOWN_CONSTANTS: &[&str] = &[
     "completedtask",
 ];
 
+// π, e and τ are NOT part of this platform's surface — they are numbers, and
+// `vybe_compiler::primitives::math` owns them for every language. The twelve
+// rows that used to sit at the top of this table (`math.pi`, `Math.PI`,
+// `system.math.pi`, `System.Math.PI`, ×3 concepts) made the dotnet platform the
+// de-facto owner of `Math.PI`, so any language that wanted π had to reach a
+// platform it has nothing to do with. `math::dotted_constant` matches the owner
+// segment case-insensitively and so answers all four spellings on its own.
+//
+// What REMAINS here is genuinely .NET's: type limits spelled by .NET type names
+// (`int.MaxValue`), and the framework enum ordinals (`CommandType`,
+// `ConnectionState`, `RegexOptions`, `MsgBoxStyle`).
 const NAMESPACE_CONSTANTS: &[(&str, f64)] = &[
-    ("math.pi", std::f64::consts::PI),
-    ("Math.PI", std::f64::consts::PI),
-    ("system.math.pi", std::f64::consts::PI),
-    ("System.Math.PI", std::f64::consts::PI),
-    ("math.e", std::f64::consts::E),
-    ("Math.E", std::f64::consts::E),
-    ("system.math.e", std::f64::consts::E),
-    ("System.Math.E", std::f64::consts::E),
-    ("math.tau", std::f64::consts::TAU),
-    ("Math.Tau", std::f64::consts::TAU),
-    ("system.math.tau", std::f64::consts::TAU),
-    ("System.Math.Tau", std::f64::consts::TAU),
     ("int.MaxValue", 2_147_483_647.0),
     ("int.MinValue", -2_147_483_648.0),
     ("double.MaxValue", f64::MAX),

@@ -87,11 +87,10 @@ fn emit_import_call(
     line: u32,
 ) {
     // Per-chunk import tables: the import must be registered on the SAME chunk
-    // that emits the CALL_IMPORT, or the index is out of range when the adapter
+    // that emits the spec `call`, or the index is out of range when the adapter
     // runs in a non-script chunk (e.g. compiled into a `__linq_*` vtable chunk).
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 fn emit_linq_structural_key(chunks: &mut [Chunk], current: usize, line: u32) {

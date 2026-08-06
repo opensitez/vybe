@@ -27,8 +27,7 @@ fn emit_control_create_graphics(chunk: &mut Chunk, line: u32) {
     // Graphics and copy the name onto it.
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_key, line); // [name]
     chunk.emit_op_u16(Op::LOCAL_SET, name_slot, line); // []
-    chunk.emit_op_u16(Op::CALL_IMPORT, graphics_new, line); // [graphics]
-    chunk.emit(0, line); // argc
+    chunk.emit_call(graphics_new, 0, line); // [graphics]
     core_wasm::dup(chunk, line); // [graphics, graphics]
     chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line); // [graphics, graphics, name]
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line); // [graphics, graphics]

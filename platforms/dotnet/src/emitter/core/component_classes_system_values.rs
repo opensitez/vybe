@@ -1,5 +1,7 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
+use vybe_runtime::component_model::{
+    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
+};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     let mut exports = vec![DotnetClassExport::new(
@@ -108,6 +110,44 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                     "Abs",
                     1,
                     MethodBody::Common("dotnet.system.math.abs".into()),
+                ));
+        }
+        // `System.Char`'s static surface. Only `Parse` was registered, so
+        // `char.ToUpper('q')` reached undefined and trapped — while the SAME
+        // conversions already worked in Java, whose `java.lang.Character`
+        // registers these leaves against `ecma:char` and `primitives::strings`.
+        // Nothing was missing but the registration.
+        if matches!(name, "Char" | "char") {
+            for (method, host_fn) in [
+                ("IsDigit", "isDigit"),
+                ("IsLetter", "isLetter"),
+                ("IsLetterOrDigit", "isAlnum"),
+                ("IsUpper", "isUpper"),
+                ("IsLower", "isLower"),
+                ("IsWhiteSpace", "isSpace"),
+            ] {
+                ty = ty.with_method(MethodDef::static_method(
+                    method,
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:char", host_fn)),
+                ));
+            }
+            // The same host fns `primitives::strings::emit_to_upper` /
+            // `emit_to_lower` call. Declared as `HostCall` rather than
+            // `Common`, because `tree_register` turns a `Common` body into a
+            // `CommonEmit` leaf whose name has to be one the dispatch chain
+            // resolves — `strings.to_upper` is not, and the call reached
+            // undefined.
+            ty = ty
+                .with_method(MethodDef::static_method(
+                    "ToUpper",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:string", "toUpperCase")),
+                ))
+                .with_method(MethodDef::static_method(
+                    "ToLower",
+                    1,
+                    MethodBody::HostCall(HostTarget::new("ecma:string", "toLowerCase")),
                 ));
         }
         if matches!(name, "Int32" | "int") {

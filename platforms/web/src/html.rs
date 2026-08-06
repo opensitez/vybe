@@ -50,6 +50,36 @@ fn listeners() -> &'static Mutex<HashMap<ListenerKey, Vec<Value>>> {
     L.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Every `(node, type, callback)` registered on a document, for a host that
+/// needs to see what the guest wired up — a form launcher deciding whether a
+/// window is interactive, or a test asserting a handler landed.
+///
+/// Read-only and ordered per key: `addEventListener` appends, and a listener
+/// list is a sequence, not a set.
+pub fn document_listeners(document: DocumentId) -> Vec<(NodeId, String, Value)> {
+    listeners()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|((doc, _, _), _)| *doc == document)
+        .flat_map(|((_, node, kind), callbacks)| {
+            callbacks
+                .iter()
+                .map(move |callback| (*node, kind.clone(), callback.clone()))
+        })
+        .collect()
+}
+
+/// Drop every listener registered on a document — the counterpart to
+/// [`reset_active_document`], since a discarded document's listeners are
+/// unreachable but the map still holds them.
+pub fn clear_document_listeners(document: DocumentId) {
+    listeners()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|(doc, _, _), _| *doc != document);
+}
+
 /// `target.addEventListener(type, callback)`.
 pub fn add_event_listener(document: DocumentId, node: NodeId, kind: &str, callback: Value) {
     listeners()
@@ -97,14 +127,43 @@ pub fn event_object(kind: &str, target: NodeId) -> Value {
     Value::Object(vybe_runtime::heap::alloc(o))
 }
 
-/// The active document, created on first use.
+/// The active document, created on first use — one per AGENT, not per
+/// process.
 ///
-/// One per process for now: these guests are single-window. `window.open`
-/// creates additional documents and hands back their handles explicitly, so
-/// this is the ambient one, not the only one.
+/// HTML §7 puts a browsing context inside an agent, and an agent is one
+/// thread of execution: two guests running side by side are two agents and
+/// must not see each other's tree. A process-wide document made them share
+/// one, which is invisible to a single-window program and wrong the moment
+/// anything runs two (a test binary being the obvious case, where every test
+/// would accumulate the previous one's controls).
+///
+/// `window.open` still creates additional documents and hands back their
+/// handles explicitly — this is the ambient one, not the only one.
 pub fn active_document() -> DocumentId {
-    static ACTIVE: OnceLock<DocumentId> = OnceLock::new();
-    *ACTIVE.get_or_init(|| crate::engine::new_document(""))
+    ACTIVE_DOCUMENT.with(|active| match active.get() {
+        Some(id) => id,
+        None => {
+            let id = crate::engine::new_document("");
+            active.set(Some(id));
+            id
+        }
+    })
+}
+
+thread_local! {
+    static ACTIVE_DOCUMENT: std::cell::Cell<Option<DocumentId>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Drop this agent's ambient document, so the next `active_document()` opens a
+/// fresh one.
+///
+/// Navigating away is what a browsing context does; a `OnceLock` could not
+/// express it, and one that never resets is how a test on a reused thread
+/// inherited the previous test's controls — a 2-test wobble between identical
+/// runs before this existed.
+pub fn reset_active_document() {
+    ACTIVE_DOCUMENT.with(|active| active.set(None));
 }
 
 // ── argument decoding ───────────────────────────────────────────────────

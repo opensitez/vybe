@@ -35,8 +35,7 @@ fn call_import(
     line: u32,
 ) {
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 fn push_const(chunk: &mut Chunk, val: Value, line: u32) {
@@ -56,7 +55,6 @@ fn struct_get(chunk: &mut Chunk, field: &str, line: u32) {
 fn struct_set_drop(chunk: &mut Chunk, field: &str, line: u32) {
     let idx = chunk.add_constant(Value::String(Arc::from(field)));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn emit_task_wait_method_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
@@ -104,8 +102,7 @@ fn emit_nullish(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op(Op::REF_IS_NULL, line);
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
     let undef = chunk.add_import("wasm:js-undefined", "test");
-    chunk.emit_op_u16(Op::CALL_IMPORT, undef, line);
-    chunk.emit(1, line);
+    chunk.emit_call(undef, 1, line);
     chunk.emit_op(Op::I32_OR, line);
 }
 

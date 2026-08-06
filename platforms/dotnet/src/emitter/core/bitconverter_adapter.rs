@@ -39,8 +39,7 @@ pub fn emit_get_bytes(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_array_new_fixed(0, 2, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_f64, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_f64, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, number_slot, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, number_slot, line);
@@ -188,7 +187,6 @@ pub fn emit_block_copy(chunks: &mut [Chunk], current: usize, line: u32) {
     vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
     chunk.emit_op(Op::ARRAY_GET, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
 
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
     chunk.emit_i32_const(1, line);

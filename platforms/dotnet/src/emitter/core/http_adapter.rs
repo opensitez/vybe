@@ -26,8 +26,7 @@ use vybe_compiler::primitives::instructions::core_wasm;
 
 fn call_import(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
     let idx = chunk.add_import(module, name);
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(idx, argc, line);
 }
 
 /// `str.indexOf(needle)` → i32. Stack: `[]` → `[idx]` (reads `s` from a local).
@@ -204,5 +203,4 @@ pub fn emit_http_client_new(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_string_const("HttpClient", line);
     let idx = chunk.add_constant(Value::String(Arc::from("__type")));
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, idx, line);
-    chunk.emit_op(Op::DROP, line);
 }

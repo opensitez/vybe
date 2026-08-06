@@ -29,7 +29,6 @@ fn set_field(chunk: &mut Chunk, object_slot: u16, field: &str, value_slot: u16, 
     chunk.emit_op_u16(Op::LOCAL_GET, object_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, field_key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn set_string_field(chunk: &mut Chunk, object_slot: u16, field: &str, value: &str, line: u32) {
@@ -68,8 +67,7 @@ fn emit_array_segment_from_slots(
 fn emit_array_with_length(chunks: &mut [Chunk], current: usize, count_slot: u16, line: u32) {
     let idx = chunks[current].add_import("ecma:array", "newWithLength");
     chunks[current].emit_op_u16(Op::LOCAL_GET, count_slot, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(idx, 1, line);
 }
 
 pub fn emit_array_pool_shared(chunks: &mut [Chunk], current: usize, line: u32) {

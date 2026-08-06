@@ -75,15 +75,15 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
             "dotnet.System.Diagnostics",
             "Debug",
             &[
-                ("WriteLine", 1, "wasi:logging/logging", "log"),
-                ("Write", 1, "wasi:logging/logging", "log"),
-                ("Assert", 1, "wasi:logging/logging", "log"),
+                ("WriteLine", 1, "web:console", "log"),
+                ("Write", 1, "web:console", "log"),
+                ("Assert", 1, "web:console", "log"),
             ],
         ),
         static_only_class(
             "dotnet.System.Diagnostics",
             "Trace",
-            &[("WriteLine", 1, "wasi:logging/logging", "log")],
+            &[("WriteLine", 1, "web:console", "log")],
         ),
         common_constructor_class(
             "dotnet.System.Diagnostics",

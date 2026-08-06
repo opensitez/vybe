@@ -34,21 +34,41 @@ fn scratch_dir(label: &str) -> PathBuf {
     dir
 }
 
+static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Invoke a `node:fs:<name>` host fn with `args` as positional
 /// constants on the stack. Returns the host fn's return value.
 fn call_fs(name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<node-fs-test>");
     let import_idx = chunk.add_import("node:fs", name);
     let argc = args.len() as u8;
+    let mut arg_globals: Vec<(String, Value)> = Vec::new();
     for value in args {
-        let constant = chunk.add_constant(value);
-        chunk.emit_op_u16(Op::CONST, constant, 0);
+        match value {
+            Value::I32(n) => chunk.emit_i32_const(n, 0),
+            Value::I64(n) => chunk.emit_i64_const(n, 0),
+            Value::F32(f) => chunk.emit_f32_const(f, 0),
+            Value::F64(f) => chunk.emit_f64_const(f, 0),
+            Value::Bool(b) => chunk.emit_bool_const(b, 0),
+            Value::String(s) => chunk.emit_string_const(&s, 0),
+            other => {
+                let name = format!(
+                    "__test_arg_{}",
+                    TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+                let ci = chunk.intern_string_constant(&name);
+                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                arg_globals.push((name, other));
+            }
+        }
     }
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
-    chunk.emit(argc, 0);
+    chunk.emit_call(import_idx, argc, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
+    for (name, value) in arg_globals {
+        vm.globals.insert(name, value);
+    }
     register_platforms(&mut vm, &Capabilities::all());
     vm.run(vec![chunk]).expect("VM run failed")
 }
@@ -103,14 +123,24 @@ fn invoke_method(receiver: &Value, method: &str) -> Value {
     let method_ref = prop(receiver, method);
     // Build a chunk that pushes the receiver + method + does call_ref 1.
     let mut chunk = Chunk::new("<node-fs-method-test>");
-    let recv_const = chunk.add_constant(receiver.clone());
-    let method_const = chunk.add_constant(method_ref);
-    chunk.emit_op_u16(Op::CONST, method_const, 0);
-    chunk.emit_op_u16(Op::CONST, recv_const, 0);
+    let method_name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let recv_name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let method_ci = chunk.intern_string_constant(&method_name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, method_ci, 0);
+    let recv_ci = chunk.intern_string_constant(&recv_name);
+    chunk.emit_op_u16(Op::GLOBAL_GET, recv_ci, 0);
     chunk.emit_op_u8(Op::CALL_REF, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
+    vm.globals.insert(method_name, method_ref);
+    vm.globals.insert(recv_name, receiver.clone());
     register_platforms(&mut vm, &Capabilities::all());
     vm.run(vec![chunk]).expect("invoke_method VM run failed")
 }

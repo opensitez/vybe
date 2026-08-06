@@ -156,8 +156,7 @@ fn emit_string_concat(chunks: &mut [Chunk], current: usize, left: u16, right: u1
     let concat_idx = chunks[current].add_import("ecma:string", "concat");
     emit_get_local(chunks, current, left, line);
     emit_get_local(chunks, current, right, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, concat_idx, line);
-    chunks[current].emit(2u8, line);
+    chunks[current].emit_call(concat_idx, 2u8, line);
 }
 
 fn emit_number_from_property(
@@ -172,8 +171,7 @@ fn emit_number_from_property(
     emit_gui_call(chunks, current, "getProperty", 2, line);
 
     let num_idx = chunks[current].add_import("ecma:number", "Number");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, num_idx, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(num_idx, 1, line);
 }
 
 fn emit_set_control_property(
@@ -600,10 +598,8 @@ pub fn emit_sdl_delay(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
     emit_get_local(chunks, current, delay_ms, line);
     chunks[current].emit_f64_const(1_000_000.0, line);
     chunks[current].emit_op(Op::F64_MUL, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, sub_idx, line);
-    chunks[current].emit(1, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, block_idx, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(sub_idx, 1, line);
+    chunks[current].emit_call(block_idx, 1, line);
     emit_zero_i32(chunks, current, line);
 }
 
@@ -616,8 +612,7 @@ pub fn emit_sdl_delay(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32
 /// `SDL_GetTicks()` → milliseconds since start.
 pub fn emit_sdl_get_ticks(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let now_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "now");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, now_idx, line);
-    chunks[current].emit(0, line);
+    chunks[current].emit_call(now_idx, 0, line);
     chunks[current].emit_f64_const(1_000_000.0, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op(Op::F64_TRUNC, line);
@@ -626,8 +621,7 @@ pub fn emit_sdl_get_ticks(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 /// `SDL_GetPerformanceCounter()` → the raw nanosecond counter.
 pub fn emit_sdl_get_performance_counter(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     let now_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "now");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, now_idx, line);
-    chunks[current].emit(0, line);
+    chunks[current].emit_call(now_idx, 0, line);
 }
 
 /// `SDL_GetPerformanceFrequency()` → counts per second: nanoseconds → 1e9.

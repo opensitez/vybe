@@ -50,9 +50,10 @@ fn struct_set_named_field(chunk: &mut Chunk, key: &str, line: u32) {
     chunk.emit_struct_field_op(Op::STRUCT_SET, 0, key_idx, line);
 }
 
+// struct.set is spec-shaped now (pushes nothing) — the old `_drop` variant
+// compensated for the retired push-val-back contract.
 fn struct_set_named_field_drop(chunk: &mut Chunk, key: &str, line: u32) {
     struct_set_named_field(chunk, key, line);
-    chunk.emit_op(Op::DROP, line);
 }
 
 fn struct_get_named_field(chunk: &mut Chunk, key: &str, line: u32) {

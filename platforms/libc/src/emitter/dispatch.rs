@@ -258,7 +258,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     match name {
         "libc.stdio.printf" => {
             super::stdio_format::emit_sprintf(chunks, current, argc, line);
-            let idx = chunks[current].add_import("wasi:logging/logging", "log");
+            let idx = chunks[current].add_import("web:console", "log");
             chunks[current].emit_call(idx, 1, line);
             true
         }

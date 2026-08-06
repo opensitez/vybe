@@ -110,7 +110,6 @@ pub fn emit_array_clear(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_end(line);
     chunk.emit_end(line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line); // ARRAY_SET pushes the value; drop it
 
     // i++
     chunk.emit_op_u16(Op::LOCAL_GET, i_slot, line);
@@ -305,7 +304,6 @@ pub fn emit_array_set_checked(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, index_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op(Op::ARRAY_SET, line);
-    chunk.emit_op(Op::DROP, line);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
 

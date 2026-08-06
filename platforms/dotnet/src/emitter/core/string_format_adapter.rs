@@ -296,8 +296,7 @@ fn emit_handle_open_brace(
     let idx_slot = chunk.alloc_scratch(1);
     let pf_idx = chunk.add_import("ecma:number", "parseInt");
     chunk.emit_op_u16(Op::LOCAL_GET, inner_slot, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, pf_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(pf_idx, 1, line);
     chunk.emit_op(Op::I32_FROM_F64, line);
     chunk.emit_op_u16(Op::LOCAL_SET, idx_slot, line);
 
@@ -360,8 +359,7 @@ fn emit_handle_open_brace(
     chunk.emit_op(Op::I32_ADD, line);
     chunk.emit_op_u16(Op::LOCAL_GET, width_end_slot, line);
     host::emit(chunk, "wasm:js-string", "substring", 3, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, pf_idx, line);
-    chunk.emit(1, line);
+    chunk.emit_call(pf_idx, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, width_slot, line);
     chunk.emit_end(line);
     chunk.patch_block(no_width_spec);

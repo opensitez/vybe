@@ -17,19 +17,39 @@ use vybe_runtime::{Chunk, Op, VM};
 use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
 
+static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn call_qs(name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<node-querystring-test>");
     let import_idx = chunk.add_import("node:querystring", name);
     let argc = args.len() as u8;
+    let mut arg_globals: Vec<(String, Value)> = Vec::new();
     for value in args {
-        let c = chunk.add_constant(value);
-        chunk.emit_op_u16(Op::CONST, c, 0);
+        match value {
+            Value::I32(n) => chunk.emit_i32_const(n, 0),
+            Value::I64(n) => chunk.emit_i64_const(n, 0),
+            Value::F32(f) => chunk.emit_f32_const(f, 0),
+            Value::F64(f) => chunk.emit_f64_const(f, 0),
+            Value::Bool(b) => chunk.emit_bool_const(b, 0),
+            Value::String(s) => chunk.emit_string_const(&s, 0),
+            other => {
+                let name = format!(
+                    "__test_arg_{}",
+                    TEST_GLOBAL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+                let ci = chunk.intern_string_constant(&name);
+                chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
+                arg_globals.push((name, other));
+            }
+        }
     }
-    chunk.emit_op_u16(Op::CALL_IMPORT, import_idx, 0);
-    chunk.emit(argc, 0);
+    chunk.emit_call(import_idx, argc, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
+    for (name, value) in arg_globals {
+        vm.globals.insert(name, value);
+    }
     register_platforms(&mut vm, &Capabilities::all());
     vm.run(vec![chunk]).expect("VM run failed")
 }
