@@ -30,7 +30,7 @@ pub fn run_lua(src: &str) -> Vec<String> {
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     // `emit = "print"` → emitter/io.rs → wasi:logging/logging.log
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let parts: Vec<String> = args.iter().map(|v| format!("{v}")).collect();

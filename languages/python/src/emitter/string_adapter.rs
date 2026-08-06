@@ -21,12 +21,11 @@ fn call_import(
     line: u32,
 ) {
     // Register on the CURRENT chunk (not chunks[0]) so `normalize_import_table`
-    // remaps this CALL_IMPORT via the emitting chunk's own local table. A
+    // remaps this spec `call` via the emitting chunk's own local table. A
     // chunks[0] index inside a non-root chunk collides with per-chunk imports
     // and resolves the wrong host fn. Matches shared `emit_import_call`.
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 /// Pop `argc` stack values (deepest first) into freshly allocated scratch slots

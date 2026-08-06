@@ -174,9 +174,8 @@ fn emit_formatted_local(chunks: &mut [Chunk], current: usize, slot: u16, line: u
 }
 
 fn emit_log(chunks: &mut [Chunk], current: usize, line: u32) {
-    let log = chunks[current].add_import("wasi:logging/logging", "log");
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, log, line);
-    chunks[current].emit(1, line);
+    let log = chunks[current].add_import("web:console", "log");
+    chunks[current].emit_call(log, 1, line);
 }
 
 fn emit_string(chunks: &mut [Chunk], current: usize, value: &str, line: u32) {

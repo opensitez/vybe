@@ -31,8 +31,7 @@ fn call_import(
     line: u32,
 ) {
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {

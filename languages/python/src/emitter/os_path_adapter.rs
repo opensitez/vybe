@@ -20,8 +20,7 @@ const END: i32 = 0x7FFF_FFFF;
 fn call_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
     // Register on the CURRENT chunk (see `string_adapter::call_import`).
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 /// Pop `argc` stack values (deepest first) into freshly allocated scratch slots

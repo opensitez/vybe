@@ -466,7 +466,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
             // The contract is declared in the profile's `[async]` section;
             // the compiler stamps it. A walker writes an override only for a
             // module whose contract differs from its language's.
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 /// Heuristic: does the source reference bytes at all? Only gates whether the
@@ -4043,7 +4044,7 @@ fn walk_params(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
                             // the default here (frontend), so the shared default
                             // machinery fills it and the compiler change stays in
                             // the named-arg reorder only.
-                            default: Some(Expression::new(ExprKind::Object(Vec::new()))),
+                            default: Some(py_dict_expr(Vec::new())),
                             pass_by: PassBy::Value,
                             is_rest: false,
                             is_kwargs: true,
@@ -4692,7 +4693,8 @@ fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtK
     // `normalize_class` (the shared signature carries modifiers, not
     // decorators) and because synthesizing real AST members keeps the shared
     // class pipeline language-neutral.
-    if decorators.iter().any(is_dataclass_decorator) {
+    let is_dataclass = decorators.iter().any(is_dataclass_decorator);
+    if is_dataclass {
         synthesize_dataclass_members(&name, &mut body_stmts);
     }
     synthesize_python_class_defaults(&name, &mut body_stmts);
@@ -4707,7 +4709,22 @@ fn walk_class_def(pair: Pair<Rule>, decorators: Vec<Expression>) -> Result<StmtK
         parents,
         interfaces: Vec::new(),
         members,
-        modifiers: ClassModifiers::default(),
+        modifiers: ClassModifiers {
+            // A `@dataclass` keeps REFERENCE storage — `b = a` still aliases —
+            // but gets VALUE equality: the generated `__eq__` compares
+            // field-by-field, which `dataclass_eq` above already synthesizes.
+            // Declaring it here is what lets the shared lowering stop caring
+            // which language wrote that method.
+            semantics: ValueSemantics {
+                equality: if is_dataclass {
+                    ValueEquality::Structural
+                } else {
+                    ValueEquality::Identity
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         decorators: vec![] })
 }
 
@@ -5107,7 +5124,8 @@ fn function_annotations_expr(params: &[Param], return_type: Option<&String>) -> 
     if props.is_empty() {
         None
     } else {
-        Some(Expression::new(ExprKind::Object(props)))
+        // `__annotations__` is a dict.
+        Some(py_dict_expr(props))
     }
 }
 
@@ -10312,7 +10330,8 @@ fn keyword_object(args: &[Argument]) -> Option<Expression> {
                 value: desugar_member_reads(arg.value.clone()) })
         })
         .collect();
-    (!props.is_empty()).then(|| Expression::new(ExprKind::Object(props)))
+    // Collected keyword arguments — a dict.
+    (!props.is_empty()).then(|| py_dict_expr(props))
 }
 
 fn collections_ctor_call(name: &str, args: &[Argument]) -> Option<Expression> {
@@ -10369,12 +10388,9 @@ fn collections_ctor_call(name: &str, args: &[Argument]) -> Option<Expression> {
                 args: call_args,
                 optional: false }))
         }
-        "UserDict" | "__py_userdict" => Some(
-            positional
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Expression::new(ExprKind::Object(Vec::new()))),
-        ),
+        "UserDict" | "__py_userdict" => {
+            Some(positional.first().cloned().unwrap_or_else(|| py_dict_expr(Vec::new())))
+        }
         "UserList" | "__py_userlist" => Some(call_ident(
             "__py_userlist",
             vec![positional
@@ -11080,7 +11096,8 @@ fn build_namedtuple_asdict(recv: &Expression, def: &NamedTupleDef) -> Expression
             key: Expression::new(ExprKind::Lit(Literal::Str(f.clone()))),
             value: namedtuple_index_read(recv, i) })
         .collect();
-    Expression::new(ExprKind::Object(props))
+    // `nt._asdict()` returns a dict.
+    py_dict_expr(props)
 }
 
 /// `nt._replace(**kw)` → a new namedtuple: each field keeps `nt[i]` unless a
@@ -15244,7 +15261,7 @@ fn walk_postfix(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 // semantics: True/False/None, [.., ..] lists,
                                 // {'k': v} dicts, single-quoted nested strings.
                                 "dict" if args.is_empty() => {
-                                    expr = Expression::new(ExprKind::Object(vec![]));
+                                    expr = py_dict_expr(vec![]);
                                     continue;
                                 }
                                 "dict" if args.len() == 1 => {
@@ -16622,15 +16639,52 @@ fn walk_list_inner(pair: Pair<Rule>) -> Result<ExprKind, String> {
     Ok(ExprKind::Array(elements))
 }
 
+/// Build a python **dict** from object properties.
+///
+/// A dict is `ExprKind::Map` — ordered, and the key keeps its type. Only a
+/// spread (`{**a, 'k': 1}`) has no entry pair to carry, so that stays an
+/// `Object`. This is the one place the choice is made; call it from every site
+/// that builds a genuine dict, and never construct `ExprKind::Object` for one.
+///
+/// This used to be `profile.dict_literals_as_map`, which reinterpreted EVERY
+/// all-key/value `Object` python emitted — including ones that are genuinely
+/// objects (`__loader__`, `gi_frame`, `SimpleNamespace`). Those stay `Object`
+/// now, which is what they always meant.
+fn py_dict_kind(props: Vec<ObjectProperty>) -> ExprKind {
+    if props
+        .iter()
+        .all(|p| matches!(p, ObjectProperty::KeyValue { .. }))
+    {
+        return ExprKind::Map(
+            props
+                .into_iter()
+                .map(|p| match p {
+                    ObjectProperty::KeyValue { key, value } => (key, value),
+                    _ => unreachable!("guarded by the all(KeyValue) test above") })
+                .collect(),
+        );
+    }
+    ExprKind::Object(props)
+}
+
+/// `py_dict_kind` as an `Expression`.
+fn py_dict_expr(props: Vec<ObjectProperty>) -> Expression {
+    Expression::new(py_dict_kind(props))
+}
+
 fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
     let text = pair.as_str().trim();
+    // `{}` is an empty DICT in python, so it is a `Map` like any other dict —
+    // not an `Object`. Getting this wrong is not cosmetic: `e = {}; e[9] = 2`
+    // then stringifies the key to `'9'` and reorders integer-like keys ahead of
+    // string ones, because that is what a JS property bag does.
     if text.is_empty() {
-        return Ok(ExprKind::Object(Vec::new())); // empty dict {}
+        return Ok(ExprKind::Map(Vec::new())); // empty dict {}
     }
 
     let inner: Vec<Pair<Rule>> = pair.into_inner().collect();
     if inner.is_empty() {
-        return Ok(ExprKind::Object(Vec::new()));
+        return Ok(ExprKind::Map(Vec::new()));
     }
 
     // ── Set comprehension: expression ~ set_comp_or_rest(comp_clause+) ──
@@ -16741,7 +16795,7 @@ fn walk_dict_or_set(pair: Pair<Rule>) -> Result<ExprKind, String> {
             }
             i += 1;
         }
-        return Ok(ExprKind::Object(props));
+        return Ok(py_dict_kind(props));
     }
 
     // Set literal: {1, 2, 3}

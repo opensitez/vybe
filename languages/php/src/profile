@@ -22,7 +22,9 @@ separate_property_method_namespace = true   # $o->foo (property) and $o->foo() (
 # common resolver instead of the legacy hardcoded arms. PHP's vybe/wasi/wasm
 # package roots were already profile data.
 uses_common_resolver = true
-has_ecma_bigint = true               # ecma:bigint for BigInt operands
+# BigInt needs no flag: PHP's walker emits `Literal::BigInt` for integer
+# literals past f64 exactness, and the shared compiler derives the capability
+# from the literals themselves (module prescan).
 has_generators = true                # PHP generators (yield)
 abstract_equality = true             # PHP == loose equality
 function_return = "explicit"
@@ -631,14 +633,7 @@ sprintf             = { emit = "common:sprintf.format",     min_args = 1, max_ar
 # `substr` walker-rewritten to `__php_substr($s, $start, $length?)`.
 
 # ── Internal helpers — AST rewrite targets ─────────────────────────────────
-# The PHP walker rewrites `$x++` → `$x = __php_increment($x)` and
-# `$x--` → `$x = __php_decrement($x)` so downstream code doesn't see
-# PHP-specific semantics. These identifiers are never writable from user
-# PHP code (leading underscores sort under the normal name binding in
-# PHP anyway, but they're not intended to collide).
 
-__php_increment     = { emit = "common:php.inc",                 min_args = 1, max_args = 1 }
-__php_decrement     = { emit = "common:php.dec",                 min_args = 1, max_args = 1 }
 __php_substr        = { emit = "intrinsic:php_substr",          min_args = 2, max_args = 3 }
 __php_mb_substr     = { emit = "common:php.mb_substr",          min_args = 2, max_args = 3 }
 __php_strpos        = { emit = "common:php.strpos",             min_args = 2, max_args = 3 }
@@ -1122,7 +1117,6 @@ reduce   = "__array_reduce"
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespaces]
-use_dotnet = false
 roots = []
 extra_imports = []
 
@@ -1194,6 +1188,11 @@ ne = "common:php.loose_ne"
 # as "1", `false`/`null` as "", and an array as "Array" — none of which is the
 # ECMA `String()` coercion the platform defaults to.
 to_string = "common:php.concat_stringify"
+# `$s++` on a string is Perl-style character carry ("az"++ is "ba") plus the
+# date-suffix form — the step SLOTS bind it, the AST keeps `++`, and the
+# shared emitter calls this only when the runtime value IS a string.
+inc = "common:php.inc"
+dec = "common:php.dec"
 
 # `+` on two arrays is UNION, not concatenation: keys present on the left win,
 # so `[1,2,3] + [10,20,30,40]` is `[1,2,3,40]`. Arithmetic `+` on numbers is

@@ -67,7 +67,8 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::Public, // Python is convention-based
-                    readonly: false };
+                    readonly: false,
+                    value_type: None };
                 // A Python class attribute is readable through instances
                 // (`a.kind` falls back to `type(a).kind`), so the class body's
                 // `kind = ...` is BOTH a static field and an instance one. The

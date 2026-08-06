@@ -417,7 +417,7 @@ fn emit_ruby_array_inspect_from_slot(chunks: &mut [Chunk], current: usize, slot:
 }
 
 fn emit_log_top_string(chunks: &mut [Chunk], current: usize, line: u32) {
-    call_import(chunks, current, "wasi:logging/logging", "log", 1, line);
+    call_import(chunks, current, "web:console", "log", 1, line);
 }
 
 fn emit_ruby_puts_value_from_slot(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {

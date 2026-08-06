@@ -1082,7 +1082,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Dart,
         body,
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 fn normalize_dart_expression_source(source: &str) -> String {

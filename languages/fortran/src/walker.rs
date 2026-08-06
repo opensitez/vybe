@@ -156,7 +156,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name,
         language: Lang::Fortran,
         body,
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 fn walk_top(
@@ -2711,7 +2712,19 @@ fn walk_type(pair: Pair<Rule>) -> Result<Statement, String> {
         parents,
         interfaces: vec![],
         members,
-        modifiers,
+        modifiers: ClassModifiers {
+            // A Fortran derived type is a VALUE aggregate: intrinsic assignment
+            // is component-wise. Measured with gfortran — `b = a; b%x = 99`
+            // leaves `a%x` at 1.
+            //
+            // Equality stays Identity: the standard gives a derived type no
+            // intrinsic `==`; a program must define one via an interface.
+            semantics: ValueSemantics {
+                storage: ValueStorage::Value,
+                ..Default::default()
+            },
+            ..modifiers
+        },
         decorators: vec![] }))
 }
 

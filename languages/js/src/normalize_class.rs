@@ -73,7 +73,7 @@ pub fn normalize_class(
                     array_bounds: array_bounds.clone(),
                     access: access_for_js(fname),
                     readonly: false, // JS doesn't have readonly at class field level
-                };
+                    value_type: None };
                 out.push_field(modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -217,7 +217,8 @@ fn static_block_field(span: Span, index: usize, body: Vec<Statement>) -> NormalF
         init: Some(init),
         array_bounds: None,
         access: Access::Private,
-        readonly: false }
+        readonly: false,
+        value_type: None }
 }
 
 /// Build a `NormalMethod` from a `StmtKind::FunctionDecl` wrapped

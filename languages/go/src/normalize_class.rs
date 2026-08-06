@@ -94,7 +94,8 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: access_from_visibility(modifiers.visibility),
-                    readonly: modifiers.is_readonly };
+                    readonly: modifiers.is_readonly,
+                    value_type: None };
                 m.push_field(modifiers.is_shared, field);
             }
             ClassMember::Method(stmt) => {

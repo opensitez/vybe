@@ -61,7 +61,8 @@ pub fn normalize_class(
                     }),
                     array_bounds: array_bounds.clone(),
                     access: Access::Public,
-                    readonly: field_modifiers.is_readonly };
+                    readonly: field_modifiers.is_readonly,
+                    value_type: None };
                 m.push_field(field_modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {

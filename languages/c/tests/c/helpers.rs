@@ -86,7 +86,7 @@ pub fn run_prints(src: &str) -> Vec<String> {
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     let out = output.clone();
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();

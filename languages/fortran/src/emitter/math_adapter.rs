@@ -38,8 +38,7 @@ fn call_import(
 ) {
     let idx = chunks[0].add_import(module.to_string(), name.to_string());
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunk.emit(argc, line);
+    chunk.emit_call(idx, argc, line);
 }
 
 fn emit_numeric_zero(chunk: &mut Chunk, line: u32) {

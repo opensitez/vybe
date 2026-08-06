@@ -72,7 +72,8 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::from(m.visibility),
-                    readonly: m.is_readonly };
+                    readonly: m.is_readonly,
+                    value_type: None };
                 out.push_field(m.is_static, field);
             }
             ClassMember::Method(stmt) => {
@@ -195,7 +196,8 @@ pub fn normalize_class(
                         init: Some(value.clone()),
                         array_bounds: None,
                         access: Access::Public,
-                        readonly: true },
+                        readonly: true,
+                        value_type: None },
                 );
                 // Keep the raw entry too so the legacy `Class.Const`
                 // global path is still emitted for any caller that

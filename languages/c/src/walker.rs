@@ -69,7 +69,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".to_string(),
         language: Lang::Unknown,
         body: full_body,
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 #[derive(Default)]
@@ -3709,7 +3710,7 @@ impl Walker {
             // A C `struct` is a VALUE type — assignment copies, and so does
             // passing or returning one by value. Equality stays Identity: C has
             // no `==` on structs at all (comparison is an explicit `memcmp`).
-            record: RecordPolicy { storage: RecordStorage::Value, ..Default::default() } })
+            semantics: ValueSemantics { storage: ValueStorage::Value, ..Default::default() } })
     }
 
     /// Zero value for a struct field given its (array-suffixed) type:

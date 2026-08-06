@@ -113,14 +113,13 @@ fn call_import(
 ) {
     // Register on the CURRENT chunk (not chunks[0]): the import-table
     // normalizer (primitives/link.rs `normalize_import_table`) remaps each
-    // CALL_IMPORT via the emitting chunk's OWN local import table. Using a
+    // spec `call` via the emitting chunk's OWN local import table. Using a
     // chunks[0] index inside a non-root chunk collides with per-chunk imports
     // (e.g. `emit_dyn_to_bool`), so the remap resolves the wrong host fn —
     // that broke `len()` on array/dict values inside function bodies. Matches
     // the shared `emit_import_call` convention.
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 
 fn stash_args(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {

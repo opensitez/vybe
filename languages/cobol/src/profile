@@ -175,6 +175,5 @@ some      = "__array_some"
 every     = "__array_every"
 
 [namespaces]
-use_dotnet = false
 roots = []
 extra_imports = []

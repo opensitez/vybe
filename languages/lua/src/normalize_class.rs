@@ -37,7 +37,8 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::from(modifiers.visibility),
-                    readonly: modifiers.is_readonly };
+                    readonly: modifiers.is_readonly,
+                    value_type: None };
                 m.push_field(modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {

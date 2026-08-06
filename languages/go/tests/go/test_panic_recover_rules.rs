@@ -73,7 +73,7 @@ fn nested_defer_inner_recover_gets_nil() {
     let out = output.clone();
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
@@ -102,7 +102,7 @@ fn defer_recover_three_level_nesting() {
     let out = output.clone();
     vybe_compiler::primitives::platforms::init_platforms(&mut vm);
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let s: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();

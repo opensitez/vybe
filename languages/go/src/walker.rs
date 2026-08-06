@@ -171,7 +171,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: package_name,
         language: Lang::Go,
         body,
-        imports }))
+        imports,
+        directives: Default::default() }))
 }
 
 /// Whether the source references the errors/Errorf runtime surface handled by
@@ -5276,8 +5277,158 @@ func __go_strings_SplitAfterN(s, sep string, n int) []string {
 func main() {}
 "#;
 
+/// Go spec "Semicolon insertion" (§Tokens): the lexer inserts `;` at a
+/// newline when the line's last token is an identifier, a literal, one of
+/// `break` / `continue` / `fallthrough` / `return`, or `++` `--` `)` `]`
+/// `}`. The pest grammar's WHITESPACE includes `\n`, so WITHOUT this pass
+/// an expression continues across the newline and a following line-start
+/// `*p = x` / `<-ch` / `-x` is swallowed as a binary operand — the whole
+/// line-start statement family. The grammar already tolerates `;` in every
+/// insertion position (statements, specs, field/interface members).
+///
+/// The `;` is emitted AFTER the `\n` so line numbers and comment text are
+/// untouched. Inside strings / runes / raw strings / comments nothing is
+/// inserted; a blank line resets the state so it never double-inserts.
+fn insert_go_semicolons(src: &str) -> String {
+    // Keywords a line may legally END on withOUT a semicolon following in
+    // real Go — everything except break/continue/fallthrough/return.
+    const NO_INSERT_KEYWORDS: &[&str] = &[
+        "package", "import", "func", "var", "const", "type", "if", "else", "for", "range", "go",
+        "defer", "chan", "map", "struct", "interface", "switch", "select", "case", "default",
+        "goto",
+    ];
+    #[derive(PartialEq)]
+    enum St {
+        Normal,
+        LineComment,
+        BlockComment,
+        Dq,
+        Raw,
+        Rune,
+    }
+    let mut out = String::with_capacity(src.len() + src.len() / 16);
+    let mut st = St::Normal;
+    let mut word = String::new();
+    let mut last_ch: Option<char> = None;
+    let mut prev_ch: Option<char> = None;
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        match st {
+            St::Normal => match c {
+                '\n' => {
+                    out.push('\n');
+                    let insert = match last_ch {
+                        Some(l) if l.is_alphanumeric() || l == '_' => {
+                            !NO_INSERT_KEYWORDS.contains(&word.as_str())
+                        }
+                        Some(')') | Some(']') | Some('}') | Some('"') | Some('\'')
+                        | Some('`') => true,
+                        Some('+') => prev_ch == Some('+'),
+                        Some('-') => prev_ch == Some('-'),
+                        _ => false };
+                    if insert {
+                        out.push(';');
+                    }
+                    word.clear();
+                    last_ch = None;
+                    prev_ch = None;
+                }
+                ' ' | '\t' | '\r' => out.push(c),
+                '"' => {
+                    st = St::Dq;
+                    out.push(c);
+                }
+                '`' => {
+                    st = St::Raw;
+                    out.push(c);
+                }
+                '\'' => {
+                    st = St::Rune;
+                    out.push(c);
+                }
+                '/' if chars.peek() == Some(&'/') => {
+                    st = St::LineComment;
+                    out.push(c);
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    st = St::BlockComment;
+                    out.push(c);
+                }
+                _ => {
+                    if c.is_alphanumeric() || c == '_' {
+                        if !matches!(last_ch, Some(l) if l.is_alphanumeric() || l == '_') {
+                            word.clear();
+                        }
+                        word.push(c);
+                    }
+                    prev_ch = last_ch;
+                    last_ch = Some(c);
+                    out.push(c);
+                }
+            },
+            St::LineComment => {
+                if c == '\n' {
+                    // Decide with the PRE-comment token state; the `;` lands
+                    // after the newline, outside the comment text.
+                    out.push('\n');
+                    let insert = match last_ch {
+                        Some(l) if l.is_alphanumeric() || l == '_' => {
+                            !NO_INSERT_KEYWORDS.contains(&word.as_str())
+                        }
+                        Some(')') | Some(']') | Some('}') | Some('"') | Some('\'')
+                        | Some('`') => true,
+                        Some('+') => prev_ch == Some('+'),
+                        Some('-') => prev_ch == Some('-'),
+                        _ => false };
+                    if insert {
+                        out.push(';');
+                    }
+                    word.clear();
+                    last_ch = None;
+                    prev_ch = None;
+                    st = St::Normal;
+                } else {
+                    out.push(c);
+                }
+            }
+            St::BlockComment => {
+                out.push(c);
+                if c == '*' && chars.peek() == Some(&'/') {
+                    out.push(chars.next().unwrap());
+                    st = St::Normal;
+                }
+            }
+            St::Dq | St::Rune => {
+                out.push(c);
+                if c == '\\' {
+                    if let Some(esc) = chars.next() {
+                        out.push(esc);
+                    }
+                } else if (c == '"' && st == St::Dq) || (c == '\'' && st == St::Rune) {
+                    prev_ch = last_ch;
+                    last_ch = Some(c);
+                    word.clear();
+                    st = St::Normal;
+                }
+            }
+            St::Raw => {
+                out.push(c);
+                if c == '`' {
+                    prev_ch = last_ch;
+                    last_ch = Some(c);
+                    word.clear();
+                    st = St::Normal;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Walk a Go source string into its raw (pre-normalization) parts.
 fn walk_go_source(source: &str) -> Result<(String, Vec<Statement>, Vec<Import>), String> {
+    let source = insert_go_semicolons(source);
+    let source = source.as_str();
     let pairs =
         GoParser::parse(Rule::program, source).map_err(|e| format!("Go parse error: {}", e))?;
 
@@ -8658,7 +8809,7 @@ fn normalize_go_statement(
             members,
             visibility,
             decorators,
-            record } => {
+            semantics } => {
             let normalized_members = members
                 .iter()
                 .map(|member| match member {
@@ -8698,7 +8849,38 @@ fn normalize_go_statement(
                 // Carried, never re-defaulted: this arm rebuilds the decl, and
                 // resetting the policy here would silently drop whatever the
                 // walker declared.
-                record: record.clone() })]
+                semantics: semantics.clone() })]
+        }
+        StmtKind::Select { arms, default } => {
+            // Select arm bodies are ordinary statements and MUST ride the
+            // normalization pass — skipping them left `len(ch)` in an arm
+            // lowering as generic polymorphic len (visible-property count)
+            // instead of `ChanOp::Len`.
+            let normalized_arms = arms
+                .iter()
+                .map(|arm| {
+                    let comm = match &arm.comm {
+                        ChanOp::Send { channel, value } => ChanOp::Send {
+                            channel: Box::new(normalize_go_expr(channel, env, signatures, state)),
+                            value: Box::new(normalize_go_expr(value, env, signatures, state)) },
+                        ChanOp::Recv(ch) => ChanOp::Recv(Box::new(normalize_go_expr(
+                            ch, env, signatures, state,
+                        ))),
+                        ChanOp::RecvOk(ch) => ChanOp::RecvOk(Box::new(normalize_go_expr(
+                            ch, env, signatures, state,
+                        ))),
+                        other => other.clone() };
+                    SelectArm {
+                        comm,
+                        body: normalize_go_block(&arm.body, env, signatures, state) }
+                })
+                .collect();
+            let normalized_default = default
+                .as_ref()
+                .map(|body| normalize_go_block(body, env, signatures, state));
+            vec![Statement::new(StmtKind::Select {
+                arms: normalized_arms,
+                default: normalized_default })]
         }
         _ => vec![stmt.clone()] }
 }
@@ -17805,7 +17987,7 @@ fn walk_method_decl(pair: Pair<Rule>) -> Result<Statement, String> {
         // NOT a user declaration — a synthetic carrier holding one method for a
         // receiver, merged into the real `type X struct` later. The policy is
         // declared THERE; stating one here would give the merge two answers.
-        record: RecordPolicy::default() }))
+        semantics: ValueSemantics::default() }))
 }
 
 fn walk_signature(pair: Pair<Rule>) -> Result<GoSignatureInfo, String> {
@@ -18395,9 +18577,9 @@ fn walk_struct_type(name: String, pair: Pair<Rule>) -> Result<Statement, String>
         // `type X struct` — the real declaration. A Go struct is a VALUE type
         // (assignment, argument passing and return all copy) and the spec makes
         // `==` on a comparable struct field-wise, so both axes are declared.
-        record: RecordPolicy {
-            storage: RecordStorage::Value,
-            equality: RecordEquality::Structural,
+        semantics: ValueSemantics {
+            storage: ValueStorage::Value,
+            equality: ValueEquality::Structural,
             ..Default::default()
         } }))
 }
@@ -19188,7 +19370,13 @@ fn walk_select(pair: Pair<Rule>) -> Result<StmtKind, String> {
     }
 
     if arms.is_empty() {
-        return Ok(StmtKind::Block(default_body.unwrap_or_default()));
+        // `select { default: ... }` runs the default; bare `select {}` must
+        // stay a Select so the lowering emits Go's blocks-forever deadlock
+        // panic instead of a silent no-op.
+        if let Some(body) = default_body {
+            return Ok(StmtKind::Block(body));
+        }
+        return Ok(StmtKind::Select { arms: Vec::new(), default: None });
     }
     Ok(StmtKind::Select {
         arms: arms

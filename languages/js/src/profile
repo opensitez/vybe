@@ -21,7 +21,9 @@ ecma_error_object_shape = true      # Error objects: non-enum fields + instanceo
 has_undefined_value = true            # distinct undefined value (ECMA)
 supports_spread_arguments = true      # f(...arr) call-site expansion
 supports_dynamic_import = true        # ECMAScript import()
-has_ecma_bigint = true                # ECMAScript BigInt via ecma:bigint
+# BigInt needs no flag: JS IS ecma — the `BigInt` builtin below reaches
+# `ecma:bigint`, and `1n` literals walk to `Literal::BigInt`; the shared
+# compiler derives the capability from either.
 ecma_strict_mode = true               # "use strict"
 ecma_switch_strict_equality = true    # switch uses ===
 ecma_lexical_declarations = true      # const/let/var lexical rules

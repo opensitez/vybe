@@ -14,8 +14,7 @@ pub fn emit_integer_of_date(chunks: &mut [Chunk], current: usize, line: u32) {
     let parse_idx = chunks[0].add_import("ecma:date", "parse");
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, to_string_idx, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(to_string_idx, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, date_str_slot, line);
 
     emit_yyyymmdd_slice(chunks, current, date_str_slot, 0.0, 4.0, line);
@@ -27,8 +26,7 @@ pub fn emit_integer_of_date(chunks: &mut [Chunk], current: usize, line: u32) {
         host::emit(&mut chunks[current], "wasm:js-string", "concat", 2, line);
     }
 
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, parse_idx, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(parse_idx, 1, line);
     emit_f64_const(chunks, current, vybe_compiler::primitives::datetime::MS_PER_DAY, line);
     chunks[current].emit_op(Op::F64_DIV, line);
     chunks[current].emit_op(Op::F64_TRUNC, line);

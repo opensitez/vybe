@@ -394,7 +394,10 @@ binary_op = @{
     | "&&"
     | "==" | "!="
     | "<<" | ">>"
-    | "<=" | ">=" | "<" | ">"
+    // `<` must not swallow the arrow: Go's lexer is maximal-munch, so `<-`
+    // is ALWAYS one token. Without the guard, `ch <- 42` followed by a
+    // line starting with `<-recv` parsed as ONE send of `42 < -recv`.
+    | "<=" | ">=" | ("<" ~ !"-") | ">"
     | "+"  | "-"  | "|" | "^"
     | "*"  | "/"  | "%" | "&^" | "&"
 }

@@ -31,7 +31,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".to_string(),
         language: Lang::Lua,
         body,
-        imports: Vec::new() };
+        imports: Vec::new(),
+        directives: Default::default() };
     super::normalize::normalize_module(&mut module);
     Ok(module)
 }

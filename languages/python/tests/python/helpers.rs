@@ -34,7 +34,7 @@ macro_rules! compile_case {
 fn register_output_capture(vm: &mut VM, output: &Arc<Mutex<Vec<String>>>) {
     let out = output.clone();
     vm.register_host_fn(
-        "wasi:logging/logging",
+        "web:console",
         "log",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let mut joined = args

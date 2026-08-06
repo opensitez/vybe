@@ -306,7 +306,6 @@ path = "sdl"
 "SIGUSR1" = 10
 
 [namespaces]
-use_dotnet = false
 roots = []
 extra_imports = []
 

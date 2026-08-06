@@ -90,7 +90,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: "main".into(),
         language: Lang::JavaScript,
         body,
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 fn validate_private_class_syntax(body: &[Statement]) -> Result<(), String> {
@@ -443,6 +444,15 @@ fn validate_private_expr(expr: &Expression) -> Result<(), String> {
             }
             Ok(())
         }
+        // js never builds a `Map` literal, but this walks the COMMON AST, so it
+        // has to descend into one all the same.
+        ExprKind::Map(entries) => {
+            for (key, value) in entries {
+                validate_private_expr(key)?;
+                validate_private_expr(value)?;
+            }
+            Ok(())
+        }
         ExprKind::Object(props) => {
             for prop in props {
                 match prop {
@@ -730,6 +740,9 @@ fn expr_contains_await(expr: &Expression) -> bool {
         ExprKind::NamedTuple { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_await(expr))
         }
+        ExprKind::Map(entries) => entries
+            .iter()
+            .any(|(key, value)| expr_contains_await(key) || expr_contains_await(value)),
         ExprKind::Object(props) => props.iter().any(|prop| match prop {
             ObjectProperty::KeyValue { key, value } | ObjectProperty::Computed { key, value } => {
                 expr_contains_await(key) || expr_contains_await(value)
@@ -1630,6 +1643,14 @@ fn rewrite_expression_keys(
         }
         ExprKind::NamedTuple { fields, .. } => {
             for (_, value) in fields.iter_mut() {
+                rewrite_expression_keys(value, consts);
+            }
+        }
+        // No `__get_`/`__set_` accessor rewrite here: those are object-literal
+        // accessor keys, and a `Map` entry key is a value, not a member name.
+        ExprKind::Map(entries) => {
+            for (key, value) in entries.iter_mut() {
+                rewrite_expression_keys(key, consts);
                 rewrite_expression_keys(value, consts);
             }
         }

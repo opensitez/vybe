@@ -70,7 +70,8 @@ pub fn normalize_class(
                     init: init.clone(),
                     array_bounds: array_bounds.clone(),
                     access: Access::Public, // Dart's `_name` convention isn't enforced
-                    readonly: field_modifiers.is_readonly };
+                    readonly: field_modifiers.is_readonly,
+                    value_type: None };
                 m.push_field(field_modifiers.is_static, field);
             }
             ClassMember::Method(stmt) => {

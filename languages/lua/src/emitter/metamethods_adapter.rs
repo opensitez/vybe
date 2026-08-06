@@ -4666,7 +4666,7 @@ pub fn emit_lua_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
         save(&mut chunks[current], base + i as u16, line);
     }
     if argc == 0 {
-        let log_idx = chunks[current].add_import("wasi:logging/logging", "log");
+        let log_idx = chunks[current].add_import("web:console", "log");
         vybe_compiler::primitives::io::emit_print_with_import(&mut chunks[current], log_idx, 0, line);
         return;
     }
@@ -4687,7 +4687,7 @@ pub fn emit_lua_print(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
         save(&mut chunks[current], out, line);
     }
     load(&mut chunks[current], out, line);
-    let log_idx = chunks[current].add_import("wasi:logging/logging", "log");
+    let log_idx = chunks[current].add_import("web:console", "log");
     vybe_compiler::primitives::io::emit_print_with_import(&mut chunks[current], log_idx, 1, line);
 }
 
@@ -4697,7 +4697,7 @@ pub fn emit_lua_print_row(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
             chunks[current].emit_op(Op::DROP, line);
         }
         chunks[current].emit_string_const("", line);
-        let log_idx = chunks[current].add_import("wasi:logging/logging", "log");
+        let log_idx = chunks[current].add_import("web:console", "log");
         vybe_compiler::primitives::io::emit_print_with_import(&mut chunks[current], log_idx, 1, line);
         return;
     }
@@ -4750,7 +4750,7 @@ pub fn emit_lua_print_row(chunks: &mut Vec<Chunk>, current: usize, argc: u8, lin
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
 
     load(&mut chunks[current], out, line);
-    let log_idx = chunks[current].add_import("wasi:logging/logging", "log");
+    let log_idx = chunks[current].add_import("web:console", "log");
     vybe_compiler::primitives::io::emit_print_with_import(&mut chunks[current], log_idx, 1, line);
 }
 

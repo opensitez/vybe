@@ -62,9 +62,9 @@ materialize_bool_results = true
 # `for k in dict` iterates KEYS (a dict is the same Map/Ordinary type as a JS
 # object; iterating an object yields its keys). Sequences still yield values.
 for_in_object_yields_keys = true
-# Dict literals build a Map so int/tuple keys keep their type and insertion
-# order is preserved (`{1: 'a'}` → key `1`, not `'1'`).
-dict_literals_as_map = true
+# NOTE: dict literals are no longer a profile flag. `{k: v}` is `ExprKind::Map`
+# in the AST — the walker declares it, so int/tuple keys keeping their type is a
+# property of the NODE, not of "this file happens to be python".
 class_introspection_metadata = true
 class_multiple_inheritance = true
 # NOTE: Python's `a[-1]` (offset-from-end) is NOT handled by the shared
@@ -337,10 +337,10 @@ __py_iter_sentinel = { emit = "common:python.iter_sentinel", min_args = 2, max_a
 __py_zip_strict = { emit = "common:python.zip_strict",      min_args = 2, max_args = 255 }
 __py_zip_spread = { emit = "common:python.zip_spread",      min_args = 1, max_args = 1 }
 __py_dict_from_pairs = { emit = "common:python.dict_from_pairs", min_args = 1, max_args = 1 }
-__py_str_isdigit = { emit = "host:ecma:string:isdigit",     min_args = 1, max_args = 1 }
-__py_str_isalpha = { emit = "host:ecma:string:isalpha",     min_args = 1, max_args = 1 }
-__py_str_isalnum = { emit = "host:ecma:string:isalnum",     min_args = 1, max_args = 1 }
-__py_str_isspace = { emit = "host:ecma:string:isspace",     min_args = 1, max_args = 1 }
+__py_str_isdigit = { emit = "common:str_is_digit", slot = "is_digit", min_args = 1, max_args = 1 }
+__py_str_isalpha = { emit = "common:str_is_alpha", slot = "is_alpha", min_args = 1, max_args = 1 }
+__py_str_isalnum = { emit = "common:str_is_alnum", slot = "is_alnum", min_args = 1, max_args = 1 }
+__py_str_isspace = { emit = "common:str_is_space", slot = "is_space", min_args = 1, max_args = 1 }
 # `re.*` over ecma:regexp (walker rewrites re.search/…→__re_*; m.group(i)→m[i]).
 __re_search     = { emit = "common:python.re_search",       min_args = 2, max_args = 2 }
 __re_match      = { emit = "common:python.re_match",         min_args = 2, max_args = 2 }
@@ -925,12 +925,12 @@ rpartition      = { emit = "intrinsic:rpartition",     min_args = 1, max_args = 
 expandtabs      = { emit = "common:python.str_expandtabs",    min_args = 0, max_args = 1 }
 encode          = { emit = "common:python.bytes",       min_args = 0, max_args = 1 }
 decode          = { emit = "common:python.bytes_decode", min_args = 0, max_args = 2 }
-isdigit         = { emit = "host:ecma:string:isdigit",        min_args = 0, max_args = 0 }
-isalpha         = { emit = "host:ecma:string:isalpha",        min_args = 0, max_args = 0 }
-isalnum         = { emit = "host:ecma:string:isalnum",        min_args = 0, max_args = 0 }
-isspace         = { emit = "host:ecma:string:isspace",        min_args = 0, max_args = 0 }
-isupper         = { emit = "host:ecma:string:isupper",        min_args = 0, max_args = 0 }
-islower         = { emit = "host:ecma:string:islower",        min_args = 0, max_args = 0 }
+isdigit         = { emit = "common:str_is_digit", slot = "is_digit", min_args = 0, max_args = 0 }
+isalpha         = { emit = "common:str_is_alpha", slot = "is_alpha", min_args = 0, max_args = 0 }
+isalnum         = { emit = "common:str_is_alnum", slot = "is_alnum", min_args = 0, max_args = 0 }
+isspace         = { emit = "common:str_is_space", slot = "is_space", min_args = 0, max_args = 0 }
+isupper         = { emit = "common:str_is_upper", slot = "is_upper", min_args = 0, max_args = 0 }
+islower         = { emit = "common:str_is_lower", slot = "is_lower", min_args = 0, max_args = 0 }
 format_map      = { emit = "common:python.format_map",              min_args = 1, max_args = 1 }
 
 # List instance methods

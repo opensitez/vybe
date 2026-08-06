@@ -269,278 +269,201 @@ pub fn emit_php_intdiv(chunks: &mut [Chunk], current: usize, _argc: u8, line: u3
     chunk.emit_end(line);
 }
 
-fn coerce_to_str(chunk: &mut Chunk, slot: u16, line: u32) {
-    push_str(chunk, "", line);
-    lget(chunk, slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-}
-
-fn emit_numeric_fallback(
-    chunk: &mut Chunk,
-    source_slot: u16,
-    parse_float: u16,
-    plus: bool,
-    line: u32,
-) {
-    lget(chunk, source_slot, line);
-    chunk.emit_call(parse_float, 1, line);
-    push_const(chunk, Value::F64(1.0), line);
-    if plus {
-        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line)
-    } else {
-        chunk.emit_op(Op::F64_SUB, line)
-    };
-}
-
-fn emit_pad_to_width_from_slots(chunk: &mut Chunk, out_slot: u16, width_slot: u16, line: u32) {
-    // block { loop { ... } } — the surrounding block makes `br_if 1` (exit
-    // once out.length >= width) a valid WASM label. This helper is called
-    // from inside an `if/else`, so a bare loop's `br 1` would otherwise
-    // branch to the enclosing `if` and skip the trailing concat.
-    let pad_block = chunk.emit_block(line);
-    let (loop_patch, _) = chunk.emit_loop_s(line);
-    lget(chunk, out_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    lget(chunk, width_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_br_if(1, line);
-    push_str(chunk, "0", line);
-    lget(chunk, out_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "concat");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, out_slot, line);
-    chunk.emit_br(0, line);
-    chunk.emit_end(line);
-    chunk.patch_loop(loop_patch);
-    chunk.emit_end(line); // end pad block
-    chunk.patch_block(pad_block);
-}
-
-/// `__php_inc(v)` — PHP `$v++` arithmetic.
-/// Stack on entry: `[v]` ; Stack on exit: `[v + 1]`.
+/// `__php_inc(v)` — the `[builtin_slots.string] inc` target and the shared
+/// step's string arm. Stack: `[v]` → `[v incremented]`.
 pub fn emit_php_inc(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_unary_arith(chunks, current, /*plus=*/ true, line);
 }
 
-/// `__php_dec(v)` — PHP `$v--` arithmetic.
-/// Stack on entry: `[v]` ; Stack on exit: `[v - 1]`.
+/// `__php_dec(v)` — the `dec` twin. Stack: `[v]` → `[v decremented]`.
 pub fn emit_php_dec(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     emit_unary_arith(chunks, current, /*plus=*/ false, line);
 }
 
+/// PHP `$v++` / `$v--`.
+///
+/// The STRING rules are Zend's own (`increment_string` in
+/// Zend/zend_operators.c): a numeric string steps numerically; a
+/// non-numeric string INCREMENTS with Perl-style character carry
+/// ("az"++ is "ba", "Zz"++ is "AAa", "a9"++ is "b0", "zz"++ is "aaa") where
+/// carry stops at a non-alphanumeric character and a carry past the front
+/// prepends by the first character's class — and DECREMENT of a non-numeric
+/// string is a NO-OP. Non-strings step through the common primitive, which
+/// keeps a BigInt exact.
 fn emit_unary_arith(chunks: &mut [Chunk], current: usize, plus: bool, line: u32) {
-    let v_slot = {
-        let chunk = &mut chunks[current];
-        let s = chunk.alloc_scratch(1);
-        chunk.emit_op_u16(Op::LOCAL_SET, s, line);
-        s
-    };
-
-    let parse_float = chunks[0].add_import("ecma:number", "parseFloat");
-    let parse_int = chunks[0].add_import("ecma:number", "parseInt");
-
-    // typeof(v) === "string"?  if not, BR over the string-coerce arm.
     let chunk = &mut chunks[current];
+    let v_slot = alloc_local(chunk);
+    chunk.emit_op_u16(Op::LOCAL_SET, v_slot, line);
+
+    let test_str = chunk.add_import("wasm:js-string", "test");
+    let number = chunk.add_import("ecma:number", "Number");
+    let is_nan = chunk.add_import("ecma:number", "isNaN");
+
     chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
-    let test_str_v = chunk.add_import("wasm:js-string", "test");
-    chunk.emit_call(test_str_v, 1, line);
+    chunk.emit_call(test_str, 1, line);
     chunk.emit_if(line);
 
-    // String case:
-    // - if the string ends with a digit run and has a non-digit prefix,
-    //   increment that suffix in place (`2026-03-25` -> `2026-03-26`)
-    // - otherwise fall back to the existing parseFloat +/- 1 behavior.
-    let s_slot = alloc_local(chunk);
-    let len_slot = alloc_local(chunk);
-    let i_slot = alloc_local(chunk);
-    let suffix_start_slot = alloc_local(chunk);
-    let code_slot = alloc_local(chunk);
-    let width_slot = alloc_local(chunk);
-    let prefix_slot = alloc_local(chunk);
-    let suffix_slot = alloc_local(chunk);
-    let out_slot = alloc_local(chunk);
-
-    coerce_to_str(chunk, v_slot, line);
-    lset(chunk, s_slot, line);
-
-    lget(chunk, s_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "length");
-        chunk.emit_call(idx, 1, line);
-    }
-    lset(chunk, len_slot, line);
-
-    push_const(chunk, Value::F64(-1.0), line);
-    lset(chunk, suffix_start_slot, line);
-
-    // Recognise a non-digit prefix followed by a one- or two-digit suffix.
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
+    // A numeric string steps as its NUMBER (PHP checks is_numeric first).
+    let n_slot = alloc_local(chunk);
+    lget(chunk, v_slot, line);
+    chunk.emit_call(number, 1, line);
+    lset(chunk, n_slot, line);
+    lget(chunk, n_slot, line);
+    chunk.emit_call(is_nan, 1, line);
+    vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
     chunk.emit_if(line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, i_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, code_slot, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(47.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(58.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, i_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, code_slot, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(47.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(58.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(3.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(3.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, i_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, i_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "charCodeAt");
-        chunk.emit_call(idx, 2, line);
-    }
-    lset(chunk, code_slot, line);
-
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(47.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_gt(chunk, line);
-    chunk.emit_if(line);
-    lget(chunk, code_slot, line);
-    push_const(chunk, Value::F64(58.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_op(Op::I32_EQZ, line);
-    chunk.emit_if(line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, suffix_start_slot, line);
-    chunk.emit_end(line);
-    chunk.emit_else(line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(2.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, suffix_start_slot, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_else(line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, suffix_start_slot, line);
-    chunk.emit_end(line);
-    chunk.emit_else(line);
-    lget(chunk, len_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, suffix_start_slot, line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-    chunk.emit_end(line);
-
-    lget(chunk, suffix_start_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
-    chunk.emit_if(line);
-    emit_numeric_fallback(chunk, s_slot, parse_float, plus, line);
-    chunk.emit_else(line);
-
-    lget(chunk, len_slot, line);
-    lget(chunk, suffix_start_slot, line);
-    chunk.emit_op(Op::F64_SUB, line);
-    lset(chunk, width_slot, line);
-
-    lget(chunk, s_slot, line);
-    push_const(chunk, Value::F64(0.0), line);
-    lget(chunk, suffix_start_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "substring");
-        chunk.emit_call(idx, 3, line);
-    }
-    lset(chunk, prefix_slot, line);
-
-    lget(chunk, s_slot, line);
-    lget(chunk, suffix_start_slot, line);
-    lget(chunk, len_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "substring");
-        chunk.emit_call(idx, 3, line);
-    }
-    lset(chunk, suffix_slot, line);
-
-    lget(chunk, suffix_slot, line);
-    push_const(chunk, Value::F64(10.0), line);
-    chunk.emit_call(parse_int, 2, line);
+    lget(chunk, n_slot, line);
     push_const(chunk, Value::F64(1.0), line);
     chunk.emit_op(if plus { Op::F64_ADD } else { Op::F64_SUB }, line);
-
-    push_str(chunk, "", line);
-    vybe_compiler::primitives::ops::emit_dyn_add(chunk, line);
-    lset(chunk, out_slot, line);
-    emit_pad_to_width_from_slots(chunk, out_slot, width_slot, line);
-
-    lget(chunk, prefix_slot, line);
-    lget(chunk, out_slot, line);
-    {
-        let idx = chunk.add_import("wasm:js-string", "concat");
-        chunk.emit_call(idx, 2, line);
+    chunk.emit_else(line);
+    if plus {
+        emit_zend_string_increment(chunk, v_slot, line);
+    } else {
+        // Zend: decrementing a non-numeric string changes NOTHING.
+        lget(chunk, v_slot, line);
     }
     chunk.emit_end(line);
-    chunk.emit_else(line);
 
-    // Numeric case: v ± 1
-    chunk.emit_op_u16(Op::LOCAL_GET, v_slot, line);
-    push_const(chunk, Value::F64(1.0), line);
-    if plus {
-        vybe_compiler::primitives::ops::emit_dyn_add(chunk, line)
-    } else {
-        chunk.emit_op(Op::F64_SUB, line)
-    };
+    chunk.emit_else(line);
+    // Non-string: the common step (BigInt stays BigInt, null coerces).
+    lget(chunk, v_slot, line);
+    vybe_compiler::primitives::bigint::emit_step(chunk, plus, line);
     chunk.emit_end(line);
+}
+
+/// Zend `increment_string`, scanning right to left. Stack: `[]` → `[string]`
+/// (reads the string from `v_slot`).
+fn emit_zend_string_increment(chunk: &mut Chunk, v_slot: u16, line: u32) {
+    let char_code_at = chunk.add_import("ecma:string", "charCodeAt");
+    let from_char_code = chunk.add_import("ecma:string", "fromCharCode");
+    let substring = chunk.add_import("wasm:js-string", "substring");
+    let length = chunk.add_import("wasm:js-string", "length");
+
+    let pos = alloc_local(chunk);
+    let tail = alloc_local(chunk);
+    let ch = alloc_local(chunk);
+    let result = alloc_local(chunk);
+
+    // pos = len - 1; tail accumulates the RESET characters ('z' → 'a', …).
+    lget(chunk, v_slot, line);
+    chunk.emit_call(length, 1, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    lset(chunk, pos, line);
+    push_str(chunk, "", line);
+    lset(chunk, tail, line);
+
+    // outer { prep { loop { … } } prepend-code } — carry off the front
+    // branches to `prep`'s end (the prepend arm); a finished result
+    // branches to `outer`'s end.
+    let outer = chunk.emit_block(line);
+    let prep = chunk.emit_block(line);
+    let (loop_patch, _) = chunk.emit_loop_s(line);
+
+    lget(chunk, pos, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_op(Op::F64_LT, line);
+    chunk.emit_br_if(1, line);
+
+    lget(chunk, v_slot, line);
+    lget(chunk, pos, line);
+    chunk.emit_call(char_code_at, 2, line);
+    lset(chunk, ch, line);
+
+    // a–y, A–Y, 0–8: increment in place, done.
+    let mut first = true;
+    for (lo, hi) in [(97.0, 121.0), (65.0, 89.0), (48.0, 56.0)] {
+        lget(chunk, ch, line);
+        push_const(chunk, Value::F64(lo), line);
+        chunk.emit_op(Op::F64_GE, line);
+        lget(chunk, ch, line);
+        push_const(chunk, Value::F64(hi), line);
+        chunk.emit_op(Op::F64_LE, line);
+        chunk.emit_op(Op::I32_AND, line);
+        if first {
+            first = false;
+        } else {
+            chunk.emit_op(Op::I32_OR, line);
+        }
+    }
+    chunk.emit_if(line);
+    lget(chunk, v_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lget(chunk, pos, line);
+    chunk.emit_call(substring, 3, line);
+    lget(chunk, ch, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_call(from_char_code, 1, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    lget(chunk, tail, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    lset(chunk, result, line);
+    chunk.emit_br(3, line);
+    chunk.emit_end(line);
+
+    // z / Z / 9: reset, carry one position left.
+    for (code, reset) in [(122.0, "a"), (90.0, "A"), (57.0, "0")] {
+        lget(chunk, ch, line);
+        push_const(chunk, Value::F64(code), line);
+        chunk.emit_op(Op::F64_EQ, line);
+        chunk.emit_if(line);
+        push_str(chunk, reset, line);
+        lget(chunk, tail, line);
+        vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+        lset(chunk, tail, line);
+        lget(chunk, pos, line);
+        push_const(chunk, Value::F64(1.0), line);
+        chunk.emit_op(Op::F64_SUB, line);
+        lset(chunk, pos, line);
+        chunk.emit_br(1, line);
+        chunk.emit_end(line);
+    }
+
+    // Non-alphanumeric: carry STOPS — the resets already made stay.
+    lget(chunk, v_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    lget(chunk, pos, line);
+    push_const(chunk, Value::F64(1.0), line);
+    chunk.emit_op(Op::F64_ADD, line);
+    chunk.emit_call(substring, 3, line);
+    lget(chunk, tail, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    lset(chunk, result, line);
+    chunk.emit_br(2, line);
+
+    chunk.emit_end(line);
+    chunk.patch_loop(loop_patch);
+    chunk.emit_end(line);
+    chunk.patch_block(prep);
+
+    // Carry past the front: prepend by the ORIGINAL first character's class
+    // ('z…' → "a" + resets, 'Z…' → "A", '9…' → "1"; z→a and Z→A are both
+    // −25 in char codes).
+    lget(chunk, v_slot, line);
+    push_const(chunk, Value::F64(0.0), line);
+    chunk.emit_call(char_code_at, 2, line);
+    lset(chunk, ch, line);
+    lget(chunk, ch, line);
+    push_const(chunk, Value::F64(57.0), line);
+    chunk.emit_op(Op::F64_EQ, line);
+    chunk.emit_if(line);
+    push_str(chunk, "1", line);
+    chunk.emit_else(line);
+    lget(chunk, ch, line);
+    push_const(chunk, Value::F64(25.0), line);
+    chunk.emit_op(Op::F64_SUB, line);
+    chunk.emit_call(from_char_code, 1, line);
+    chunk.emit_end(line);
+    lget(chunk, tail, line);
+    vybe_compiler::primitives::strings::emit_concat(chunk, 2, line);
+    lset(chunk, result, line);
+
+    chunk.emit_end(line);
+    chunk.patch_block(outer);
+
+    lget(chunk, result, line);
 }
 
 /// PHP `rand([$min, $max])` / `mt_rand([$min, $max])` / `random_int($min, $max)`.

@@ -15,7 +15,7 @@ use super::helpers::run_js_with_imports;
 fn named_import_direct_call() {
     let out = run_js_with_imports(
         r#"
-import { log } from "wasi:logging/logging";
+import { log } from "web:console";
 log("direct");
 "#,
     );
@@ -27,7 +27,7 @@ fn named_import_read_as_value() {
     // `const f = log; f(...)` — exercises the GLOBAL_GET path.
     let out = run_js_with_imports(
         r#"
-import { log } from "wasi:logging/logging";
+import { log } from "web:console";
 const f = log;
 f("indirect");
 "#,
@@ -39,7 +39,7 @@ f("indirect");
 fn named_import_aliased() {
     let out = run_js_with_imports(
         r#"
-import { log as myLog } from "wasi:logging/logging";
+import { log as myLog } from "web:console";
 myLog("aliased");
 "#,
     );
@@ -52,7 +52,7 @@ fn wildcard_namespace_import() {
     // with `log` (and every other fn in wasi:cli) as properties.
     let out = run_js_with_imports(
         r#"
-import * as logging from "wasi:logging/logging";
+import * as logging from "web:console";
 logging.log("namespaced");
 "#,
     );
@@ -185,7 +185,7 @@ fn side_effect_import_is_noop() {
     // aren't code that runs, they're a bag of functions.
     let out = run_js_with_imports(
         r#"
-import "wasi:logging/logging";
+import "web:console";
 console.log("after");
 "#,
     );
@@ -200,7 +200,7 @@ fn wildcard_namespace_typeof_is_object() {
     // object is exotic (frozen, null-prototype).
     let out = run_js_with_imports(
         r#"
-import * as logging from "wasi:logging/logging";
+import * as logging from "web:console";
 console.log(typeof logging);
 "#,
     );
@@ -216,7 +216,7 @@ fn wildcard_namespace_tostring_tag() {
     // produces.
     let out = run_js_with_imports(
         r#"
-import * as logging from "wasi:logging/logging";
+import * as logging from "web:console";
 console.log(String(logging));
 "#,
     );
@@ -359,7 +359,7 @@ fn validator_accepts_resolvable_imports() {
 
     let module = vybe_language_js::parse(
         r#"
-import { log } from "wasi:logging/logging";
+import { log } from "web:console";
 log("hi");
 "#,
     )
@@ -396,7 +396,7 @@ fn validator_flags_unknown_export() {
 
     let module = vybe_language_js::parse(
         r#"
-import { definitelyNotAThing } from "wasi:logging/logging";
+import { definitelyNotAThing } from "web:console";
 definitelyNotAThing();
 "#,
     )

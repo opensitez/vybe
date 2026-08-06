@@ -366,6 +366,5 @@ SetBool     = { emit = "common:go.reflect_set_bool",  min_args = 1, max_args = 1
 # ────────────────────────────────────────────────────────────────────────────
 
 [namespaces]
-use_dotnet = false
 roots = []
 extra_imports = []

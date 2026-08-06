@@ -43,16 +43,14 @@ fn add_import(chunks: &mut [Chunk], current: usize, module: &str, name: &str) ->
 pub fn emit_proxy_create(chunks: &mut [Chunk], current: usize, line: u32) {
     let new_idx = add_import(chunks, current, "ecma:proxy", "new");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, new_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(new_idx, 2, line);
 }
 
 /// Proxy `get` trap dispatch. Stack: [obj, key] → [value].
 pub fn emit_proxy_get_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
     let get_idx = add_import(chunks, current, "ecma:proxy", "get");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, get_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(get_idx, 2, line);
 }
 
 /// Proxy `set` trap dispatch. Stack: [obj, key, value] → [value].
@@ -63,8 +61,7 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
 
     chunk.emit_op_u16(Op::LOCAL_SET, value_local, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_local, line);
-    chunk.emit_op_u16(Op::CALL_IMPORT, set_idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(set_idx, 3, line);
     chunk.emit_op(Op::DROP, line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_local, line);
 }
@@ -75,14 +72,12 @@ pub fn emit_proxy_set_dispatch(chunks: &mut [Chunk], current: usize, line: u32) 
 pub fn emit_proxy_set_dispatch_bool(chunks: &mut [Chunk], current: usize, line: u32) {
     let set_idx = add_import(chunks, current, "ecma:proxy", "set");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, set_idx, line);
-    chunk.emit(3, line);
+    chunk.emit_call(set_idx, 3, line);
 }
 
 /// Proxy `has` trap dispatch. Stack: [obj, key] → [bool]. Used by `in`.
 pub fn emit_proxy_has_dispatch(chunks: &mut [Chunk], current: usize, line: u32) {
     let has_idx = add_import(chunks, current, "ecma:proxy", "has");
     let chunk = &mut chunks[current];
-    chunk.emit_op_u16(Op::CALL_IMPORT, has_idx, line);
-    chunk.emit(2, line);
+    chunk.emit_call(has_idx, 2, line);
 }

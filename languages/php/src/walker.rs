@@ -135,6 +135,19 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
     static FUNC_REGISTRY: RefCell<std::collections::HashMap<String, FuncMeta>> =
         RefCell::new(std::collections::HashMap::new());
+    /// Declared spelling and by-reference parameter positions, per
+    /// free-function name.
+    ///
+    /// Filled by `pre_register_php_function_signatures` — BEFORE any body is
+    /// walked — because a call may be written above the declaration it binds
+    /// to. `FUNC_REGISTRY.params` cannot serve: it is populated as each
+    /// declaration is walked, so it is empty for a forward call.
+    ///
+    /// The declared spelling rides along because php function names are
+    /// case-insensitive while the compiler's signature table is keyed by the
+    /// exact name — see `mark_php_by_ref_args`.
+    static FUNC_BY_REF_PARAMS: RefCell<std::collections::HashMap<String, (String, Vec<bool>)>> =
+        RefCell::new(std::collections::HashMap::new());
     static NAMESPACE_FUNCTIONS: RefCell<std::collections::HashSet<String>> =
         RefCell::new(std::collections::HashSet::new());
     static FUNCTION_IMPORT_ALIASES: RefCell<std::collections::HashMap<String, String>> =
@@ -631,7 +644,13 @@ fn reflection_param_metas(
             default: param.default.clone(),
             type_name: param.type_hint.clone().as_deref().map(str::to_string),
             is_nullable: param.is_nullable,
-            pass_by_ref: matches!(param.pass_by, vybe_ast::PassBy::Ref),
+            // Both mechanisms are "by reference" as far as reflection is
+            // concerned — `ReflectionParameter::isPassedByReference()` reports
+            // the DECLARATION, not how the compiler implements it.
+            pass_by_ref: matches!(
+                param.pass_by,
+                vybe_ast::PassBy::Ref | vybe_ast::PassBy::Alias
+            ),
             is_variadic: param.is_rest })
         .collect()
 }
@@ -4155,9 +4174,32 @@ fn php_prelude_needs(stmts: &[Statement]) -> PhpPreludeNeeds {
 }
 
 fn pre_register_php_function_signatures(program: &Pair<Rule>) {
-    fn register_name(name: String, ns: Option<&str>, param_count: usize, required_params: usize) {
+    fn register_name(
+        name: String,
+        ns: Option<&str>,
+        param_count: usize,
+        required_params: usize,
+        by_ref: &[bool],
+    ) {
         if name.is_empty() {
             return;
+        }
+        if by_ref.contains(&true) {
+            FUNC_BY_REF_PARAMS.with(|r| {
+                let mut reg = r.borrow_mut();
+                // php function names are case-insensitive, so the call site may
+                // spell `W($g)` for `function w`. Index both rather than
+                // scanning at every call.
+                let entry = (name.clone(), by_ref.to_vec());
+                reg.insert(name.to_ascii_lowercase(), entry.clone());
+                reg.insert(name.clone(), entry);
+                if let Some(ns) = ns.filter(|ns| !ns.is_empty()) {
+                    let dotted = format!("{}.{}", ns.replace('\\', "."), name);
+                    let mangled = php_mangle_function_name(&dotted);
+                    reg.insert(mangled.clone(), (mangled, by_ref.to_vec()));
+                    reg.insert(dotted.clone(), (dotted, by_ref.to_vec()));
+                }
+            });
         }
         FUNC_REGISTRY.with(|r| {
             let mut reg = r.borrow_mut();
@@ -4211,6 +4253,7 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
             let mut name = String::new();
             let mut param_count = 0usize;
             let mut required_params = 0usize;
+            let mut by_ref = Vec::new();
             for p in pair.into_inner() {
                 match p.as_rule() {
                     Rule::identifier | Rule::method_ident => name = p.as_str().to_string(),
@@ -4220,6 +4263,7 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                             .filter(|p| matches!(p.as_rule(), Rule::param))
                         {
                             param_count += 1;
+                            by_ref.push(php_param_is_by_ref(param.as_str()));
                             if !param.as_str().contains('=') {
                                 required_params += 1;
                             }
@@ -4228,7 +4272,13 @@ fn pre_register_php_function_signatures(program: &Pair<Rule>) {
                     _ => {}
                 }
             }
-            register_name(name, current_ns.as_deref(), param_count, required_params);
+            register_name(
+                name,
+                current_ns.as_deref(),
+                param_count,
+                required_params,
+                &by_ref,
+            );
             return;
         }
         if matches!(pair.as_rule(), Rule::namespace_statement) {
@@ -4390,6 +4440,9 @@ pub fn parse(source: &str) -> Result<Module, String> {
 
     let program = pairs.next().ok_or("empty parse")?;
     pre_register_php_type_names(&program);
+    // A name left over from a previously parsed file would mark arguments at a
+    // call site whose callee takes none by reference.
+    FUNC_BY_REF_PARAMS.with(|r| r.borrow_mut().clear());
     pre_register_php_function_signatures(&program);
     match program.as_rule() {
         Rule::program => {
@@ -4969,7 +5022,13 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::PHP,
         body,
-        imports })
+        imports,
+        // PHP arrays are VALUES: `$b = $a` copies, and copies again all the
+        // way down, while objects inside stay shared. Declared here rather
+        // than implemented in this walker so the shared assign path owns the
+        // behaviour — the same split records use.
+        directives: Directives {
+            array_storage: Some(ValueStorage::Value) } })
 }
 
 // ─── Statements ────────────────────────────────────────────────────────────
@@ -7264,14 +7323,51 @@ fn walk_params_with_promotion(
     Ok(out)
 }
 
+/// Does this parameter's source text declare it by-reference?
+///
+/// The `&` binds to the VARIABLE, so it is the one that immediately precedes
+/// the `$` (`&$x`, `& $x`, `&...$rest`). Testing for a bare `&` anywhere in the
+/// text also matches an intersection type (`f(A&B $x)`) and a constant
+/// expression in a default (`$f = FOO & BAR`), neither of which passes
+/// anything by reference — and a false positive here is no longer harmless
+/// now that it promotes the ARGUMENT's storage at every call site.
+fn php_param_is_by_ref(raw: &str) -> bool {
+    let b = raw.as_bytes();
+    for (i, c) in b.iter().enumerate() {
+        if *c != b'&' {
+            continue;
+        }
+        let mut j = i + 1;
+        while b.get(j).is_some_and(u8::is_ascii_whitespace) {
+            j += 1;
+        }
+        if b[j..].starts_with(b"...") {
+            j += 3;
+            while b.get(j).is_some_and(u8::is_ascii_whitespace) {
+                j += 1;
+            }
+        }
+        if b.get(j) == Some(&b'$') {
+            return true;
+        }
+    }
+    false
+}
+
 fn walk_param(pair: Pair<Rule>) -> Result<(Param, Option<(Visibility, bool)>), String> {
     let raw = pair.as_str();
     let mut name = String::new();
     let mut type_hint: Option<String> = None;
     let mut default: Option<Expression> = None;
     let mut promotion: Option<(Visibility, bool)> = None;
-    let pass_by = if raw.contains('&') {
-        PassBy::Ref
+    // php `&$x` is true aliasing, not copy-in/copy-out: the mutation is visible
+    // through another binding DURING the call, and it survives the callee
+    // throwing. `PassBy::Ref` gives neither — it is a write-back after return,
+    // and a callee that throws never returns. php is the first language moved
+    // off it; the rest stay on `Ref` until each is migrated with its own
+    // differential test (§3, `referenceplan.md`).
+    let pass_by = if php_param_is_by_ref(raw) {
+        PassBy::Alias
     } else {
         PassBy::Value
     };
@@ -12983,23 +13079,18 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
                     ));
                 }
             }
-            let helper = if op_str == "++" {
-                "__php_increment"
-            } else {
-                "__php_decrement"
-            };
-            let callee = Expression::with_span(ExprKind::Ident(helper.to_string()), span.clone());
-            let call = Expression::with_span(
-                ExprKind::Call {
-                    callee: Box::new(callee),
-                    args: vec![Argument::positional(expr.clone())],
-                    optional: false },
-                span.clone(),
-            );
+            // The AST KEEPS the step operator — the shared emitter owns
+            // load/step/store, and PHP's string-increment quirk is declared
+            // per type (`[builtin_slots.string] inc/dec`), not erased into a
+            // name-call the compiler cannot see through.
             return Ok(Expression::with_span(
-                ExprKind::Assign {
-                    target: Box::new(expr),
-                    value: Box::new(call) },
+                ExprKind::Unary {
+                    op: if op_str == "++" {
+                        UnaryOp::PreInc
+                    } else {
+                        UnaryOp::PreDec
+                    },
+                    expr: Box::new(expr) },
                 span,
             ));
         }
@@ -13034,6 +13125,23 @@ fn walk_unary(pair: Pair<Rule>) -> Result<Expression, String> {
             if let Some(value) = php_literal_string_bitnot(&expr) {
                 return Ok(Expression::with_span(
                     ExprKind::Lit(Literal::Str(value)),
+                    span,
+                ));
+            }
+        }
+        // `&$a[$k]` denotes the SLOT. `$a[$k]` has already been lowered to the
+        // ArrayAccess READ dispatch (a `Sequence` of two temps and a
+        // `typeof …offsetGet === "function"` ternary), which is an rvalue — so
+        // the reference would alias a copy of the element, and `offsetGet`
+        // would be called for a read php never performs here. Recover the place
+        // and hand the compiler a place.
+        if op == UnaryOp::AddrOf {
+            if let Some((object, index)) = php_array_read_parts(&expr) {
+                return Ok(Expression::with_span(
+                    ExprKind::RefOf(Box::new(PlaceExpr::Index {
+                        object: Box::new(object),
+                        index: Box::new(index),
+                        null_safe: false })),
                     span,
                 ));
             }
@@ -15765,6 +15873,7 @@ fn apply_postfix(
             // indistinguishable — the compiler emits a single canonical
             // host call regardless of surface syntax.
             let args = canonicalize_php_call_args(&receiver, args);
+            let (receiver, args) = mark_php_by_ref_args(receiver, args);
             let mut resolved_simple_callable = false;
             let receiver = if from_variable {
                 if let ExprKind::Ident(name) = &receiver.kind {
@@ -16907,22 +17016,11 @@ fn apply_postfix(
             // PHP `++` / `--` aren't C-style "add 1" — PHP defines them
             // with Perl-style string-character carry ("aa"++ → "ab",
             // "az"++ → "ba", "zz"++ → "aaa") AND PHP-flavored numeric
-            // coercion for non-string inputs. Normalise both at walker
-            // time so the AST carries a language-neutral call to a
-            // stdlib helper:
-            //
-            //   $x++   →   ($tmp = $x, $x = __php_increment($x), $tmp)
-            //   $x--   →   ($tmp = $x, $x = __php_decrement($x), $tmp)
-            //
-            // The Sequence form returns the OLD value (PHP postfix
-            // semantics) — required by `yield $n++` and similar
-            // expression-level uses. The temp is unique per call site
-            // (TMP_COUNTER) so nested post-increments like
-            // `$a++ + $b++` don't clobber each other.
-            //
-            // Downstream compilers, consumers, and other language
-            // walkers see a plain Sequence + call + assign — no
-            // compiler-side `if profile.php_*` flag needed.
+            // coercion for non-string inputs. The quirk is DECLARED, not
+            // rewritten away: the AST keeps the step operator and
+            // `[builtin_slots.string] inc/dec` binds the string behavior,
+            // so the shared emitter owns load/step/store like every other
+            // language's `++`.
             let receiver = if let ExprKind::Ident(name) = &receiver.kind {
                 php_var_index_alias_expr(name, span).unwrap_or(receiver)
             } else {
@@ -16936,38 +17034,18 @@ fn apply_postfix(
                     ));
                 }
             }
-            let helper = if op.as_str() == "++" {
-                "__php_increment"
-            } else {
-                "__php_decrement"
-            };
-            let callee = Expression::with_span(ExprKind::Ident(helper.to_string()), span.clone());
-            let call = Expression::with_span(
-                ExprKind::Call {
-                    callee: Box::new(callee),
-                    args: vec![Argument::positional(receiver.clone())],
-                    optional: false },
-                span.clone(),
-            );
-            let tmp = next_tmp_name("post_inc");
-            let tmp_save = Expression::with_span(
-                ExprKind::Assign {
-                    target: Box::new(Expression::with_span(
-                        ExprKind::Ident(tmp.clone()),
-                        span.clone(),
-                    )),
-                    value: Box::new(receiver.clone()) },
-                span.clone(),
-            );
-            let assign = Expression::with_span(
-                ExprKind::Assign {
-                    target: Box::new(receiver.clone()),
-                    value: Box::new(call) },
-                span.clone(),
-            );
-            let read_tmp = Expression::with_span(ExprKind::Ident(tmp), span.clone());
+            // The AST KEEPS the step operator (postfix — the shared emitter
+            // dups the OLD value before stepping, so `yield $n++` and nested
+            // `$a++ + $b++` keep their PHP semantics); the string-increment
+            // quirk is declared per type (`[builtin_slots.string] inc/dec`).
             Ok(Expression::with_span(
-                ExprKind::Sequence(vec![tmp_save, assign, read_tmp]),
+                ExprKind::Unary {
+                    op: if op.as_str() == "++" {
+                        UnaryOp::PostInc
+                    } else {
+                        UnaryOp::PostDec
+                    },
+                    expr: Box::new(receiver) },
                 span.clone(),
             ))
         }
@@ -21764,6 +21842,75 @@ fn canonicalize_php_call_args(callee: &Expression, args: Vec<Argument>) -> Vec<A
         }
     }
     out
+}
+
+/// Declare, on the ARGUMENT, that this call passes it by reference.
+///
+/// php never spells the `&` at the call site — `w($g)` looks identical to a
+/// by-value call and the `&` lives on `w`'s parameter, in a different subtree.
+/// Everything downstream that needs to know a variable's storage is aliased
+/// (notably the compiler's whole-module scan for globals that must become
+/// pointer cells, which runs before any body is emitted) would have to
+/// re-derive it by resolving the callee. The walker already resolved that
+/// signature, so it writes the fact down instead.
+///
+/// Free functions only: `FUNC_BY_REF_PARAMS` is filled from
+/// `Rule::function_declaration`, and methods (`Rule::method_declaration`) are
+/// deliberately absent — their by-ref parameters are a separate open item, and
+/// marking an argument the method call path would then pack is worse than
+/// leaving it unmarked.
+fn mark_php_by_ref_args(callee: Expression, mut args: Vec<Argument>) -> (Expression, Vec<Argument>) {
+    let ExprKind::Ident(name) = &callee.kind else {
+        return (callee, args);
+    };
+    let Some((declared, positions)) = FUNC_BY_REF_PARAMS.with(|r| {
+        let reg = r.borrow();
+        reg.get(name)
+            .or_else(|| reg.get(&name.to_ascii_lowercase()))
+            .cloned()
+    }) else {
+        return (callee, args);
+    };
+    // php resolves function names case-insensitively; the compiler's
+    // `function_param_modes` is keyed by the EXACT name. So `w($q)` calling
+    // `function W(&$x)` misses the signature, takes the by-ref fallback, and
+    // clobbers `$q` with a write-back read off a value that is not a pack.
+    // One name for one function is a normalization the walker owes the common
+    // AST anyway — and it is only reached here for a function this map already
+    // resolved.
+    let callee = if *name == declared {
+        callee
+    } else {
+        Expression::with_span(ExprKind::Ident(declared), callee.span.clone())
+    };
+    for (index, arg) in args.iter_mut().enumerate() {
+        // A spread contributes an unknown number of arguments, so position
+        // `index` no longer names the parameter it lands on.
+        if arg.spread {
+            break;
+        }
+        if positions.get(index).copied().unwrap_or(false) {
+            arg.by_ref = true;
+            // `$a[0]` has already been lowered to the ArrayAccess READ dispatch
+            // (a `Sequence` of two temps and an `offsetGet` ternary), which is
+            // an rvalue: aliasing it would alias a COPY of the element, and it
+            // would call `offsetGet` for a read php never performs here. A
+            // by-reference argument denotes the SLOT, so recover the place —
+            // the same recovery `&$a[0]` performs a few frames away, which a
+            // call site does not spell because php puts the `&` on the
+            // parameter.
+            if let Some((object, key)) = php_array_read_parts(&arg.value) {
+                arg.value = Expression::with_span(
+                    ExprKind::Index {
+                        object: Box::new(object),
+                        index: Box::new(key),
+                        null_safe: false },
+                    arg.value.span.clone(),
+                );
+            }
+        }
+    }
+    (callee, args)
 }
 
 fn bind_this_in_lambda_body(body: &LambdaBody, bound_obj_name: &str) -> LambdaBody {

@@ -43,8 +43,7 @@ fn emit_sb_marker_test(chunk: &mut Chunk, line: u32) {
 
 fn emit_dart_value_to_string(chunk: &mut Chunk, line: u32) {
     let to_str = chunk.add_import("ecma:string", "String");
-    chunk.emit_op_u16(Op::CALL_IMPORT, to_str, line);
-    chunk.emit(1, line);
+    chunk.emit_call(to_str, 1, line);
 }
 
 fn emit_string_field(chunk: &mut Chunk, key: &str, value: &str, line: u32) {
@@ -992,9 +991,8 @@ pub fn emit_dart_index_get(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_dart_print(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
     use vybe_runtime::Op as VOp;
     emit_dart_to_string(chunks, current, line);
-    let log_idx = chunks[current].add_import("wasi:logging/logging", "log");
-    chunks[current].emit_op_u16(VOp::CALL_IMPORT, log_idx, line);
-    chunks[current].emit(1, line);
+    let log_idx = chunks[current].add_import("web:console", "log");
+    chunks[current].emit_call(log_idx, 1, line);
 }
 
 /// Dart `value.toString()` — route through ECMA string coercion.
@@ -1350,10 +1348,9 @@ pub fn emit_dart_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
     // Object/Map fall-through — count own enumerable properties via
     // `ecma:object.length`. Import tables are per chunk: register on
-    // the chunk whose CALL_IMPORT indexes them.
+    // the chunk whose spec `call` indexes them.
     let idx = chunks[current].add_import("ecma:object", "length");
-    chunks[current].emit_op_u16(VOp::CALL_IMPORT, idx, line);
-    chunks[current].emit(1, line);
+    chunks[current].emit_call(idx, 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);

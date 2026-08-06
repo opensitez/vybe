@@ -2352,7 +2352,8 @@ a = [1].freeze; begin; a.delete_at(0); rescue FrozenError; puts 'err'; end"#, r#
         name: "main".into(),
         language: Lang::Ruby,
         body,
-        imports })
+        imports,
+        directives: Default::default() })
 }
 
 fn normalize_ruby_file_dir_smoke_tests(source: &str) -> String {

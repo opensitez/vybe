@@ -699,7 +699,8 @@ pub fn parse(source: &str) -> Result<Module, String> {
         name: String::new(),
         language: Lang::Cobol,
         body: Vec::new(),
-        imports: Vec::new() };
+        imports: Vec::new(),
+        directives: Default::default() };
 
     for pair in program.into_inner() {
         match pair.as_rule() {

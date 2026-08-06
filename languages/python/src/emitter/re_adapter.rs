@@ -19,8 +19,7 @@ fn lset(c: &mut Chunk, s: u16, line: u32) {
 }
 fn call(chunks: &mut [Chunk], current: usize, module: &str, name: &str, argc: u8, line: u32) {
     let idx = chunks[current].add_import(module, name);
-    chunks[current].emit_op_u16(Op::CALL_IMPORT, idx, line);
-    chunks[current].emit(argc, line);
+    chunks[current].emit_call(idx, argc, line);
 }
 fn stash(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> u16 {
     let base = chunks[current].alloc_scratch(argc as u16);
