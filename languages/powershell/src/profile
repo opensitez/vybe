@@ -227,6 +227,9 @@ add = "common:powershell.add"
 
 [builtin_slots.int]
 to_string = "common:dotnet.tostring_runtime"
+# The MIRROR of `[builtin_slots.char] int`: `[char]65` is "A". Both directions
+# are declared so a cast cannot resolve one way and not the other.
+char = "common:strings.from_char_code"
 
 [builtin_slots.double]
 to_string = "common:dotnet.tostring_runtime"

@@ -3244,7 +3244,7 @@ fn collect_vb_byref_signatures(body: &[Statement], signatures: &mut HashMap<Stri
                     name.to_ascii_lowercase(),
                     params
                         .iter()
-                        .map(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Out))
+                        .map(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out))
                         .collect(),
                 );
                 collect_vb_byref_signatures(body, signatures);
@@ -7146,7 +7146,7 @@ fn normalize_vb_implicit_method_self_members(owner_name: &str, members: &mut [Cl
                 name.to_ascii_lowercase(),
                 params
                     .iter()
-                    .map(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Out))
+                    .map(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out))
                     .collect(),
             ))
         })
@@ -13005,7 +13005,7 @@ fn vb_reflection_constructor_byref_invoke_statement(
     };
     let ctor = locals.constructors.get(&ctor_name.to_ascii_lowercase())?;
     let first_param = ctor.params.first()?;
-    if first_param.pass_by != PassBy::Ref {
+    if !matches!(first_param.pass_by, PassBy::Ref | PassBy::Alias) {
         return None;
     }
     let ExprKind::Ident(args_name) = &args.first()?.value.kind else {
@@ -19680,9 +19680,9 @@ fn normalize_vb_delegate_binding_expr(
             }
             if let ExprKind::Ident(name) = &callee.kind {
                 if let Some(binding) = bindings.get(&name.to_ascii_lowercase()) {
-                    if binding.params.iter().any(|param| param.pass_by == PassBy::Ref) {
+                    if binding.params.iter().any(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Alias)) {
                         for (idx, param) in binding.params.iter().enumerate() {
-                            if param.pass_by == PassBy::Ref {
+                            if matches!(param.pass_by, PassBy::Ref | PassBy::Alias) {
                                 if let Some(arg) = args.get_mut(idx) {
                                     arg.by_ref = true;
                                 }
@@ -19703,9 +19703,9 @@ fn normalize_vb_delegate_binding_expr(
                 if field.eq_ignore_ascii_case("Invoke") {
                     if let ExprKind::Ident(name) = &object.kind {
                         if let Some(binding) = bindings.get(&name.to_ascii_lowercase()) {
-                            if binding.params.iter().any(|param| param.pass_by == PassBy::Ref) {
+                            if binding.params.iter().any(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Alias)) {
                                 for (idx, param) in binding.params.iter().enumerate() {
-                                    if param.pass_by == PassBy::Ref {
+                                    if matches!(param.pass_by, PassBy::Ref | PassBy::Alias) {
                                         if let Some(arg) = args.get_mut(idx) {
                                             arg.by_ref = true;
                                         }
@@ -19911,7 +19911,7 @@ fn normalize_vb_addressof_delegate_value(
         method_name: method_name.clone(),
         params: params.clone(),
         return_type };
-    if target.is_some() || params.iter().any(|param| param.pass_by == PassBy::Ref) {
+    if target.is_some() || params.iter().any(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Alias)) {
         *expr = vb_addressof_lambda(name, target, method_name, params);
     }
     Some(binding)
@@ -19936,7 +19936,7 @@ fn vb_addressof_lambda(
         .map(|param| Argument {
             value: Expression::ident(&param.name),
             name: None,
-            by_ref: param.pass_by == PassBy::Ref,
+            by_ref: matches!(param.pass_by, PassBy::Ref | PassBy::Alias),
             spread: false })
         .collect();
     Expression::new(ExprKind::Lambda {
@@ -33928,7 +33928,13 @@ fn parse_parameter(pair: Pair<Rule>) -> Result<Param, String> {
                 if text == "byval" {
                     pass_by = PassBy::Value;
                 } else {
-                    pass_by = PassBy::Ref;
+                    // `ByRef` is true aliasing — the callee writes the caller's
+                    // storage directly, so the mutation is visible mid-call and
+                    // survives the callee throwing. Copy-in/copy-out gives
+                    // neither: it writes back after return, and a callee that
+                    // throws never returns (measured on c# `ref` against
+                    // `dotnet run`, same mechanism).
+                    pass_by = PassBy::Alias;
                 }
             }
             Rule::optional_keyword => {

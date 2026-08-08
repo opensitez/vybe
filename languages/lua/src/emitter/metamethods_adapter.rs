@@ -783,7 +783,7 @@ pub fn emit_lua_debug_getupvalue(chunks: &mut Vec<Chunk>, current: usize, argc: 
     chunks[current].emit_string_const("up", line);
     save(&mut chunks[current], name, line);
     load(&mut chunks[current], func, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     save(&mut chunks[current], value, line);
     emit_lua_first_if_multi_row(chunks, current, value, line);
     save(&mut chunks[current], value, line);
@@ -859,7 +859,7 @@ pub fn emit_lua_debug_sethook(chunks: &mut Vec<Chunk>, current: usize, argc: u8,
     vybe_compiler::primitives::reflection::emit_is_callable(chunks, current, line);
     chunks[current].emit_if(line);
     load(&mut chunks[current], base, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -1219,7 +1219,7 @@ pub fn emit_lua_coroutine_resume(chunks: &mut Vec<Chunk>, current: usize, argc: 
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, argc - 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc - 1, 1, line);
     save(&mut chunks[current], cont_slot, line);
     load(&mut chunks[current], cont_slot, line);
     chunks[current].emit_call(is_gen, 1, line);
@@ -3179,7 +3179,7 @@ pub fn emit_lua_pcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, argc - 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc - 1, 1, line);
     save(&mut chunks[current], value_slot, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     i32_const(&mut chunks[current], 1, line);
@@ -3305,7 +3305,7 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     for i in 2..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, argc - 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc - 2, 1, line);
     save(&mut chunks[current], value_slot, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     i32_const(&mut chunks[current], 1, line);
@@ -3319,7 +3319,7 @@ pub fn emit_lua_xpcall(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: 
     let handler_catch = vybe_compiler::primitives::errors::emit_try_start(&mut chunks[current], line);
     load(&mut chunks[current], base + 1, line);
     load(&mut chunks[current], error_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     save(&mut chunks[current], value_slot, line);
     vybe_compiler::primitives::errors::emit_try_end(&mut chunks[current], line);
     chunks[current].emit_br(0, line);
@@ -4840,7 +4840,7 @@ pub fn emit_metamethod_call(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, argc, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
     save(&mut chunks[current], result, line);
     chunks[current].emit_else(line);
     emit_lua_get_metamethod(chunks, current, method, "__call", line);
@@ -4853,7 +4853,7 @@ pub fn emit_metamethod_call(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, argc, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
     save(&mut chunks[current], result, line);
     chunks[current].emit_else(line);
     chunks[current].emit_string_const("attempt to call a non-function value", line);
@@ -4971,7 +4971,7 @@ fn emit_lua_call_fixed(chunks: &mut Vec<Chunk>, current: usize, base: u16, argc:
     for i in 1..argc {
         load(&mut chunks[current], base + i as u16, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, argc - 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc - 1, 1, line);
 }
 
 fn emit_lua_call_rest_dispatch(
@@ -5032,5 +5032,5 @@ fn emit_lua_call_rest_fixed(
         }
     }
     load(&mut chunks[current], rest, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, fixed + 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, fixed + 1, 1, line);
 }

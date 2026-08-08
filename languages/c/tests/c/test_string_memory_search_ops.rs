@@ -11,7 +11,7 @@ c_run_cases! {
     memchr_space_byte => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%s\\n\", memchr(\"a b\", ' ', 3)); return 0;", expect: [" b"] },
     memchr_partial_buffer => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", memchr(\"hello\", 'l', 2)==NULL); return 0;", expect: ["1"] },
     memchr_returns_pointer_into_buffer => { includes: ["<stdio.h>", "<string.h>"], decls: "char buf[6]=\"kite\";", body: "char *p=memchr(buf, 't', 4); printf(\"%c\\n\", *p); return 0;", expect: ["t"] },
-    memchr_uppercase_match => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%s\\n\", memchr(\"AbC\", 'B', 3)); return 0;", expect: ["bC"] },
+    memchr_uppercase_match => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%s\\n\", memchr(\"AbC\", 'C', 3)); return 0;", expect: ["C"] },
     memchr_first_of_duplicates => { includes: ["<stdio.h>", "<string.h>"], decls: "char h[]=\"banana\";", body: "printf(\"%d\\n\", (int)(memchr(h, 'a', 6) - h)); return 0;", expect: ["1"] },
     memchr_exclamation => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%s\\n\", memchr(\"ok!\", '!', 3)); return 0;", expect: ["!"] },
     memchr_n_equals_one => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%c\\n\", *memchr(\"xy\", 'x', 1)); return 0;", expect: ["x"] },

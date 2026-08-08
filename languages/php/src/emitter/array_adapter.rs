@@ -1436,7 +1436,7 @@ pub fn emit_php_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // Countable: method(value)
     lget(chunk, method_slot, line);
     lget(chunk, value_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_else(line);
 
     lget(chunk, value_slot, line);
@@ -1531,7 +1531,7 @@ pub fn emit_php_json_encode(chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     chunk.emit_if(line);
     lget(chunk, method_slot, line);
     lget(chunk, value_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     lset(chunk, value_slot, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
@@ -1867,7 +1867,7 @@ fn emit_call_via_invoke_dispatch<F>(
     lget(chunk, fn_slot, line);
     push_args(chunks, current);
     let chunk = &mut chunks[current];
-    chunk.emit_op_u8(Op::CALL_REF, argc, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
     chunk.emit_else(line);
 
     // Object: call $obj->__invoke(args). PHP method ABI passes `$this`
@@ -1878,7 +1878,7 @@ fn emit_call_via_invoke_dispatch<F>(
     lget(chunk, fn_slot, line);
     push_args(chunks, current);
     let chunk = &mut chunks[current];
-    chunk.emit_op_u8(Op::CALL_REF, argc + 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, argc + 1, 1, line);
     chunk.emit_end(line);
 }
 
@@ -2064,7 +2064,7 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     chunk.emit_if_value(line);
     lget(chunk, fn_slot, line);
     lget(chunk, key_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_else(line);
 
     lget(chunk, flag_slot, line);
@@ -2074,12 +2074,12 @@ pub fn emit_array_filter(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     lget(chunk, fn_slot, line);
     lget(chunk, value_slot, line);
     lget(chunk, key_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunk.emit_else(line);
 
     lget(chunk, fn_slot, line);
     lget(chunk, value_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_end(line);
     chunk.emit_end(line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -3098,7 +3098,7 @@ pub fn emit_array_column(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         lget(chunk, get_method_slot, line);
         lget(chunk, row_slot, line);
         lget(chunk, col_slot, line);
-        chunk.emit_op_u8(Op::CALL_REF, 2, line);
+        chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         lset(chunk, value_slot, line);
         chunk.emit_end(line);
         chunk.emit_end(line);
@@ -4922,7 +4922,7 @@ fn emit_array_udiff_or_uintersect(
         lget(chunk, cb_slot, line);
         lget(chunk, aval_slot, line);
         lget(chunk, bval_slot, line);
-        chunk.emit_op_u8(Op::CALL_REF, 2, line);
+        chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         push_const(chunk, Value::F64(0.0), line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
@@ -5096,7 +5096,7 @@ fn emit_array_uassoc_impl(
         lget(chunk, key_cb_slot, line);
         lget(chunk, akey_slot, line);
         lget(chunk, bkey_slot, line);
-        chunk.emit_op_u8(Op::CALL_REF, 2, line);
+        chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         push_const(chunk, Value::F64(0.0), line);
         vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
         chunk.emit_if(line);
@@ -5128,7 +5128,7 @@ fn emit_array_uassoc_impl(
             lget(chunk, aval_slot, line);
             lget(chunk, bval_slot, line);
             chunk.emit_end(line);
-            chunk.emit_op_u8(Op::CALL_REF, 2, line);
+            chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
             push_const(chunk, Value::F64(0.0), line);
             vybe_compiler::primitives::ops::emit_dyn_eq(chunk, line);
             chunk.emit_if(line);
@@ -5365,7 +5365,7 @@ fn emit_assoc_sort_impl(
             lget(chunk, best_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
             chunk.emit_op(Op::ARRAY_GET, line);
-            chunk.emit_op_u8(Op::CALL_REF, 2, line);
+            chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
             push_const(chunk, Value::F64(0.0), line);
             vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         }
@@ -5379,7 +5379,7 @@ fn emit_assoc_sort_impl(
             lget(chunk, keys_slot, line);
             lget(chunk, best_slot, line);
             chunk.emit_op(Op::ARRAY_GET, line);
-            chunk.emit_op_u8(Op::CALL_REF, 2, line);
+            chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
             push_const(chunk, Value::F64(0.0), line);
             vybe_compiler::primitives::ops::emit_dyn_lt(chunk, line);
         }

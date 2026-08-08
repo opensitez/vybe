@@ -335,3 +335,22 @@ path = "dotnet.system.xml.linq"
 # here rather than decided by a language check in the shared compiler.
 [builtin_slots.char]
 int = "common:strings.char_code"
+
+# `x.ToString()` on a value that turns out to be a primitive at runtime is the
+# built-in string conversion, not a member lookup. Declaring WHICH conversion is
+# what lets the shared compiler run that probe without asking who the language
+# is — it reads this binding (builtinslotplan.md §2c, the runtime path).
+[builtin_slots.string]
+to_string = "host:ecma:string:String"
+
+[builtin_slots.int]
+to_string = "host:ecma:string:String"
+# The MIRROR of `[builtin_slots.char] int`: `(char)65` is "A". Both directions
+# are declared here so a cast cannot resolve one way and not the other.
+char = "common:strings.from_char_code"
+
+[builtin_slots.double]
+to_string = "host:ecma:string:String"
+
+[builtin_slots.bool]
+to_string = "host:ecma:string:String"

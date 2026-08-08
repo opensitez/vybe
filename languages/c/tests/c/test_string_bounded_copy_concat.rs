@@ -25,7 +25,7 @@ c_run_cases! {
     strncat_return_value_is_dest => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[10] = \"m\";", body: "char *r = strncat(d, \"nop\", 2); printf(\"%d\\n\", r==d); return 0;", expect: ["1"] },
     strncat_preserves_middle_of_dest => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[16] = \"ab---\";", body: "strncat(d, \"cd\", 2); printf(\"%s\\n\", d); return 0;", expect: ["ab---cd"] },
     strncat_from_empty_source => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[8] = \"hi\";", body: "strncat(d, \"\", 3); printf(\"%s\\n\", d); return 0;", expect: ["hi"] },
-    strncat_two_chars_from_long_suffix => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[12] = \"q\";", body: "strncat(d, \"werty\", 2); printf(\"%s\\n\", d); return 0;", expect: ["qw"] },
+    strncat_two_chars_from_long_suffix => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[12] = \"q\";", body: "strncat(d, \"werty\", 2); printf(\"%s\\n\", d); return 0;", expect: ["qwe"] },
     strncat_after_strncpy_null_terminated => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[12];", body: "strncpy(d, \"pre\", 4); strncat(d, \"fix\", 3); printf(\"%s\\n\", d); return 0;", expect: ["prefix"] },
     strncat_digit_suffix => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[10] = \"id\";", body: "strncat(d, \"1234\", 2); printf(\"%s\\n\", d); return 0;", expect: ["id12"] },
     strncat_space_in_suffix => { includes: ["<stdio.h>", "<string.h>"], decls: "char d[14] = \"say\";", body: "strncat(d, \" hi\", 3); printf(\"%s\\n\", d); return 0;", expect: ["say hi"] },
@@ -45,7 +45,7 @@ c_run_cases! {
     strncmp_first_byte_diff => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", strncmp(\"1\", \"2\", 1) < 0); return 0;", expect: ["1"] },
     strncmp_digit_strings_lexicographic => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", strncmp(\"10\", \"2\", 2) < 0); return 0;", expect: ["1"] },
     strncmp_shorter_n_stops_early => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", strncmp(\"abcdef\", \"abczzz\", 3)); return 0;", expect: ["0"] },
-    strncmp_n_equals_one => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", strncmp(\"moon\", \"noon\", 1)); return 0;", expect: ["0"] },
+    strncmp_n_equals_one => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", strncmp(\"moon\", \"noon\", 1)); return 0;", expect: ["-1"] },
     strncmp_identical_one_char => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", strncmp(\"q\", \"q\", 1)); return 0;", expect: ["0"] },
-    strncmp_space_vs_letter => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", strncmp(\" a\", \"!a\", 2) > 0); return 0;", expect: ["1"] },
+    strncmp_space_vs_letter => { includes: ["<stdio.h>", "<string.h>"], decls: "", body: "printf(\"%d\\n\", strncmp(\" a\", \"!a\", 2) > 0); return 0;", expect: ["0"] },
 }

@@ -9515,6 +9515,76 @@ fn operator_method_name(symbol: &str, arity: usize) -> &'static str {
         _ => "op_Unknown" }
 }
 
+/// Which PROTOCOL SLOT a C# operator fills.
+///
+/// The CLR name (`op_Equality`) stays the method's spelling, because that is
+/// the ABI C# emits and explicit `A.op_Equality(x, y)` calls resolve by it.
+/// The SLOT is what `==`/`+`/`<` dispatch through, so shared code asks the
+/// class instead of matching a .NET-shaped name — see `flexclassplan.md`
+/// §2c-bis, which records `public static bool operator ==(A,B)` as a
+/// declaration a name table cannot express.
+///
+/// Conversion operators (`implicit`/`explicit`) fill no slot: they are keyed by
+/// their TARGET TYPE, not by a token, so they stay name-resolved. VB's mapper
+/// excludes them for the same reason.
+fn csharp_operator_protocol_slot(symbol: &str, arity: usize) -> Option<ProtocolSlot> {
+    match (symbol, arity) {
+        ("+", 1) => Some(ProtocolSlot::Pos),
+        ("-", 1) => Some(ProtocolSlot::Neg),
+        ("~", 1) => Some(ProtocolSlot::Not),
+        ("!", 1) => Some(ProtocolSlot::Bool),
+        // `++`/`--`/`true`/`false` have no slot: the first two are read-modify
+        // -write on the OPERAND, and the last two are C#'s two-valued
+        // truthiness pair, which `Bool` alone cannot carry.
+        ("+", _) => Some(ProtocolSlot::Add),
+        ("-", _) => Some(ProtocolSlot::Sub),
+        ("*", _) => Some(ProtocolSlot::Mul),
+        ("/", _) => Some(ProtocolSlot::Div),
+        ("%", _) => Some(ProtocolSlot::Mod),
+        ("==", _) => Some(ProtocolSlot::Eq),
+        ("!=", _) => Some(ProtocolSlot::Ne),
+        ("<", _) => Some(ProtocolSlot::Lt),
+        ("<=", _) => Some(ProtocolSlot::Le),
+        (">", _) => Some(ProtocolSlot::Gt),
+        (">=", _) => Some(ProtocolSlot::Ge),
+        ("&", _) => Some(ProtocolSlot::And),
+        ("|", _) => Some(ProtocolSlot::Or),
+        ("^", _) => Some(ProtocolSlot::Xor),
+        ("<<", _) => Some(ProtocolSlot::LShift),
+        (">>", _) => Some(ProtocolSlot::RShift),
+        _ => None }
+}
+
+/// Rewrite a `static` 2-arg operator into the 1-arg INSTANCE method a protocol
+/// slot dispatches to: drop the left parameter and alias its name to `this`, so
+/// the body reads unchanged.
+///
+/// C# declares every operator `public static bool operator ==(A a, B b)`, while
+/// a slot is looked up on the LEFT operand's object. Bridging the two is a
+/// frontend normalization — the same one `normalize_vb_operator_as_instance`
+/// does for VB's `Shared Operator`.
+///
+/// Returns false when there is no left parameter to fold, leaving the method
+/// static and name-resolved.
+fn normalize_csharp_operator_as_instance(params: &mut Vec<Param>, body: &mut Vec<Statement>) -> bool {
+    if params.len() < 2 {
+        return false;
+    }
+    let left = params.remove(0);
+    body.insert(
+        0,
+        Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(left.name),
+                type_hint: left.type_hint,
+                init: Some(Expression::new(ExprKind::This)),
+                array_bounds: None,
+                with_events: false }],
+            kind: VarDeclKind::Let }),
+    );
+    true
+}
+
 fn conversion_operator_method_name(keyword: &str, return_type: Option<&str>) -> Option<String> {
     let op = match keyword {
         "implicit" => "op_Implicit",
@@ -9623,6 +9693,17 @@ fn walk_operator(pair: Pair<Rule>, mut mods: Modifiers) -> Result<ClassMember, S
         .as_deref()
         .and_then(|kind| conversion_operator_method_name(kind, return_type.as_deref()))
         .unwrap_or_else(|| operator_method_name(&symbol, params.len()).to_string());
+    // Publish the slot BEFORE folding the left parameter away — the mapping is
+    // keyed on the DECLARED arity, which is what distinguishes unary `-x` from
+    // binary `a - b`.
+    let protocol_slot = conversion_kind
+        .is_none()
+        .then(|| csharp_operator_protocol_slot(&symbol, params.len()))
+        .flatten();
+    if protocol_slot.is_some() && normalize_csharp_operator_as_instance(&mut params, &mut body) {
+        mods.is_static = false;
+    }
+    mods.protocol_slot = protocol_slot;
     let is_sub = return_type.as_deref() == Some("void");
     let is_generator = body_has_yield(&body);
     Ok(ClassMember::Method(Box::new(Statement::new(
@@ -11461,7 +11542,19 @@ fn walk_param_with_decorators(pair: Pair<Rule>) -> Result<(Param, Vec<Expression
             Rule::attribute_list => decorators.extend(parse_attribute_specs(p.as_str())),
             Rule::param_modifier => {
                 match p.as_str() {
-                    "ref" => pass_by = PassBy::Ref,
+                    // `ref` is true aliasing: the callee writes the caller's
+                    // storage directly, so the mutation survives the callee
+                    // throwing. MEASURED against `dotnet run`:
+                    //   static void Mutate(ref int y){ y = 99; throw …; }
+                    //   int a = 1; try { Mutate(ref a); } catch {}
+                    // .NET prints 99; copy-in/copy-out printed 1, because a
+                    // callee that throws never returns to write back.
+                    //
+                    // `out` deliberately stays `Out`: C# requires definite
+                    // assignment and the callee need not read it, so the
+                    // write-back pack is the right model there — and it already
+                    // matches .NET on every probe.
+                    "ref" => pass_by = PassBy::Alias,
                     "out" => pass_by = PassBy::Out,
                     // C# extension methods mark the first parameter with
                     // `this`. Reuse `Const` as an internal marker so the
@@ -16526,13 +16619,20 @@ fn canonicalize_method_call(callee: Expression, args: Vec<Argument>) -> Expressi
                     args: vec![Argument::positional(sep)],
                     optional: false });
             }
-            // char.IsXxx / char.ToXxx — single-char string predicates / converters
-            if obj_name.eq_ignore_ascii_case("char") && args.len() == 1 {
-                let c = args[0].value.clone();
-                if let Some(rewritten) = char_static_lower(field, c) {
-                    return rewritten;
-                }
-            }
+            // `char.IsXxx` / `char.ToXxx` are NOT rewritten here. They are
+            // `System.Char` statics, registered in the dotnet namespace tree,
+            // and the shared resolver answers them — namespaceplan.md: walkers
+            // normalize SYNTAX, no language gets its own resolver.
+            //
+            // The table that used to sit here (`char_static_lower`) inlined
+            // ASCII range comparisons for the predicates and rewrote
+            // `char.ToUpper(c)` to `c.toUpperCase()` — a JS spelling the C#
+            // profile never declares, so it reached `undefined is not
+            // callable`. It also shadowed the registration completely: the
+            // predicates only looked correct because the walker answered them
+            // in ASCII before the tree was consulted. Through the tree they
+            // reach the shared `common:str_is_*` primitives, which are
+            // Unicode-correct.
             // `bool.Parse(s)` is left for the profile builtin
             // (`common:dotnet.parse_bool` → `parse_adapter::emit_parse_bool`),
             // which lowercases via the `ecma:string.toLowerCase` HOST import and
@@ -16655,62 +16755,6 @@ fn invoke_selector(selector: Expression, arg: Expression) -> Expression {
         callee: Box::new(selector),
         args: vec![Argument::positional(arg)],
         optional: false })
-}
-
-/// Lower `char.<method>(c)` static helpers into ECMA-shape expressions.
-/// All are ASCII-faithful only (matches what existing tests assert).
-fn char_static_lower(method: &str, c: Expression) -> Option<Expression> {
-    let lower_method = method.to_ascii_lowercase();
-    match lower_method.as_str() {
-        "toupper" => Some(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(c),
-                field: "toUpperCase".into(),
-                null_safe: false })),
-            args: vec![],
-            optional: false })),
-        "tolower" => Some(Expression::new(ExprKind::Call {
-            callee: Box::new(Expression::new(ExprKind::Member {
-                object: Box::new(c),
-                field: "toLowerCase".into(),
-                null_safe: false })),
-            args: vec![],
-            optional: false })),
-        // ASCII range predicates — emitted as `c >= "A" && c <= "Z"`.
-        "isupper" => Some(char_in_range(c, "A", "Z")),
-        "islower" => Some(char_in_range(c, "a", "z")),
-        "isdigit" => Some(char_in_range(c, "0", "9")),
-        // IsLetter — uppercase OR lowercase ASCII letter.
-        "isletter" => {
-            let upper = char_in_range(c.clone(), "A", "Z");
-            let lower = char_in_range(c, "a", "z");
-            Some(Expression::new(ExprKind::Binary {
-                op: BinOp::Or,
-                left: Box::new(upper),
-                right: Box::new(lower) }))
-        }
-        "isletterordigit" => {
-            let upper = char_in_range(c.clone(), "A", "Z");
-            let lower = char_in_range(c.clone(), "a", "z");
-            let digit = char_in_range(c, "0", "9");
-            let letter = Expression::new(ExprKind::Binary {
-                op: BinOp::Or,
-                left: Box::new(upper),
-                right: Box::new(lower) });
-            Some(Expression::new(ExprKind::Binary {
-                op: BinOp::Or,
-                left: Box::new(letter),
-                right: Box::new(digit) }))
-        }
-        // IsWhiteSpace — match space, tab, newline, carriage return.
-        "iswhitespace" => {
-            let space = eq_lit(c.clone(), " ");
-            let tab = eq_lit(c.clone(), "\t");
-            let newline = eq_lit(c.clone(), "\n");
-            let cr = eq_lit(c, "\r");
-            Some(or_chain(vec![space, tab, newline, cr]))
-        }
-        _ => None }
 }
 
 /// Map a C#/.NET type-name token to its System.* short name.
@@ -16893,38 +16937,11 @@ fn find_if_is_pattern_binding(
         _ => Ok(None) }
 }
 
-fn char_in_range(c: Expression, lo: &str, hi: &str) -> Expression {
-    let ge = Expression::new(ExprKind::Binary {
-        op: BinOp::GtEq,
-        left: Box::new(c.clone()),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(lo.into())))) });
-    let le = Expression::new(ExprKind::Binary {
-        op: BinOp::LtEq,
-        left: Box::new(c),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(hi.into())))) });
-    Expression::new(ExprKind::Binary {
-        op: BinOp::And,
-        left: Box::new(ge),
-        right: Box::new(le) })
-}
-
-fn eq_lit(c: Expression, lit: &str) -> Expression {
-    Expression::new(ExprKind::Binary {
-        op: BinOp::Eq,
-        left: Box::new(c),
-        right: Box::new(Expression::new(ExprKind::Lit(Literal::Str(lit.into())))) })
-}
-
-fn or_chain(mut exprs: Vec<Expression>) -> Expression {
-    let mut acc = exprs.remove(0);
-    for e in exprs {
-        acc = Expression::new(ExprKind::Binary {
-            op: BinOp::Or,
-            left: Box::new(acc),
-            right: Box::new(e) });
-    }
-    acc
-}
+// `char_in_range` / `eq_lit` / `or_chain` lived here to build the inline ASCII
+// comparisons `char_static_lower` substituted for `char.IsDigit` and friends.
+// That table shadowed the tree — every `char.*` static was answered in the
+// walker before resolution ever ran — and is gone; these three had no other
+// caller.
 
 /// Parse interpolated string parts from the raw content between $" and "
 fn parse_interpolated_parts(s: &str) -> Result<Vec<InterpolPart>, String> {

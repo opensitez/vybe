@@ -47,6 +47,9 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "[]=" => ("setitem".into(), Some(SetItem)),
         "include?" => ("contains".into(), Some(Contains)),
         "size" | "length" => ("len".into(), Some(Len)),
+        // Ruby asks emptiness as its own predicate, `empty?` — not `size == 0`.
+        // The `?` is part of the method name, so the canonical name keeps it.
+        "empty?" => ("empty?".into(), Some(IsEmpty)),
         "call" => ("call".into(), Some(Call)),
         // Ruby's missing-method hook is PHP's `__call` and Dart's
         // `noSuchMethod` — one slot, three spellings.

@@ -67,6 +67,64 @@ uses_common_resolver = true
 "__c_sprintf" = { emit = "common:libc.stdio.sprintf", min_args = 1, max_args = 255 }
 "__c_vsprintf" = { emit = "common:libc.stdio.vsprintf", min_args = 2, max_args = 2 }
 "__c_char_code_at" = { emit = "common:str_char_code_at", min_args = 2, max_args = 2 }
+# system() runs a REAL /bin/sh -c through node:child_process; fopen falls
+# back to the real filesystem on a store miss so shell redirects compose.
+"__c_spawn_sync" = { emit = "host:node:child_process:spawnSync", min_args = 2, max_args = 3 }
+# getenv/setenv share ONE runtime env object, seeded from the real process
+# environment via the WASI CLI interface.
+"__c_get_environment" = { emit = "host:wasi:cli/environment:get-environment", min_args = 0, max_args = 0 }
+"__c_fs_exists" = { emit = "host:node:fs:existsSync", min_args = 1, max_args = 1 }
+"__c_fs_read" = { emit = "host:node:fs:readFileSync", min_args = 2, max_args = 2 }
+"__c_fs_rm" = { emit = "host:node:fs:rmSync", min_args = 1, max_args = 1 }
+# exec* replaces the process image: at top level the run ENDS with the
+# child's status (WASI's exit arm), same as `exit(code)`.
+"__c_exit_with_code" = { emit = "host:wasi:cli/exit:exit-with-code", min_args = 1, max_args = 1 }
+# ── sockets: REAL wasi:sockets, the same rows python's socket class uses ─────
+# The start-*/finish-* pairs are two calls because the proposal is poll-based;
+# a C socket call is blocking, so the runtime helpers do both — exactly the
+# sequencing python's VybeSocketImpl performs. `read` is the NON-blocking arm
+# on purpose: a poll-shaped `accept` answers nothing when the queue is empty,
+# and `blocking-read` would hang the process instead of failing.
+"__c_wasi_network"     = { emit = "host:wasi:sockets/instance-network:instance-network", min_args = 0, max_args = 0 }
+"__c_wasi_tcp_new"     = { emit = "host:wasi:sockets/tcp-create-socket:create-tcp-socket", min_args = 0, max_args = 1 }
+"__c_wasi_udp_new"     = { emit = "host:wasi:sockets/udp-create-socket:create-udp-socket", min_args = 0, max_args = 1 }
+"__c_wasi_start_bind"  = { emit = "host:wasi:sockets/tcp:start-bind",     min_args = 3, max_args = 3 }
+"__c_wasi_finish_bind" = { emit = "host:wasi:sockets/tcp:finish-bind",    min_args = 1, max_args = 1 }
+"__c_wasi_backlog"     = { emit = "host:wasi:sockets/tcp:set-listen-backlog-size", min_args = 2, max_args = 2 }
+"__c_wasi_start_listen" = { emit = "host:wasi:sockets/tcp:start-listen",  min_args = 1, max_args = 1 }
+"__c_wasi_finish_listen" = { emit = "host:wasi:sockets/tcp:finish-listen", min_args = 1, max_args = 1 }
+"__c_wasi_start_conn"  = { emit = "host:wasi:sockets/tcp:start-connect",  min_args = 3, max_args = 3 }
+"__c_wasi_finish_conn" = { emit = "host:wasi:sockets/tcp:finish-connect", min_args = 1, max_args = 1 }
+"__c_wasi_accept"      = { emit = "host:wasi:sockets/tcp:accept",         min_args = 1, max_args = 1 }
+"__c_wasi_local_addr"  = { emit = "host:wasi:sockets/tcp:local-address",  min_args = 1, max_args = 1 }
+"__c_wasi_remote_addr" = { emit = "host:wasi:sockets/tcp:remote-address", min_args = 1, max_args = 1 }
+"__c_wasi_sock_shutdown" = { emit = "host:wasi:sockets/tcp:shutdown",    min_args = 1, max_args = 2 }
+"__c_wasi_udp_start_bind"  = { emit = "host:wasi:sockets/udp:start-bind",     min_args = 3, max_args = 3 }
+"__c_wasi_udp_finish_bind" = { emit = "host:wasi:sockets/udp:finish-bind",    min_args = 1, max_args = 1 }
+# UDP datagrams flow through the socket's datagram STREAMS, not through
+# connect/send on the socket itself (wasi:sockets/udp `stream` hands back
+# the incoming/outgoing pair).
+"__c_wasi_udp_stream"      = { emit = "host:wasi:sockets/udp:stream",         min_args = 1, max_args = 2 }
+"__c_wasi_dgram_send"      = { emit = "host:wasi:sockets/udp:[method]outgoing-datagram-stream.send",   min_args = 2, max_args = 2 }
+"__c_wasi_dgram_recv"      = { emit = "host:wasi:sockets/udp:[method]incoming-datagram-stream.receive", min_args = 1, max_args = 2 }
+"__c_wasi_stream_read" = { emit = "host:wasi:io/streams:read",            min_args = 2, max_args = 2 }
+"__c_wasi_stream_write" = { emit = "host:wasi:io/streams:blocking-write-and-flush", min_args = 2, max_args = 2 }
+"__c_fs_rename" = { emit = "host:node:fs:renameSync", min_args = 2, max_args = 2 }
+# Code-point boundary ops for wide (wchar_t/char32_t) buffers: whole code
+# points, not UTF-16 units — the unit ops above are for char/char16_t.
+"__c_code_point_at" = { emit = "common:str_code_point_at", min_args = 2, max_args = 2 }
+"__c_from_code_point" = { emit = "common:str_from_code_point", min_args = 1, max_args = 1 }
+# pthreads ARE wasm threads. `thread_spawn` is the shared spawn lowering
+# (funcref table.grow → 16-byte {fn_idx,status,user_arg} futex record →
+# the `wasi:threads.thread-spawn` import); `thread_join` is the futex wait
+# on that record's status word. The user_arg word is an i32, so what rides
+# it is the C thread HANDLE — the start function and its `void*` argument
+# travel in the shared `__c_thread_starts/_args` objects instead.
+"__c_thread_spawn" = { emit = "common:threading.thread_spawn", min_args = 2, max_args = 2 }
+# Real blocking sleep (WASI `subscribe-duration` + `pollable.block`) — what a
+# waiter yields with instead of burning a core.
+"__c_sleep_ms" = { emit = "common:threading.sleep", min_args = 1, max_args = 1 }
+"__c_task_wait" = { emit = "common:threading.thread_join", min_args = 1, max_args = 1 }
 "__c_str_index_of" = { emit = "common:str_index_of", min_args = 2, max_args = 2 }
 "__c_str_last_index_of" = { emit = "common:str_last_index_of", min_args = 2, max_args = 2 }
 "__c_str_concat" = { emit = "common:str_concat", min_args = 2, max_args = 2 }
@@ -87,6 +145,7 @@ uses_common_resolver = true
 # wasi:io/streams.blocking-write-and-flush). Byte-faithful, no implicit newline.
 # libc output must NOT route through the `print`/wasi:logging vybelib builtin.
 "__c_write_stdout" = { emit = "intrinsic:write_stdout", min_args = 1, max_args = 1 }
+"__c_write_stderr" = { emit = "intrinsic:write_stderr", min_args = 1, max_args = 1 }
 
 # ── stdio.h extras ───────────────────────────────────────────────────────────
 # `fflush(stdout)` and stream flushes route through the walker's handle-based
@@ -109,17 +168,13 @@ uses_common_resolver = true
 "strlwr"   = { emit = "common:c.strlwr",   min_args = 1, max_args = 1 }
 "memcmp"   = { emit = "common:c.memcmp",        min_args = 3, max_args = 3 }
 
-# ── ctype.h — walker rewrites these to ecma:string calls ─────────────────────
-# isalpha/isdigit/isalnum/isspace/isupper/islower: walker wraps char-code arg
-# with String.fromCharCode then calls these:
-"isalpha"  = { emit = "host:ecma:string:isalpha",  min_args = 1, max_args = 1 }
-"isdigit"  = { emit = "host:ecma:string:isdigit",  min_args = 1, max_args = 1 }
-"isalnum"  = { emit = "host:ecma:string:isalnum",  min_args = 1, max_args = 1 }
-"isspace"  = { emit = "host:ecma:string:isspace",  min_args = 1, max_args = 1 }
-"isupper"  = { emit = "host:ecma:string:isupper",  min_args = 1, max_args = 1 }
-"islower"  = { emit = "host:ecma:string:islower",  min_args = 1, max_args = 1 }
-"isxdigit" = { emit = "host:ecma:string:isxdigit", min_args = 1, max_args = 1 }
-# iscntrl/isprint/ispunct/toupper/tolower: walker emits arithmetic inline
+# ── ctype.h ──────────────────────────────────────────────────────────────────
+# The walker inlines every classifier as C-locale ASCII integer arithmetic
+# (`primitives::codepoints::c_is*`) — the char stays an int end to end, exactly
+# the C model. No profile rows: the old host:ecma:string:is* rows here were
+# DEAD (the walker rewrite always won) and pointed at non-ECMA host fns; a
+# ctype call the walker cannot see (e.g. through a function pointer) now fails
+# loudly instead of silently answering with Unicode string semantics.
 
 # ── stdlib.h ─────────────────────────────────────────────────────────────────
 "atoi"     = { emit = "common:c.atoi",               min_args = 1, max_args = 1 }

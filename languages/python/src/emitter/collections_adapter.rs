@@ -1143,7 +1143,7 @@ pub fn emit_contains(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, contains_method, line);
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, container, line);
     chunk.emit_op_u16(Op::LOCAL_GET, needle, line);
@@ -1203,7 +1203,7 @@ pub fn emit_attr_read(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, name, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunks[current].emit_else(line);
     emit_throw_python_exception(
         &mut chunks[current],
@@ -1517,7 +1517,7 @@ pub fn emit_iter_sentinel(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let (lp, _) = chunks[current].emit_loop_s(line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, func, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, item, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, item, line);
@@ -2204,7 +2204,7 @@ pub fn emit_length(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if_value(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, len_method, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_else(line);
 
     // isString(recv) → CODE POINTS, not UTF-16 code units.

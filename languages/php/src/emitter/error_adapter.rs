@@ -410,7 +410,7 @@ pub fn emit_trigger_error(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     lget(chunk, msg_slot, line);
     push_str(chunk, "php", line);
     chunk.emit_f64_const(1.0, line);
-    chunk.emit_op_u8(Op::CALL_REF, 4, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 4, 1, line);
     let ret_slot = alloc_local(chunk);
     lset(chunk, ret_slot, line);
     //     if ret === false → record for error_get_last

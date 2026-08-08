@@ -92,7 +92,7 @@ fn build_method_invoke(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     reflection::emit_get_property_in_chunk(&mut c, line);
     c.emit_op_u16(Op::LOCAL_GET, 1, line);
     c.emit_op_u16(Op::LOCAL_GET, 2, line);
-    c.emit_op_u8(Op::CALL_REF, 2, line);
+    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     c.emit_op(Op::RETURN, line);
     c.local_count = c.local_count.max(3);
     chunks.push(c);

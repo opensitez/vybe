@@ -68,6 +68,31 @@ thread_local! {
     // multi-memory `i32.load/store $m`, `memory.size $m`, and `(data (memory $m))`
     // target the right linear memory.
     static MEMORY_NAME_INDEX: RefCell<HashMap<String, usize>> = RefCell::new(HashMap::new());
+    // Memories declared by PREVIOUS modules of the same wast script. The whole
+    // script compiles into ONE program with one memory index space
+    // (`memory_min_pages` accumulates across modules), so module K's "memory 0"
+    // is program memory <base> — every memidx (explicit or default) shifts by
+    // this, via the same `@@mem<N>` selector mechanism multi-memory uses.
+    static MEMORY_INDEX_BASE: RefCell<usize> = const { RefCell::new(0) };
+    // How many modules of the current script have been walked — the anonymous
+    // module class's discriminator (see `walk_module`).
+    static MODULE_SEQ: RefCell<usize> = const { RefCell::new(0) };
+    // Function index → method name (imports first, then defined functions —
+    // the WASM function index space). Lets `(export "e" (func N))` and any
+    // other positional function reference name the right method.
+    static FUNC_INDEX_NAME: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // Every module of the script, by class name → its export map. `EXPORT_FUNC_MAP`
+    // holds only the module being walked, so a later `(invoke $M "e")` — which
+    // targets an EARLIER module by name — needs this accumulated view.
+    static MODULE_EXPORTS: RefCell<HashMap<String, HashMap<String, String>>> =
+        RefCell::new(HashMap::new());
+    // Exported GLOBALS: export name → the global's top-level binding, for the
+    // module being walked and (accumulated, by class name) for `(get $M "e")`.
+    // A `(get "e")` used to lower to a profile-declared no-op, so every
+    // `assert_return (get …)` silently compared null.
+    static EXPORT_GLOBAL_MAP: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static MODULE_GLOBAL_EXPORTS: RefCell<HashMap<String, HashMap<String, String>>> =
+        RefCell::new(HashMap::new());
     // Global declaration-order index → the binding name it lowers to (its `$id`,
     // or a synthetic `__wasm_global_<i>` when unnamed). Lets `global.get N` /
     // `global.set N` by NUMERIC index resolve to the right binding (globals do
@@ -401,6 +426,138 @@ fn emit_folded_block(
     Ok(())
 }
 
+/// Statement lowering for a folded `(if $label? bt? (cond)* (then …) (else …)?)`.
+/// The expression walk lowers folded `if` to a ternary that keeps only each
+/// arm's LAST expression — a `br`/`br_if`/`return` inside an arm is a
+/// STATEMENT and gets dropped there (labels.wast `loop1`: the `(br $exit …)`
+/// inside `(then …)` vanished, so the loop never exited). This mirrors the
+/// unfolded-if handler: real If statement, arms folded recursively with the
+/// full stack machinery, results captured in temps.
+fn emit_folded_if(
+    inner: Pair<Rule>,
+    span: Span,
+    labels: &mut LabelStack,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) -> Result<(), String> {
+    let mut label: Option<String> = None;
+    let mut result_count = 0usize;
+    let mut param_count = 0usize;
+    let mut then_pairs: Vec<Pair<Rule>> = Vec::new();
+    let mut else_pairs: Option<Vec<Pair<Rule>>> = None;
+    for child in inner.into_inner() {
+        match child.as_rule() {
+            Rule::id => label = Some(child.as_str()[1..].to_string()),
+            Rule::block_type => {
+                let s = child.as_str().trim_start();
+                if s.starts_with("(result") {
+                    result_count += child
+                        .into_inner()
+                        .filter(|p| matches!(p.as_rule(), Rule::any_val_type | Rule::val_type))
+                        .count();
+                } else if s.starts_with("(param") {
+                    param_count += child
+                        .into_inner()
+                        .filter(|p| p.as_rule() == Rule::val_type)
+                        .count();
+                }
+            }
+            Rule::then_block => {
+                then_pairs = child
+                    .into_inner()
+                    .filter(|s| s.as_rule() == Rule::instr)
+                    .collect();
+            }
+            Rule::else_block => {
+                else_pairs = Some(
+                    child
+                        .into_inner()
+                        .filter(|s| s.as_rule() == Rule::instr)
+                        .collect(),
+                );
+            }
+            // Folded condition operand(s) — evaluate onto the stack in order,
+            // routing branchy/structured ones through the statement machinery.
+            Rule::instr_arg => {
+                let nested = child
+                    .clone()
+                    .into_inner()
+                    .next()
+                    .filter(|x| x.as_rule() == Rule::folded_instr);
+                if let Some(op) = nested {
+                    if folded_needs_stmt_lowering(&op) {
+                        emit_folded_operand_stmtwise(op, labels, statements, stack)?;
+                    } else {
+                        let op_span = to_span(&op);
+                        stack.push(walk_folded_instr_as_expr(op, op_span, labels)?);
+                    }
+                }
+            }
+            Rule::instr => {
+                let nested = child.clone().into_inner().next();
+                match nested {
+                    Some(op)
+                        if op.as_rule() == Rule::folded_instr
+                            && folded_needs_stmt_lowering(&op) =>
+                    {
+                        emit_folded_operand_stmtwise(op, labels, statements, stack)?;
+                    }
+                    _ => stack.push(walk_instr_as_expr(child, labels)?) }
+            }
+            _ => {}
+        }
+    }
+    let cond = stack.pop().unwrap_or(Expression::bool(false));
+    // Seed `(param …)` inputs into BOTH arms, then flush pending side effects
+    // (mirrors the unfolded-if handler).
+    let seed = if param_count > 0 && stack.len() >= param_count {
+        stack.split_off(stack.len() - param_count)
+    } else {
+        Vec::new()
+    };
+    preserve_stack_across_block(stack, statements);
+    let result_temps: Vec<String> = (0..result_count).map(|_| fresh_result_temp()).collect();
+    for tmp in &result_temps {
+        statements.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(tmp.clone()),
+                type_hint: None,
+                init: Some(Expression::null()),
+                array_bounds: None,
+                with_events: false }],
+            kind: VarDeclKind::Let }));
+    }
+    let effective = labels.push(label.clone(), LabelKind::Block, result_temps.clone());
+    let mut then_body = fold_instructions_seeded(then_pairs, labels, seed.clone())?;
+    assign_last_n_exprs_to(&mut then_body, &result_temps);
+    let else_body = match else_pairs {
+        Some(pairs) => {
+            let mut eb = fold_instructions_seeded(pairs, labels, seed)?;
+            assign_last_n_exprs_to(&mut eb, &result_temps);
+            Some(eb)
+        }
+        None => None };
+    labels.pop();
+    let if_stmt = Statement::with_span(
+        StmtKind::If {
+            cond,
+            then_body,
+            else_body,
+            elifs: Vec::new() },
+        span,
+    );
+    statements.push(Statement::with_span(
+        StmtKind::Labeled {
+            label: effective,
+            body: Box::new(if_stmt) },
+        span,
+    ));
+    for tmp in &result_temps {
+        stack.push(Expression::ident(tmp));
+    }
+    Ok(())
+}
+
 /// Lower a canonical folded `(try_table (catch $tag $L) (catch_ref $tag $L)
 /// (catch_all $L) (catch_all_ref $L) body…)` (WASM 3.0 exception handling).
 /// Each clause transfers a matching thrown exception to the enclosing label
@@ -632,9 +789,33 @@ fn emit_folded_return(
 ) -> Result<(), String> {
     for child in inner.into_inner() {
         match child.as_rule() {
-            // A folded return value nests as `instr_arg → folded_instr`.
-            Rule::instr_arg => stack.push(walk_instr_arg_pair(child, labels)?),
-            Rule::instr => stack.push(walk_instr_as_expr(child, labels)?),
+            // A folded return value nests as `instr_arg → folded_instr`. A
+            // branching/structured value (`(return (br_if …))`, `(return
+            // (block …))`) must go through the statement machinery — the
+            // expression walk would drop the branch/label handling.
+            Rule::instr_arg => {
+                let nested = child
+                    .clone()
+                    .into_inner()
+                    .next()
+                    .filter(|x| x.as_rule() == Rule::folded_instr);
+                match nested {
+                    Some(op) if folded_needs_stmt_lowering(&op) => {
+                        emit_folded_operand_stmtwise(op, labels, statements, stack)?;
+                    }
+                    _ => stack.push(walk_instr_arg_pair(child, labels)?) }
+            }
+            Rule::instr => {
+                let nested = child.clone().into_inner().next();
+                match nested {
+                    Some(op)
+                        if op.as_rule() == Rule::folded_instr
+                            && folded_needs_stmt_lowering(&op) =>
+                    {
+                        emit_folded_operand_stmtwise(op, labels, statements, stack)?;
+                    }
+                    _ => stack.push(walk_instr_as_expr(child, labels)?) }
+            }
             _ => {}
         }
     }
@@ -644,6 +825,254 @@ fn emit_folded_return(
     } else {
         let val = stack.pop();
         statements.push(Statement::with_span(StmtKind::Return(val), span));
+    }
+    Ok(())
+}
+
+/// Does this folded instr need STATEMENT lowering rather than the expression
+/// walk? True when it branches (`br`/`br_if`/`br_table`/`return` — a branch
+/// has no expression value; the expression walk yields null and DROPS it),
+/// when it is structured control (`block`/`loop`/`if`/`try_table` — the
+/// expression walk keeps only the body's last expression, dropping inner
+/// branches, labels, and result-temp carries), or when a nested operand
+/// transitively needs it.
+fn folded_needs_stmt_lowering(pair: &Pair<Rule>) -> bool {
+    let head = folded_instr_head(pair);
+    if matches!(
+        head.as_str(),
+        "br" | "br_if"
+            | "br_table"
+            | "return"
+            | "block"
+            | "loop"
+            | "if"
+            | "try_table"
+            // The `(type $sig)` immediates are read off the PAIR (the
+            // expression walk drops them and the call gets argc/results 0→0).
+            | "call_indirect"
+            | "return_call_indirect"
+            // `select` evaluates ALL THREE operands (it is not a conditional);
+            // the expression walk's ternary would short-circuit their effects.
+            | "select"
+    ) {
+        return true;
+    }
+    pair.clone().into_inner().any(|c| {
+        let nested = match c.as_rule() {
+            Rule::folded_instr => Some(c),
+            Rule::instr_arg | Rule::instr => c
+                .into_inner()
+                .next()
+                .filter(|x| x.as_rule() == Rule::folded_instr),
+            _ => None };
+        nested.is_some_and(|n| folded_needs_stmt_lowering(&n))
+    })
+}
+
+/// Land an instruction's value(s) the way the plain path does: a void
+/// instruction is a statement in program order; one value goes on the stack
+/// for its consumer; a multi-result call destructures into fresh temps (the
+/// shared compiler's multi-value ABI) and leaves the temps on the stack.
+fn land_instr_value(
+    expr: Expression,
+    pushes: usize,
+    is_call: bool,
+    span: Span,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) {
+    if is_call && pushes >= 2 {
+        let temps: Vec<String> = (0..pushes).map(|_| fresh_result_temp()).collect();
+        let pats: Vec<ArrayPatternElem> = temps
+            .iter()
+            .map(|t| ArrayPatternElem::Pattern(BindingPattern::Ident(t.clone()), None))
+            .collect();
+        statements.push(Statement::with_span(
+            StmtKind::Assign {
+                targets: vec![Expression::new(ExprKind::Destructure(
+                    DestructurePattern::Array(pats),
+                ))],
+                value: expr,
+                by_ref: false },
+            span,
+        ));
+        for t in &temps {
+            stack.push(Expression::ident(t));
+        }
+    } else if pushes > 0 {
+        stack.push(expr);
+    } else {
+        statements.push(Statement::with_span(StmtKind::Expr(expr), span));
+    }
+}
+
+/// Route one nested folded OPERAND through the statement machinery: structured
+/// control goes to its dedicated emitter (which pushes its result temps onto
+/// the stack), branching instrs recurse through `emit_folded_stmtwise`.
+fn emit_folded_operand_stmtwise(
+    op: Pair<Rule>,
+    labels: &mut LabelStack,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) -> Result<(), String> {
+    let op_span = to_span(&op);
+    match folded_instr_head(&op).as_str() {
+        "block" => emit_folded_block(op, false, op_span, labels, statements, stack),
+        "loop" => emit_folded_block(op, true, op_span, labels, statements, stack),
+        "if" => emit_folded_if(op, op_span, labels, statements, stack),
+        "try_table" => emit_folded_try_table(op, op_span, labels, statements, stack),
+        _ => emit_folded_stmtwise(op, op_span, labels, statements, stack) }
+}
+
+/// Statement-aware lowering for a folded instr that branches (see
+/// `folded_contains_branch`). Folding is pure sugar for the flat instruction
+/// sequence (spec: text format, abbreviations), so this walks the nested
+/// operands in order through the SAME stack+statements machinery as the plain
+/// form — a nested `(br_if …)` peeks the block-result carry and emits its
+/// conditional branch; the head then takes its operands from the stack.
+fn emit_folded_stmtwise(
+    inner: Pair<Rule>,
+    span: Span,
+    labels: &mut LabelStack,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) -> Result<(), String> {
+    let head = folded_instr_head(&inner);
+    let mut immediate_args: Vec<Expression> = Vec::new();
+    for child in inner.clone().into_inner() {
+        match child.as_rule() {
+            Rule::instr_arg => {
+                let nested_folded = child
+                    .clone()
+                    .into_inner()
+                    .next()
+                    .filter(|x| x.as_rule() == Rule::folded_instr);
+                match nested_folded {
+                    Some(op) if folded_needs_stmt_lowering(&op) => {
+                        emit_folded_operand_stmtwise(op, labels, statements, stack)?;
+                    }
+                    Some(op) => {
+                        let op_span = to_span(&op);
+                        stack.push(walk_folded_instr_as_expr(op, op_span, labels)?);
+                    }
+                    None => immediate_args.push(walk_instr_arg_pair(child, labels)?) }
+            }
+            Rule::instr => {
+                let nested = child.clone().into_inner().next();
+                match nested {
+                    Some(op)
+                        if op.as_rule() == Rule::folded_instr
+                            && folded_needs_stmt_lowering(&op) =>
+                    {
+                        emit_folded_operand_stmtwise(op, labels, statements, stack)?;
+                    }
+                    _ => stack.push(walk_instr_as_expr(child, labels)?) }
+            }
+            _ => {}
+        }
+    }
+    match head.as_str() {
+        "br" => {
+            emit_br_stmt_carry(immediate_args.first(), span, labels, statements, stack);
+        }
+        "br_if" => {
+            let cond = stack.pop().unwrap_or(Expression::int(0));
+            emit_br_if_stmt(immediate_args.first(), cond, span, labels, statements, stack);
+        }
+        "br_table" => {
+            emit_br_table_stmt(&immediate_args, span, labels, statements, stack);
+        }
+        "return" => {
+            let n = CURRENT_FN_RESULTS.with(|c| *c.borrow());
+            if n >= 2 {
+                statements.push(multi_value_return_stmt(stack, n, span));
+            } else {
+                let val = stack.pop();
+                statements.push(Statement::with_span(StmtKind::Return(val), span));
+            }
+        }
+        // WASM `select` pops (val1, val2, cond) and evaluates all three — no
+        // short-circuit. Bind each to a temp in program order (they may be
+        // DEFERRED side-effectful expressions), then pick via a ternary over
+        // the temps.
+        "select" => {
+            let n = 3.min(stack.len());
+            let mut ops: Vec<Expression> = stack.split_off(stack.len() - n);
+            while ops.len() < 3 {
+                ops.insert(0, Expression::null());
+            }
+            let cond = ops.pop().expect("three operands");
+            let val2 = ops.pop().expect("three operands");
+            let val1 = ops.pop().expect("three operands");
+            let mut bind = |e: Expression| -> Expression {
+                let t = fresh_result_temp();
+                statements.push(Statement::new(StmtKind::VarDecl {
+                    declarations: vec![VarDeclarator {
+                        pattern: BindingPattern::Ident(t.clone()),
+                        type_hint: None,
+                        init: Some(e),
+                        array_bounds: None,
+                        with_events: false }],
+                    kind: VarDeclKind::Let }));
+                Expression::ident(&t)
+            };
+            let v1 = bind(val1);
+            let v2 = bind(val2);
+            let c = bind(cond);
+            stack.push(Expression::with_span(
+                ExprKind::Ternary {
+                    cond: Box::new(c),
+                    then: Box::new(v1),
+                    else_: Box::new(v2) },
+                span,
+            ));
+        }
+        // Mirrors the plain arm: argc/results from the `(type $sig)` type-use,
+        // operands (spec order: call args, then the table index on top) from
+        // the stack the nested operands just evaluated onto.
+        "call_indirect" | "return_call_indirect" => {
+            let sig = peek_typeuse_index(&inner);
+            let argc = sig
+                .as_ref()
+                .and_then(|n| TYPE_FUNC_PARAMS.with(|m| m.borrow().get(n).copied()))
+                .unwrap_or(0) as usize;
+            let expected_results = sig
+                .as_ref()
+                .and_then(|n| TYPE_FUNC_RESULTS.with(|m| m.borrow().get(n).copied()))
+                .unwrap_or(0) as usize;
+            let tableidx = peek_call_indirect_table(&inner)
+                .map(|t| resolve_table_index(&t) as usize)
+                .unwrap_or(0);
+            let n = (argc + 1).min(stack.len());
+            let operands: Vec<Expression> = stack.split_off(stack.len() - n);
+            let mut call_args = vec![
+                Expression::int(argc as i64),
+                Expression::int(tableidx as i64),
+                Expression::int(expected_results as i64),
+            ];
+            call_args.extend(operands);
+            if head == "return_call_indirect" {
+                let call = make_call("return_call_indirect", call_args, span);
+                statements.push(Statement::with_span(StmtKind::Expr(call), span));
+            } else {
+                stack.push(make_call("call_indirect", call_args, span));
+            }
+        }
+        _ => {
+            // Ordinary head: apply it to the stack exactly like the flat form.
+            let arity = get_instruction_arity(&head, &immediate_args);
+            let pop_count = arity.min(stack.len());
+            let drain_start = stack.len() - pop_count;
+            let popped: Vec<Expression> = stack.drain(drain_start..).collect();
+            let mut args = immediate_args;
+            args.extend(popped);
+            let expr = map_instr_to_ast(head.clone(), args, span)?;
+            if get_instruction_push_count(&head) > 0 {
+                stack.push(expr);
+            } else {
+                statements.push(Statement::with_span(StmtKind::Expr(expr), span));
+            }
+        }
     }
     Ok(())
 }
@@ -775,12 +1204,152 @@ fn br_stmt_for(entry: &LabelEntry, span: Span) -> Statement {
         ) }
 }
 
+/// Unconditional `br`: carry (consume) the top N stack values into the target's
+/// temps, then jump. A `br` to a loop is a continue carrying the NEXT
+/// iteration's params; a `br` to a block carries the block's results.
+fn emit_br_stmt_carry(
+    lbl_arg: Option<&Expression>,
+    span: Span,
+    labels: &mut LabelStack,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) {
+    // Deferred stack values (calls, loads) must evaluate in program order —
+    // BEFORE the branch — exactly once, including the ones the unwinding
+    // discards.
+    preserve_stack_across_block(stack, statements);
+    let target = br_target_of(lbl_arg);
+    if let Some(entry) = labels.resolve(&target) {
+        let carry = branch_carry_temps(&entry);
+        carry_stack_into_temps(&carry, stack, true, statements);
+        statements.push(br_stmt_for(&entry, span));
+    } else {
+        statements.push(make_br_stmt_opt(None, labels, span));
+    }
+}
+
+/// Conditional `br_if`: the carried values pass through only when taken, so
+/// peek (don't consume) the top N into the target's temps inside the then-arm.
+fn emit_br_if_stmt(
+    lbl_arg: Option<&Expression>,
+    cond: Expression,
+    span: Span,
+    labels: &mut LabelStack,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) {
+    // Spec order: the carried value(s) were pushed BEFORE the condition, so
+    // any deferred stack expressions must evaluate first, exactly once —
+    // taken or not. The condition then evaluates inside the `if` header,
+    // after these materialized bindings.
+    preserve_stack_across_block(stack, statements);
+    let target = br_target_of(lbl_arg);
+    let mut then_body: Vec<Statement> = Vec::new();
+    let branch = match labels.resolve(&target) {
+        Some(entry) => {
+            let carry = branch_carry_temps(&entry);
+            carry_stack_into_temps(&carry, stack, false, &mut then_body);
+            br_stmt_for(&entry, span)
+        }
+        None => make_br_stmt_opt(None, labels, span) };
+    then_body.push(branch);
+    statements.push(Statement::with_span(
+        StmtKind::If {
+            cond,
+            then_body,
+            else_body: None,
+            elifs: Vec::new() },
+        span,
+    ));
+}
+
+/// `br_table l0 l1 … ln`: pops a selector index and branches to the l_index
+/// frame (l_n is the default). Lowered to an if/else-if chain over the index
+/// bound to a temp; each case carries the same top-N snapshot into the chosen
+/// target's result temps before branching, mirroring `br`.
+fn emit_br_table_stmt(
+    target_args: &[Expression],
+    span: Span,
+    labels: &mut LabelStack,
+    statements: &mut Vec<Statement>,
+    stack: &mut Vec<Expression>,
+) {
+    let targets: Vec<BrTarget> = target_args.iter().map(|a| br_target_of(Some(a))).collect();
+    let index = stack.pop().unwrap_or(Expression::int(0));
+    // The carried values were pushed BEFORE the selector: materialize any
+    // deferred expressions so they evaluate first and exactly once (each case
+    // below references the same snapshot; only the taken case runs, but the
+    // VALUES must have been computed regardless).
+    preserve_stack_across_block(stack, statements);
+    let carried: Vec<Expression> = stack.clone();
+    let br_for = |t: &BrTarget| -> Vec<Statement> {
+        match labels.resolve(t) {
+            Some(entry) => {
+                let mut out = Vec::new();
+                let n = entry.result_temps.len();
+                let start = carried.len().saturating_sub(n);
+                for (k, tmp) in entry.result_temps.iter().enumerate() {
+                    if let Some(val) = carried.get(start + k) {
+                        out.push(Statement::new(StmtKind::Expr(Expression::new(
+                            ExprKind::Assign {
+                                target: Box::new(Expression::ident(tmp)),
+                                value: Box::new(val.clone()) },
+                        ))));
+                    }
+                }
+                out.push(br_stmt_for(&entry, span));
+                out
+            }
+            None => vec![make_br_stmt_opt(None, labels, span)] }
+    };
+    if targets.is_empty() {
+        // Degenerate: nothing to branch to.
+    } else if targets.len() == 1 {
+        // The selector still evaluates (exactly once) even though only one
+        // target exists.
+        statements.push(Statement::with_span(StmtKind::Expr(index), span));
+        statements.extend(br_for(&targets[0]));
+    } else {
+        let idx_tmp = fresh_result_temp();
+        statements.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(idx_tmp.clone()),
+                type_hint: None,
+                init: Some(index),
+                array_bounds: None,
+                with_events: false }],
+            kind: VarDeclKind::Let }));
+        let mut chain = br_for(&targets[targets.len() - 1]);
+        for k in (0..targets.len() - 1).rev() {
+            let cond = Expression::new(ExprKind::Binary {
+                op: BinOp::StrictEq,
+                left: Box::new(Expression::ident(&idx_tmp)),
+                right: Box::new(Expression::int(k as i64)) });
+            chain = vec![Statement::with_span(
+                StmtKind::If {
+                    cond,
+                    then_body: br_for(&targets[k]),
+                    else_body: Some(chain),
+                    elifs: Vec::new() },
+                span,
+            )];
+        }
+        statements.extend(chain);
+    }
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 pub fn parse(source: &str) -> Result<Module, String> {
     let pairs =
         WastParser::parse(Rule::program, source).map_err(|e| format!("Parse error: {}", e))?;
 
+    // Fresh script → fresh memory index space and module numbering (these
+    // thread-locals persist across compiles on this thread).
+    MEMORY_INDEX_BASE.with(|b| *b.borrow_mut() = 0);
+    MODULE_SEQ.with(|c| *c.borrow_mut() = 0);
+    MODULE_EXPORTS.with(|m| m.borrow_mut().clear());
+    MODULE_GLOBAL_EXPORTS.with(|m| m.borrow_mut().clear());
     let mut body = Vec::new();
     for top in pairs {
         match top.as_rule() {
@@ -838,24 +1407,23 @@ fn walk_script_cmd(pair: Pair<Rule>, body: &mut Vec<Statement>) -> Result<(), St
             body.push(walk_assert_trap(pair)?);
             Ok(())
         }
-        Rule::assert_invalid => {
-            body.push(walk_assert_generic(pair, "__wast_assert_invalid")?);
+        // Validity/malformedness/linkability are STATIC properties of the
+        // quoted module — discharging them means compiling/decoding it and
+        // EXPECTING rejection, which requires the typed-validation service
+        // this front end does not have. They are skipped, NOT passed: the
+        // conformance scoreboard counts them as unenforced. Do not route
+        // them to a runtime call — nothing implements it, and one
+        // unresolved import fails the whole file, masking every semantic
+        // assert around it.
+        Rule::assert_invalid | Rule::assert_malformed | Rule::assert_unlinkable => {
+            body.push(Statement::with_span(StmtKind::Empty, to_span(&pair)));
             Ok(())
         }
-        Rule::assert_malformed => {
-            body.push(walk_assert_generic(pair, "__wast_assert_malformed")?);
-            Ok(())
-        }
-        Rule::assert_unlinkable => {
-            body.push(walk_assert_generic(pair, "__wast_assert_unlinkable")?);
-            Ok(())
-        }
-        Rule::assert_exhaustion => {
-            body.push(walk_assert_generic(pair, "__wast_assert_exhaustion")?);
-            Ok(())
-        }
-        Rule::assert_suspension => {
-            body.push(walk_assert_generic(pair, "__wast_assert_suspension")?);
+        // Exhaustion/suspension are RUNTIME trap assertions with an
+        // action — same lowering as assert_trap (the old message-only
+        // routing dropped the action entirely).
+        Rule::assert_exhaustion | Rule::assert_suspension => {
+            body.push(walk_assert_trap(pair)?);
             Ok(())
         }
         Rule::invoke_cmd => {
@@ -1024,6 +1592,31 @@ fn validate_module(pair: &Pair<Rule>) -> Result<(), String> {
 fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     validate_module(&pair)?;
     let span = to_span(&pair);
+    // A wast script may declare SEVERAL modules; each is a distinct instance,
+    // so each needs its own class name. Sharing one name made every class after
+    // the first shadow its predecessors at hoist time, and an `invoke` of an
+    // earlier module's export resolved against the LAST class → "undefined is
+    // not callable". Numbering starts at the SECOND module so a single-module
+    // script keeps the plain `__wasm_module` name (which the compiler's passive
+    // element-segment directive resolves against by that literal name).
+    let module_seq = MODULE_SEQ.with(|c| {
+        let n = *c.borrow();
+        *c.borrow_mut() = n + 1;
+        n
+    });
+    let default_class_name = if module_seq == 0 {
+        "__wasm_module".to_string()
+    } else {
+        format!("__wasm_module_{module_seq}")
+    };
+    // The class name is needed by several prescans below (they publish
+    // per-module registries keyed by it), so resolve it once, up front.
+    let prescan_class_name = pair
+        .clone()
+        .into_inner()
+        .find(|c| c.as_rule() == Rule::id)
+        .map(|c| c.as_str()[1..].to_string())
+        .unwrap_or_else(|| default_class_name.clone());
     let mut module_name: Option<String> = None;
     let mut members: Vec<ClassMember> = Vec::new();
     let mut pre_stmts: Vec<Statement> = Vec::new(); // before class (globals)
@@ -1033,6 +1626,11 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     let mut name_arities = HashMap::new();
     let mut index_results = Vec::new();
     let mut name_results = HashMap::new();
+    // Function index → the method name it compiles to. An unnamed function is
+    // named after its first inline export, else synthesized from its index —
+    // never a shared constant, since a module may hold several unnamed
+    // functions and `(export "a" (func 0))` must name exactly one of them.
+    let mut index_names: Vec<String> = Vec::new();
 
     // 1. Pre-scan imports. Params live inside `typeuse` (and, for imports, inside
     //    `import_desc`), so the signature scan must descend, not read direct children.
@@ -1043,6 +1641,13 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                     let (name, params_count, results_count) = scan_func_signature(inner);
                     index_arities.push(params_count);
                     index_results.push(results_count);
+                    // Imported functions occupy the LEADING function indices, so
+                    // the index→name map must cover them for `(export "e"
+                    // (func N))` to name the right entity.
+                    index_names.push(
+                        name.clone()
+                            .unwrap_or_else(|| format!("__wasm_import_{}", index_names.len())),
+                    );
                     if let Some(n) = name {
                         name_arities.insert(n.clone(), params_count);
                         name_results.insert(n, results_count);
@@ -1055,6 +1660,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     // 2. Pre-scan defined functions
     let mut defined_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut export_map: HashMap<String, String> = HashMap::new();
+    let mut defined_func_count = 0usize;
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
@@ -1076,6 +1682,12 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                         .map(|s| unquote(s.as_str()))
                         .collect();
                     let method = name.clone().or_else(|| exports.first().cloned());
+                    index_names.push(
+                        method
+                            .clone()
+                            .unwrap_or_else(|| format!("__wasm_func_{}", index_names.len())),
+                    );
+                    defined_func_count += 1;
                     if let Some(m) = method {
                         // An unnamed exported func is reached by its export name
                         // (e.g. `_start`); key its signature there too so the
@@ -1087,13 +1699,28 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                         }
                     }
                 } else if inner.as_rule() == Rule::export_field {
-                    // `(export "e" (func $g))`: map the export name to the func id.
+                    // `(export "e" (func $g))` / `(export "e" (func 0))`: map the
+                    // export name to the function's method name. The target sits
+                    // inside `export_desc → index`, NOT as a direct child, and a
+                    // numeric index names the function positionally. Only `func`
+                    // descriptors belong in this map — a table/memory/global
+                    // export names a different entity, and mapping it here would
+                    // make `invoke` call a non-function.
                     let mut ename: Option<String> = None;
                     let mut target: Option<String> = None;
                     for c in inner.into_inner() {
                         match c.as_rule() {
                             Rule::string => ename = Some(unquote(c.as_str())),
-                            Rule::id => target = Some(c.as_str()[1..].to_string()),
+                            Rule::export_desc => {
+                                if !c.as_str().trim_start().starts_with("(func") {
+                                    continue;
+                                }
+                                if let Some(idx) =
+                                    c.into_inner().find(|p| p.as_rule() == Rule::index)
+                                {
+                                    target = resolve_func_index_name(&idx, &index_names);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -1111,6 +1738,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     FUNC_NAME_RESULTS.with(|f| *f.borrow_mut() = name_results);
     DEFINED_FUNC_NAMES.with(|f| *f.borrow_mut() = defined_names);
     EXPORT_FUNC_MAP.with(|f| *f.borrow_mut() = export_map);
+    FUNC_INDEX_NAME.with(|f| *f.borrow_mut() = index_names.clone());
 
     // 3. Pre-scan struct type definitions to know field counts for struct.new arity
     let mut struct_counts: HashMap<String, usize> = HashMap::new();
@@ -1298,12 +1926,14 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
     //      declaration index for multi-memory load/store/size and data segments.
     let mut memory_names: HashMap<String, usize> = HashMap::new();
     let mut memory_idx = 0usize;
+    let memory_base = MEMORY_INDEX_BASE.with(|b| *b.borrow());
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::memory_field {
                     if let Some(id) = inner.into_inner().find(|c| c.as_rule() == Rule::id) {
-                        memory_names.insert(id.as_str()[1..].to_string(), memory_idx);
+                        memory_names
+                            .insert(id.as_str()[1..].to_string(), memory_base + memory_idx);
                     }
                     memory_idx += 1;
                 }
@@ -1311,22 +1941,71 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         }
     }
     MEMORY_NAME_INDEX.with(|f| *f.borrow_mut() = memory_names);
+    // Advance the base for the NEXT module only after this one is fully
+    // walked (deferred to the end of this function); record the count here.
+    let module_memory_count = memory_idx;
 
     // 3a''. Pre-scan globals so a `global.get N` / `global.set N` by numeric
     //       index resolves to the right binding (each global's `$id`, or a
     //       synthetic `__wasm_global_<i>` when unnamed).
     let mut global_names: Vec<String> = Vec::new();
+    let mut global_export_map: HashMap<String, String> = HashMap::new();
     for child in pair.clone().into_inner() {
         if child.as_rule() == Rule::module_field {
             if let Some(inner) = child.into_inner().next() {
                 if inner.as_rule() == Rule::global_field {
                     let idx = global_names.len();
-                    global_names.push(global_binding_name(&inner, idx));
+                    let binding = global_binding_name(&inner, idx);
+                    // Inline exports: `(global $a (export "a") i32 …)`.
+                    for e in inner
+                        .into_inner()
+                        .filter(|c| c.as_rule() == Rule::export_inline)
+                        .filter_map(|c| c.into_inner().find(|p| p.as_rule() == Rule::string))
+                    {
+                        global_export_map.insert(unquote(e.as_str()), binding.clone());
+                    }
+                    global_names.push(binding);
+                }
+            }
+        }
+    }
+    // Standalone `(export "e" (global $g))` / `(export "e" (global 0))`. Walked
+    // after the names above so a forward reference resolves.
+    for child in pair.clone().into_inner() {
+        if child.as_rule() == Rule::module_field {
+            if let Some(inner) = child.into_inner().next() {
+                if inner.as_rule() == Rule::export_field {
+                    let mut ename: Option<String> = None;
+                    let mut target: Option<String> = None;
+                    for c in inner.into_inner() {
+                        match c.as_rule() {
+                            Rule::string => ename = Some(unquote(c.as_str())),
+                            Rule::export_desc => {
+                                if !c.as_str().trim_start().starts_with("(global") {
+                                    continue;
+                                }
+                                if let Some(idx) =
+                                    c.into_inner().find(|p| p.as_rule() == Rule::index)
+                                {
+                                    target = resolve_func_index_name(&idx, &global_names);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let (Some(e), Some(t)) = (ename, target) {
+                        global_export_map.insert(e, t);
+                    }
                 }
             }
         }
     }
     GLOBAL_INDEX_NAME.with(|f| *f.borrow_mut() = global_names);
+    EXPORT_GLOBAL_MAP.with(|f| *f.borrow_mut() = global_export_map.clone());
+    MODULE_GLOBAL_EXPORTS.with(|m| {
+        m.borrow_mut()
+            .insert(prescan_class_name.clone(), global_export_map)
+    });
 
     // 3b. Pre-scan exception tags so a `catch $e` in any function body knows
     //     the tag's payload arity regardless of source order. Reset first —
@@ -1399,16 +2078,21 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
 
     // Record the module class name before walking bodies so `call $f` to a
     // defined function can be qualified as `ClassName.f(...)`.
-    let prescan_class_name = pair
-        .clone()
-        .into_inner()
-        .find(|c| c.as_rule() == Rule::id)
-        .map(|c| c.as_str()[1..].to_string())
-        .unwrap_or_else(|| "__wasm_module".to_string());
+    // Publish this module's exports under its class name so a later
+    // `(invoke $M "e")` can reach it after other modules have been walked.
+    let module_exports = EXPORT_FUNC_MAP.with(|m| m.borrow().clone());
+    MODULE_EXPORTS.with(|m| {
+        m.borrow_mut()
+            .insert(prescan_class_name.clone(), module_exports)
+    });
     MODULE_CLASS_NAME.with(|c| *c.borrow_mut() = prescan_class_name);
 
     let mut global_decl_idx = 0usize;
     let mut table_decl_idx = 0usize;
+    // Imported functions occupy the leading function indices (prescan step 1),
+    // so a defined function's index starts after them.
+    let import_func_count = index_names.len() - defined_func_count;
+    let mut defined_func_seq = 0usize;
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::id => {
@@ -1418,7 +2102,11 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
                 let inner = child.into_inner().next().ok_or("Empty module_field")?;
                 match inner.as_rule() {
                     Rule::func_field => {
-                        members.push(ClassMember::Method(Box::new(walk_func_field(inner)?)))
+                        // Defined functions follow the imported ones in the
+                        // function index space.
+                        let idx = import_func_count + defined_func_seq;
+                        defined_func_seq += 1;
+                        members.push(ClassMember::Method(Box::new(walk_func_field(inner, idx)?)))
                     }
                     Rule::import_field => post_stmts.push(walk_import_field(inner)?),
                     Rule::export_field => {
@@ -1472,7 +2160,7 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         }
     }
 
-    let name = module_name.unwrap_or_else(|| "__wasm_module".to_string());
+    let name = module_name.unwrap_or(default_class_name);
     let class_name = name.clone();
     let class = Statement::with_span(
         StmtKind::ClassDecl {
@@ -1573,12 +2261,15 @@ fn walk_module(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
             result.push(Statement::new(StmtKind::Expr(stmt)));
         }
     }
+    // This module is fully walked: its memories now belong to the script's
+    // accumulated index space, so the NEXT module's memidx 0 starts after them.
+    MEMORY_INDEX_BASE.with(|b| *b.borrow_mut() += module_memory_count);
     Ok(result)
 }
 
 // ── Function field ────────────────────────────────────────────────────────────
 
-fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
+fn walk_func_field(pair: Pair<Rule>, func_index: usize) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut func_name = String::new();
     let mut params: Vec<Param> = Vec::new();
@@ -1586,6 +2277,7 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
     let mut body: Vec<Statement> = Vec::new();
     let mut export_names: Vec<String> = Vec::new();
     let mut labels = LabelStack::new();
+    let mut locals_seen: usize = 0;
 
     let mut instr_pairs = Vec::new();
 
@@ -1645,7 +2337,9 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
                 }
             }
             Rule::local => {
-                body.extend(walk_local(child)?);
+                let decls = walk_local(child, params.len() + locals_seen)?;
+                locals_seen += decls.len();
+                body.extend(decls);
             }
             Rule::instr => {
                 instr_pairs.push(child);
@@ -1661,10 +2355,14 @@ fn walk_func_field(pair: Pair<Rule>) -> Result<Statement, String> {
     CURRENT_FN_RESULTS.with(|c| *c.borrow_mut() = 0);
 
     if func_name.is_empty() {
+        // Same rule the prescan's index→name map used: id, else first inline
+        // export, else a per-INDEX synthetic name. A module may hold several
+        // unnamed functions, so a shared constant would collide (and
+        // `(export "e" (func N))` could not tell them apart).
         func_name = export_names
             .first()
             .cloned()
-            .unwrap_or_else(|| "__wasm_func".to_string());
+            .unwrap_or_else(|| format!("__wasm_func_{func_index}"));
     }
 
     if result_count >= 2 {
@@ -1804,7 +2502,7 @@ fn walk_param(pair: Pair<Rule>, base: usize) -> Result<Vec<Param>, String> {
         .collect())
 }
 
-fn walk_local(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
+fn walk_local(pair: Pair<Rule>, index_base: usize) -> Result<Vec<Statement>, String> {
     let mut name: Option<String> = None;
     let mut types: Vec<String> = Vec::new();
     for child in pair.into_inner() {
@@ -1818,9 +2516,21 @@ fn walk_local(pair: Pair<Rule>) -> Result<Vec<Statement>, String> {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let var_name = name.clone().unwrap_or_else(|| format!("local{}", i));
+            // An anonymous local is addressed by INDEX, in the same index
+            // space as the params (`local.get N` lowers to `p<N>`), so its
+            // name is `p<params + locals-so-far>` — never a per-group count.
+            let var_name = name
+                .clone()
+                .unwrap_or_else(|| format!("p{}", index_base + i));
             let init = match t.as_str() {
-                "i32" | "i64" => Expression::int(0),
+                "i32" => Expression::int(0),
+                // An i64 zero is a BigInt — the exact-integer shape every
+                // other i64 value carries (a plain Int literal compiles to
+                // f64 and compares unequal to `(i64.const 0)`).
+                "i64" => Expression::with_span(
+                    ExprKind::Lit(Literal::BigInt(0)),
+                    Span::default(),
+                ),
                 // f32 is WASM-exclusive: demote 0.0 to single precision so the
                 // default lands as `Value::F32(0.0)` (Displays "0.0"), not a
                 // generic float folding to `F64` (Displays "0"). f64 keeps the
@@ -2353,12 +3063,15 @@ fn index_binding_name(i: i64, is_global: bool) -> String {
 /// Resolve a memory-index immediate: a literal integer, or a `$name` looked up
 /// in the declaration-order `MEMORY_NAME_INDEX`. Anything else defaults to 0.
 fn resolve_wat_memidx(e: &Expression) -> usize {
+    let base = MEMORY_INDEX_BASE.with(|b| *b.borrow());
     match &e.kind {
-        ExprKind::Lit(Literal::Int(n)) => *n as usize,
+        // A numeric memidx is module-relative; shift into the script's
+        // accumulated index space. Named memories were registered shifted.
+        ExprKind::Lit(Literal::Int(n)) => base + *n as usize,
         ExprKind::Ident(nm) => MEMORY_NAME_INDEX
             .with(|f| f.borrow().get(nm).copied())
-            .unwrap_or(0),
-        _ => 0 }
+            .unwrap_or(base),
+        _ => base }
 }
 
 /// Number of leading memory-index immediates a memory op may carry: `memory.copy`
@@ -2421,6 +3134,22 @@ fn peel_mem_selector(
 }
 
 fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<Expression, String> {
+    // A memory op with NO explicit selector targets ITS module's memory 0 —
+    // which, in a multi-module script, is program memory <base>. Explicit
+    // selectors were already `@@mem`-mangled (shifted) at the parse sites.
+    let name = if MEMORY_INDEX_BASE.with(|b| *b.borrow()) > 0
+        && !name.contains("@@mem")
+        && mem_op_immediate_count(&name) > 0
+    {
+        let base = MEMORY_INDEX_BASE.with(|b| *b.borrow());
+        if name == "memory.copy" {
+            format!("memory.copy@@mem{base}@@mem{base}")
+        } else {
+            format!("{name}@@mem{base}")
+        }
+    } else {
+        name
+    };
     // A constant `offset=N` memarg on a load/store folds into the address
     // (WASM effective address = base + offset). The VM's load/store opcode
     // stream can't unambiguously carry a memarg — its optional-memarg peek
@@ -2440,7 +3169,7 @@ fn map_instr_to_ast(name: String, args: Vec<Expression>, span: Span) -> Result<E
     // from a flushed operand) is done in this shared lowering.
     match name.as_str() {
         // `table.init tableidx? elemidx` — WAT allows 1 index (elemidx, table 0)
-        // or 2 (tableidx elemidx). The VM's TABLE_INIT reads two byte immediates
+        // or 2 (tableidx elemidx). The VM's TABLE_INIT reads two u16 immediates
         // in [elem_idx, table_idx] order, then 3 stack operands (dst, src, len).
         // Normalize the leading immediates to exactly [elem, table] so the table
         // index is never mistaken for the first stack operand.
@@ -3069,6 +3798,19 @@ fn walk_memory_field(pair: Pair<Rule>) -> Result<Statement, String> {
     ))
 }
 
+/// The method name a function `index` (`$id` or a positional integer) refers
+/// to, given the module's index→name map. `None` when a positional index is out
+/// of range (a malformed module, caught by validation, not by silent fallback).
+fn resolve_func_index_name(idx: &Pair<Rule>, index_names: &[String]) -> Option<String> {
+    let inner = idx.clone().into_inner().next()?;
+    match inner.as_rule() {
+        Rule::id => Some(inner.as_str()[1..].to_string()),
+        Rule::integer => index_names
+            .get(parse_wat_u64(inner.as_str()) as usize)
+            .cloned(),
+        _ => None }
+}
+
 /// Extract `(tag $e (param t*))`'s name (without `$`) and payload arity.
 fn scan_tag_signature(pair: Pair<Rule>) -> (Option<String>, u8) {
     let mut name: Option<String> = None;
@@ -3406,7 +4148,10 @@ fn resolve_table_index(name: &str) -> i64 {
 
 fn walk_data_field(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
-    let mut memory_index: u32 = 0;
+    // Default and numeric memory indices are module-relative — shift into the
+    // script's accumulated index space (named memories resolve pre-shifted).
+    let mem_base = MEMORY_INDEX_BASE.with(|b| *b.borrow()) as u32;
+    let mut memory_index: u32 = mem_base;
     let mut offset: Option<Expression> = None;
     let mut bytes: Vec<u8> = Vec::new();
     let mut labels = LabelStack::new();
@@ -3421,7 +4166,7 @@ fn walk_data_field(pair: Pair<Rule>) -> Result<Statement, String> {
                         Rule::index => {
                             if let Some(i) = m.into_inner().next() {
                                 if i.as_rule() == Rule::integer {
-                                    memory_index = parse_wat_u64(i.as_str()) as u32;
+                                    memory_index = mem_base + parse_wat_u64(i.as_str()) as u32;
                                 } else {
                                     // `(memory $m2)` — resolve the name to its
                                     // declaration index.
@@ -3550,10 +4295,13 @@ fn decode_wat_data_string(s: &str) -> Vec<u8> {
 fn walk_invoke_cmd(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut func_name = String::new();
+    let mut module_id: Option<String> = None;
     let mut args: Vec<Expression> = Vec::new();
     for child in pair.into_inner() {
         match child.as_rule() {
-            Rule::id => {}
+            // `(invoke $M "e" …)` targets the module NAMED $M; a bare
+            // `(invoke "e" …)` targets the most recent one.
+            Rule::id => module_id = Some(child.as_str()[1..].to_string()),
             Rule::string => {
                 if func_name.is_empty() {
                     func_name = unquote(child.as_str());
@@ -3565,17 +4313,21 @@ fn walk_invoke_cmd(pair: Pair<Rule>) -> Result<Statement, String> {
     }
     // Resolve the exported name to the module class's static method so the call
     // actually reaches the function (exports are `Class.method`).
-    let callee = match EXPORT_FUNC_MAP.with(|m| m.borrow().get(&func_name).cloned()) {
-        Some(method) => {
-            let class = MODULE_CLASS_NAME.with(|c| c.borrow().clone());
-            Expression::with_span(
-                ExprKind::Member {
-                    object: Box::new(Expression::ident(&class)),
-                    field: method,
-                    null_safe: false },
-                span,
-            )
-        }
+    let resolved = match &module_id {
+        Some(m) => MODULE_EXPORTS
+            .with(|x| x.borrow().get(m).and_then(|e| e.get(&func_name).cloned()))
+            .map(|method| (m.clone(), method)),
+        None => EXPORT_FUNC_MAP
+            .with(|m| m.borrow().get(&func_name).cloned())
+            .map(|method| (MODULE_CLASS_NAME.with(|c| c.borrow().clone()), method)) };
+    let callee = match resolved {
+        Some((class, method)) => Expression::with_span(
+            ExprKind::Member {
+                object: Box::new(Expression::ident(&class)),
+                field: method,
+                null_safe: false },
+            span,
+        ),
         None => Expression::ident(&func_name) };
     Ok(Statement::with_span(
         StmtKind::Expr(Expression::with_span(
@@ -3679,12 +4431,96 @@ fn walk_assert_return(pair: Pair<Rule>) -> Result<Statement, String> {
         ));
     }
 
-    // Multi-value results arrive packed as one array and zero-value actions
-    // have nothing to compare; both still go through the builtin.
-    let mut args = vec![action];
-    args.extend(expected);
+    if expected.is_empty() {
+        // `(assert_return (invoke …))` with no results: the assertion is
+        // exactly that the action completes without trapping — run it.
+        return Ok(Statement::with_span(StmtKind::Expr(action), span));
+    }
+
+    // Multi-value: the callee's multi-value ABI packs the results as one
+    // tuple/array value (see `multi_value_return_stmt`), so bind it to a
+    // temp and compare element-wise — the same NaN ("equals itself" is the
+    // failure) and v128 (i8x16.eq + all_true) semantics as the
+    // single-value path, index by index.
+    let tmp = "__wast_mv";
+    let decl = Statement::with_span(
+        StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(tmp.to_string()),
+                type_hint: None,
+                init: Some(action),
+                array_bounds: None,
+                with_events: false }],
+            kind: VarDeclKind::Let },
+        span,
+    );
+    let elem = |i: usize| {
+        Expression::with_span(
+            ExprKind::Index {
+                object: Box::new(Expression::ident(tmp)),
+                index: Box::new(Expression::int(i as i64)),
+                null_safe: false },
+            span,
+        )
+    };
+    let mut fail: Option<Expression> = None;
+    for (i, want) in expected.into_iter().enumerate() {
+        let cond = if expects_nan[i] {
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(elem(i)),
+                    right: Box::new(elem(i)) },
+                span,
+            )
+        } else if expects_v128[i] {
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(make_call(
+                        "i8x16.all_true",
+                        vec![make_call("i8x16.eq", vec![elem(i), want], span)],
+                        span,
+                    )),
+                    right: Box::new(Expression::int(0)) },
+                span,
+            )
+        } else {
+            Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::NotEq,
+                    left: Box::new(elem(i)),
+                    right: Box::new(want) },
+                span,
+            )
+        };
+        fail = Some(match fail {
+            None => cond,
+            Some(prev) => Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Or,
+                    left: Box::new(prev),
+                    right: Box::new(cond) },
+                span,
+            ),
+        });
+    }
+    let throw = Statement::with_span(
+        StmtKind::Throw {
+            expr: Some(Expression::string("assert_return failed")),
+            cause: None },
+        span,
+    );
+    let check = Statement::with_span(
+        StmtKind::If {
+            cond: fail.expect("expected values are non-empty here"),
+            then_body: vec![throw],
+            elifs: Vec::new(),
+            else_body: None },
+        span,
+    );
     Ok(Statement::with_span(
-        StmtKind::Expr(make_call("__wast_assert_return", args, span)),
+        StmtKind::Block(vec![decl, check]),
         span,
     ))
 }
@@ -3692,21 +4528,62 @@ fn walk_assert_return(pair: Pair<Rule>) -> Result<Statement, String> {
 fn walk_assert_trap(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut action_expr: Option<Expression> = None;
-    let mut message = String::new();
     for child in pair.into_inner() {
-        match child.as_rule() {
-            Rule::action => action_expr = Some(walk_action(child)?),
-            Rule::string => message = unquote(child.as_str()),
-            _ => {}
+        if child.as_rule() == Rule::action {
+            action_expr = Some(walk_action(child)?);
         }
     }
-    let mut args = Vec::new();
-    if let Some(a) = action_expr {
-        args.push(a);
-    }
-    args.push(Expression::string(&message));
+    let Some(action) = action_expr else {
+        return Ok(Statement::with_span(StmtKind::Empty, span));
+    };
+    // Language-level lowering, same principle as assert_return: run the
+    // action inside a try; COMPLETING normally is the failure, so the body
+    // throws a marker after the action, and the catch re-raises exactly
+    // that marker (a genuine trap lands in the catch and passes). The
+    // spec's expected-message text is not compared: our trap messages are
+    // not the spec interpreter's strings, and asserting on them would
+    // fail every file for phrasing rather than semantics.
+    let marker = "assert_trap failed: expected a trap";
+    let body = vec![
+        Statement::with_span(StmtKind::Expr(action), span),
+        Statement::with_span(
+            StmtKind::Throw {
+                expr: Some(Expression::string(marker)),
+                cause: None },
+            span,
+        ),
+    ];
+    let rethrow = Statement::with_span(
+        StmtKind::Throw {
+            expr: Some(Expression::ident("__wast_trap_err")),
+            cause: None },
+        span,
+    );
+    let catch_body = vec![Statement::with_span(
+        StmtKind::If {
+            cond: Expression::with_span(
+                ExprKind::Binary {
+                    op: BinOp::Eq,
+                    left: Box::new(Expression::ident("__wast_trap_err")),
+                    right: Box::new(Expression::string(marker)) },
+                span,
+            ),
+            then_body: vec![rethrow],
+            elifs: Vec::new(),
+            else_body: None },
+        span,
+    )];
     Ok(Statement::with_span(
-        StmtKind::Expr(make_call("__wast_assert_trap", args, span)),
+        StmtKind::Try {
+            body,
+            catches: vec![CatchClause {
+                types: Vec::new(),
+                var_name: Some("__wast_trap_err".to_string()),
+                stack_var: None,
+                body: catch_body,
+                when_clause: None }],
+            else_body: None,
+            finally: None },
         span,
     ))
 }
@@ -3747,20 +4624,30 @@ fn walk_register_cmd(pair: Pair<Rule>) -> Result<Statement, String> {
 fn walk_get_cmd(pair: Pair<Rule>) -> Result<Statement, String> {
     let span = to_span(&pair);
     let mut name = String::new();
+    let mut module_id: Option<String> = None;
     for child in pair.into_inner() {
-        if child.as_rule() == Rule::string {
-            name = unquote(child.as_str());
-            break;
+        match child.as_rule() {
+            // `(get $M "e")` reads the global exported by the module NAMED $M.
+            Rule::id => module_id = Some(child.as_str()[1..].to_string()),
+            Rule::string => {
+                if name.is_empty() {
+                    name = unquote(child.as_str());
+                }
+            }
+            _ => {}
         }
     }
-    Ok(Statement::with_span(
-        StmtKind::Expr(make_call(
-            "__wasm_get",
-            vec![Expression::string(&name)],
-            span,
-        )),
-        span,
-    ))
+    // An exported global IS a top-level binding — read it directly.
+    let binding = match &module_id {
+        Some(m) => MODULE_GLOBAL_EXPORTS
+            .with(|x| x.borrow().get(m).and_then(|e| e.get(&name).cloned())),
+        None => EXPORT_GLOBAL_MAP.with(|m| m.borrow().get(&name).cloned()) };
+    let expr = match binding {
+        Some(b) => Expression::with_span(ExprKind::Ident(b), span),
+        // Unresolved: keep the (profile no-op) call rather than inventing a
+        // binding, so the failure stays visible instead of reading a stray name.
+        None => make_call("__wasm_get", vec![Expression::string(&name)], span) };
+    Ok(Statement::with_span(StmtKind::Expr(expr), span))
 }
 
 fn walk_action(pair: Pair<Rule>) -> Result<Expression, String> {
@@ -3809,8 +4696,32 @@ fn walk_const_expr(pair: Pair<Rule>) -> Result<Expression, String> {
     }
     for child in children {
         match child.as_rule() {
-            Rule::integer => return Ok(parse_integer(child.as_str())),
-            Rule::float => return Ok(parse_float(child.as_str())),
+            Rule::integer => {
+                let v = parse_integer(child.as_str());
+                // Mirror the ACTION side's lowerings so both sides of the
+                // compare carry the same value shape: `i64.const` is a BigInt
+                // (a plain Int literal compiles to f64, losing bits past 2^53
+                // AND the i64 result's BigInt identity); `f32.const` demotes
+                // to single precision (`Value::F32`).
+                if raw_text.contains("i64.const") {
+                    if let ExprKind::Lit(Literal::Int(n)) = &v.kind {
+                        return Ok(Expression::with_span(
+                            ExprKind::Lit(Literal::BigInt(*n)),
+                            span,
+                        ));
+                    }
+                } else if raw_text.contains("f32.const") {
+                    return Ok(make_call("f32_demote_f64", vec![v], span));
+                }
+                return Ok(v);
+            }
+            Rule::float => {
+                let v = parse_float(child.as_str());
+                if raw_text.contains("f32.const") {
+                    return Ok(make_call("f32_demote_f64", vec![v], span));
+                }
+                return Ok(v);
+            }
             Rule::string => return Ok(Expression::string(&unquote(child.as_str()))),
             _ => {}
         }
@@ -4105,7 +5016,9 @@ fn peek_typeuse_index(pair: &Pair<Rule>) -> Option<String> {
     } else {
         pair.clone()
     };
-    if inner.as_rule() != Rule::plain_instr {
+    // The `(type $sig)` type-use nests identically (`instr_arg → block_type`)
+    // in the plain and folded forms.
+    if !matches!(inner.as_rule(), Rule::plain_instr | Rule::folded_instr) {
         return None;
     }
     for c in inner.into_inner() {
@@ -4134,7 +5047,7 @@ fn peek_call_indirect_table(pair: &Pair<Rule>) -> Option<String> {
     } else {
         pair.clone()
     };
-    if inner.as_rule() != Rule::plain_instr {
+    if !matches!(inner.as_rule(), Rule::plain_instr | Rule::folded_instr) {
         return None;
     }
     for c in inner.into_inner() {
@@ -4531,6 +5444,9 @@ fn fold_instructions_seeded(
                     "loop" => {
                         emit_folded_block(inner, true, span, labels, &mut statements, &mut stack)?;
                     }
+                    "if" => {
+                        emit_folded_if(inner, span, labels, &mut statements, &mut stack)?;
+                    }
                     "try_table" => {
                         emit_folded_try_table(inner, span, labels, &mut statements, &mut stack)?;
                     }
@@ -4603,6 +5519,26 @@ fn fold_instructions_seeded(
                                 )?;
                                 stack.pop();
                             }
+                            // A dropped operand that branches or is structured
+                            // (`(drop (br_if $L (block …) (cond)))`) must run
+                            // through the statement machinery; the expression
+                            // walk would discard the branch. Evaluate it onto
+                            // the stack, then pop for the drop — landing the
+                            // popped value as a statement, since it may be a
+                            // DEFERRED expression (e.g. a call) whose side
+                            // effects must still run in program order.
+                            (Some(op), _) if folded_needs_stmt_lowering(&op) => {
+                                emit_folded_operand_stmtwise(
+                                    op,
+                                    labels,
+                                    &mut statements,
+                                    &mut stack,
+                                )?;
+                                if let Some(v) = stack.pop() {
+                                    statements
+                                        .push(Statement::with_span(StmtKind::Expr(v), span));
+                                }
+                            }
                             _ => {
                                 // Ordinary drop: a void instr, emit in program order.
                                 let expr = walk_folded_instr_as_expr(inner, span, labels)?;
@@ -4611,6 +5547,23 @@ fn fold_instructions_seeded(
                         }
                     }
                     _ => {
+                        // A branching folded instr (`br_if` at the head, or a
+                        // `br`/`br_if`/`br_table`/`return` nested in an operand,
+                        // e.g. `(i32.ctz (br_if 0 (i32.const 1) (i32.const 1)))`)
+                        // — or one with a structured operand (`(i32.mul … (block
+                        // …))`) — cannot go through the expression walk: the
+                        // branch/label machinery would lower to null and vanish.
+                        // Unfold it through the statement machinery instead.
+                        if folded_needs_stmt_lowering(&inner) {
+                            emit_folded_stmtwise(
+                                inner,
+                                span,
+                                labels,
+                                &mut statements,
+                                &mut stack,
+                            )?;
+                            continue;
+                        }
                         // A folded operand nests as `instr` or `instr_arg →
                         // folded/plain_instr`. When a stack-consuming instr has
                         // NONE of its value operands nested (the abbreviated
@@ -4633,18 +5586,29 @@ fn fold_instructions_seeded(
                             .map(|c| walk_instr_arg_pair(c, labels))
                             .collect::<Result<_, _>>()?;
                         let arity = get_instruction_arity(&head, &immediate_args);
-                        if !has_nested_operand && head != "call" && arity > 0 {
+                        if !has_nested_operand && (arity > 0 || head == "call") {
                             let mut args = immediate_args;
                             let pop_count = arity.min(stack.len());
                             let drain_start = stack.len() - pop_count;
                             let popped: Vec<Expression> = stack.drain(drain_start..).collect();
                             args.extend(popped);
-                            let expr = map_instr_to_ast(head.clone(), args, span)?;
-                            if get_instruction_push_count(&head) > 0 {
-                                stack.push(expr);
+                            // A `call` yields as many values as the callee has
+                            // results — a void call is a statement in program
+                            // order, exactly like the plain form.
+                            let pushes = if head == "call" {
+                                call_result_count(&args)
                             } else {
-                                statements.push(Statement::with_span(StmtKind::Expr(expr), span));
-                            }
+                                get_instruction_push_count(&head)
+                            };
+                            let expr = map_instr_to_ast(head.clone(), args, span)?;
+                            land_instr_value(
+                                expr,
+                                pushes,
+                                head == "call",
+                                span,
+                                &mut statements,
+                                &mut stack,
+                            );
                             continue;
                         }
                         // A fully-folded instr is self-contained (all operands
@@ -4652,17 +5616,26 @@ fn fold_instructions_seeded(
                         // question. Void instructions (`local.set`, stores,
                         // `struct.set`/`array.set`, bulk ops) must run in program
                         // order — deferring them on the value stack lets a later
-                        // reader observe the pre-write state. Value producers — and
-                        // `call`, whose result count is context-dependent — stay on
-                        // the stack for their consumer.
-                        let expr = walk_folded_instr_as_expr(inner, span, labels)?;
-                        if !head.is_empty()
-                            && head != "call"
-                            && get_instruction_push_count(&head) == 0
-                        {
-                            statements.push(Statement::with_span(StmtKind::Expr(expr), span));
+                        // reader observe the pre-write state. Value producers stay
+                        // on the stack for their consumer; a `call` lands by its
+                        // callee's declared result count (0 = void statement).
+                        let pushes = if head == "call" {
+                            call_result_count(&immediate_args)
                         } else {
+                            get_instruction_push_count(&head)
+                        };
+                        let expr = walk_folded_instr_as_expr(inner, span, labels)?;
+                        if head.is_empty() {
                             stack.push(expr);
+                        } else {
+                            land_instr_value(
+                                expr,
+                                pushes,
+                                head == "call",
+                                span,
+                                &mut statements,
+                                &mut stack,
+                            );
                         }
                     }
                 }
@@ -4765,18 +5738,7 @@ fn fold_instructions_seeded(
                         }
                     }
                     "br" => {
-                        let target = br_target_of(args.first());
-                        if let Some(entry) = labels.resolve(&target) {
-                            // Unconditional branch: carry (consume) the top N stack
-                            // values into the target, then jump. A `br` to a loop is
-                            // a continue that carries the NEXT iteration's params; a
-                            // `br` to a block carries the block's results.
-                            let carry = branch_carry_temps(&entry);
-                            carry_stack_into_temps(&carry, &mut stack, true, &mut statements);
-                            statements.push(br_stmt_for(&entry, span));
-                        } else {
-                            statements.push(make_br_stmt_opt(None, labels, span));
-                        }
+                        emit_br_stmt_carry(args.first(), span, labels, &mut statements, &mut stack);
                     }
                     "br_if" => {
                         // Arity 1 pops the condition; the label (if any) is the
@@ -4790,93 +5752,17 @@ fn fold_instructions_seeded(
                             cond = Some(args[0].clone());
                         }
                         let cond_expr = cond.unwrap_or(Expression::int(0));
-                        let target = br_target_of(lbl_arg);
-                        let mut then_body: Vec<Statement> = Vec::new();
-                        let branch = match labels.resolve(&target) {
-                            Some(entry) => {
-                                // The carried values pass through a conditional
-                                // branch, so peek (don't consume) the top N. A
-                                // loop target carries its param temps; a block, its
-                                // result temps.
-                                let carry = branch_carry_temps(&entry);
-                                carry_stack_into_temps(&carry, &mut stack, false, &mut then_body);
-                                br_stmt_for(&entry, span)
-                            }
-                            None => make_br_stmt_opt(None, labels, span) };
-                        then_body.push(branch);
-                        statements.push(Statement::with_span(
-                            StmtKind::If {
-                                cond: cond_expr,
-                                then_body,
-                                else_body: None,
-                                elifs: Vec::new() },
+                        emit_br_if_stmt(
+                            lbl_arg,
+                            cond_expr,
                             span,
-                        ));
+                            labels,
+                            &mut statements,
+                            &mut stack,
+                        );
                     }
                     "br_table" => {
-                        // `br_table l0 l1 … ln` pops a selector index and branches
-                        // to the l_index frame (l_n is the default). Lower to an
-                        // if/else-if chain over the index bound to a temp.
-                        let targets: Vec<BrTarget> =
-                            args.iter().map(|a| br_target_of(Some(a))).collect();
-                        let index = stack.pop().unwrap_or(Expression::int(0));
-                        // Exactly one target is taken, consuming the top N block
-                        // results on the (post-selector) stack. Each case peeks the
-                        // same snapshot and carries the top N into the chosen
-                        // target's result temps before branching, mirroring `br`.
-                        let carried: Vec<Expression> = stack.clone();
-                        let br_for = |t: &BrTarget| -> Vec<Statement> {
-                            match labels.resolve(t) {
-                                Some(entry) => {
-                                    let mut out = Vec::new();
-                                    let n = entry.result_temps.len();
-                                    let start = carried.len().saturating_sub(n);
-                                    for (k, tmp) in entry.result_temps.iter().enumerate() {
-                                        if let Some(val) = carried.get(start + k) {
-                                            out.push(Statement::new(StmtKind::Expr(
-                                                Expression::new(ExprKind::Assign {
-                                                    target: Box::new(Expression::ident(tmp)),
-                                                    value: Box::new(val.clone()) }),
-                                            )));
-                                        }
-                                    }
-                                    out.push(br_stmt_for(&entry, span));
-                                    out
-                                }
-                                None => vec![make_br_stmt_opt(None, labels, span)] }
-                        };
-                        if targets.is_empty() {
-                            // Degenerate: nothing to branch to.
-                        } else if targets.len() == 1 {
-                            statements.extend(br_for(&targets[0]));
-                        } else {
-                            let idx_tmp = fresh_result_temp();
-                            statements.push(Statement::new(StmtKind::VarDecl {
-                                declarations: vec![VarDeclarator {
-                                    pattern: BindingPattern::Ident(idx_tmp.clone()),
-                                    type_hint: None,
-                                    init: Some(index),
-                                    array_bounds: None,
-                                    with_events: false }],
-                                kind: VarDeclKind::Let }));
-                            // Default (last) branch, then wrap each earlier case.
-                            let mut chain = br_for(&targets[targets.len() - 1]);
-                            for k in (0..targets.len() - 1).rev() {
-                                let cond = Expression::new(ExprKind::Binary {
-                                    op: BinOp::StrictEq,
-                                    left: Box::new(Expression::ident(&idx_tmp)),
-                                    right: Box::new(Expression::int(k as i64)) });
-                                chain = vec![Statement::with_span(
-                                    StmtKind::If {
-                                        cond,
-                                        then_body: br_for(&targets[k]),
-                                        else_body: Some(chain),
-                                        elifs: Vec::new() },
-                                    span,
-                                )];
-                            }
-                            statements.extend(chain);
-                        }
+                        emit_br_table_stmt(&args, span, labels, &mut statements, &mut stack);
                     }
                     // `br_on_cast L $from $to` branches to L (carrying the ref as
                     // the block result) when the ref IS `$to`; `br_on_cast_fail`

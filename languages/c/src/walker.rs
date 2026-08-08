@@ -26,6 +26,25 @@ use vybe_platform_libc::emitter::{
 
 const ARRAY_PARAM_MARKER: &str = "__c_array_param";
 
+/// `[&g1, &g2, …]` — the address of every shared file-scope scalar.
+///
+/// `Unary{AddrOf, Ident}` is the spelling both the compiler's address-taken
+/// pre-pass and `compile_address_of_expr` read; `RefOf` reaches neither for a
+/// global, so it would wrap a detached cell and aliasing would degrade to a
+/// copy.
+fn shared_global_addresses(names: &[String]) -> Vec<ArrayElement> {
+    names
+        .iter()
+        .map(|name| ArrayElement {
+            key: None,
+            value: expr(ExprKind::Unary {
+                op: UnaryOp::AddrOf,
+                expr: Box::new(ident(name)) }),
+            spread: false,
+            by_ref: false })
+        .collect()
+}
+
 pub fn parse(source: &str) -> Result<Module, String> {
     let (preprocessed, pp_macros) = preprocess_c_source(source);
     let mut pairs =
@@ -42,13 +61,55 @@ pub fn parse(source: &str) -> Result<Module, String> {
             Rule::EOI => {}
             _ => w.walk_top_item(item, &mut body) }
     }
-    // Prepend runtime helpers and static globals before the rest of the module body.
+    // Prepend the runtime helpers before the rest of the module body.
+    // Static locals need nothing here: `VarDeclKind::Static` keeps them in
+    // place and the shared compiler owns their storage.
     let mut full_body = vybe_platform_libc::emitter::c_runtime::prelude();
     full_body.push(var_decl_stmt("__c_skip_atexit", int_lit(0)));
     full_body.push(var_decl_stmt("__c_skip_flush", int_lit(0)));
     full_body.push(var_decl_stmt("__c_exit_status", int_lit(0)));
-    full_body.extend(w.static_globals);
+    // The data segment (see the collection site). A C file-scope variable has
+    // static storage duration: ONE object, shared by every thread. A plain
+    // module global is not that — a spawned thread gets a private CLONE of the
+    // globals map — so each one is promoted to a pointer CELL, and a cell is an
+    // object, whose handle the clone shares.
+    //
+    // Two statements, and the order between them is the whole point:
+    //
+    //   `__c_data_init` is declared BEFORE any user function, and function
+    //   bodies compile before module-level statements, in source order. That
+    //   makes it the first place the compiler sees `&g`, so IT owns the wrap.
+    //   Left to itself the wrap is created by whichever code writes `g` first
+    //   (`referenceplan.md` §10e.6) — and in a threaded program that is the
+    //   CHILD, which wraps its own copy and the parent never sees a cell.
+    //
+    //   The module-scope array keeps the pre-pass hint that makes every reader
+    //   deref, for any chunk that compiles ahead of `__c_data_init`.
+    //
+    // The CALL goes last in the module body: file-scope initializers have run
+    // by then, so the cell is created holding the declared value, in the
+    // parent, before `main` and therefore before any spawn.
+    if !w.shared_globals.is_empty() {
+        full_body.push(function_stmt(
+            "__c_data_init",
+            Vec::new(),
+            vec![var_decl_stmt(
+                "__c_data_addresses",
+                expr(ExprKind::Array(shared_global_addresses(&w.shared_globals))),
+            )],
+        ));
+    }
     full_body.extend(body);
+    if !w.shared_globals.is_empty() {
+        full_body.push(var_decl_stmt(
+            "__c_data_segment",
+            expr(ExprKind::Array(shared_global_addresses(&w.shared_globals))),
+        ));
+        full_body.push(stmt(StmtKind::Expr(call_expr(
+            ident("__c_data_init"),
+            Vec::new(),
+        ))));
+    }
     if let Some((name, ns)) = w.header_violations.first() {
         return Err(format!(
             "call to undeclared function '{name}'; ISO C99 and later do not \
@@ -94,6 +155,10 @@ struct Walker {
     /// compile error at the end of the walk (clang's implicit-declaration
     /// shape, naming the USER's function, not the lowering's helper).
     header_violations: Vec<(String, String)>,
+    /// File-scope scalars whose storage must be SHARED with spawned threads
+    /// (C's data segment). Declared as address-taken at the end of the module
+    /// so the compiler holds them in promoted-global cells.
+    shared_globals: Vec<String>,
     /// Tags declared with the `union` keyword.
     union_tags: HashSet<String>,
     /// tag → shared-storage REGIONS. A union tag has one region holding all
@@ -130,14 +195,10 @@ struct Walker {
     initialized_char_buffers: HashSet<String>,
     /// literal-backed char buffers whose contents can be updated at walk time.
     char_string_values: HashMap<String, String>,
-    /// environment variable names assigned during walking, for `clearenv`.
-    env_names: HashSet<String>,
-    /// literal env values known at walk time, used for char indexing on getenv.
-    env_literal_values: HashMap<String, String>,
-    /// env names known to be unset at walk time.
-    env_removed_names: HashSet<String>,
-    /// `putenv` keeps the caller-owned `NAME=value` buffer alive; getenv reads
-    /// the current suffix so later char-buffer writes are reflected.
+    /// POSIX `putenv(buf)` ALIASES the caller's buffer: later writes to the
+    /// buffer change the environment. The runtime env object copies, so a
+    /// statically-visible alias (name → (buffer var, value offset)) lets
+    /// `getenv("NAME")` read the buffer's CURRENT suffix instead.
     env_aliases: HashMap<String, (String, usize)>,
     /// literal-backed wide strings whose pointers still need byte/length lowering.
     wide_string_values: HashMap<String, String>,
@@ -189,10 +250,6 @@ struct Walker {
     current_function: String,
     /// current function parameter names in declaration order.
     current_param_names: Vec<String>,
-    /// static local variable orignal name → mangled global name
-    static_renames: HashMap<String, String>,
-    /// accumulated static-local declarations to prepend to the module body
-    static_globals: Vec<Statement>,
     /// current function char* parameter name → parameter index.
     current_char_param_indices: HashMap<String, usize>,
     /// function-pointer bindings that should be removed when the current function exits.
@@ -492,6 +549,48 @@ fn preprocess_c_source(source: &str) -> (String, HashMap<String, String>) {
     }
 
     (out.join("\n"), object_macros)
+}
+
+/// A declared C integer (non-char, non-pointer) type — the declarations
+/// whose value must be a NUMBER, so a char-buffer read initializer
+/// (`int v = *p`) converts to its char code instead of reaching the
+/// declared-width wrap as a one-char string.
+fn c_int_family_type(type_text: &str) -> bool {
+    let t = type_text.trim();
+    let t = t.strip_prefix("const").unwrap_or(t).trim();
+    matches!(
+        t,
+        "int"
+            | "unsigned"
+            | "signed"
+            | "unsigned int"
+            | "signed int"
+            | "short"
+            | "short int"
+            | "unsigned short"
+            | "unsigned short int"
+            | "long"
+            | "long int"
+            | "unsigned long"
+            | "unsigned long int"
+            | "long long"
+            | "long long int"
+            | "unsigned long long"
+            | "unsigned long long int"
+            | "size_t"
+            | "ssize_t"
+            | "ptrdiff_t"
+            | "intptr_t"
+            | "uintptr_t"
+            | "int8_t"
+            | "int16_t"
+            | "int32_t"
+            | "int64_t"
+            | "uint8_t"
+            | "uint16_t"
+            | "uint32_t"
+            | "uint64_t"
+    )
 }
 
 fn rewrite_builtin_types_compatible_p_calls(line: &str) -> String {
@@ -1201,8 +1300,8 @@ fn expand_object_macros_in_text(line: &str, object_macros: &HashMap<String, Stri
 // the runtime from one set of helpers. Imported here so existing call sites
 // (expr/stmt/ident/int_lit/.../function_stmt, CFILE_*) resolve unchanged.
 use vybe_platform_libc::emitter::build::{
-    assign_expr, call_expr, expr, ident, if_stmt, index_expr, int_lit, member, null_lit, stmt,
-    str_lit, var_decl_stmt };
+    assign_expr, call_expr, expr, function_stmt, ident, if_stmt, index_expr, int_lit, member,
+    null_lit, stmt, str_lit, var_decl_stmt };
 // Bare math-call constructors used by walker arms (cabs, etc.). The series
 // builders (tgamma/erf/…) are only referenced from the runtime prelude.
 use vybe_platform_libc::emitter::math_runtime::{ecma_math_call, ecma_math_call2};
@@ -2226,10 +2325,8 @@ impl Walker {
                     }
                 }
                 Rule::compound_statement => {
-                    // Set current function context for static local mangling
                     self.current_function = name.clone();
                     self.current_param_names = params.iter().map(|p| p.name.clone()).collect();
-                    self.static_renames.clear();
                     let mut scoped_param_types = Vec::new();
                     let mut scoped_param_sizes = Vec::new();
                     let mut scoped_char_params = Vec::new();
@@ -3014,7 +3111,21 @@ impl Walker {
             if init_is_member && is_pointer_decl && type_text.contains("char") {
                 self.array_ptr_vars.insert(name.clone());
             }
+            // char16_t*/char32_t*/wchar_t* are WIDE code-unit array pointers,
+            // not string char*: their literals lower to flat arrays
+            // (utf16_string_literal / wide_string_literal), and the string
+            // classification below would hit the heap-allocation arm and
+            // replace the array init with an empty string. Claim them as
+            // array-backed pointers instead.
+            let is_wide_char_pointer_family = matches!(
+                normalized_type_text.as_str(),
+                "char16_t" | "char32_t" | "wchar_t"
+            );
+            if is_wide_char_pointer_family && is_pointer_decl {
+                self.array_ptr_vars.insert(name.clone());
+            }
             if (type_text.contains("char") || type_is_char_pointer_alias)
+                && !is_wide_char_pointer_family
                 && !init_is_member
                 && !is_unsigned_char_pointer_type
                 && !is_function_pointer_decl
@@ -3472,10 +3583,18 @@ impl Walker {
                     self.wide_string_values.insert(name.clone(), text);
                 }
             }
-            if is_char_type && !is_pointer_decl && !was_array_decl {
+            // A char-buffer read initializing a CHAR or INTEGER declaration
+            // must become its char code: the declared-width wrap downstream
+            // does modular arithmetic on the VALUE, and a one-char string
+            // there is NaN (`int v = *p` held NaN while `printf("%d", *p)`
+            // printed 65 — the formatter converted, the declaration didn't).
+            if (is_char_type || c_int_family_type(&type_text))
+                && !is_pointer_decl
+                && !was_array_decl
+            {
                 if let Some(init_expr) = init.clone() {
                     if self.is_char_index_read(&init_expr) {
-                        init = Some(string_adapter::string_to_char_code(init_expr));
+                        init = Some(self.char_index_read_to_code(init_expr));
                     }
                 }
             }
@@ -3607,37 +3726,42 @@ impl Walker {
                 }
             };
             self.var_sizes.insert(name.clone(), sz);
+            // C's file-scope objects live in the DATA SEGMENT, and that is
+            // memory every thread SHARES. Nothing here rewrites a single
+            // reference: declaring the address is what moves the storage into
+            // the compiler's promoted-global CELL — the same fact php declares
+            // with `by_ref` — and every read/write then derefs that one cell,
+            // so a spawned thread's write is seen by the others instead of
+            // landing in its private copy of the globals.
+            //
+            // Aggregates are left alone: an array or struct is ALREADY an
+            // object, so its identity crosses the thread boundary on its own.
+            if self.block_depth == 0
+                && !is_static_local
+                && !was_array_decl
+                && declared_array_bounds.is_none()
+                && !type_text.contains("const")
+                && !type_text.starts_with("struct ")
+                && !type_text.starts_with("union ")
+                && !self.shared_globals.contains(&name)
+            {
+                self.shared_globals.push(name.clone());
+            }
             // Non-char arrays (int arr[n], double arr[n]) decay to pointer for arithmetic.
             if was_array_decl && (!is_char_type || is_pointer_decl) {
                 self.array_ptr_vars.insert(name.clone());
             }
-            // Handle static local: lift to a module-level global with mangled name
+            // A static local is `VarDeclKind::Static` — the shared compiler
+            // owns the storage (`__staticlocal_*` global + init flag), the
+            // once-only initialization, and identifier resolution, so the
+            // name stays as written and nothing here rewrites references.
             if is_static_local {
-                let mangled = format!("__static_{}_{}", self.current_function, name);
-                self.static_renames.insert(name.clone(), mangled.clone());
-                if self.array_ptr_vars.contains(&name) {
-                    self.array_ptr_vars.insert(mangled.clone());
-                }
-                if self.char_pointers.contains(&name) {
-                    self.char_pointers.insert(mangled.clone());
-                }
-                if let Some(type_text) = self.var_types.get(&name).cloned() {
-                    self.var_types.insert(mangled.clone(), type_text);
-                }
-                if let Some(size) = self.var_sizes.get(&name).copied() {
-                    self.var_sizes.insert(mangled.clone(), size);
-                }
-                if let Some(a) = self.var_alignments.get(&name).copied() {
-                    self.var_alignments.insert(mangled.clone(), a);
-                }
-                self.static_globals.push(stmt(StmtKind::VarDecl {
-                    declarations: vec![VarDeclarator {
-                        pattern: BindingPattern::Ident(mangled),
-                        type_hint: Some(emitted_type_hint.clone().into()),
-                        init,
-                        array_bounds,
-                        with_events: false }],
-                    kind: VarDeclKind::Var }));
+                declarations.push(VarDeclarator {
+                    pattern: BindingPattern::Ident(name.clone()),
+                    type_hint: Some(emitted_type_hint.clone().into()),
+                    init,
+                    array_bounds,
+                    with_events: false });
                 continue;
             }
             let emit_name = if self.block_depth > 1 && self.var_types.contains_key(&name) {
@@ -3681,7 +3805,9 @@ impl Walker {
                 with_events: false });
         }
         if !declarations.is_empty() {
-            let kind = if self.block_depth > 0 {
+            let kind = if is_static_local {
+                VarDeclKind::Static
+            } else if self.block_depth > 0 {
                 VarDeclKind::Let
             } else {
                 VarDeclKind::Var
@@ -5504,7 +5630,24 @@ impl Walker {
             _ => {}
         }
         seq.push(int_lit(0));
-        Some(stmt(StmtKind::Return(Some(expr(ExprKind::Sequence(seq))))))
+        // Inside an inline forked child (`fork()` returned 0 and we are
+        // running the child block), `_exit` ends the CHILD, not the run:
+        // clear the flag and fall through so the parent's code continues.
+        Some(stmt(StmtKind::If {
+            cond: binary_expr(
+                BinOp::Eq,
+                ident("__c_in_forked_child"),
+                int_lit(1),
+            ),
+            then_body: vec![stmt(StmtKind::Expr(assign_expr(
+                ident("__c_in_forked_child"),
+                int_lit(0),
+            )))],
+            elifs: Vec::new(),
+            else_body: Some(vec![stmt(StmtKind::Return(Some(expr(
+                ExprKind::Sequence(seq),
+            ))))]),
+        }))
     }
 
     // ── Statements ─────────────────────────────────────────────────────────
@@ -5579,6 +5722,7 @@ impl Walker {
                         {
                             rewrite
                         } else {
+                            let value = self.wrap_char_read_assignment_value(&target, value);
                             expr(ExprKind::Assign {
                                 target: Box::new(target),
                                 value: Box::new(value) })
@@ -6091,6 +6235,7 @@ impl Walker {
                         {
                             rewrite
                         } else {
+                            let value = self.wrap_char_read_assignment_value(&target, value);
                             expr(ExprKind::Assign {
                                 target: Box::new(target),
                                 value: Box::new(value) })
@@ -6262,6 +6407,10 @@ impl Walker {
             if let Some(rewrite) = self.rewrite_char_index_assignment(&target, value.clone()) {
                 return rewrite;
             }
+            // Value side of the same coin: `v = s[i]` into a declared integer
+            // (or scalar char) variable reads the char CODE, not the one-char
+            // string.
+            let value = self.wrap_char_read_assignment_value(&target, value);
             // Assigning to a bitfield member (`b.val = 7` for `: 2`) wraps to the
             // declared bit width (unsigned → mask; signed → mask + sign-extend).
             let value = match self.bitfield_of_member(&target) {
@@ -7516,118 +7665,14 @@ impl Walker {
     }
 
     fn rewrite_system_call(&self, cmd: Expression) -> Expression {
+        // `system(NULL)` asks whether a shell is available — nonzero says yes.
         if self.is_null_expr_value(&cmd) {
             return int_lit(1);
         }
-        let Some(raw_cmd) = literal_string_value(&cmd) else {
-            return int_lit(0);
-        };
-        let command = raw_cmd.trim();
-        if command.is_empty() {
-            return int_lit(0);
-        }
-        if command.starts_with("nonexistent_command_") {
-            return int_lit(1);
-        }
-        if command == "echo $(echo nested)" {
-            return expr(ExprKind::Sequence(vec![
-                call_expr(ident("__c_fputs_h"), vec![str_lit("nested\n"), int_lit(1)]),
-                int_lit(0),
-            ]));
-        }
-        if command.starts_with("rm ") {
-            let path = command.trim_start_matches("rm").trim();
-            return expr(ExprKind::Sequence(vec![
-                assign_expr(
-                    index_expr(ident("__c_file_store"), str_lit(path)),
-                    null_lit(),
-                ),
-                int_lit(0),
-            ]));
-        }
-        if command.starts_with("ls nonexistent_file 2>") {
-            let path = command
-                .split_once("2>")
-                .map(|(_, path)| path.trim())
-                .unwrap_or("");
-            return expr(ExprKind::Sequence(vec![
-                assign_expr(
-                    index_expr(ident("__c_file_store"), str_lit(path)),
-                    str_lit("error\n"),
-                ),
-                int_lit(1),
-            ]));
-        }
-        if let Some((left, path)) = command.split_once('>') {
-            let path = path.trim();
-            if path == "/dev/null" {
-                return int_lit(0);
-            }
-            if let Some(text) = system_echo_output(left.trim()) {
-                return expr(ExprKind::Sequence(vec![
-                    assign_expr(
-                        index_expr(ident("__c_file_store"), str_lit(path)),
-                        str_lit(&text),
-                    ),
-                    int_lit(0),
-                ]));
-            }
-        }
-        if let Some(var_name) = command.strip_prefix("echo $") {
-            if !var_name
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-            {
-                return int_lit(0);
-            }
-            let value = expr(ExprKind::NullCoalesce {
-                left: Box::new(ident(&c_env_slot_name(var_name.trim()))),
-                right: Box::new(str_lit("")) });
-            return expr(ExprKind::Sequence(vec![
-                call_expr(
-                    ident("__c_fputs_h"),
-                    vec![binary_expr(BinOp::Add, value, str_lit("\n")), int_lit(1)],
-                ),
-                int_lit(0),
-            ]));
-        }
-        let status = if let Some(code) = command
-            .strip_prefix("exit ")
-            .and_then(|tail| tail.trim().parse::<i64>().ok())
-        {
-            code
-        } else if command.starts_with("nonexistent_command_") || command.starts_with("kill -INT") {
-            1
-        } else {
-            0
-        };
-        let output = if command == "true && echo ok" || command == "false || echo ok" {
-            Some("ok\n".to_string())
-        } else if command == "(echo sub)" {
-            Some("sub\n".to_string())
-        } else if command == "echo abc | tr a-z A-Z" {
-            Some("ABC\n".to_string())
-        } else if command == "echo 1; echo 2; echo 3" {
-            Some("1\n2\n3\n".to_string())
-        } else if command == "echo 'single quotes'" {
-            Some("single quotes\n".to_string())
-        } else if command == "echo \"double quotes\"" {
-            Some("double quotes\n".to_string())
-        } else if command == "echo \\$\\$" {
-            Some("$$\n".to_string())
-        } else if command.starts_with("sleep ") || command.starts_with("exit ") {
-            None
-        } else {
-            system_echo_output(command)
-        };
-        if let Some(output) = output {
-            expr(ExprKind::Sequence(vec![
-                call_expr(ident("__c_fputs_h"), vec![str_lit(&output), int_lit(1)]),
-                int_lit(status),
-            ]))
-        } else {
-            int_lit(status)
-        }
+        // A REAL `/bin/sh -c` run through `node:child_process` — the child's
+        // stdout/stderr are forwarded and its exit status returned by the
+        // `__c_system_h` runtime helper.
+        call_expr(ident("__c_system_h"), vec![cmd])
     }
 
     fn walk_conditional(&mut self, pair: Pair<Rule>) -> Expression {
@@ -8343,6 +8388,25 @@ impl Walker {
                 left: Box::new(left),
                 right: Box::new(right) });
         }
+        // C compares pointers against the 0 literal (`getenv(x) == 0`); the
+        // pointer-returning helper yields null, and the VM's Eq is strict —
+        // normalize the 0 to null so the comparison means "is NULL".
+        if matches!(op, BinOp::Eq | BinOp::NotEq) {
+            let left_is_ptr_call = is_ptr_returning_helper_call(&left);
+            let right_is_ptr_call = is_ptr_returning_helper_call(&right);
+            if left_is_ptr_call && matches!(right.kind, ExprKind::Lit(Literal::Int(0))) {
+                return expr(ExprKind::Binary {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(null_lit()) });
+            }
+            if right_is_ptr_call && matches!(left.kind, ExprKind::Lit(Literal::Int(0))) {
+                return expr(ExprKind::Binary {
+                    op,
+                    left: Box::new(null_lit()),
+                    right: Box::new(right) });
+            }
+        }
         let left = if self.is_char_index_read(&left) {
             self.char_index_read_to_code(left)
         } else {
@@ -8409,6 +8473,47 @@ impl Walker {
             right: Box::new(right) })
     }
 
+    /// `v = s[i];` into a declared integer (or scalar char) variable — the
+    /// char read becomes its code, mirroring the declaration-initializer
+    /// wrap; without it the re-assignment held a one-char string that the
+    /// next arithmetic NaN'd. Write-side rewrites (`s[i] = v`) run first
+    /// and take precedence.
+    fn wrap_char_read_assignment_value(
+        &self,
+        target: &Expression,
+        value: Expression,
+    ) -> Expression {
+        let ExprKind::Ident(name) = &target.kind else {
+            return value;
+        };
+        if !self.is_char_index_read(&value) {
+            return value;
+        }
+        let declared = self.var_types.get(name.as_str());
+        let is_int = declared.is_some_and(|ty| c_int_family_type(ty));
+        let is_scalar_char = declared
+            .is_some_and(|ty| ty.contains("char") && !ty.contains('*'))
+            && !self.is_char_array_var(name);
+        if is_int || is_scalar_char {
+            self.char_index_read_to_code(value)
+        } else {
+            value
+        }
+    }
+
+    /// ctype.h is defined on `int`: a char-buffer read argument
+    /// (`isalpha(*p)`, `isdigit(s[i])`) must become its char code BEFORE the
+    /// classifier's integer arithmetic is inlined around it — a one-char
+    /// string reaching the inlined comparisons traps the strict numeric
+    /// compare. Non-char-read arguments pass through untouched.
+    fn ctype_arg_to_code(&self, e: Expression) -> Expression {
+        if self.is_char_index_read(&e) {
+            self.char_index_read_to_code(e)
+        } else {
+            e
+        }
+    }
+
     /// Convert a char-buffer element read (`s[i]`) into its int char code,
     /// guarding the read: an index at/past the string content yields the C null
     /// terminator (0) instead of `undefined.charCodeAt(...)`. Mirrors the bounds
@@ -8467,11 +8572,28 @@ impl Walker {
         if self.dynamic_char_index_target(e).is_some() {
             return true;
         }
+        // `*(p + n)` on a char pointer lowers to Deref(__c_char_ptr_add(p, n))
+        // — the helper's NAME carries the char-ness (it exists only for char
+        // pointer arithmetic).
+        if let ExprKind::Unary {
+            op: UnaryOp::Deref,
+            expr,
+        } = &e.kind
+        {
+            if let ExprKind::Call { callee, .. } = &expr.kind {
+                if matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_char_ptr_add") {
+                    return true;
+                }
+            }
+        }
         let ExprKind::Index { object, .. } = &e.kind else {
             return false;
         };
         matches!(&object.kind, ExprKind::Lit(Literal::Str(_)))
             || self.is_char_carray_deref_expr(object)
+            // `getenv(x)[i]` — a char*-returning helper's result indexed
+            // directly; the helper NAME carries the char-ness.
+            || is_ptr_returning_helper_call(object)
             || matches!(&object.kind, ExprKind::Ident(name)
                 if self.char_pointers.contains(name) || self.is_char_array_var(name))
             // `TABLE[i][j]` where TABLE is an array of C strings
@@ -8511,7 +8633,18 @@ impl Walker {
         else {
             return false;
         };
-        base_name == idx_name
+        if base_name != idx_name {
+            return false;
+        }
+        // Only a CHAR pointer's element is a char. Without this, an int
+        // carray deref (`int i = *q`) pattern-matches the same shape and the
+        // int-declaration wrap charCodes the NUMBER (7 became 55).
+        self.char_pointers.contains(base_name)
+            || self.is_char_array_var(base_name)
+            || self
+                .var_types
+                .get(base_name.as_str())
+                .is_some_and(|ty| ty.contains("char"))
             && self
                 .var_types
                 .get(base_name)
@@ -8893,6 +9026,34 @@ impl Walker {
         if indices.len() == 1 {
             return Some((ident(base), indices.pop().unwrap()));
         }
+
+        // A DECLARED multi-dimensional array (`int g[2][2]`) is stored NESTED —
+        // `build_zero_array` allocates one array per dimension, and an explicit
+        // initializer keeps that shape. Linearizing its subscripts indexes the
+        // OUTER array with a flat offset: `&g[1][0]` became `g[1*2+0]` = `g[2]`
+        // on a two-element outer array, so a read through the pointer returned
+        // NaN and every write went nowhere. MEASURED against clang:
+        //
+        //   int g[2][2]; g[1][0] = 3;
+        //   int *q = &g[1][0];  *q      // clang 3,  was NaN
+        //   *q = 77; g[1][0]            // clang 77, was 3
+        //
+        // Address the row and index within it, matching how a plain read of
+        // `g[1][0]` already resolves. Flattening stays for the pointer cases
+        // below, where the storage really is one contiguous buffer — the
+        // declared bounds are what tell the two apart.
+        if bounds.len() >= 2 {
+            let last = indices.pop().unwrap_or_else(|| int_lit(0));
+            let mut base_expr = ident(base);
+            for index in indices {
+                base_expr = expr(ExprKind::Index {
+                    object: Box::new(base_expr),
+                    index: Box::new(index),
+                    null_safe: false });
+            }
+            return Some((base_expr, last));
+        }
+
         for (pos, index) in indices.into_iter().enumerate() {
             let stride = bounds
                 .iter()
@@ -10669,12 +10830,16 @@ impl Walker {
                         seq.push(handle);
                         let opened = expr(ExprKind::Sequence(seq));
                         if readonly {
+                            // Absent on BOTH surfaces (virtual store + real
+                            // fs) → NULL, per C. `__c_path_present` replaces
+                            // the old `__c_path_exists[p] == 0` check that
+                            // never fired for never-created paths.
                             return expr(ExprKind::Ternary {
                                 cond: Box::new(expr(ExprKind::Binary {
                                     op: BinOp::Eq,
-                                    left: Box::new(index_expr(
-                                        ident("__c_path_exists"),
-                                        path.clone(),
+                                    left: Box::new(call_expr(
+                                        ident("__c_path_present"),
+                                        vec![path.clone()],
                                     )),
                                     right: Box::new(int_lit(0)) })),
                                 then: Box::new(null_lit()),
@@ -10689,6 +10854,25 @@ impl Walker {
                         return call_expr(ident("__c_fclose_h"), vec![file.value]);
                     }
                     return int_lit(0);
+                }
+                // popen/pclose — REAL `/bin/sh -c` children ("r" buffers the
+                // child's stdout as the FILE content; "w" feeds the buffered
+                // writes to the child's stdin at pclose).
+                "popen" => {
+                    let mut it = args.into_iter();
+                    if let (Some(cmd), Some(mode)) = (it.next(), it.next()) {
+                        return call_expr(
+                            ident("__c_popen_h"),
+                            vec![cmd.value, mode.value],
+                        );
+                    }
+                    return null_lit();
+                }
+                "pclose" => {
+                    if let Some(file) = args.into_iter().next() {
+                        return call_expr(ident("__c_pclose_h"), vec![file.value]);
+                    }
+                    return int_lit(-1);
                 }
                 "fflush" => {
                     if let Some(file) = args.into_iter().next() {
@@ -10912,35 +11096,8 @@ impl Walker {
                 }
                 "remove" => {
                     if let Some(path_arg) = args.into_iter().next() {
-                        let invalid_literal = literal_string_value(&path_arg.value)
-                            .map(|s| s.contains("doesnotexist") || s.contains("nonexist"))
-                            .unwrap_or(false);
-                        if invalid_literal {
-                            return int_lit(-1);
-                        }
                         let path = call_expr(ident("__libc_char_to_str"), vec![path_arg.value]);
-                        let missing = expr(ExprKind::Binary {
-                            op: BinOp::Eq,
-                            left: Box::new(index_expr(ident("__c_path_exists"), path.clone())),
-                            right: Box::new(int_lit(0)) });
-                        let too_long = expr(ExprKind::Binary {
-                            op: BinOp::Gt,
-                            left: Box::new(member(path.clone(), "length")),
-                            right: Box::new(int_lit(240)) });
-                        return expr(ExprKind::Ternary {
-                            cond: Box::new(expr(ExprKind::Binary {
-                                op: BinOp::Or,
-                                left: Box::new(missing),
-                                right: Box::new(too_long) })),
-                            then: Box::new(int_lit(-1)),
-                            else_: Box::new(expr(ExprKind::Sequence(vec![
-                                assign_expr(
-                                    index_expr(ident("__c_path_exists"), path.clone()),
-                                    int_lit(0),
-                                ),
-                                assign_expr(index_expr(ident("__c_file_store"), path), null_lit()),
-                                int_lit(0),
-                            ]))) });
+                        return call_expr(ident("__c_remove_h"), vec![path]);
                     }
                     return int_lit(-1);
                 }
@@ -10950,37 +11107,7 @@ impl Walker {
                             call_expr(ident("__libc_char_to_str"), vec![args[0].value.clone()]);
                         let dst =
                             call_expr(ident("__libc_char_to_str"), vec![args[1].value.clone()]);
-                        let src_missing = expr(ExprKind::Binary {
-                            op: BinOp::Eq,
-                            left: Box::new(index_expr(ident("__c_path_exists"), src.clone())),
-                            right: Box::new(int_lit(0)) });
-                        let invalid_literal = match (
-                            literal_string_value(&args[0].value),
-                            literal_string_value(&args[1].value),
-                        ) {
-                            (Some(a), Some(b)) => {
-                                a.contains("doesnotexist")
-                                    || a.contains("nonexist")
-                                    || (a.contains("test_file") && b.contains("test_dir"))
-                                    || (a.contains("test_dir") && b.contains("test_file"))
-                                    || (a == "test_ren_s" && b == "test_ren_d")
-                            }
-                            _ => false };
-                        if invalid_literal {
-                            return int_lit(-1);
-                        }
-                        return expr(ExprKind::Ternary {
-                            cond: Box::new(src_missing),
-                            then: Box::new(int_lit(-1)),
-                            else_: Box::new(expr(ExprKind::Sequence(vec![
-                                assign_expr(
-                                    index_expr(ident("__c_file_store"), dst.clone()),
-                                    index_expr(ident("__c_file_store"), src.clone()),
-                                ),
-                                assign_expr(index_expr(ident("__c_path_exists"), dst), int_lit(1)),
-                                assign_expr(index_expr(ident("__c_path_exists"), src), int_lit(0)),
-                                int_lit(0),
-                            ]))) });
+                        return call_expr(ident("__c_rename_h"), vec![src, dst]);
                     }
                     return int_lit(-1);
                 }
@@ -11563,86 +11690,86 @@ impl Walker {
                 // ── ctype.h — inline arithmetic on integer char codes ────────
                 "isalpha" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isalpha(a.value);
+                        return codepoints::c_isalpha(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isdigit" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isdigit(a.value);
+                        return codepoints::c_isdigit(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isalnum" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isalnum(a.value);
+                        return codepoints::c_isalnum(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isspace" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isspace(a.value);
+                        return codepoints::c_isspace(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isupper" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isupper(a.value);
+                        return codepoints::c_isupper(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "islower" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_islower(a.value);
+                        return codepoints::c_islower(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isxdigit" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isxdigit(a.value);
+                        return codepoints::c_isxdigit(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "iscntrl" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_iscntrl(a.value);
+                        return codepoints::c_iscntrl(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isprint" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isprint(a.value);
+                        return codepoints::c_isprint(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "ispunct" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_ispunct(a.value);
+                        return codepoints::c_ispunct(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isgraph" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isgraph(a.value);
+                        return codepoints::c_isgraph(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "isblank" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_isblank(a.value);
+                        return codepoints::c_isblank(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 // toupper/tolower: pure inline char-code arithmetic
                 "toupper" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_toupper(a.value);
+                        return codepoints::c_toupper(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
                 "tolower" => {
                     if let Some(a) = args.into_iter().next() {
-                        return codepoints::c_tolower(a.value);
+                        return codepoints::c_tolower(self.ctype_arg_to_code(a.value));
                     }
                     return expr(ExprKind::Lit(Literal::Int(0)));
                 }
@@ -12553,15 +12680,6 @@ impl Walker {
                 "strstr" => {
                     let mut it = args.into_iter();
                     if let (Some(hay), Some(ndl)) = (it.next(), it.next()) {
-                        if let (
-                            ExprKind::Lit(Literal::Str(hay_text)),
-                            ExprKind::Lit(Literal::Str(needle_text)),
-                        ) = (&hay.value.kind, &ndl.value.kind)
-                        {
-                            if hay_text == "mississippi" && needle_text == "issi" {
-                                return expr(ExprKind::Lit(Literal::Str("issippi".to_string())));
-                            }
-                        }
                         return string_adapter::strstr(hay.value, ndl.value);
                     }
                     return expr(ExprKind::Lit(Literal::Null));
@@ -12879,6 +12997,15 @@ impl Walker {
                     if let (Some(dst), Some(src), Some(n), Some(_state)) =
                         (it.next(), it.next(), it.next(), it.next())
                     {
+                        // The C11 idiom passes the ADDRESS of a scalar
+                        // (`mbrtoc16(&c16, s, n, &st)`); that write is a plain
+                        // assignment, not a carray cell write.
+                        if let ExprKind::Unary {
+                            op: UnaryOp::AddrOf,
+                            expr: inner } = dst.value.kind
+                        {
+                            return uchar_adapter::mbrtoc_scalar(*inner, src.value, n.value);
+                        }
                         return uchar_adapter::mbrtoc(dst.value, src.value, n.value);
                     }
                     return int_lit(0);
@@ -12994,12 +13121,7 @@ impl Walker {
                         if let (ExprKind::Lit(Literal::Str(text)), Some(count)) =
                             (&src.value.kind, self.byte_count_to_usize(&n.value))
                         {
-                            let take_count = if text == "werty" && count == 2 {
-                                1
-                            } else {
-                                count
-                            };
-                            let clipped: String = text.chars().take(take_count).collect();
+                            let clipped: String = text.chars().take(count).collect();
                             let concat = expr(ExprKind::Binary {
                                 op: BinOp::Add,
                                 left: Box::new(c_string_visible(dest.value.clone())),
@@ -13437,18 +13559,43 @@ impl Walker {
                         .unwrap_or_else(|| int_lit(0));
                     return posix_adapter::close(fd);
                 }
-                "unlink" | "rmdir" | "symlink" => {
-                    if name == "symlink" {
-                        return int_lit(0);
+                // unlink/rmdir answer from the dir registry (`__c_is_dir`),
+                // not from name patterns: unlink on a directory is EISDIR,
+                // rmdir on a non-directory is ENOTDIR.
+                "unlink" => {
+                    if let Some(path_arg) = args.into_iter().next() {
+                        let path = call_expr(
+                            ident("__libc_char_to_str"),
+                            vec![path_arg.value],
+                        );
+                        return call_expr(ident("__c_unlink_h"), vec![path]);
                     }
-                    if let Some(path) = args.first().and_then(|a| literal_string_value(&a.value)) {
-                        if (name == "unlink" && path.contains("_dir"))
-                            || (name == "rmdir" && path.contains("_f."))
-                        {
-                            return int_lit(-1);
-                        }
+                    return int_lit(-1);
+                }
+                "rmdir" => {
+                    if let Some(path_arg) = args.into_iter().next() {
+                        let path = call_expr(
+                            ident("__libc_char_to_str"),
+                            vec![path_arg.value],
+                        );
+                        return call_expr(ident("__c_rmdir_h"), vec![path]);
                     }
-                    return int_lit(0);
+                    return int_lit(-1);
+                }
+                "symlink" => {
+                    let mut it = args.into_iter();
+                    if let (Some(target), Some(link)) = (it.next(), it.next()) {
+                        let target = call_expr(
+                            ident("__libc_char_to_str"),
+                            vec![target.value],
+                        );
+                        let link = call_expr(
+                            ident("__libc_char_to_str"),
+                            vec![link.value],
+                        );
+                        return call_expr(ident("__c_symlink_h"), vec![target, link]);
+                    }
+                    return int_lit(-1);
                 }
                 "fcntl" => {
                     let mut it = args.into_iter();
@@ -13653,7 +13800,26 @@ impl Walker {
                         .unwrap_or_else(|| int_lit(0));
                     return posix_adapter::chmod(mode, nonexistent);
                 }
-                "mkdir" => return posix_adapter::set_mode(16384),
+                "mkdir" => {
+                    // Register the directory (existence + dir-ness) so
+                    // remove/rmdir/rename answer from the registry instead
+                    // of literal name patterns.
+                    if let Some(path_arg) = args.first() {
+                        let path = call_expr(
+                            ident("__libc_char_to_str"),
+                            vec![path_arg.value.clone()],
+                        );
+                        return expr(ExprKind::Sequence(vec![
+                            assign_expr(
+                                index_expr(ident("__c_path_exists"), path.clone()),
+                                int_lit(1),
+                            ),
+                            assign_expr(index_expr(ident("__c_is_dir"), path), int_lit(1)),
+                            posix_adapter::set_mode(16384),
+                        ]));
+                    }
+                    return posix_adapter::set_mode(16384);
+                }
                 "mkfifo" => return posix_adapter::set_mode(4096),
                 "umask" => {
                     let mask = args
@@ -13671,30 +13837,75 @@ impl Walker {
                     return int_lit(0);
                 }
                 "S_ISCHR" | "S_ISFIFO" | "S_ISLNK" | "S_ISBLK" | "S_ISSOCK" => return int_lit(1),
+                // Sockets are REAL `wasi:sockets` now — the same host rows
+                // python's socket class uses. The runtime helpers keep the
+                // resource + its streams in fd-keyed tables.
                 "socket" => {
                     let invalid = args
                         .first()
                         .and_then(|family| self.eval_int_expr(&family.value))
                         == Some(9999);
-                    let kind = args.get(1).map(|arg| arg.value.clone());
-                    return posix_adapter::socket(kind, invalid);
+                    if invalid {
+                        return int_lit(-1);
+                    }
+                    let family = args
+                        .first()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(2));
+                    let kind = args
+                        .get(1)
+                        .map(|arg| arg.value.clone())
+                        .unwrap_or_else(|| int_lit(1));
+                    return call_expr(ident("__c_socket_h"), vec![family, kind]);
                 }
-                "bind" => return posix_adapter::bind(args.get(1).map(|arg| arg.value.clone())),
-                "setsockopt" => return int_lit(0),
-                "shutdown" => return posix_adapter::shutdown(),
-                "listen" => return posix_adapter::listen(),
-                "connect" => {
+                "bind" => {
                     if args.len() >= 2 {
-                        return posix_adapter::connect(args[1].value.clone());
+                        let fd = args[0].value.clone();
+                        let addr = self.value_from_c_address_arg(args[1].value.clone());
+                        return call_expr(ident("__c_bind_h"), vec![fd, addr]);
                     }
                     return int_lit(0);
                 }
-                "accept" => return posix_adapter::accept(),
+                "setsockopt" => return int_lit(0),
+                "shutdown" => {
+                    let mut it = args.into_iter();
+                    let fd = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let how = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(2));
+                    return posix_adapter::shutdown(fd, how);
+                }
+                "listen" => {
+                    let mut it = args.into_iter();
+                    let fd = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
+                    let backlog = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(5));
+                    return call_expr(ident("__c_listen_h"), vec![fd, backlog]);
+                }
+                "connect" => {
+                    if args.len() >= 2 {
+                        let fd = args[0].value.clone();
+                        let addr = self.value_from_c_address_arg(args[1].value.clone());
+                        return call_expr(ident("__c_connect_h"), vec![fd, addr]);
+                    }
+                    return int_lit(0);
+                }
+                "accept" => {
+                    let fd = args
+                        .into_iter()
+                        .next()
+                        .map(|a| a.value)
+                        .unwrap_or_else(|| int_lit(0));
+                    return call_expr(ident("__c_accept_h"), vec![fd]);
+                }
                 "getsockname" | "getpeername" => {
                     let mut it = args.into_iter();
-                    it.next();
+                    let fd = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(0));
                     if let Some(addr) = it.next() {
-                        return posix_adapter::get_name(name, addr.value);
+                        let addr = self.value_from_c_address_arg(addr.value);
+                        let helper = if name == "getsockname" {
+                            "__c_getsockname_h"
+                        } else {
+                            "__c_getpeername_h"
+                        };
+                        return call_expr(ident(helper), vec![fd, addr]);
                     }
                     return int_lit(0);
                 }
@@ -13707,6 +13918,10 @@ impl Walker {
                     return int_lit(0);
                 }
                 "send" | "sendto" => {
+                    let fd = args
+                        .first()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
                     let data = args
                         .get(1)
                         .map(|a| a.value.clone())
@@ -13715,7 +13930,12 @@ impl Walker {
                         .get(2)
                         .map(|a| a.value.clone())
                         .unwrap_or_else(|| int_lit(0));
-                    return posix_adapter::send(data, count, name == "send");
+                    // sendto(fd, buf, len, flags, dest, addrlen)
+                    let dest = args
+                        .get(4)
+                        .map(|a| self.value_from_c_address_arg(a.value.clone()))
+                        .unwrap_or_else(null_lit);
+                    return call_expr(ident("__c_send_h"), vec![fd, data, count, dest]);
                 }
                 "recv" | "recvfrom" => {
                     let buf = args
@@ -13726,8 +13946,40 @@ impl Walker {
                         .get(2)
                         .map(|a| a.value.clone())
                         .unwrap_or_else(|| int_lit(0));
-                    let count_value = self.eval_int_expr(&count);
-                    return posix_adapter::recv(name, buf, count, count_value);
+                    let fd = args
+                        .first()
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
+                    // The received bytes go into the caller's buffer; the
+                    // return value is the byte count, as recv(2) says —
+                    // except that a NON-BLOCKING descriptor with nothing
+                    // queued is EAGAIN, which the helper reports as null and
+                    // recv(2) reports as -1. A closed peer is a real 0.
+                    // recv(fd, buf, len, flags) and
+                    // recvfrom(fd, buf, len, flags, src, srclen) agree on the
+                    // flags position, so MSG_PEEK reaches the helper the same
+                    // way from both.
+                    let flags = args
+                        .get(3)
+                        .map(|a| a.value.clone())
+                        .unwrap_or_else(|| int_lit(0));
+                    let received = call_expr(ident("__c_recv_h"), vec![fd, count, flags]);
+                    return expr(ExprKind::Sequence(vec![
+                        assign_expr(ident("__c_recv_tmp"), received),
+                        expr(ExprKind::Ternary {
+                            cond: Box::new(expr(ExprKind::Binary {
+                                op: BinOp::Eq,
+                                left: Box::new(ident("__c_recv_tmp")),
+                                right: Box::new(null_lit()) })),
+                            then: Box::new(int_lit(-1)),
+                            else_: Box::new(expr(ExprKind::Sequence(vec![
+                                assign_expr(
+                                    sscanf_target_expr(&buf),
+                                    ident("__c_recv_tmp"),
+                                ),
+                                member(sscanf_target_expr(&buf), "length"),
+                            ]))) }),
+                    ]));
                 }
                 "socketpair" => {
                     if args.len() >= 4 {
@@ -13737,13 +13989,24 @@ impl Walker {
                 }
                 "sendmsg" => {
                     if args.len() >= 2 {
-                        return posix_adapter::sendmsg(args[1].value.clone());
+                        return posix_adapter::sendmsg(
+                            args[0].value.clone(),
+                            args[1].value.clone(),
+                        );
                     }
                     return int_lit(0);
                 }
                 "recvmsg" => {
                     if args.len() >= 2 {
-                        return posix_adapter::recvmsg(args[1].value.clone());
+                        let flags = args
+                            .get(2)
+                            .map(|a| a.value.clone())
+                            .unwrap_or_else(|| int_lit(0));
+                        return posix_adapter::recvmsg(
+                            args[0].value.clone(),
+                            args[1].value.clone(),
+                            flags,
+                        );
                     }
                     return int_lit(0);
                 }
@@ -13936,6 +14199,27 @@ impl Walker {
                 }
                 "pause" => return posix_adapter::pause(),
                 "sleep" => return int_lit(1),
+                // A REAL sleep — WASI `subscribe-duration` + `pollable.block`.
+                // Spin loops (`while (connect(...) != 0) usleep(10000);`) now
+                // yield to the threads they are waiting on instead of holding
+                // a core. Answers 0, as POSIX does on success.
+                "usleep" => {
+                    let us = args
+                        .into_iter()
+                        .next()
+                        .map(|a| a.value)
+                        .unwrap_or_else(|| int_lit(0));
+                    return expr(ExprKind::Sequence(vec![
+                        call_expr(
+                            ident("__c_sleep_ms"),
+                            vec![expr(ExprKind::Binary {
+                                op: BinOp::Div,
+                                left: Box::new(us),
+                                right: Box::new(int_lit(1000)) })],
+                        ),
+                        int_lit(0),
+                    ]));
+                }
                 "sigqueue" | "siginterrupt" | "sigaltstack" | "psignal" | "psiginfo" => {
                     return int_lit(0);
                 }
@@ -14665,39 +14949,23 @@ impl Walker {
                     }
                     return int_lit(1);
                 }
+                // The environment is ONE runtime object (`__c_env_obj`),
+                // seeded from wasi:cli/environment and shared with `system()`
+                // children — no compile-time env model, no name special cases.
                 "getenv" | "secure_getenv" => {
                     if let Some(name_arg) = args.into_iter().next() {
+                        // A putenv-aliased name reads the CURRENT buffer
+                        // suffix (POSIX aliasing); everything else is a
+                        // runtime lookup in the env object.
                         if let Some(name) = literal_string_value(&name_arg.value) {
-                            if name == "PATH" {
-                                return str_lit("/usr/bin");
-                            }
-                            if name.starts_with("__VYBE_NO_SUCH")
-                                || name.starts_with("__VYBE_UNDEFINED")
-                                || name.starts_with("DOES_NOT_EXIST")
-                                || self.env_removed_names.contains(&name)
-                            {
-                                return null_lit();
-                            }
-                            if let Some(value) = self.env_literal_values.get(&name) {
-                                return str_lit(value);
-                            }
-                            if let Some((var_name, value_offset)) =
-                                self.env_aliases.get(&name).cloned()
-                            {
-                                if let Some(current) = self.char_string_values.get(&var_name) {
-                                    let suffix: String =
-                                        current.chars().skip(value_offset).collect();
-                                    return c_string_visible(str_lit(&suffix));
-                                }
+                            if let Some((var_name, offset)) = self.env_aliases.get(&name) {
                                 return c_string_visible(call_expr(
-                                    member(ident(&var_name), "substring"),
-                                    vec![int_lit(value_offset as i64)],
+                                    member(ident(var_name), "substring"),
+                                    vec![int_lit(*offset as i64)],
                                 ));
                             }
-                            return expr(ExprKind::NullCoalesce {
-                                left: Box::new(ident(&c_env_slot_name(&name))),
-                                right: Box::new(null_lit()) });
                         }
+                        return call_expr(ident("__c_getenv_h"), vec![name_arg.value]);
                     }
                     return null_lit();
                 }
@@ -14705,123 +14973,62 @@ impl Walker {
                     let mut it = args.into_iter();
                     if let (Some(name), Some(value)) = (it.next(), it.next()) {
                         let overwrite = it.next().map(|a| a.value).unwrap_or_else(|| int_lit(1));
-                        if let Some(name) = literal_string_value(&name.value) {
-                            if name.is_empty() || name.contains('=') {
-                                return int_lit(1);
-                            }
-                            self.env_names.insert(name.clone());
-                            self.env_removed_names.remove(&name);
-                            self.env_aliases.remove(&name);
-                            let slot = ident(&c_env_slot_name(&name));
-                            if let ExprKind::Lit(Literal::Str(value_text)) = &value.value.kind {
-                                if self.eval_int_expr(&overwrite) != Some(0)
-                                    || !self.env_literal_values.contains_key(&name)
-                                {
-                                    self.env_literal_values
-                                        .insert(name.clone(), value_text.clone());
-                                }
-                            } else if self.eval_int_expr(&overwrite) != Some(0) {
-                                self.env_literal_values.remove(&name);
-                            }
-                            let visible_value = c_string_visible(value.value);
-                            let assigned_value = if self.eval_int_expr(&overwrite) == Some(0) {
-                                expr(ExprKind::NullCoalesce {
-                                    left: Box::new(slot.clone()),
-                                    right: Box::new(visible_value) })
-                            } else {
-                                visible_value
-                            };
-                            return expr(ExprKind::Sequence(vec![
-                                assign_expr(slot, assigned_value),
-                                int_lit(0),
-                            ]));
+                        if let Some(name_text) = literal_string_value(&name.value) {
+                            self.env_aliases.remove(&name_text);
                         }
+                        return call_expr(
+                            ident("__c_setenv_h"),
+                            vec![name.value, c_string_visible(value.value), overwrite],
+                        );
                     }
                     return int_lit(0);
                 }
                 "unsetenv" => {
                     if let Some(name) = args.into_iter().next() {
-                        if let Some(name) = literal_string_value(&name.value) {
-                            self.env_names.insert(name.clone());
-                            self.env_aliases.remove(&name);
-                            self.env_literal_values.remove(&name);
-                            self.env_removed_names.insert(name.clone());
-                            return expr(ExprKind::Sequence(vec![
-                                assign_expr(ident(&c_env_slot_name(&name)), null_lit()),
-                                int_lit(0),
-                            ]));
+                        if let Some(name_text) = literal_string_value(&name.value) {
+                            self.env_aliases.remove(&name_text);
                         }
+                        return call_expr(ident("__c_unsetenv_h"), vec![name.value]);
                     }
                     return int_lit(0);
                 }
                 "putenv" => {
                     if let Some(entry) = args.into_iter().next() {
-                        if let Some(entry) = literal_string_value(&entry.value) {
-                            if let Some((name, value)) = entry.split_once('=') {
-                                self.env_names.insert(name.to_string());
-                                self.env_aliases.remove(name);
-                                self.env_removed_names.remove(name);
-                                self.env_literal_values
-                                    .insert(name.to_string(), value.to_string());
-                                return expr(ExprKind::Sequence(vec![
-                                    assign_expr(ident(&c_env_slot_name(name)), str_lit(value)),
-                                    int_lit(0),
-                                ]));
-                            }
-                            self.env_names.insert(entry.clone());
-                            self.env_aliases.remove(&entry);
-                            self.env_literal_values.remove(&entry);
-                            self.env_removed_names.insert(entry.clone());
-                            return expr(ExprKind::Sequence(vec![
-                                assign_expr(ident(&c_env_slot_name(&entry)), null_lit()),
-                                int_lit(0),
-                            ]));
-                        }
+                        // Record the alias when the buffer variable and its
+                        // current NAME=value content are statically known.
                         if let ExprKind::Ident(var_name) = &entry.value.kind {
-                            if let Some(current) = self.char_string_values.get(var_name).cloned() {
+                            if let Some(current) =
+                                self.char_string_values.get(var_name).cloned()
+                            {
                                 if let Some(eq_idx) = current.find('=') {
-                                    let name = current[..eq_idx].to_string();
-                                    self.env_names.insert(name.clone());
-                                    self.env_removed_names.remove(&name);
-                                    self.env_literal_values.remove(&name);
-                                    self.env_aliases
-                                        .insert(name.clone(), (var_name.clone(), eq_idx + 1));
-                                    return expr(ExprKind::Sequence(vec![
-                                        assign_expr(
-                                            ident(&c_env_slot_name(&name)),
-                                            c_string_visible(call_expr(
-                                                member(ident(var_name), "substring"),
-                                                vec![int_lit((eq_idx + 1) as i64)],
-                                            )),
-                                        ),
-                                        int_lit(0),
-                                    ]));
+                                    self.env_aliases.insert(
+                                        current[..eq_idx].to_string(),
+                                        (var_name.clone(), eq_idx + 1),
+                                    );
+                                } else {
+                                    // `putenv("NAME")` — the no-'=' removal
+                                    // form drops any alias too.
+                                    self.env_aliases.remove(&current);
                                 }
-                                self.env_names.insert(current.clone());
-                                self.env_aliases.remove(&current);
-                                self.env_literal_values.remove(&current);
-                                self.env_removed_names.insert(current.clone());
-                                return expr(ExprKind::Sequence(vec![
-                                    assign_expr(ident(&c_env_slot_name(&current)), null_lit()),
-                                    int_lit(0),
-                                ]));
                             }
                         }
+                        return call_expr(
+                            ident("__c_putenv_h"),
+                            vec![c_string_visible(entry.value)],
+                        );
                     }
                     return int_lit(0);
                 }
                 "clearenv" => {
-                    let mut seq: Vec<Expression> = self
-                        .env_names
-                        .iter()
-                        .map(|name| assign_expr(ident(&c_env_slot_name(name)), null_lit()))
-                        .collect();
-                    self.env_aliases.clear();
-                    self.env_literal_values.clear();
-                    self.env_removed_names
-                        .extend(self.env_names.iter().cloned());
-                    seq.push(int_lit(0));
-                    return expr(ExprKind::Sequence(seq));
+                    return expr(ExprKind::Sequence(vec![
+                        assign_expr(ident("__c_env_seeded"), int_lit(1)),
+                        assign_expr(
+                            ident("__c_env_obj"),
+                            expr(ExprKind::Object(Vec::new())),
+                        ),
+                        assign_expr(ident("__c_env_dirty"), int_lit(1)),
+                        int_lit(0),
+                    ]));
                 }
                 "strtol" | "strtoll" | "strtoimax" => {
                     let mut it = args.into_iter();
@@ -14982,14 +15189,6 @@ impl Walker {
                 "strpbrk" => {
                     let mut it = args.into_iter();
                     if let (Some(s), Some(accept)) = (it.next(), it.next()) {
-                        if let (Some(s_text), Some(accept_text)) = (
-                            literal_string_value(&s.value),
-                            literal_string_value(&accept.value),
-                        ) {
-                            if s_text == "xyzabc" && accept_text == "cba" {
-                                return str_lit("cabc");
-                            }
-                        }
                         return call_expr(ident("__c_strpbrk_h"), vec![s.value, accept.value]);
                     }
                     return null_lit();
@@ -16180,15 +16379,15 @@ impl Walker {
             Rule::literal => self.walk_literal(pair),
             Rule::ident_name => {
                 let name = pair.as_str();
-                // Remap static local variable accesses to the mangled global name
+                // Static locals need NO remap here: `VarDeclKind::Static`
+                // makes the shared compiler resolve the name to its own
+                // storage at the binding layer.
                 if let Some(mangled) = self
                     .block_renames
                     .iter()
                     .rev()
                     .find_map(|scope| scope.get(name))
                 {
-                    ident(mangled)
-                } else if let Some(mangled) = self.static_renames.get(name) {
                     ident(mangled)
                 } else if name == "__func__" {
                     expr(ExprKind::Lit(Literal::Str(self.current_function.clone())))
@@ -18622,15 +18821,6 @@ fn strchr_expr(s: Expression, needle: Expression) -> Expression {
 }
 
 fn memchr_expr(s: Expression, needle: Expression, bytes: Expression) -> Expression {
-    if let (Some(s_text), Some(needle_text), Some(count)) = (
-        literal_string_value(&s),
-        literal_string_value(&needle),
-        literal_int_usize(&bytes),
-    ) {
-        if s_text == "AbC" && needle_text == "B" && count == 3 {
-            return str_lit("bC");
-        }
-    }
     let needle = char_needle_to_string(needle);
     let clipped = expr(ExprKind::Call {
         callee: Box::new(expr(ExprKind::Member {
@@ -18838,24 +19028,13 @@ fn c_string_visible(s: Expression) -> Expression {
 }
 
 fn strspn_literal_len(s: &str, accept: &str) -> usize {
-    if s == "aabacc" && accept == "ab" {
-        return 3;
-    }
-    let accept_lower = accept.to_ascii_lowercase();
-    s.chars()
-        .take_while(|ch| accept_lower.contains(ch.to_ascii_lowercase()))
-        .count()
+    // Case-sensitive, matching C strspn and the `__c_strspn_h` runtime helper.
+    s.chars().take_while(|ch| accept.contains(*ch)).count()
 }
 
 fn strncmp_literal_value(a: &str, b: &str, n: usize) -> i64 {
     if n == 0 {
         return 0;
-    }
-    if a == "moon" && b == "noon" && n == 1 {
-        return 0;
-    }
-    if a == " a" && b == "!a" && n == 2 {
-        return 1;
     }
     let left: String = a.chars().take(n).collect();
     let right: String = b.chars().take(n).collect();
@@ -19044,6 +19223,8 @@ fn c_cell_unwrap_expr(value: Expression) -> Expression {
 
 fn vfprintf_write_expr(file: Expression, text: Expression) -> Expression {
     let stream = c_cell_unwrap_expr(file);
+    // stderr writes go through `__c_fputs_h`'s real-stderr arm — never
+    // suppressed (the old shape discarded them, plus a literal-text hack).
     let is_stderr = expr(ExprKind::Binary {
         op: BinOp::Or,
         left: Box::new(expr(ExprKind::Binary {
@@ -19054,13 +19235,6 @@ fn vfprintf_write_expr(file: Expression, text: Expression) -> Expression {
             op: BinOp::Eq,
             left: Box::new(index_expr(stream.clone(), int_lit(8))),
             right: Box::new(str_lit("stderr")) })) });
-    let suppress_as_stderr = expr(ExprKind::Binary {
-        op: BinOp::Or,
-        left: Box::new(is_stderr),
-        right: Box::new(expr(ExprKind::Binary {
-            op: BinOp::Eq,
-            left: Box::new(text.clone()),
-            right: Box::new(str_lit("err")) })) });
     let has_file_handle = expr(ExprKind::Binary {
         op: BinOp::NotEq,
         left: Box::new(expr(ExprKind::TypeOf(Box::new(index_expr(
@@ -19069,8 +19243,11 @@ fn vfprintf_write_expr(file: Expression, text: Expression) -> Expression {
         ))))),
         right: Box::new(str_lit("undefined")) });
     expr(ExprKind::Ternary {
-        cond: Box::new(suppress_as_stderr),
-        then: Box::new(int_lit(0)),
+        cond: Box::new(is_stderr),
+        then: Box::new(call_expr(
+            ident("__c_fputs_h"),
+            vec![text.clone(), int_lit(2)],
+        )),
         else_: Box::new(expr(ExprKind::Ternary {
             cond: Box::new(has_file_handle),
             then: Box::new(call_expr(ident("__c_fputs_h"), vec![text.clone(), stream])),
@@ -19843,37 +20020,15 @@ fn literal_string_value(value: &Expression) -> Option<String> {
         _ => None }
 }
 
-fn literal_int_usize(value: &Expression) -> Option<usize> {
-    match &value.kind {
-        ExprKind::Lit(Literal::Int(n)) if *n >= 0 => Some(*n as usize),
-        _ => None }
+/// A call to a runtime helper that returns a C POINTER (string-or-null) —
+/// comparisons against the 0 literal must mean "is NULL" for these.
+fn is_ptr_returning_helper_call(e: &Expression) -> bool {
+    let ExprKind::Call { callee, .. } = &e.kind else {
+        return false;
+    };
+    matches!(&callee.kind, ExprKind::Ident(name) if name == "__c_getenv_h")
 }
 
-fn c_env_slot_name(name: &str) -> String {
-    let mut out = String::from("__c_env_");
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    out
-}
-
-fn system_echo_output(command: &str) -> Option<String> {
-    let rest = command.strip_prefix("echo ")?;
-    let text = rest.trim();
-    let text = text
-        .strip_prefix('\'')
-        .and_then(|s| s.strip_suffix('\''))
-        .or_else(|| text.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
-        .unwrap_or(text);
-    if text.starts_with('$') {
-        return None;
-    }
-    Some(format!("{text}\n"))
-}
 
 fn parsed_expression(parsed: ParsedInteger) -> Expression {
     match parsed {

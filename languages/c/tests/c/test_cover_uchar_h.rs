@@ -10,6 +10,8 @@ c_run_cases! {
     uchar_mbrtoc32_ascii => { includes: ["<stdio.h>", "<uchar.h>"], decls: "", body: "char32_t out[2]; size_t n = mbrtoc32(out, \"R\", 1, 0); printf(\"%d %d\\n\", (int)n, (int)out[0]); return 0;", expect: ["1 82"] },
     uchar_c16rtomb_ascii => { includes: ["<stdio.h>", "<uchar.h>"], decls: "", body: "char b[4]; size_t n = c16rtomb(b, u'S', 0); printf(\"%d %c\\n\", (int)n, b[0]); return 0;", expect: ["1 S"] },
     uchar_c32rtomb_ascii => { includes: ["<stdio.h>", "<uchar.h>"], decls: "", body: "char b[4]; size_t n = c32rtomb(b, U'T', 0); printf(\"%d %c\\n\", (int)n, b[0]); return 0;", expect: ["1 T"] },
+    uchar_utf16_pointer_reads_units => { includes: ["<stdio.h>", "<uchar.h>"], decls: "", body: "const char16_t *s = u\"hé\\U0001D11E\"; printf(\"%d %d %d %d\\n\", (int)s[0], (int)s[1], (int)s[2], (int)s[3]); return 0;", expect: ["104 233 55348 56606"] },
+    uchar_mbrtoc16_scalar_destination => { includes: ["<stdio.h>", "<uchar.h>"], decls: "", body: "char16_t c; mbrtoc16(&c, \"é\", 4, 0); printf(\"%d\\n\", (int)c); return 0;", expect: ["233"] },
 }
 
 c_compile_cases! {

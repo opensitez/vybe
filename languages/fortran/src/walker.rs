@@ -4004,20 +4004,35 @@ fn parse_fortran_intent_mode(attr_text: &str) -> Option<PassBy> {
     match inner {
         "in" => Some(PassBy::Const),
         "out" => Some(PassBy::Out),
-        "inout" => Some(PassBy::Ref),
+        // Fortran passes dummy arguments by reference: the callee writes the
+        // caller's storage directly, so the mutation is visible immediately
+        // rather than being copied back on return. `Alias`, not `Ref` — the
+        // same migration pascal `var`, vb `ByRef`, c# `ref` and php `&` took.
+        "inout" => Some(PassBy::Alias),
         _ => None }
 }
 
 fn promote_mutated_fortran_params(params: &mut [Param], body: &[Statement]) {
     for param in params.iter_mut() {
-        if param.pass_by != PassBy::Const {
+        // A dummy argument with NO `intent` is by reference in Fortran, and it
+        // lands here as `Value` — so the old `!= Const` guard skipped exactly
+        // the case the language leaves implicit. MEASURED against gfortran:
+        //
+        //   subroutine bump(n)   ! no intent
+        //     integer :: n
+        //     n = n + 1
+        //   end subroutine
+        //
+        // gfortran prints 2; `Value` printed 1, while `intent(inout)` and
+        // `intent(out)` were both already correct.
+        if !matches!(param.pass_by, PassBy::Const | PassBy::Value) {
             continue;
         }
         if body
             .iter()
             .any(|statement| statement_mutates_fortran_param(statement, &param.name))
         {
-            param.pass_by = PassBy::Ref;
+            param.pass_by = PassBy::Alias;
         }
     }
 }

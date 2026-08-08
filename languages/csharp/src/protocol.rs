@@ -52,6 +52,14 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "operator~" => ("not".into(), Some(Not)),
         "operator<<" => ("lshift".into(), Some(LShift)),
         "operator>>" => ("rshift".into(), Some(RShift)),
+        // `IsEmpty` on `ImmutableArray`/`Span`/`Range` — the shared emptiness
+        // role, spelled as a PROPERTY in C#. Lowercased to match the vtable key
+        // the fallback below produces, so only the SLOT is added.
+        //
+        // LINQ's `Any()` is deliberately NOT mapped here: it answers the
+        // INVERSE question (non-empty), so filling `IsEmpty` with it would
+        // publish a negated answer to every consumer of the slot.
+        "IsEmpty" => ("isempty".into(), Some(IsEmpty)),
         // C# resolves members case-sensitively at the source, but the vtable
         // key is lowercase.
         _ => (name.to_lowercase(), None) }

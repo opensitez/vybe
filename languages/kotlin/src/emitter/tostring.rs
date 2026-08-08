@@ -72,8 +72,7 @@ fn emit_call_render(chunks: &mut [Chunk], current: usize, render_idx: usize, lin
     chunks[current].emit_op_u16(Op::REF_FUNC, render_idx as u16, line);
     chunks[current].emit(0, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, tmp, line);
-    chunks[current].emit_op(Op::CALL_REF, line);
-    chunks[current].emit(1u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
 }
 
 /// Push i32 `1` when the value in `slot` is an object (so `STRUCT_GET` on it

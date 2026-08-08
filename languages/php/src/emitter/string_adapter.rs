@@ -3288,8 +3288,7 @@ pub fn emit_preg_replace_callback(chunks: &mut [Chunk], current: usize, _argc: u
     // cb_ret = cb(m)
     lget(chunk, cb_slot, line);
     lget(chunk, m_slot, line);
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(1u8, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     coerce_to_str(chunk, line);
     lset(chunk, cb_ret_slot, line);
 
@@ -3528,8 +3527,7 @@ pub fn emit_php_clone(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     // function frame.
     lget(chunk, clone_fn_slot, line);
     lget(chunk, copy_slot, line);
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(1u8, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_op(Op::DROP, line);
 
     chunk.emit_end(line);
@@ -5489,8 +5487,7 @@ fn emit_strtok_call(chunks: &mut Vec<Chunk>, current: usize, s_slot: u16, delim_
     lget(chunk, s_slot, line);
     lget(chunk, delim_slot, line);
     vybe_compiler::primitives::globals::emit_read(chunk, STRTOK_CURSOR, line);
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(3u8, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
 }
 
 pub fn emit_strtok_init(chunks: &mut Vec<Chunk>, current: usize, _argc: u8, line: u32) {

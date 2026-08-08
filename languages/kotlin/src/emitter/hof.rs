@@ -59,7 +59,7 @@ fn call_fn(chunks: &mut [Chunk], current: usize, fn_slot: u16, args: &[u16], lin
     for &a in args {
         get(chunks, current, a, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, args.len() as u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, args.len() as u8, 1, line);
 }
 
 /// `arr[i]` from locals. Leaves the element on the stack.

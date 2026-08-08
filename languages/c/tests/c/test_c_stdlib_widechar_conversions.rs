@@ -181,3 +181,14 @@ fn mbrtowc_incomplete() {
         vec!["ok"]
     );
 }
+#[test]
+fn mbstowcs_astral_roundtrip() {
+    // wchar_t is a CODE POINT: an astral char is ONE element (119070), not a
+    // surrogate pair, and wcstombs restores the original string.
+    assert_eq!(
+        run_c(
+            "#include <wchar.h>\n#include <stdlib.h>\nint main() { wchar_t w[16]; int n = mbstowcs(w, \"aé\\U0001D11E\", 16); char back[32]; wcstombs(back, w, 32); printf(\"%d %d %d %s\", n, (int)w[2], (int)wcslen(w), back); return 0; }"
+        ),
+        vec!["3 119070 3 aé\u{1D11E}"]
+    );
+}

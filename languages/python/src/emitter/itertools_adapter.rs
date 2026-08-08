@@ -206,7 +206,7 @@ fn emit_pred_filter(chunks: &mut [Chunk], current: usize, spec: Filter, line: u3
     chunk.emit_op_u16(Op::LOCAL_GET, xs, line);
     chunk.emit_op_u16(Op::LOCAL_GET, i, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_SET, p, line);
 

@@ -39,6 +39,25 @@ pub fn normalize_class(
 ) -> NormalClass {
     let mut out = NormalMembers::default();
 
+    // Slots this class DECLARES, collected before the member loop so a
+    // declaration anywhere in the body outranks a guess anywhere else.
+    //
+    // C# spells one slot two ways and means two different things by them:
+    // `operator ==` defines `a == b`, while `Equals` is the virtual
+    // object-equality method — `Equals` is mapped to `Eq` by name so that a
+    // type with no `operator ==` still compares sensibly. When BOTH are
+    // present they collide on one slot key and the loser is silently
+    // overwritten, which made `a == b` run `Equals`. A declaration is
+    // evidence; a name is a guess, so the guess yields.
+    let declared_slots: Vec<ProtocolSlot> = members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Method(stmt) => match &stmt.kind {
+                StmtKind::FunctionDecl { modifiers, .. } => modifiers.protocol_slot,
+                _ => None },
+            _ => None })
+        .collect();
+
     for member in members {
         match member {
             ClassMember::Field {
@@ -80,7 +99,16 @@ pub fn normalize_class(
                     out.auto_init_methods.push(src_name.clone());
                 }
 
-                let (canonical, special_kind) = crate::protocol::canonical_method(src_name);
+                let (canonical, name_kind) = crate::protocol::canonical_method(src_name);
+                // A slot the WALKER stated wins over one guessed from the
+                // spelling: `operator ==` knows it fills `Eq` from the
+                // declaration form, while the name it carries (`op_Equality`)
+                // is the CLR ABI spelling and means nothing to the name table.
+                let special_kind = m.protocol_slot.or_else(|| {
+                    name_kind.filter(|guessed| {
+                        !declared_slots.iter().any(|declared| declared == guessed)
+                    })
+                });
                 let access = Access::from(m.visibility);
                 let Some(method) = from_method_stmt(span.clone(), stmt, &canonical, access) else {
                     continue;

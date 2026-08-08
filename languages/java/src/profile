@@ -829,6 +829,14 @@ path = "jvm.java.io"
 # question "what does operator X do to built-in type Y" is a slot by rule.
 to_string = "common:jvm.java.to_string"
 
+# A Java `double`/`float` always renders with a fractional part — `"" + 4.0` is
+# `4.0`, `String.valueOf(4.0d)` is `4.0` — where the general renderer above
+# falls through to the ECMA coercion's `4`. The more specific row wins wherever
+# the expression is statically a double, so `+`, interpolation and
+# `String.valueOf` all read the SAME declaration.
+[builtin_slots.double]
+to_string = "common:java.double_to_string"
+
 [namespaces]
 
 # Namespace-tree roots this language resolves platform types against, and mounts

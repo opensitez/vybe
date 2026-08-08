@@ -71,7 +71,7 @@ pub fn emit_or_else(chunks: &mut [Chunk], current: usize, call_supplier: bool, l
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fallback_slot, line);
     if call_supplier {
-        chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_end(line);
@@ -91,7 +91,7 @@ pub fn emit_if_present(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, consumer_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -117,7 +117,7 @@ pub fn emit_filter(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, predicate_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, optional_slot, line);
@@ -147,7 +147,7 @@ pub fn emit_map(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, mapper_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     emit_of_nullable(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_else(line);
@@ -171,7 +171,7 @@ pub fn emit_flat_map(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, mapper_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_else(line);
     emit_empty(chunks, current, line);
@@ -195,11 +195,11 @@ pub fn emit_if_present_or_else(chunks: &mut [Chunk], current: usize, line: u32) 
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, consumer_slot, line);
     emit_value_from_slot(chunks, current, optional_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, empty_action_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -221,7 +221,7 @@ pub fn emit_or(chunks: &mut [Chunk], current: usize, call_supplier: bool, line: 
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fallback_slot, line);
     if call_supplier {
-        chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     }
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunks[current].emit_end(line);
@@ -338,7 +338,7 @@ pub fn emit_or_else_throw(chunks: &mut [Chunk], current: usize, has_supplier: bo
     chunks[current].emit_else(line);
     if has_supplier {
         chunks[current].emit_op_u16(Op::LOCAL_GET, supplier_slot, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     } else {
         chunks[current].emit_struct_new(0, 0, line);
         chunks[current].emit_dup(line);

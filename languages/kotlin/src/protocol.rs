@@ -66,6 +66,12 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "compareTo" => ("compare".into(), Some(Compare)),
         "iterator" => ("iterator".into(), Some(Iterator)),
         "next" => ("next".into(), Some(Next)),
+        // Kotlin spells emptiness `isEmpty()` on `Collection`/`CharSequence`,
+        // and a class may spell it as a `val isEmpty get() = ...` PROPERTY
+        // instead — which is exactly why the canonical name stays the SOURCE
+        // one. A property's canonical name IS its storage key, so renaming it
+        // would move the member out from under the name Kotlin code writes.
+        "isEmpty" => ("isEmpty".into(), Some(IsEmpty)),
         _ => (name.to_string(), None),
     }
 }

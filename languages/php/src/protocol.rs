@@ -31,6 +31,11 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         // the same roles a Python dunder does, so they resolve to the same
         // slots rather than staying PHP-shaped.
         "count" => ("len".into(), Some(Len)),
+        // `Ds\Collection::isEmpty()` asks emptiness directly rather than
+        // through `count() === 0`. Keeps its source spelling; only the slot
+        // is added. PHP's `empty()` is a language construct on a VALUE, not a
+        // member, so it is not a member spelling this can map.
+        "isEmpty" => ("isEmpty".into(), Some(IsEmpty)),
         "offsetGet" => ("getitem".into(), Some(GetItem)),
         "offsetSet" => ("setitem".into(), Some(SetItem)),
         "offsetExists" => ("hasitem".into(), Some(HasItem)),

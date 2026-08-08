@@ -66,8 +66,7 @@ fn call_import_into(
 }
 
 fn call_ref(chunk: &mut Chunk, argc: u8, line: u32) {
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(argc, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
 }
 
 fn ref_func(chunk: &mut Chunk, func_idx: usize, line: u32) {

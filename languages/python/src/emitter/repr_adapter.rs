@@ -47,8 +47,7 @@ fn recurse(chunk: &mut Chunk, self_idx: usize, line: u32) {
     chunk.emit_op_u16(Op::REF_FUNC, self_idx as u16, line);
     chunk.emit(0, line);
     lget(chunk, tmp, line);
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(1u8, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
 }
 
 /// Return the index of the `__py_repr` chunk, building it once per module.
@@ -360,7 +359,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         vybe_compiler::primitives::globals::emit_read(&mut c, "__vybe_js_get_method", line);
         lget(&mut c, value, line);
         str_const(&mut c, method, line);
-        c.emit_op_u8(Op::CALL_REF, 2, line);
+        c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         lset(&mut c, m, line);
         lget(&mut c, m, line);
         c.emit_call(test_undef, 1, line); // 1 if undefined
@@ -368,8 +367,7 @@ fn build_py_repr_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
         c.emit_if(line);
         lget(&mut c, m, line);
         lget(&mut c, value, line);
-        c.emit_op(Op::CALL_REF, line);
-        c.emit(1u8, line);
+        c.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
         c.emit_op(Op::RETURN, line);
         c.emit_end(line);
     }

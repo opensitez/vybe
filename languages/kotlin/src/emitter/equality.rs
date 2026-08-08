@@ -31,8 +31,7 @@ pub fn emit_value_eq(chunks: &mut Vec<Chunk>, current: usize, line: u32) {
     c.emit(0, line);
     c.emit_op_u16(Op::LOCAL_GET, a, line);
     c.emit_op_u16(Op::LOCAL_GET, b, line);
-    c.emit_op(Op::CALL_REF, line);
-    c.emit(2u8, line);
+    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 }
 
 fn ensure_value_eq_chunk(chunks: &mut Vec<Chunk>, line: u32) -> usize {
@@ -206,8 +205,7 @@ fn emit_dict_eq_body(c: &mut Chunk, self_idx: usize, a: u16, b: u16, line: u32) 
     c.emit_op_u16(Op::LOCAL_GET, b, line);
     c.emit_op_u16(Op::LOCAL_GET, k, line);
     c.emit_call(obj_get, 2, line);
-    c.emit_op(Op::CALL_REF, line);
-    c.emit(2u8, line);
+    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(c, line);
     c.emit_op(Op::I32_EQZ, line);
     c.emit_if(line);

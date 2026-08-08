@@ -7,7 +7,7 @@ fn run_c(src: &str) -> Vec<String> {
 fn ferror_basic() {
     assert_eq!(
         run_c(
-            "int main() { FILE *f = fopen(\"test_ferror.txt\", \"r\"); if (!f) { printf(\"skip\"); return 0; } fputc('X', f); printf(\"%d\", ferror(f) != 0); fclose(f); return 0; }"
+            "int main() { FILE *g = fopen(\"test_ferror.txt\", \"w\"); fclose(g); FILE *f = fopen(\"test_ferror.txt\", \"r\"); if (!f) { printf(\"skip\"); return 0; } fputc('X', f); printf(\"%d\", ferror(f) != 0); fclose(f); remove(\"test_ferror.txt\"); return 0; }"
         ),
         vec!["1"]
     );

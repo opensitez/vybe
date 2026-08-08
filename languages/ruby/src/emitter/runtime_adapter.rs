@@ -1720,7 +1720,7 @@ fn emit_ruby_fill_loop(
     if let Some(fn_slot) = fn_s {
         chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     } else if let Some(value_slot) = value_s {
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     } else {
@@ -2042,7 +2042,7 @@ fn emit_ruby_array_delete_from_slots(
     chunks[current].emit_else(line);
     if slots.len() >= 3 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, slots[2], line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     } else {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
@@ -2223,7 +2223,7 @@ fn emit_ruby_enum_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
     if let Some(block_s) = slots.first() {
         let cont_s = chunks[current].alloc_scratch(1);
         chunks[current].emit_op_u16(Op::LOCAL_GET, *block_s, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, cont_s, line);
         emit_ruby_enumerator_from_cont_slot(chunks, current, cont_s, line);
     } else {
@@ -2392,7 +2392,7 @@ fn emit_ruby_enum_with_index(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
@@ -2435,7 +2435,7 @@ fn emit_ruby_enum_with_object(chunks: &mut [Chunk], current: usize, argc: u8, li
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, obj_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -2496,7 +2496,7 @@ fn emit_ruby_bsearch(
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, pred_s, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, pred_s, line);
@@ -2553,7 +2553,7 @@ fn emit_ruby_call_block_with_array_row(
         core_wasm::i32_const(&mut chunks[current], line, i as i32);
         collections::emit_get(chunks, current, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, argc, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
 }
 
 fn emit_ruby_zip(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
@@ -2590,7 +2590,7 @@ fn emit_ruby_zip(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
             chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
             collections::emit_get(chunks, current, line);
         }
-        chunks[current].emit_op_u8(Op::CALL_REF, arr_count as u8, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, arr_count as u8, 1, line);
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
         core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -3462,7 +3462,7 @@ fn emit_ruby_dir_each(
     chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -3837,7 +3837,7 @@ fn emit_ruby_thread_value(chunks: &mut [Chunk], current: usize, argc: u8, line: 
     let slots = emit_store_args(chunks, current, argc, line);
     if let Some(recv_s) = slots.first() {
         emit_time_prop_from_slot(chunks, current, *recv_s, "__block", line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     } else {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
@@ -3917,7 +3917,7 @@ fn emit_ruby_synchronize(chunks: &mut [Chunk], current: usize, argc: u8, line: u
     let slots = emit_store_args(chunks, current, argc, line);
     if let Some(block_s) = slots.get(1) {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *block_s, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     } else {
         chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     }
@@ -4367,7 +4367,7 @@ fn emit_ruby_each_string_item(
     chunks[current].emit_op_u16(Op::LOCAL_GET, items_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -5350,7 +5350,7 @@ fn emit_ruby_yield_split_items(
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -6390,7 +6390,7 @@ fn emit_ruby_callable_gsub_scan(
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, repl_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, ch_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_end(line);
     call_import(chunks, current, "ecma:string", "String", 1, line);
     call_import(chunks, current, "wasm:js-string", "concat", 2, line);
@@ -7054,12 +7054,12 @@ fn emit_ruby_invoke_one_arg_slot(
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arg_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     emit_ruby_callable_from_slot(chunks, current, callable_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arg_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_end(line);
 }
 
@@ -7232,7 +7232,7 @@ fn emit_ruby_proc_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     emit_ruby_callable_from_slot(chunks, current, target_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, first_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, second_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunks[current].emit_else(line);
     emit_ruby_proc_curry_object(chunks, current, target_s, Some(second_s), line);
     chunks[current].emit_end(line);
@@ -7270,7 +7270,7 @@ fn emit_ruby_proc_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     for arg_s in &slots[1..] {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, (slots.len() - 1) as u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, (slots.len() - 1) as u8, 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
@@ -7288,14 +7288,14 @@ fn emit_ruby_proc_call(chunks: &mut [Chunk], current: usize, argc: u8, line: u32
     for arg_s in &slots[1..] {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, (slots.len() - 1) as u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, (slots.len() - 1) as u8, 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_s, line);
     for arg_s in &slots[1..] {
         chunks[current].emit_op_u16(Op::LOCAL_GET, *arg_s, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, (slots.len() - 1) as u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, (slots.len() - 1) as u8, 1, line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
     chunks[current].emit_end(line);
@@ -9534,7 +9534,7 @@ fn emit_ruby_times(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, slots[1], line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -9735,7 +9735,7 @@ fn emit_ruby_date_step_from_slots(
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
     emit_date_object_from_ms(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op(Op::DROP, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
@@ -9801,7 +9801,7 @@ fn emit_ruby_step(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
         chunks[current].emit_br_if(1, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
         chunks[current].emit_op(Op::DROP, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, cur_s, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, step_s, line);
@@ -9889,7 +9889,7 @@ fn emit_ruby_number_upto_downto_from_slots(
     chunks[current].emit_br_if(1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, block_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_s, line);
     core_wasm::i32_const(
@@ -9986,7 +9986,7 @@ fn emit_ruby_hash_update(chunks: &mut [Chunk], current: usize, argc: u8, line: u
         chunks[current].emit_op_u16(Op::LOCAL_GET, key_s, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, old_s, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, new_s, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 3, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, value_s, line);
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, new_s, line);
@@ -11462,7 +11462,7 @@ fn emit_select_like(
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     if !keep_matches {
         ops::emit_dyn_not(&mut chunks[current], line);
@@ -11524,7 +11524,7 @@ fn emit_ruby_map_like(chunks: &mut [Chunk], current: usize, argc: u8, flatten: b
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, mapped_s, line);
     if flatten {
         chunks[current].emit_op_u16(Op::LOCAL_GET, mapped_s, line);
@@ -11691,7 +11691,7 @@ fn emit_ruby_select_like_value(
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     if !keep_matches {
         ops::emit_dyn_not(&mut chunks[current], line);
@@ -11762,7 +11762,7 @@ fn emit_array_new(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, init_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, init_s, line);
     chunks[current].emit_end(line);
@@ -11852,7 +11852,7 @@ fn emit_take_while(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
@@ -11916,7 +11916,7 @@ fn emit_drop_while(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     ops::emit_dyn_not(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);
@@ -12024,7 +12024,7 @@ fn emit_count(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, pred_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_else(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
@@ -12711,7 +12711,7 @@ fn emit_inject_initial(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, acc_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
@@ -12741,7 +12741,7 @@ fn emit_min_by(chunks: &mut [Chunk], current: usize, as_array: bool, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, best_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, best_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, best_key_s, line);
     core_wasm::i32_const(&mut chunks[current], line, 1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, idx_s, line);
@@ -12759,7 +12759,7 @@ fn emit_min_by(chunks: &mut [Chunk], current: usize, as_array: bool, line: u32) 
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_s, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, best_key_s, line);
@@ -14182,7 +14182,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-            chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+            chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             collections::emit_set(chunks, current, line);
             chunks[current].emit_op(Op::DROP, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
@@ -14229,7 +14229,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_GET, arr_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
             collections::emit_get(chunks, current, line);
-            chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+            chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             chunks[current].emit_op_u16(Op::LOCAL_SET, mapped_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, mapped_s, line);
             ops::emit_dyn_to_bool(&mut chunks[current], line);
@@ -14338,7 +14338,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-            chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+            chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
@@ -14383,7 +14383,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-            chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+            chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, idx_s, line);
@@ -14427,7 +14427,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, fn_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-            chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+            chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, count_s, line);
@@ -14487,7 +14487,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_SET, elem_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, pred_s, line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
-            chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+            chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             ops::emit_dyn_to_bool(&mut chunks[current], line);
             chunks[current].emit_if(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, elem_s, line);
@@ -14511,7 +14511,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
             chunks[current].emit_op_u16(Op::LOCAL_GET, result_s, line);
             chunks[current].emit_else(line);
             chunks[current].emit_op_u16(Op::LOCAL_GET, ifnone_s, line);
-            chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+            chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
             chunks[current].emit_end(line);
         }
         // `s.bytes` — `TextEncoder().encode(s)` (web:encoding host surface).
@@ -14906,7 +14906,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
                 chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
                 core_wasm::i32_const(&mut chunks[current], line, transform_idx);
                 collections::emit_get(chunks, current, line);
-                chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+                chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
                 // v (kept)
                 chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
                 core_wasm::i32_const(&mut chunks[current], line, keep_idx);
@@ -14921,7 +14921,7 @@ pub fn emit_helper(name: &str, chunks: &mut [Chunk], current: usize, argc: u8, l
                 chunks[current].emit_op_u16(Op::LOCAL_GET, pair_s, line);
                 core_wasm::i32_const(&mut chunks[current], line, transform_idx);
                 collections::emit_get(chunks, current, line);
-                chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+                chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             }
             collections::emit_array_pair(chunks, current, line);
             collections::emit_push(chunks, current, line);

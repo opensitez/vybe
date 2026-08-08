@@ -264,3 +264,15 @@ math_pi = { emit = "opcode:f64_const", value = "3.141592653589793" }
 math_huge = { emit = "opcode:f64_const", value = "1.7976931348623157e+308" }
 math_maxinteger = { emit = "common:lua.math_maxinteger", min_args = 0, max_args = 0 }
 math_mininteger = { emit = "common:lua.math_mininteger", min_args = 0, max_args = 0 }
+
+# ────────────────────────────────────────────────────────────────────────────
+# BUILTIN SLOTS — what an operator does to a BUILT-IN type (builtinslotplan §2d)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Lua prints a float with a fractional part — `print(1.0)` is `1.0` and
+# `tostring(3/1)` is `3.0` — where the ECMA coercion answers `1` and `3`. That
+# is a property of the TYPE, so `..` concatenation and `tostring` read it from
+# this one declaration rather than the normaliser wrapping each expression it
+# recognises as a float.
+[builtin_slots.double]
+to_string = "common:lua.float_repr"

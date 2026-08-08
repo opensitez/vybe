@@ -292,7 +292,11 @@ input           = { emit = "host:wasi:cli:readLine",        min_args = 0, max_ar
 int             = { emit = "common:python.int",     min_args = 1, max_args = 2 }
 parseInt        = { emit = "host:ecma:number:parseInt",   min_args = 2, max_args = 2 }
 float           = { emit = "host:ecma:number:Number",        min_args = 1, max_args = 1 }
-str             = { emit = "common:python.str",              min_args = 0, max_args = 1 }
+# `slot = "to_string"` says `str()` fills the shared `ToString` slot, so when
+# the argument's built-in type is statically a float the emit is rewritten to
+# `[builtin_slots.double] to_string` below and `str(0.0)` answers "0.0" rather
+# than ECMA `String()`'s "0". Any other argument type keeps `python.str`.
+str             = { emit = "common:python.str",              min_args = 0, max_args = 1, slot = "to_string" }
 bool            = { emit = "common:dyn_to_bool",            min_args = 1, max_args = 1 }
 chr             = { emit = "common:str_from_char_code",     min_args = 1, max_args = 1 }
 # `ord` is a CODE POINT, not a UTF-16 unit: `ord("\U0001F600")` is 128512,
@@ -301,7 +305,7 @@ ord             = { emit = "common:str_first_code_point",    min_args = 1, max_a
 hex             = { emit = "common:python.hex",                  min_args = 1, max_args = 1 }
 oct             = { emit = "common:python.oct",                  min_args = 1, max_args = 1 }
 bin             = { emit = "common:python.bin",                  min_args = 1, max_args = 1 }
-repr            = { emit = "common:python.repr",             min_args = 1, max_args = 1 }
+repr            = { emit = "common:python.repr",             min_args = 1, max_args = 1, slot = "to_string" }
 bytes           = { emit = "common:python.bytes",     min_args = 0, max_args = 3 }
 
 # ── Collections ──────────────────────────────────────────────────────────────
@@ -1159,6 +1163,10 @@ module = "wasi:clocks/wall-clock"
 [builtin_return_types]
 str = "str"
 repr = "str"
+# `float(x)` IS a float — without this the call has no type and `str(float(3))`
+# could not reach `[builtin_slots.double] to_string`, printing "3" for "3.0".
+float = "float"
+__py_float_repr__ = "str"
 chr = "str"
 hex = "str"
 oct = "str"
@@ -1225,3 +1233,11 @@ contains = "host:ecma:object:hasIn"
 # arm.
 [builtin_slots.int]
 mod = "common:math.floor_mod"
+
+# A Python float ALWAYS displays with a fractional part — `str(4.0)` is "4.0"
+# and `repr(-0.0)` is "-0.0" — where ECMA `String()` answers "4" and "0". That
+# is a property of the TYPE, so declaring it once here covers every rendering
+# site (`str()`, `repr()`, f-strings, `+` on a str) instead of the walker
+# wrapping each expression it happens to know is a float.
+[builtin_slots.double]
+to_string = "common:python.float_repr"

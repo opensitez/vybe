@@ -42,7 +42,7 @@ c_cases! {
     strcmp_nonempty_greater_than_empty => { declarations: "", body: "if (strcmp(\"a\", \"\") > 0) puts(\"gt\"); else puts(\"bad\");\nreturn 0;", expect: ["gt"] },
     strlen_after_strcat_includes_suffix => { declarations: "char left[32] = \"moon\";", body: "strcat(left, \"light\");\nprintf(\"%d\\n\", strlen(left));\nreturn 0;", expect: ["9"] },
     strcpy_preserves_embedded_spaces => { declarations: "char dest[32] = \"aaaa\";", body: "puts(strcpy(dest, \"a b\"));\nreturn 0;", expect: ["a b"] },
-    strstr_match_can_start_midword => { declarations: "", body: "puts(strstr(\"mississippi\", \"issi\"));\nreturn 0;", expect: ["issippi"] },
+    strstr_match_can_start_midword => { declarations: "", body: "puts(strstr(\"mississippi\", \"issi\"));\nreturn 0;", expect: ["ississippi"] },
     strchr_can_find_null_terminator_position => { declarations: "", body: "if (strchr(\"abc\", '\\0') != NULL) puts(\"term\"); else puts(\"bad\");\nreturn 0;", expect: ["term"] },
     strcmp_numeric_text_uses_lexicographic_order => { declarations: "", body: "if (strcmp(\"10\", \"2\") < 0) puts(\"lex\"); else puts(\"bad\");\nreturn 0;", expect: ["lex"] },
     strcpy_return_value_is_destination_pointer => { declarations: "char dest[32] = \"aaaa\";", body: "if (strcpy(dest, \"tool\") == dest) puts(\"same\"); else puts(\"bad\");\nreturn 0;", expect: ["same"] },

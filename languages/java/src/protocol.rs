@@ -28,6 +28,10 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "compareTo" => ("compare".into(), Some(Compare)),
         "iterator" => ("iterator".into(), Some(Iterator)),
         "next" => ("next".into(), Some(Next)),
+        // `Collection.isEmpty()` / `String.isEmpty()` — the shared emptiness
+        // role. Keeps its SOURCE spelling as the canonical name: only the SLOT
+        // is added, so `x.isEmpty()` still resolves by name and nothing moves.
+        "isEmpty" => ("isEmpty".into(), Some(IsEmpty)),
         // `AutoCloseable.close` is the try-with-resources release hook — the
         // same role Python spells `__exit__` and C# spells `Dispose`.
         "close" => ("exit".into(), Some(Exit)),
