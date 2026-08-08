@@ -698,14 +698,75 @@ pub fn parse(source: &str) -> Result<Module, String> {
     let mut module = Module {
         name: String::new(),
         language: Lang::Cobol,
-        body: Vec::new(),
+        body: cobol_exception_condition_prelude(),
         imports: Vec::new(),
         directives: Default::default() };
+
+    // A COBOL source file may hold SEVERAL `PROGRAM-ID` units. The grammar's
+    // top-level group repeats, so they arrive as one FLAT sibling run:
+    //
+    //   identification_division(MAINP), data_division, procedure_division,
+    //   identification_division(SUBR),  data_division, procedure_division, …
+    //
+    // Only the FIRST unit is the run unit. Every later one is a callable
+    // program, and `CALL "SUBR" USING X` already lowers to
+    // `Call{Ident("SUBR")}` — cobol's profile is on the common resolver
+    // (`uses_common_resolver`), so the unit only has to BE a function for that
+    // call to resolve. Appending every unit's divisions onto one body instead
+    // left the subprograms' statements loose at module scope with nothing
+    // named after them, so `CALL` found `undefined`.
+    // Each unit becomes a NAMESPACE. COBOL keeps program names and data names
+    // in SEPARATE namespaces — `PROGRAM-ID. T.` alongside `01 T` is legal, and
+    // the test corpus generates exactly that. Emitting the unit's entry as a
+    // plain module-scope function put both in ONE flat namespace, so `T(1)`
+    // resolved to the function and failed with "string is not callable" — 92
+    // tests, every one of them a program whose name matches a data item.
+    //
+    // `StmtKind::NamespaceDecl` (statements.rs:2177) qualifies the FUNCTION and
+    // type members it contains to `ns.member` while leaving variables alone, so
+    // the entry becomes `t.t` and the data stays `t`. Different names, no
+    // collision — and `resolve_namespaced_function_identity` resolves the
+    // member chain back, which is the route `CALL … USING BY REFERENCE` already
+    // relies on.
+    let mut unit_index = 0usize;
+    let mut run_unit_name: Option<String> = None;
+    let mut current_unit_name = String::new();
+    let mut unit_stmts: Vec<Statement> = Vec::new();
+    // `LOCAL-STORAGE` for the unit currently being read. It is NOT unit-scoped
+    // storage: it belongs to one invocation of the entry, so it is held aside
+    // here and prepended to the entry's own body when the procedure division
+    // arrives.
+    let mut unit_local_storage: Vec<Statement> = Vec::new();
+    let mut units: Vec<(String, Vec<Statement>)> = Vec::new();
 
     for pair in program.into_inner() {
         match pair.as_rule() {
             Rule::identification_division => {
-                walk_identification_division(pair, &mut module)?;
+                // Flush BEFORE the call rewrites `module.name`, and only open a
+                // new unit for a real `PROGRAM-ID` — a `CLASS-ID` /
+                // `INTERFACE-ID` division declares a TYPE, has no procedure
+                // division and nothing to call.
+                let declares_program = {
+                    if unit_index > 0 {
+                        units.push((current_unit_name.clone(), std::mem::take(&mut unit_stmts)));
+                        // A unit with a data division but no procedure division
+                        // never consumed its `LOCAL-STORAGE`; it must not leak
+                        // into the next unit's entry.
+                        unit_local_storage.clear();
+                    }
+                    walk_identification_division(pair, &mut module)?
+                };
+                if !declares_program {
+                    continue;
+                }
+                unit_index += 1;
+                current_unit_name = module.name.clone();
+                // `walk_identification_division` writes `module.name`, so a
+                // multi-unit file would otherwise end up named after its LAST
+                // program. The module is the run unit.
+                if run_unit_name.is_none() {
+                    run_unit_name = Some(current_unit_name.clone());
+                }
             }
             Rule::class_id_paragraph => {
                 walk_class_id(pair, &mut module.body)?;
@@ -717,24 +778,312 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 walk_environment_division(pair, &mut module, &mut ctx)?;
             }
             Rule::data_division => {
-                walk_data_division(pair, &mut module.body, &mut ctx)?;
+                // Storage stays at MODULE scope for every unit, including the
+                // subprograms. MEASURED against GnuCOBOL: `WORKING-STORAGE`
+                // PERSISTS across `CALL`s (a counter program called three
+                // times prints 1, 2, 3), so it is static storage, not locals —
+                // putting it inside the function body would reset it per call.
+                walk_data_division(pair, &mut unit_stmts, &mut unit_local_storage, &mut ctx)?;
             }
             Rule::procedure_division => {
-                walk_procedure_division(pair, &mut module.body, &ctx)?;
+                // EVERY unit becomes a function, the run unit included: a
+                // COBOL program can be RUN or CALLED, and which one it is is
+                // not a property of the source. A file holding only a
+                // subprogram is its own unit 1, so treating unit 1 as
+                // "statements at module scope" left it with nothing callable
+                // — which is why another language could not reach it even
+                // though the linker had loaded the file.
+                let params = cobol_procedure_using_params(&pair);
+                let mut unit_body = Vec::new();
+                walk_procedure_division(pair, &mut unit_body, &ctx)?;
+
+                // A COBOL paragraph is a FUNCTION OF the unit, not a statement
+                // IN it — `walk_procedure_division` already normalizes each one
+                // to a `FunctionDecl`. Left inside the entry function they
+                // became NESTED declarations, and a `PERFORM` of a paragraph
+                // written later in the division no longer resolved: that cost
+                // 92 tests, concentrated in the categories that use paragraphs
+                // and tables (`arrays_tables_indexing`, `inspect_tallying`,
+                // `binary_comp_types`). Hoist the declarations to module scope
+                // and keep only executable statements in the entry.
+                let (paragraph_decls, entry_statements): (Vec<_>, Vec<_>) = unit_body
+                    .into_iter()
+                    .partition(|stmt| matches!(stmt.kind, StmtKind::FunctionDecl { .. }));
+                unit_stmts.extend(paragraph_decls);
+                // `LOCAL-STORAGE` first, so each invocation re-declares it and
+                // re-runs its `VALUE` clauses before the entry's own statements
+                // observe it.
+                let mut entry_body = std::mem::take(&mut unit_local_storage);
+                entry_body.extend(entry_statements);
+                // The frame RETURNS its entry; the caller binds it. Assigning
+                // to the unit's name from INSIDE the frame cannot work when a
+                // data item shares that name — `PROGRAM-ID. T.` with `01 T` —
+                // because the assignment resolves to the frame's own local and
+                // the entry lands in the data item. Returning moves the
+                // binding out to module scope, where only the program name
+                // exists. That is COBOL's two namespaces, kept apart by
+                // ordinary lexical scope.
+                unit_stmts.push(Statement::new(StmtKind::Return(Some(
+                    Expression::new(ExprKind::Lambda {
+                        params,
+                        body: LambdaBody::Block(entry_body),
+                        is_async: false,
+                        captures: Vec::new() }),
+                ))));
             }
             Rule::nested_program | Rule::EOI => {}
             _ => {}
         }
     }
 
+    if unit_index > 0 {
+        units.push((current_unit_name.clone(), std::mem::take(&mut unit_stmts)));
+    }
+    // CALLED units first, the run unit LAST. The run unit holds the `CALL`s,
+    // and a callee's parameter modes are only registered once its own
+    // declaration has been compiled — emitted in source order, `CALL "SUBR"`
+    // compiled before `subr.subr` existed, found no modes, and passed its
+    // `BY REFERENCE` argument by value (`ref=0001` instead of `0099`).
+    let run_unit_first = run_unit_name.clone();
+    let (run_units, called_units): (Vec<_>, Vec<_>) = units.into_iter().partition(|(name, _)| {
+        run_unit_first.as_deref().is_some_and(|run| run == name)
+    });
+    // A unit is a LEXICAL FRAME that runs once.
+    //
+    //     var UNIT = (function () {
+    //         <WORKING-STORAGE / FILE / LINKAGE declarations>   ← locals
+    //         <paragraphs>                                      ← close over them
+    //         return function (linkage) { <LOCAL-STORAGE>; <entry> };
+    //     })();
+    //
+    // `WORKING-STORAGE` persists across `CALL` because the frame runs once and
+    // stays alive, and every paragraph sees the same storage through ordinary
+    // capture. The unit had been a `NamespaceDecl`, which qualifies CODE but
+    // has no `VarDecl` arm, so data items stayed FLAT globals: `PROGRAM-ID. T.`
+    // beside `01 T` — legal COBOL, since program names and data names are
+    // separate namespaces — put both in global `t` and the data item read `00`
+    // where GnuCOBOL reads `01`. As a frame local the data item has no global
+    // name to collide with, and the unit's own global holds only its entry.
+    for (name, body) in called_units.into_iter().chain(run_units) {
+        module.body.push(Statement::new(StmtKind::VarDecl {
+            declarations: vec![VarDeclarator {
+                pattern: BindingPattern::Ident(name.clone()),
+                type_hint: None,
+                init: Some(Expression::new(ExprKind::Call {
+                    callee: Box::new(Expression::new(ExprKind::Lambda {
+                        params: Vec::new(),
+                        body: LambdaBody::Block(body),
+                        is_async: false,
+                        captures: Vec::new() })),
+                    args: Vec::new(),
+                    optional: false })),
+                array_bounds: None,
+                with_events: false }],
+            kind: VarDeclKind::Var }));
+    }
+
+    if let Some(name) = run_unit_name {
+        module.name = name.clone();
+        // Invoke the run unit LAST — after every unit's frame has run.
+        // Called in source position, `CALL "CTR"` ran while CTR's
+        // `WORKING-STORAGE` was still undeclared and its counter read NaN.
+        module.body.push(Statement::new(StmtKind::Expr(Expression::new(
+            ExprKind::Call {
+                callee: Box::new(Expression::ident(&name)),
+                args: Vec::new(),
+                optional: false },
+        ))));
+    }
+
     Ok(module)
+}
+
+/// Whether `name` is one of the declared exception conditions.
+///
+/// Spelling alone, deliberately: `EC-` is the standard's reserved prefix for
+/// condition names, and the corpus also uses `EC-1` / `EC-A` / `EC-NUM` as
+/// ordinary DATA names — those are not in the tree, so they must not be
+/// constructed. Membership is the test, not the prefix.
+fn cobol_is_exception_condition(name: &str) -> bool {
+    cobol_exception_condition_prelude().iter().any(|stmt| {
+        matches!(&stmt.kind, StmtKind::ClassDecl { name: declared, .. }
+            if declared.eq_ignore_ascii_case(name))
+    })
+}
+
+/// The ISO 1989:2002 exception-condition tree, as real classes.
+///
+/// `RAISE EXCEPTION EC-PROGRAM` lowered to `Throw { Ident("EC-PROGRAM") }`
+/// against a name nothing declared, so every raise threw `undefined` and the
+/// report read `RuntimeError: undefined` — the condition's identity, which is
+/// the whole point of `RAISE`, was gone. php has the same problem and solves it
+/// by DECLARING its hierarchy (`Exception`, `RuntimeException extends
+/// Exception`, …) as a prelude the walker parses into `ClassDecl`s; the error
+/// boundary keeps declarations outside its `Try` and the module's first pass
+/// predeclares them.
+///
+/// Built as AST rather than COBOL source because the condition names are not
+/// expressible as `CLASS-ID` units — they are level-1/level-2 condition names,
+/// and the LEVELS are the inheritance: `EC-BOUND-SUBSCRIPT` is an `EC-BOUND` is
+/// an `EC-ALL`, so `USE AFTER EXCEPTION EC-BOUND` catches the subscript case.
+fn cobol_exception_condition_prelude() -> Vec<Statement> {
+    // (level-1 category, its level-2 conditions). Level-2 names are spelled in
+    // full because COBOL spells them in full — the prefix is not a separator.
+    const CONDITIONS: &[(&str, &[&str])] = &[
+        ("EC-ARGUMENT", &["EC-ARGUMENT-FUNCTION", "EC-ARGUMENT-IMP"]),
+        ("EC-BOUND", &[
+            "EC-BOUND-IMP", "EC-BOUND-ODO", "EC-BOUND-OVERFLOW", "EC-BOUND-PTR",
+            "EC-BOUND-PTR-NULL", "EC-BOUND-REF-MOD", "EC-BOUND-SET",
+            "EC-BOUND-SUBSCRIPT", "EC-BOUND-TABLE-LIMIT",
+        ]),
+        ("EC-DATA", &[
+            "EC-DATA-CONVERSION", "EC-DATA-IMP", "EC-DATA-INCOMPATIBLE",
+            "EC-DATA-PTR-NULL",
+        ]),
+        ("EC-FLOW", &[
+            "EC-FLOW-GLOBAL-EXIT", "EC-FLOW-GLOBAL-GOBACK", "EC-FLOW-IMP",
+            "EC-FLOW-RELEASE", "EC-FLOW-REPORT", "EC-FLOW-RETURN",
+            "EC-FLOW-SEARCH", "EC-FLOW-USE",
+        ]),
+        ("EC-FUNCTION", &["EC-FUNCTION-NOT-FOUND", "EC-FUNCTION-PTR-INVALID", "EC-FUNCTION-PTR-NULL"]),
+        ("EC-I-O", &[
+            "EC-I-O-AT-END", "EC-I-O-EOP", "EC-I-O-EOP-OVERFLOW",
+            "EC-I-O-FILE-SHARING", "EC-I-O-IMP", "EC-I-O-INVALID-KEY",
+            "EC-I-O-LINAGE", "EC-I-O-LOGIC-ERROR", "EC-I-O-PERMANENT-ERROR",
+            "EC-I-O-RECORD-CONTENT", "EC-I-O-RECORD-OPERATION", "EC-I-O-WARNING",
+        ]),
+        ("EC-IMP", &["EC-IMP-ACCEPT", "EC-IMP-DISPLAY"]),
+        ("EC-LOCALE", &[
+            "EC-LOCALE-IMP", "EC-LOCALE-INCOMPATIBLE", "EC-LOCALE-INVALID",
+            "EC-LOCALE-INVALID-PTR", "EC-LOCALE-MISSING", "EC-LOCALE-SIZE",
+        ]),
+        ("EC-OO", &[
+            "EC-OO-CONFORMANCE", "EC-OO-EXCEPTION", "EC-OO-IMP",
+            "EC-OO-METHOD", "EC-OO-NULL", "EC-OO-RESOURCE", "EC-OO-UNIVERSAL",
+        ]),
+        ("EC-ORDER", &["EC-ORDER-IMP", "EC-ORDER-NOT-SUPPORTED"]),
+        ("EC-OVERFLOW", &["EC-OVERFLOW-IMP", "EC-OVERFLOW-STRING", "EC-OVERFLOW-UNSTRING"]),
+        ("EC-PROGRAM", &[
+            "EC-PROGRAM-ARG-MISMATCH", "EC-PROGRAM-ARG-OMITTED",
+            "EC-PROGRAM-CANCEL-ACTIVE", "EC-PROGRAM-IMP",
+            "EC-PROGRAM-NOT-FOUND", "EC-PROGRAM-PTR-NULL",
+            "EC-PROGRAM-RECURSIVE-CALL",
+        ]),
+        ("EC-RAISING", &["EC-RAISING-IMP", "EC-RAISING-NOT-SPECIFIED"]),
+        ("EC-RANGE", &[
+            "EC-RANGE-IMP", "EC-RANGE-INDEX", "EC-RANGE-INSPECT-SIZE",
+            "EC-RANGE-INVALID", "EC-RANGE-PERFORM-VARYING", "EC-RANGE-PTR",
+            "EC-RANGE-SEARCH-INDEX", "EC-RANGE-SEARCH-NO-MATCH",
+        ]),
+        ("EC-REPORT", &[
+            "EC-REPORT-ACTIVE", "EC-REPORT-COLUMN-OVERLAP", "EC-REPORT-FILE-MODE",
+            "EC-REPORT-IMP", "EC-REPORT-INACTIVE", "EC-REPORT-LINE-OVERLAP",
+            "EC-REPORT-NOT-TERMINATED", "EC-REPORT-PAGE-LIMIT",
+            "EC-REPORT-PAGE-WIDTH", "EC-REPORT-SUM-SIZE", "EC-REPORT-VARYING",
+        ]),
+        ("EC-SCREEN", &[
+            "EC-SCREEN-FIELD-OVERLAP", "EC-SCREEN-IMP", "EC-SCREEN-ITEM-TRUNCATED",
+            "EC-SCREEN-LINE-NUMBER", "EC-SCREEN-STARTING-COLUMN",
+        ]),
+        ("EC-SIZE", &[
+            "EC-SIZE-ADDRESS", "EC-SIZE-EXPONENTIATION", "EC-SIZE-IMP",
+            "EC-SIZE-OVERFLOW", "EC-SIZE-TRUNCATION", "EC-SIZE-UNDERFLOW",
+            "EC-SIZE-ZERO-DIVIDE",
+        ]),
+        ("EC-SORT-MERGE", &[
+            "EC-SORT-MERGE-ACTIVE", "EC-SORT-MERGE-FILE-OPEN",
+            "EC-SORT-MERGE-IMP", "EC-SORT-MERGE-RELEASE", "EC-SORT-MERGE-RETURN",
+            "EC-SORT-MERGE-SEQUENCE",
+        ]),
+        ("EC-STORAGE", &["EC-STORAGE-IMP", "EC-STORAGE-NOT-ALLOC", "EC-STORAGE-NOT-AVAIL"]),
+        ("EC-USER", &[]),
+        ("EC-VALIDATE", &[
+            "EC-VALIDATE-CONTENT", "EC-VALIDATE-FORMAT", "EC-VALIDATE-IMP",
+            "EC-VALIDATE-RELATION", "EC-VALIDATE-VARYING",
+        ]),
+    ];
+
+    fn condition_class(name: &str, parent: Option<&str>) -> Statement {
+        Statement::new(StmtKind::ClassDecl {
+            name: name.to_string(),
+            parents: parent.map(|p| vec![p.to_string()]).unwrap_or_default(),
+            interfaces: Vec::new(),
+            members: Vec::new(),
+            modifiers: ClassModifiers::default(),
+            decorators: Vec::new() })
+    }
+
+    let mut out = vec![condition_class("EC-ALL", None)];
+    for (category, specifics) in CONDITIONS {
+        out.push(condition_class(category, Some("EC-ALL")));
+        for specific in *specifics {
+            out.push(condition_class(specific, Some(category)));
+        }
+    }
+    out
+}
+
+/// `DISPLAY` writes ONE record: the operands concatenated with no separator,
+/// then a newline. Callers pass operands already formatted to their PICTURE.
+///
+/// Not `StmtKind::Echo`, which compiles to `web:console.log` — the browser
+/// console, not the `wasi:cli/stdout` every other language's output reaches.
+/// c (`__c_write_stdout`) and java (`__j_write`) already bind
+/// `intrinsic:write_stdout`; cobol was the last real producer of `Echo`, and
+/// php had already moved off it. Nothing about the FORMATTING changes: the
+/// operands were always built by `common:str_pad_start` / `common:str_concat`,
+/// and `Echo` contributed only the write.
+///
+/// `write_stdout` is byte-faithful and appends nothing, so the record
+/// terminator is explicit here — `web:console.log` had been supplying it.
+///
+/// A plain call is also an `Expr(Call)`, which the compiler's closure-capture
+/// prescan traverses. `Echo` is absent from that match, so a name appearing
+/// ONLY inside a DISPLAY was never boxed into an enclosing frame's shared env
+/// and read null from a closure.
+fn cobol_display_stmt(exprs: Vec<Expression>) -> StmtKind {
+    let mut operands = exprs.into_iter();
+    let mut record = match operands.next() {
+        Some(first) => first,
+        None => Expression::string("") };
+    for operand in operands {
+        record = binary(BinOp::Concat, record, operand);
+    }
+    record = binary(BinOp::Concat, record, Expression::string("\n"));
+    StmtKind::Expr(Expression::new(ExprKind::Call {
+        callee: Box::new(Expression::ident("__cobol_display")),
+        args: vec![Argument::positional(record)],
+        optional: false }))
+}
+
+/// The `PROCEDURE DIVISION USING …` parameters of a program unit, read WITHOUT
+/// consuming the pair so the division itself can still be walked.
+///
+/// `walk_procedure_division` already computes these, but it can only attach
+/// them to a named leading PARAGRAPH — a subprogram whose procedure division is
+/// bare statements has no paragraph to hang them on, and the parameters were
+/// dropped. They are the program's own signature, so the wrapping function
+/// needs them directly.
+fn cobol_procedure_using_params(pair: &Pair<Rule>) -> Vec<Param> {
+    pair.clone()
+        .into_inner()
+        .find(|child| child.as_rule() == Rule::using_clause)
+        .map(walk_using_params)
+        .unwrap_or_default()
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // Identification Division
 // ════════════════════════════════════════════════════════════════════════════
 
-fn walk_identification_division(pair: Pair<Rule>, module: &mut Module) -> Result<(), String> {
+/// Returns whether this division declared a `PROGRAM-ID`.
+///
+/// An `IDENTIFICATION DIVISION` also heads `CLASS-ID` and `INTERFACE-ID` units,
+/// which are types rather than programs: they have no procedure division and
+/// nothing to call. Treating them as program units gave them an EMPTY name and
+/// synthesized a call to it.
+fn walk_identification_division(pair: Pair<Rule>, module: &mut Module) -> Result<bool, String> {
+    let mut declares_program = false;
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::program_id_paragraph => {
@@ -743,6 +1092,7 @@ fn walk_identification_division(pair: Pair<Rule>, module: &mut Module) -> Result
                     .find(|p| matches!(p.as_rule(), Rule::ident_name | Rule::ident_or_keyword))
                 {
                     module.name = name_pair.as_str().to_string();
+                    declares_program = true;
                 }
             }
             Rule::class_id_paragraph => {
@@ -755,7 +1105,7 @@ fn walk_identification_division(pair: Pair<Rule>, module: &mut Module) -> Result
             _ => {}
         }
     }
-    Ok(())
+    Ok(declares_program)
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1114,9 +1464,19 @@ fn parse_cobol_start_relation(source: &str) -> FileKeyRelation {
 // Data Division
 // ════════════════════════════════════════════════════════════════════════════
 
+/// `body` receives the storage that lives for the whole unit;
+/// `per_invocation` receives `LOCAL-STORAGE`, which does not.
+///
+/// The three sections had been collapsed into one arm, so `LOCAL-STORAGE`
+/// was declared beside `WORKING-STORAGE` and inherited its lifetime — a
+/// counter in it printed 1, 2 across two `CALL`s where GnuCOBOL prints 1, 1.
+/// The standard is explicit that `LOCAL-STORAGE` is allocated afresh on each
+/// invocation and re-initialized to its `VALUE` clauses, which is what a
+/// declaration inside the entry's own body already means.
 fn walk_data_division(
     pair: Pair<Rule>,
     body: &mut Vec<Statement>,
+    per_invocation: &mut Vec<Statement>,
     ctx: &mut CobolWalkerContext,
 ) -> Result<(), String> {
     for child in pair.into_inner() {
@@ -1124,7 +1484,10 @@ fn walk_data_division(
             Rule::file_section => {
                 walk_file_section(child, body, ctx)?;
             }
-            Rule::working_storage_section | Rule::local_storage_section | Rule::linkage_section => {
+            Rule::local_storage_section => {
+                walk_storage_section(child, per_invocation, ctx)?;
+            }
+            Rule::working_storage_section | Rule::linkage_section => {
                 walk_storage_section(child, body, ctx)?;
             }
             Rule::screen_section => {
@@ -1613,12 +1976,26 @@ fn walk_regular_data_item(
             optional: false }))
         }
     } else {
-        init_value.or_else(|| {
-            Some(default_value_for_cobol_type(
-                pic_str.as_deref(),
-                usage_str.as_deref(),
-            ))
-        })
+        // `01 N REDEFINES D PIC 9(4).` — an ELEMENTARY item redefining another
+        // names D's storage, so it starts as whatever D holds. Only the GROUP
+        // branch above aliased anything, so an elementary REDEFINES fell
+        // through to its own PIC default and every read came back as zeros or
+        // spaces instead of the redefined item's characters.
+        //
+        // Reads only, exactly as the group branch: a write through the
+        // redefining item still does not propagate back, which needs the shared
+        // variant storage rather than a copy (recordprimitiveplan.md step 5).
+        //
+        // A VALUE clause wins if one is somehow present, so this never
+        // overrides a stated initial value.
+        init_value
+            .or_else(|| redefines_target.as_deref().map(Expression::ident))
+            .or_else(|| {
+                Some(default_value_for_cobol_type(
+                    pic_str.as_deref(),
+                    usage_str.as_deref(),
+                ))
+            })
     };
 
     if name.is_empty() {
@@ -2539,7 +2916,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
                     *e = cobol_pic_format_expr(std::mem::replace(e, Expression::null()), fmt);
                 }
             }
-            StmtKind::Echo(exprs)
+            cobol_display_stmt(exprs)
         }
 
         // ── ACCEPT ──────────────────────────────────────────────────────
@@ -2638,6 +3015,18 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
                 .find(|p| p.as_rule() == Rule::expression)
                 .map(|p| walk_expression(p))
                 .transpose()?;
+            // `RAISE EXCEPTION EC-x` names a CONDITION, so raising it
+            // constructs one — the same shape as php's `throw new
+            // RuntimeException`. Thrown bare, the class object itself went out
+            // and the report read `[function ec-program]`. `RAISE identifier`
+            // on an object reference (OO COBOL) still throws the value.
+            let expr = expr.map(|e| match &e.kind {
+                ExprKind::Ident(name) if cobol_is_exception_condition(name) => {
+                    Expression::new(ExprKind::New {
+                        class: Box::new(e.clone()),
+                        args: Vec::new() })
+                }
+                _ => e });
             StmtKind::Throw { expr, cause: None }
         }
 
@@ -2798,6 +3187,7 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
         Rule::nested_program_stmt => {
             // Compile inline — walk its procedure division
             let mut nested_body = Vec::new();
+            let mut nested_local = Vec::new();
             let mut nested_ctx = CobolWalkerContext::new();
             for child in pair.into_inner() {
                 match child.as_rule() {
@@ -2805,7 +3195,11 @@ fn walk_statement(pair: Pair<Rule>, ctx: &CobolWalkerContext) -> Result<Option<S
                         walk_procedure_division(child, &mut nested_body, &nested_ctx)?;
                     }
                     Rule::data_division => {
-                        walk_data_division(child, &mut nested_body, &mut nested_ctx)?;
+                        // A nested program is one BLOCK — it has no separate
+                        // entry to re-enter, so its `LOCAL-STORAGE` keeps the
+                        // block's lifetime, as before.
+                        walk_data_division(child, &mut nested_body, &mut nested_local, &mut nested_ctx)?;
+                        nested_body.append(&mut nested_local);
                     }
                     _ => {}
                 }
@@ -3067,7 +3461,7 @@ fn walk_stop_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
 
     for child in pair.into_inner() {
         if child.as_rule() == Rule::literal {
-            stmts.push(Statement::new(StmtKind::Echo(vec![walk_literal(child)?])));
+            stmts.push(Statement::new(cobol_display_stmt(vec![walk_literal(child)?])));
         }
     }
 
@@ -5290,6 +5684,10 @@ fn walk_call_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
     let mut callee_name = String::new();
     let mut args: Vec<Argument> = Vec::new();
     let mut returning_var: Option<String> = None;
+    // Statements the call needs emitted BEFORE it (BY CONTENT temporaries).
+    let mut prelude: Vec<Statement> = Vec::new();
+    // Sticky argument-passing mode. COBOL's default is BY REFERENCE.
+    let mut by_content = false;
 
     for child in children {
         match child.as_rule() {
@@ -5306,10 +5704,50 @@ fn walk_call_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
                 }
             }
             Rule::call_arg => {
+                // COBOL decides BY REFERENCE / BY CONTENT / BY VALUE at the
+                // CALL SITE, not in the callee — `PROCEDURE DIVISION USING`
+                // only names the linkage items. The keyword is also STICKY:
+                // it governs every following argument until another `BY`
+                // appears. Dropping it here made a `BY CONTENT` argument
+                // alias the caller's storage once the callee's default
+                // became by-reference.
+                let mut arg_name: Option<String> = None;
                 for ca in child.into_inner() {
-                    if ca.as_rule() == Rule::ident_name {
-                        args.push(Argument::positional(Expression::ident(ca.as_str())));
+                    match ca.as_rule() {
+                        Rule::kw_reference => by_content = false,
+                        Rule::kw_content | Rule::kw_value => by_content = true,
+                        Rule::ident_name => arg_name = Some(ca.as_str().to_string()),
+                        _ => {}
                     }
+                }
+                let Some(name) = arg_name else { continue };
+                if by_content {
+                    // BY CONTENT / BY VALUE pass a COPY. The callee may still
+                    // write its linkage item — GnuCOBOL runs the `MOVE` — but
+                    // the caller's storage must not change. Bind the value to
+                    // a temporary and pass THAT, so the callee aliases the
+                    // temporary and the write lands there.
+                    let tmp = format!("__cobol_by_content_{}", args.len());
+                    prelude.push(Statement::new(StmtKind::VarDecl {
+                        kind: VarDeclKind::Dim,
+                        declarations: vec![VarDeclarator {
+                            pattern: BindingPattern::Ident(tmp.clone()),
+                            type_hint: None,
+                            init: Some(Expression::ident(&name)),
+                            array_bounds: None,
+                            with_events: false }] }));
+                    args.push(Argument::positional(Expression::ident(&tmp)));
+                } else {
+                    // The REFERENCE is taken here, at the call site, because
+                    // that is where COBOL decides it. The callee's entry is a
+                    // closure over its unit's frame, so it registers no
+                    // declared parameter modes for the shared compiler to
+                    // consult — and it should not have to: `PROCEDURE DIVISION
+                    // USING` names the linkage items, it does not say how they
+                    // are passed.
+                    args.push(Argument::positional(Expression::new(ExprKind::RefOf(
+                        Box::new(PlaceExpr::Ident(name.clone())),
+                    ))));
                 }
             }
             Rule::kw_returning => {}
@@ -5322,18 +5760,26 @@ fn walk_call_stmt(pair: Pair<Rule>) -> Result<StmtKind, String> {
         }
     }
 
+    // A called program's entry is the value of the unit's own global — the
+    // unit's frame assigned it there when it ran.
     let call_expr = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::ident(&callee_name)),
         args,
         optional: false });
 
-    if let Some(ret_var) = returning_var {
-        Ok(StmtKind::Assign {
+    let call_stmt = if let Some(ret_var) = returning_var {
+        StmtKind::Assign {
             targets: vec![Expression::ident(&ret_var)],
-            value: call_expr, by_ref: false })
+            value: call_expr, by_ref: false }
     } else {
-        Ok(StmtKind::Expr(call_expr))
+        StmtKind::Expr(call_expr)
+    };
+
+    if prelude.is_empty() {
+        return Ok(call_stmt);
     }
+    prelude.push(Statement::new(call_stmt));
+    Ok(StmtKind::Block(prelude))
 }
 
 // ── INITIALIZE ──────────────────────────────────────────────────────────────
@@ -6247,8 +6693,10 @@ fn walk_class_body(pair: Pair<Rule>, members: &mut Vec<ClassMember>) -> Result<(
             Rule::data_division => {
                 // Class-level data division → fields
                 let mut field_stmts = Vec::new();
+                let mut local_storage_fields = Vec::new();
                 let mut local_ctx = CobolWalkerContext::new();
-                walk_data_division(child, &mut field_stmts, &mut local_ctx)?;
+                walk_data_division(child, &mut field_stmts, &mut local_storage_fields, &mut local_ctx)?;
+                field_stmts.append(&mut local_storage_fields);
                 for stmt in field_stmts {
                     if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
                         for decl in declarations {
@@ -6289,8 +6737,10 @@ fn walk_class_body(pair: Pair<Rule>, members: &mut Vec<ClassMember>) -> Result<(
                     match oc.as_rule() {
                         Rule::data_division => {
                             let mut field_stmts = Vec::new();
+                            let mut local_storage_fields = Vec::new();
                             let mut local_ctx = CobolWalkerContext::new();
-                            walk_data_division(oc, &mut field_stmts, &mut local_ctx)?;
+                            walk_data_division(oc, &mut field_stmts, &mut local_storage_fields, &mut local_ctx)?;
+                            field_stmts.append(&mut local_storage_fields);
                             for stmt in field_stmts {
                                 if let StmtKind::VarDecl { declarations, .. } = &stmt.kind {
                                     for decl in declarations {
@@ -6430,12 +6880,22 @@ fn walk_method_def(pair: Pair<Rule>) -> Result<Statement, String> {
 
 fn walk_using_params(pair: Pair<Rule>) -> Vec<Param> {
     let mut params = Vec::new();
-    let mut pass_by = PassBy::Value;
+    // COBOL's default for a `USING` item carrying no `BY` clause is BY
+    // REFERENCE, not by value. MEASURED against GnuCOBOL 3.2:
+    //
+    //   CALL "SUBD" USING BVAL        → dflt=0088   the callee's MOVE lands
+    //
+    // `Value` here silently dropped every write back to the caller for the
+    // spelling COBOL programs use most.
+    let mut pass_by = PassBy::Alias;
 
     for child in pair.into_inner() {
         match child.as_rule() {
             Rule::kw_reference => {
-                pass_by = PassBy::Ref;
+                // True aliasing — the callee writes the caller's storage
+                // directly. The same migration pascal `var`, vb `ByRef`,
+                // c# `ref`, php `&` and fortran `intent(inout)` took.
+                pass_by = PassBy::Alias;
             }
             Rule::kw_content => {
                 pass_by = PassBy::Const;

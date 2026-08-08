@@ -120,6 +120,11 @@ __char_code         = { emit = "common:str_from_char_code",  min_args = 1, max_a
 # PICTURE fixed-width DISPLAY padding (walker wraps field operands).
 __pad_start         = { emit = "common:str_pad_start",       min_args = 3, max_args = 3 }
 __pad_end           = { emit = "common:str_pad_end",         min_args = 3, max_args = 3 }
+# DISPLAY writes its finished record to WASI stdout, the same intrinsic c and
+# java bind. Byte-faithful and appends nothing — the walker supplies the record
+# terminator, since COBOL's record is the operands concatenated with NO
+# separator (see `echo_concatenates_operands` above, now unused).
+__cobol_display     = { emit = "intrinsic:write_stdout",     min_args = 1, max_args = 1 }
 # STOP RUN terminates the whole run from any depth (inside PERFORMed paragraphs
 # too) via WASI cli/exit — ends the VM run, not the host process.
 __stop_run          = { emit = "host:wasi:cli/exit:exit",    min_args = 0, max_args = 0 }
