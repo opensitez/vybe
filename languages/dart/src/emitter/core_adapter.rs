@@ -73,17 +73,19 @@ fn wrap_duration_ms(chunk: &mut Chunk, line: u32) {
     set_field(chunk, "inMilliseconds", line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
-    chunk.emit_f64_const(1000.0, line);
+    // Spans from `primitives::datetime`; `MS_PER_SECOND` doubles as the
+    // millisecond→microsecond factor, Dart's one-tick-finer resolution.
+    chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_SECOND, line);
     chunk.emit_op(Op::F64_MUL, line);
     set_field(chunk, "inMicroseconds", line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
-    chunk.emit_f64_const(1000.0, line);
+    chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_SECOND, line);
     chunk.emit_op(Op::F64_DIV, line);
     set_field(chunk, "inSeconds", line);
     core_wasm::dup(chunk, line);
     chunk.emit_op_u16(Op::LOCAL_GET, ms, line);
-    chunk.emit_f64_const(60_000.0, line);
+    chunk.emit_f64_const(vybe_compiler::primitives::datetime::MS_PER_MINUTE, line);
     chunk.emit_op(Op::F64_DIV, line);
     set_field(chunk, "inMinutes", line);
     core_wasm::dup(chunk, line);
@@ -129,11 +131,25 @@ pub fn emit_duration_abs(chunks: &mut [Chunk], current: usize, line: u32) {
     wrap_duration_ms(&mut chunks[current], line);
 }
 
-fn emit_slot_is_type(chunk: &mut Chunk, slot: u16, type_name: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    get_field(chunk, reflection::FIELD_TYPE, line);
-    chunk.emit_string_const(type_name, line);
-    chunk.emit_op(Op::EQ, line);
+/// Is the value in `slot` a `type_name`? Stack: [] → [i32].
+///
+/// Asks IDENTITY first — `emit_is_instance_of` is the shared rtt test, the same
+/// one `x is T` compiles to — and only then falls back to the `__type` STRING a
+/// legacy wrapper carries. Both, because the two shapes coexist during this
+/// migration: `Duration` is a real class now, so it has an rtt and no `__type`,
+/// while `DateTime` is still an anonymous struct with a `__type` and no rtt.
+///
+/// Keeping only the string compare is what made `d.abs()` and
+/// `d.compareTo(other)` answer nothing the moment Duration became a class:
+/// receiver-blind `[value_methods]` adapters serve every type through this one
+/// question, so it has to recognise both.
+fn emit_slot_is_type(chunks: &mut [Chunk], current: usize, slot: u16, type_name: &str, line: u32) {
+    reflection::emit_is_instance_of(chunks, current, slot, type_name, line);
+    chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
+    get_field(&mut chunks[current], reflection::FIELD_TYPE, line);
+    chunks[current].emit_string_const(type_name, line);
+    chunks[current].emit_op(Op::EQ, line);
+    chunks[current].emit_op(Op::I32_OR, line);
 }
 
 pub fn emit_dart_abs(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -144,7 +160,7 @@ pub fn emit_dart_abs(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     crate::emitter::string_adapter::emit_dart_bigint_abs(chunks, current, line);
     chunks[current].emit_else(line);
-    emit_slot_is_type(&mut chunks[current], value, "Duration", line);
+    emit_slot_is_type(chunks, current, value, "Duration", line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     emit_duration_abs(chunks, current, line);
@@ -183,7 +199,7 @@ pub fn emit_num_remainder(chunks: &mut [Chunk], current: usize, line: u32) {
 pub fn emit_num_is_negative(chunks: &mut [Chunk], current: usize, line: u32) {
     let value = chunks[current].alloc_scratch(1);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
-    emit_slot_is_type(&mut chunks[current], value, "Duration", line);
+    emit_slot_is_type(chunks, current, value, "Duration", line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
     get_field(&mut chunks[current], "isNegative", line);
@@ -422,6 +438,16 @@ pub fn emit_datetime_subtract(chunks: &mut [Chunk], current: usize, line: u32) {
 }
 
 pub fn emit_datetime_difference(chunks: &mut [Chunk], current: usize, line: u32) {
+    emit_datetime_diff_ms(chunks, current, line);
+    wrap_duration_ms(&mut chunks[current], line);
+}
+
+/// The signed millisecond span between two DateTimes. Stack: [a, b] → [ms].
+///
+/// The number alone, because a `Duration` is now a declared CLASS and an emit
+/// has no type index with which to allocate one. The walker hands this result
+/// to `Duration(...)`, so the construction happens where classes are built.
+pub fn emit_datetime_diff_ms(chunks: &mut [Chunk], current: usize, line: u32) {
     let right = chunks[current].alloc_scratch(2);
     let left = right + 1;
     chunks[current].emit_op_u16(Op::LOCAL_SET, right, line);
@@ -429,7 +455,6 @@ pub fn emit_datetime_difference(chunks: &mut [Chunk], current: usize, line: u32)
     datetime_ms_from_obj(&mut chunks[current], left, line);
     datetime_ms_from_obj(&mut chunks[current], right, line);
     chunks[current].emit_op(Op::F64_SUB, line);
-    wrap_duration_ms(&mut chunks[current], line);
 }
 
 fn compare_ms(chunks: &mut [Chunk], current: usize, line: u32, op: Op) {
@@ -507,7 +532,7 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, method, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunks[current].emit_else(line);
     comparable_value_from_obj(&mut chunks[current], left, l, line);
     comparable_value_from_obj(&mut chunks[current], right, r, line);

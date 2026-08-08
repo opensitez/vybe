@@ -70,7 +70,12 @@ identical           = { emit = "common:dart.identical",          min_args = 2, m
 # ── I/O ──────────────────────────────────────────────────────────────────────
 
 print               = { emit = "common:dart.print",              min_args = 1, max_args = 1 }
-StringBuffer        = { emit = "common:dart.sb_new",             min_args = 0, max_args = 0 }
+# `StringBuffer` is NOT a builtin: it is a `dart.core` TYPE node
+# (`tree_register.rs`), so `StringBuffer()` constructs through the shared ctor
+# path — which stamps `__type`/`__types` — and its members resolve by RECEIVER
+# TYPE. A `[builtins]` entry here would intercept the call first, emit the
+# backing struct with no identity, and put the members back on the
+# receiver-blind `[value_methods]` table.
 RegExp              = { emit = "common:dart.regexp_new",         min_args = 1, max_args = 4 }
 Map                 = { emit = "common:dart.map_new",            min_args = 0, max_args = 0 }
 SplayTreeMap        = { emit = "common:dart.sorted_map_new",     min_args = 0, max_args = 0 }
@@ -117,8 +122,20 @@ __dart_runtime_type = { emit = "common:dart.runtime_type",       min_args = 1, m
 __dart_type_to_string = { emit = "common:dart.type_to_string",   min_args = 1, max_args = 1 }
 __dart_is_list_of_int = { emit = "common:dart.is_list_of_int",   min_args = 1, max_args = 1 }
 __dart_double_to_string = { emit = "common:dart.double_to_string", min_args = 1, max_args = 1 }
-Duration            = { emit = "common:dart.duration_new",       min_args = 0, max_args = 1 }
+# `Duration` is not here: it is a `dart.core` CLASS (`core_classes.rs`), so
+# `Duration(...)` is an ordinary construction and its members dispatch on the
+# receiver. The wrapper this replaces was an anonymous struct with a `__type`
+# STRING, which is why `d1 + d2` had no `+` to find.
 DateTime            = { emit = "common:dart.datetime_new",       min_args = 3, max_args = 6 }
+# NOTE — `a.difference(b)` still produces the LEGACY Duration wrapper, not a
+# class instance. `difference` is a receiver-BLIND `[value_methods]` entry that
+# serves DateTime and Set alike and picks between them by sniffing a `__type`
+# STRING at runtime, so the walker cannot rewrite the spelling to a
+# construction without breaking `Set.difference`, and an emit cannot allocate a
+# declared class (it has no type index). The wrapper still answers `.inDays`
+# and friends because the class deliberately keeps the same FIELD names, but
+# two Duration shapes coexist until value-method dispatch becomes
+# receiver-typed. `emit_datetime_diff_ms` is already factored out for that day.
 "DateTime.utc"      = { emit = "common:dart.datetime_utc",       min_args = 3, max_args = 6 }
 "Future.value"      = { emit = "host:ecma:promise:resolve",       min_args = 1, max_args = 1 }
 "Future.error"      = { emit = "host:ecma:promise:reject",        min_args = 1, max_args = 1 }
@@ -134,7 +151,16 @@ DateTime            = { emit = "common:dart.datetime_new",       min_args = 3, m
 "Promise.all"       = { emit = "host:ecma:promise:all",           min_args = 1, max_args = 1 }
 "Promise.race"      = { emit = "host:ecma:promise:race",          min_args = 1, max_args = 1 }
 "Promise.try"       = { emit = "host:ecma:promise:try",           min_args = 1, max_args = 1 }
+# Kept so `dart.core.Duration.zero` stays in the namespace tree — the tree is
+# built FROM these dotted keys. The walker rewrites the SPELLING to
+# `Duration(0)`, a construction of the class, before this emit is reached.
 "Duration.zero"     = { emit = "common:dart.duration_zero",      min_args = 0, max_args = 0 }
+# A dotted key is a TYPE and its STATIC member written as one flat string.
+# `tree_register.rs` splits each at the dot and registers the member under its
+# owner's `statics`, so these lines are the DATA a real namespace is built
+# from — `dart.core.Uri.parse` walks the tree today. They cannot simply be
+# deleted: this table is that namespace's source. What retires is the flat
+# table's role as a RESOLUTION path (namespaceplan Phase 6), not the data.
 "Uri.parse"         = { emit = "common:dart.uri_parse",          min_args = 1, max_args = 1 }
 "Uri.http"          = { emit = "common:dart.uri_http",           min_args = 2, max_args = 4 }
 "Uri.https"         = { emit = "common:dart.uri_https",          min_args = 2, max_args = 4 }
@@ -144,10 +170,26 @@ DateTime            = { emit = "common:dart.datetime_new",       min_args = 3, m
 "List.from"         = { emit = "common:dart.list_from",          min_args = 1, max_args = 2 }
 "List.of"           = { emit = "common:dart.list_from",          min_args = 1, max_args = 2 }
 "List.unmodifiable" = { emit = "common:dart.list_unmodifiable",  min_args = 1, max_args = 1 }
-"BigInt.from"       = { emit = "common:dart.bigint_from",        min_args = 1, max_args = 1 }
+# Kept as its own key even though the walker normalises the SPELLING onto
+# `__dart_bigint_from` below: the `dart.core.BigInt` namespace node is built
+# FROM these dotted keys, so deleting one deletes `dart.core.BigInt.from` from
+# the tree along with it.
+"BigInt.from"       = { emit = "host:ecma:bigint:BigInt",        min_args = 1, max_args = 1 }
 "BigInt.parse"      = { emit = "common:dart.bigint_parse",       min_args = 1, max_args = 2 }
 "BigInt.gcd"        = { emit = "common:dart.bigint_gcd",         min_args = 2, max_args = 2 }
-"__dart_bigint_from" = { emit = "common:dart.bigint_from",       min_args = 1, max_args = 1 }
+# `BigInt.from` normalises in the walker onto this name — the same rewrite
+# `BigInt.zero`/`one`/`two` already used — so ONE spelling carries every
+# BigInt construction and `[builtin_return_types]` below can type it.
+#
+# The emit is the `ecma:bigint` host constructor DIRECTLY rather than through
+# `common:dart.bigint_from`, which was only ever a one-line wrapper around it.
+# Stating the host target is what turns BigInt semantics on: the shared
+# compiler derives `bigint_enabled` from the DECLARATIONS (a `[builtin_types]`
+# bigint spelling, a builtin reaching `ecma:bigint`, or a BigInt literal), and
+# an opaque `common:` name reaches none of them. With it off, every `*`, `%`,
+# `~/` and unary `-` on a BigInt fell through to f64 arithmetic and produced
+# NaN even though the VALUE was a real ECMA BigInt all along.
+"__dart_bigint_from" = { emit = "host:ecma:bigint:BigInt",       min_args = 1, max_args = 1 }
 "String.fromCharCode" = { emit = "host:wasm:js-string:fromCharCode", min_args = 1, max_args = 1 }
 "String.fromCharCodes" = { emit = "common:dart.string_from_char_codes", min_args = 1, max_args = 1 }
 "__dart_string_code_units" = { emit = "common:dart.string_code_units", min_args = 1, max_args = 1 }
@@ -244,7 +286,12 @@ split         = { emit = "common:strings.split",       min_args = 1, max_args = 
 substring     = { emit = "common:strings.substring",   min_args = 1, max_args = 2 }
 padLeft       = { emit = "host:ecma:string:padStart",  min_args = 1, max_args = 2 }
 padRight      = { emit = "host:ecma:string:padEnd",    min_args = 1, max_args = 2 }
-toString      = { emit = "common:dart.to_string",      min_args = 0, max_args = 0 }
+# `slot = "to_string"` says `x.toString()` fills the shared `ToString` slot, so
+# a receiver that is statically a double is rewritten to
+# `[builtin_slots.double] to_string` and `5.0.toString()` answers "5.0". Every
+# other receiver keeps `dart.to_string`, which is the same renderer the
+# `[builtin_slots.string]` row binds for interpolation.
+toString      = { emit = "common:dart.to_string",      min_args = 0, max_args = 0, slot = "to_string" }
 # UTF-16 code unit, not a UTF-8 byte: `common:str_char_code_at` is
 # `wasm:js-string.charCodeAt` and returned 195 (the first byte of `é`)
 # where Dart specifies 233.
@@ -392,6 +439,29 @@ putIfAbsent   = { emit = "common:dart.map_put_if_absent", min_args = 2, max_args
 # through the common resolver's package-root step — the same data the
 # hardcoded `vybe|wasi|wasm` prefix arm used to embody in code.
 
+# The `dart:` libraries, mounted ambiently — the data form of Dart's implicit
+# `dart:core` import, and the same shape java uses for `jvm.java.lang` and
+# csharp for `dotnet.system`. An unqualified chain (`Uri.parse`, `int.parse`)
+# searches these roots in declaration order, so a type's statics resolve by
+# walking the TREE instead of matching a dotted string key in `[builtins]`.
+# `dart.core.Uri.parse` stays reachable fully-qualified from anywhere.
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dart.core"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dart.async"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dart.collection"
+
+[[esm_default]]
+kind = "tree-ambient"
+path = "dart.io"
+
 [[esm_default]]
 kind = "package-root"
 prefix = "vybe"
@@ -447,12 +517,12 @@ kind = "namespace"
 alias = "Set"
 module = "ecma:set"
 
-# DateTime / StringBuffer / Duration namespace aliases retired —
-# these Dart types are constructed via the dotnet wrapper Component
-# Model adapter (`new DateTime()` lowers through `datetime_adapter`,
-# `new StringBuffer()` through `stringbuilder_adapter`). Method
-# dispatch goes through the TypeRegistry vtable; no namespace
-# fallback is needed.
+# DateTime / StringBuffer / Duration namespace aliases retired.
+# `StringBuffer` is a `dart.core` TYPE node (`tree_register.rs`) —
+# construction and member dispatch both resolve from that one
+# registration. The claim this comment used to make, that these lower
+# through dotnet's `stringbuilder_adapter`/`datetime_adapter`, was never
+# true for Dart: the emits are `dart.sb_*` in `emitter/string_adapter.rs`.
 
 # Random is resolved via known_types -> wasi:random/insecure. No namespace
 # indirection needed.
@@ -514,12 +584,12 @@ module = "web:encoding"
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
-# DateTime / StringBuffer retired — handled by the dotnet wrapper
-# Component Model at compile time (`datetime_adapter`, `stringbuilder_adapter`).
+# `StringBuffer` and `Duration` are not here: they are `dart.core` CLASSES, and
+# `[known_types]` is the pre-tree mechanism this table is being migrated off.
+# `DateTime` keeps its entry below until it moves too.
 Random          = ["wasi:random/insecure", "get-insecure-random-u64"]
 Stopwatch       = ["common", "dart.stopwatch_new"]
 RegExp          = ["common", "dart.regexp_new"]
-Duration        = ["common", "dart.duration_new"]
 DateTime        = ["common", "dart.datetime_new"]
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -530,7 +600,12 @@ DateTime        = ["common", "dart.datetime_new"]
 
 # Namespace-tree roots this language resolves platform types against, and
 # mounts ambiently so unqualified names resolve to their `Type` node.
-type_scopes = ["flutter"]
+#
+# `dart` is this language's OWN root (`tree_register.rs`). It carried only
+# function leaves until `dart.core` gained `Type` nodes, so listing it here
+# would have found nothing; now it is what makes `StringBuffer()` construct
+# through the shared ctor path and `sb.toString()` resolve by receiver type.
+type_scopes = ["flutter", "dart"]
 roots = []
 extra_imports = []
 
@@ -549,6 +624,22 @@ bool   = ["bool"]
 array  = ["list", "list<*"]
 map    = ["map", "map<*"]
 set    = ["set", "set<*"]
+# NOT declared here: `bigint`. Dart's `BigInt` is a DISTINCT type — `x + 1` on
+# one is a compile error, not a widening — and declaring a spelling is also
+# declaring that the language's integers widen into each other (Kotlin's
+# `Long`). `"bigint"` is already a PLATFORM spelling, so the inference
+# classifies it without any language declaration; what Dart needs is for the
+# inference to REACH that answer, which `[builtin_return_types]` below does.
+
+# Builtins whose result type is known — the shared inference reads this for a
+# free-call callee, and `"bigint"` is its own spelling for an ECMA BigInt.
+#
+# Every `BigInt` construction normalises onto `__dart_bigint_from` in the
+# walker, so this ONE line types `BigInt.from(n)`, `BigInt.zero`, `BigInt.one`
+# and `BigInt.two` alike, and `var a = BigInt.from(12)` carries the type to
+# every later `a * b`, `a % b`, `a ~/ b` and `-a`.
+[builtin_return_types]
+__dart_bigint_from = "bigint"
 
 # Dart's OVERRIDES of the platform default slot table — builtinslotplan.md §2a.
 #
@@ -577,3 +668,12 @@ eq = "common:dart.value_eq"
 # same renderer, which interpolation simply never consulted.
 [builtin_slots.string]
 to_string = "common:dart.to_string"
+
+# A Dart `double` ALWAYS shows a fractional part — `5.toDouble()` prints `5.0`
+# and `(-0.0)` prints `-0.0` — where the general renderer above (and ECMA
+# `String()`) answer `5` and `0`. That is a property of the TYPE, so the more
+# specific row wins wherever the expression is statically a double, and every
+# rendering site gets it from this one declaration instead of the walker
+# wrapping each expression it happens to recognise.
+[builtin_slots.double]
+to_string = "common:dart.double_to_string"

@@ -33,7 +33,21 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "dart.is_even" => crate::emitter::string_adapter::emit_dart_is_even(chunks, current, line),
         "dart.is_odd" => crate::emitter::string_adapter::emit_dart_is_odd(chunks, current, line),
-        "dart.sb_new" => crate::emitter::string_adapter::emit_dart_sb_new(chunks, current, line),
+        "dart.sb_new" => {
+            crate::emitter::string_adapter::emit_dart_sb_new(chunks, current, argc, line)
+        }
+        "dart.sb_to_string" => {
+            crate::emitter::string_adapter::emit_dart_sb_to_string(chunks, current, line)
+        }
+        "dart.sb_length" => {
+            crate::emitter::string_adapter::emit_dart_sb_length(chunks, current, line)
+        }
+        "dart.sb_is_empty" => {
+            crate::emitter::string_adapter::emit_dart_sb_is_empty(chunks, current, line)
+        }
+        "dart.sb_is_not_empty" => {
+            crate::emitter::string_adapter::emit_dart_sb_is_not_empty(chunks, current, line)
+        }
         "dart.sb_write" => {
             crate::emitter::string_adapter::emit_dart_sb_write(chunks, current, line)
         }

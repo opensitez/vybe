@@ -143,7 +143,12 @@ fn is_user_declared_class(name: &str) -> bool {
 /// Any other callee stays a plain `Call`.
 fn dart_call_or_new(callee: Expression, args: Vec<Argument>) -> ExprKind {
     if let ExprKind::Ident(name) = &callee.kind {
-        if is_user_declared_class(name) {
+        // A `dart:core` TYPE constructs like any class. The shared ctor path
+        // (`ExprKind::New` → `lookup_type_ctor_target`) is what emits the
+        // backing call AND stamps `__type`/`__types`; a plain `Call` reaches
+        // neither, which is what left every builtin class anonymous. A user
+        // declaration of the same name still wins — it is checked first.
+        if is_user_declared_class(name) || crate::core_classes::is_core_class(name) {
             return ExprKind::New {
                 class: Box::new(callee),
                 args };
@@ -1045,6 +1050,26 @@ pub fn parse(source: &str) -> Result<Module, String> {
     // declare `with Mixin` (parents). Walker normalisation so the
     // shared class compiler sees a single flat class instead of
     // multi-mixin inheritance.
+    // `dart:core` classes the runtime provides, declared as ordinary AST so
+    // they normalise and compile exactly like a user class — see
+    // `core_classes.rs`. Prepended so they precede any `const` binding that
+    // constructs one, and skipped for a name the program declares itself.
+    //
+    // Spliced HERE, before the class passes below, not after them. Those passes
+    // build the static-type environment that types a member chain and an
+    // operator result (`rewrite_user_add_methods` collects every class's method
+    // return types), so a class inserted afterwards is invisible to them: its
+    // `operator +` exists on the class but no expression using it was ever
+    // typed, and `d1 + d2` reached the slot lookup with nothing to find.
+    let core_classes: Vec<Statement> = crate::core_classes::CORE_CLASSES
+        .iter()
+        .filter(|(name, _)| !is_user_declared_class(name))
+        .map(|(_, build)| build())
+        .collect();
+    if !core_classes.is_empty() {
+        body.splice(0..0, core_classes);
+    }
+
     DART_MIXIN_NAMES.with(|m| *m.borrow_mut() = mixin_names.clone());
     DART_CLASS_MIXINS.with(|m| m.borrow_mut().clear());
     apply_mixins(&mut body, &mixin_names);
@@ -6427,10 +6452,24 @@ fn build_is_type(expr: Expression, type_name: &str) -> Expression {
         type_name: type_name.to_string() })
 }
 
+/// Dart property spellings this walker rewrites into zero-arg CALLS so the
+/// `[value_methods]` dispatch table can see them.
+///
+/// This is spelling → ROLE, which is the frontend's job: the rewrite is what
+/// carries the read to a `[value_methods]` emitter that resolves by PROTOCOL
+/// SLOT. `length` reaches `string_adapter::emit_dart_length`, which reads
+/// `ProtocolSlot::Len` off the receiver first and only probes the runtime shape
+/// when the receiver carries no slot. Taking `length` out of this list does not
+/// make the read slot-based — it routes it to a plain `STRUCT_GET "length"`,
+/// which is resolution BY SPELLING and the thing the slot exists to replace.
+///
+/// A name leaves this list when its emitter's role is consumed on the shared
+/// member-read path, not merely because the name looks like a property.
 fn is_dart_zero_arg_getter(name: &str) -> bool {
     matches!(
         name,
-        "isEmpty"
+        "length"
+            | "isEmpty"
             | "isNotEmpty"
             | "isEven"
             | "isOdd"
@@ -6443,7 +6482,6 @@ fn is_dart_zero_arg_getter(name: &str) -> bool {
             | "last"
             | "single"
             | "singleOrNull"
-            | "length"
             | "runes"
             | "codeUnits"
             | "keys"
@@ -10013,6 +10051,25 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 continue;
                             }
                         }
+                        // `BigInt.from(n)` is the same construction the three
+                        // constants above already normalise to, so it takes
+                        // the same free-call spelling. One name for every
+                        // BigInt construction is what lets the profile state
+                        // the result type once — a `Member` callee is typed
+                        // from user function signatures, which a builtin has
+                        // none of, and an untyped `BigInt` operand sends `*`,
+                        // `%`, `~/` and unary `-` down the f64 path to NaN.
+                        if class_name == "BigInt" && name == "from" {
+                            if let Some(args) = call_args.clone() {
+                                if args.len() == 1 {
+                                    expr = Expression::new(ExprKind::Call {
+                                        callee: Box::new(Expression::ident("__dart_bigint_from")),
+                                        args,
+                                        optional: false });
+                                    continue;
+                                }
+                            }
+                        }
                         if class_name == "Iterable" && name == "generate" {
                             if let Some(args) =
                                 call_args.clone().or_else(|| has_call.then(Vec::new))
@@ -10140,10 +10197,13 @@ fn walk_call_chain(pair: Pair<Rule>) -> Result<ExprKind, String> {
                                 args,
                                 optional: false });
                         } else if class_name == "Duration" && name == "zero" {
-                            expr = Expression::new(ExprKind::Call {
-                                callee: Box::new(expr),
-                                args: Vec::new(),
-                                optional: false });
+                            // `Duration` is a CLASS now, so its zero value is
+                            // an ordinary construction rather than a builtin
+                            // emit — one shape for every Duration, with the
+                            // same rtt and operators.
+                            expr = Expression::new(ExprKind::New {
+                                class: Box::new(Expression::ident("Duration")),
+                                args: vec![Argument::positional(Expression::int(0))] });
                         }
                         continue;
                     }
@@ -10539,13 +10599,19 @@ fn normalize_duration_args(args: Vec<Argument>) -> Vec<Argument> {
     }
     let mut total = Expression::float(0.0);
     for arg in args {
+        // Spans from `primitives::datetime`, the module that owns the unit
+        // vocabulary — the whole point of it was to stop `86_400_000` being
+        // respelled per language.
+        use vybe_compiler::primitives::datetime as dt;
         let factor = match arg.name.as_deref() {
-            Some("days") => 86_400_000.0,
-            Some("hours") => 3_600_000.0,
-            Some("minutes") => 60_000.0,
-            Some("seconds") => 1000.0,
+            Some("days") => dt::MS_PER_DAY,
+            Some("hours") => dt::MS_PER_HOUR,
+            Some("minutes") => dt::MS_PER_MINUTE,
+            Some("seconds") => dt::MS_PER_SECOND,
             Some("milliseconds") => 1.0,
-            Some("microseconds") => 0.001,
+            // Dart resolves to MICROseconds, one tick finer than the
+            // millisecond the shared arithmetic works in.
+            Some("microseconds") => 1.0 / dt::MS_PER_SECOND,
             _ => continue };
         total = add_expr(total, mul_expr(arg.value, factor));
     }
@@ -11197,10 +11263,16 @@ fn fold_string_buffer_cascade(
             _ => return Ok(None) }
     }
 
-    Ok(Some(Expression::new(ExprKind::Object(vec![
-        obj_prop("__dart_string_buffer_marker", Expression::bool(true)),
-        obj_prop("__dart_string_buffer", Expression::string(&buffer)),
-    ]))))
+    // The FOLD is the point — an all-literal buffer chain collapses to its
+    // finished text at walk time. What it folds TO is a construction of the
+    // `StringBuffer` CLASS seeded with that text, not the marker object it used
+    // to build: a marker object has no rtt, so a folded buffer failed
+    // `is StringBuffer` and sent `.toString()` back through the marker tower
+    // the class exists to retire. One shape for every StringBuffer, folded or
+    // not; the constructor's optional seed is what makes the fold expressible.
+    Ok(Some(Expression::new(ExprKind::New {
+        class: Box::new(Expression::ident("StringBuffer")),
+        args: vec![Argument::positional(Expression::string(&buffer))] })))
 }
 
 fn dart_literal_to_string(expr: &Expression) -> Option<String> {

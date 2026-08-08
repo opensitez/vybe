@@ -136,7 +136,18 @@ pub fn normalize_class(
                 modifiers: prop_modifiers,
                 ..
             } => {
-                let (canonical, _) = crate::protocol::canonical_method(pname);
+                let (canonical, special_kind) = crate::protocol::canonical_method(pname);
+                // A PROPERTY can fill a protocol slot too — Dart spells
+                // `int get length` and `bool get isEmpty`, and those are the
+                // shared `Len`/`IsEmpty` roles. Publishing the slot from here
+                // is what makes them dispatch by RECEIVER; the kind used to be
+                // discarded, so a class's `length` was reachable only by NAME.
+                if let Some(kind) = special_kind {
+                    m.special_methods.push(SpecialMethod {
+                        kind,
+                        canonical_name: canonical.clone(),
+                        source_name: pname.clone() });
+                }
                 let getter_method = getter.as_ref().map(|body| {
                     build_normal_method(
                         span.clone(),

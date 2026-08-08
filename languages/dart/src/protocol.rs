@@ -26,11 +26,17 @@ pub fn canonical_method(name: &str) -> (String, Option<SpecialMethodKind>) {
         "call" => ("call".into(), Some(Call)),
         "noSuchMethod" => ("callmissing".into(), Some(CallMissing)),
         "compareTo" => ("compare".into(), Some(Compare)),
-        // `iterator` and `contains` keep their own canonical spelling, so the
-        // member is still stored under the name Dart code calls; only the slot
-        // is added. `length` is deliberately absent — it is a property, and a
-        // property's canonical name IS its storage key, so mapping it to `len`
-        // would move `obj.length` out from under the source name.
+        // `length`, `isEmpty`, `iterator` and `contains` keep their SOURCE spelling as the canonical
+        // name — a property's canonical name IS its storage key, so renaming
+        // them to `len`/`is_empty` would move `obj.length` out from under the
+        // name Dart code writes. Only the SLOT is added, and that is the whole
+        // point: a getter that fills `ProtocolSlot::Len` is reachable by
+        // RECEIVER through the slot, and `ClassMember::Property` never enters
+        // the flat `defined_class_methods` set (`link.rs:391` matches
+        // `ClassMember::Method` only). Declaring them as methods instead put
+        // `length` in that set and took every dart slice to 0 passing.
+        "length" => ("length".into(), Some(Len)),
+        "isEmpty" => ("isEmpty".into(), Some(IsEmpty)),
         "iterator" => ("iterator".into(), Some(Iterator)),
         "moveNext" => ("next".into(), Some(Next)),
         "contains" => ("contains".into(), Some(Contains)),
