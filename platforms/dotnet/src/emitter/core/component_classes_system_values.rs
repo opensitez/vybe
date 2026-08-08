@@ -1,7 +1,5 @@
 use super::super::super::class_exports::DotnetClassExport;
-use vybe_runtime::component_model::{
-    ClassType, ConstructorDef, HostTarget, MethodBody, MethodDef,
-};
+use vybe_runtime::component_model::{ClassType, ConstructorDef, MethodBody, MethodDef};
 
 pub(super) fn exports() -> Vec<DotnetClassExport> {
     let mut exports = vec![DotnetClassExport::new(
@@ -113,42 +111,38 @@ pub(super) fn exports() -> Vec<DotnetClassExport> {
                 ));
         }
         // `System.Char`'s static surface. Only `Parse` was registered, so
-        // `char.ToUpper('q')` reached undefined and trapped — while the SAME
-        // conversions already worked in Java, whose `java.lang.Character`
-        // registers these leaves against `ecma:char` and `primitives::strings`.
-        // Nothing was missing but the registration.
+        // `char.ToUpper('q')` reached undefined and trapped.
+        //
+        // There is no `ecma:char` host module and there never was — ECMAScript
+        // has no char type, so a char IS a one-character string, and jvm/java
+        // both carry a note that binding to `ecma:char` panicked at compile
+        // time. The classifiers are the SHARED string primitives
+        // (`primitives::strings`, pure WASM over code points); case conversion
+        // is `ecma:string`, which is a real ECMA String method.
         if matches!(name, "Char" | "char") {
-            for (method, host_fn) in [
-                ("IsDigit", "isDigit"),
-                ("IsLetter", "isLetter"),
-                ("IsLetterOrDigit", "isAlnum"),
-                ("IsUpper", "isUpper"),
-                ("IsLower", "isLower"),
-                ("IsWhiteSpace", "isSpace"),
+            for (method, emit) in [
+                ("IsDigit", "str_is_digit"),
+                ("IsLetter", "str_is_alpha"),
+                ("IsLetterOrDigit", "str_is_alnum"),
+                ("IsUpper", "str_is_upper"),
+                ("IsLower", "str_is_lower"),
+                ("IsWhiteSpace", "str_is_space"),
+                // The UNDOTTED dispatch keys. Measured 2026-08-07: a tree
+                // `CommonEmit` leaf named `strings.to_upper` reaches
+                // `undefined is not callable`, while `str_is_digit` in the same
+                // registration resolves — a dotted emit name is routed by its
+                // PREFIX first, and `strings` is not a registered dispatcher.
+                // `str_to_upper` / `str_to_lower` are the same emitters under
+                // names the tree path resolves.
+                ("ToUpper", "str_to_upper"),
+                ("ToLower", "str_to_lower"),
             ] {
                 ty = ty.with_method(MethodDef::static_method(
                     method,
                     1,
-                    MethodBody::HostCall(HostTarget::new("ecma:char", host_fn)),
+                    MethodBody::Common(emit.into()),
                 ));
             }
-            // The same host fns `primitives::strings::emit_to_upper` /
-            // `emit_to_lower` call. Declared as `HostCall` rather than
-            // `Common`, because `tree_register` turns a `Common` body into a
-            // `CommonEmit` leaf whose name has to be one the dispatch chain
-            // resolves — `strings.to_upper` is not, and the call reached
-            // undefined.
-            ty = ty
-                .with_method(MethodDef::static_method(
-                    "ToUpper",
-                    1,
-                    MethodBody::HostCall(HostTarget::new("ecma:string", "toUpperCase")),
-                ))
-                .with_method(MethodDef::static_method(
-                    "ToLower",
-                    1,
-                    MethodBody::HostCall(HostTarget::new("ecma:string", "toLowerCase")),
-                ));
         }
         if matches!(name, "Int32" | "int") {
             ty = ty.with_method(MethodDef::static_method(

@@ -152,7 +152,7 @@ fn inlining_section_absent_for_non_leaf() {
 
     let mut caller = Chunk::new("caller");
     caller.arity = 0;
-    caller.emit_op_u8(Op::CALL_REF, 0, 0); // any call-family op makes the caller non-leaf
+    caller.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0); // any call-family op makes the caller non-leaf
     caller.emit_op(Op::RETURN, 0);
 
     let wasm = emit_wasm(vec![script_chunk(), callee, caller]);

@@ -843,7 +843,7 @@ fn resume_handler_vector_routes_suspend_to_handler_offset() {
     script.local_count = 1;
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
-    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
     script.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
@@ -891,7 +891,7 @@ fn generator_chunk_returns_continuation_on_call() {
     script.local_count = 1;
     script.emit_op_u16(Op::REF_FUNC, 1, 0); // chunk_idx = 1 (gen_body)
     script.emit(0, 0); // uv_count = 0
-    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -1008,7 +1008,7 @@ fn generator_resume_preserves_loop_label_stack() {
     script.local_count = 3; // cont, value, has_more
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
-    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
     for _ in 0..2 {
@@ -1119,7 +1119,7 @@ fn jspi_pending_promise_inside_generator_preserves_continuation_and_yields_on_re
     script.local_count = 3;
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
-    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -1197,7 +1197,7 @@ fn reentrant_host_callback_inside_generator_does_not_complete_it() {
     script.local_count = 3; // cont, value, has_more
     script.emit_op_u16(Op::REF_FUNC, 1, 0); // gen_body is chunk index 1
     script.emit(0, 0);
-    script.emit_op_u8(Op::CALL_REF, 0, 0); // -> continuation
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0); // -> continuation
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
     script.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -1256,7 +1256,7 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     gen_body.is_generator = true;
     gen_body.emit_op_u16(Op::REF_FUNC, 3, 0); // helper = chunk index 3
     gen_body.emit(0, 0);
-    gen_body.emit_op_u8(Op::CALL_REF, 0, 0);
+    gen_body.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     gen_body.emit_op(Op::DROP, 0); // discard helper() result (7)
     gen_body.emit_i32_const(99, 0);
     gen_body.emit_op_u16(Op::SUSPEND, 0, 0); // yield 99
@@ -1278,7 +1278,7 @@ fn continuation_started_inside_host_callback_runs_nested_calls_before_first_susp
     let drive_idx = script.add_import("test", "drive");
     script.emit_op_u16(Op::REF_FUNC, 1, 0); // gen_body = chunk index 1
     script.emit(0, 0);
-    script.emit_op_u8(Op::CALL_REF, 0, 0); // -> continuation
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0); // -> continuation
     script.emit_op_u16(Op::LOCAL_SET, 0, 0);
     script.emit_op_u16(Op::REF_FUNC, 2, 0); // cb = chunk index 2
     script.emit(0, 0);

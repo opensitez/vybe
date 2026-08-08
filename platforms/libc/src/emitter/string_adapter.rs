@@ -160,12 +160,19 @@ pub fn strrchr(s: Expression, c_code: Expression) -> Expression {
 }
 
 /// C-facing `strchr` lowering with `needle == 0` handling.
-/// For `strchr(s, '\0')` we return non-null truthy sentinel `1`.
+/// `strchr(s, '\0')` returns the pointer to the terminator — the empty
+/// suffix at `s + strlen(s)`. A compile-time NUL needle folds to that
+/// suffix directly (no ternary): pointer-identity comparisons extract
+/// their offset from the suffix shape, and the dead general-search
+/// branch would win that extraction otherwise.
 pub fn strchr_c(s: Expression, c_code: Expression) -> Expression {
     let zero_suffix = call(
         member(s.clone(), "substring"),
         vec![member(s.clone(), "length")],
     );
+    if matches!(c_code.kind, ExprKind::Lit(Literal::Int(0))) {
+        return zero_suffix;
+    }
     e(ExprKind::Ternary {
         cond: Box::new(e(ExprKind::Binary {
             op: BinOp::Eq,
@@ -178,12 +185,16 @@ pub fn strchr_c(s: Expression, c_code: Expression) -> Expression {
 }
 
 /// C-facing `strrchr` lowering with `needle == 0` handling.
-/// For `strrchr(s, '\0')` we return non-null truthy sentinel `1`.
+/// `strrchr(s, '\0')` is the same terminator pointer as `strchr` — see
+/// `strchr_c` for why a constant NUL folds to the suffix directly.
 pub fn strrchr_c(s: Expression, c_code: Expression) -> Expression {
     let zero_suffix = call(
         member(s.clone(), "substring"),
         vec![member(s.clone(), "length")],
     );
+    if matches!(c_code.kind, ExprKind::Lit(Literal::Int(0))) {
+        return zero_suffix;
+    }
     e(ExprKind::Ternary {
         cond: Box::new(e(ExprKind::Binary {
             op: BinOp::Eq,

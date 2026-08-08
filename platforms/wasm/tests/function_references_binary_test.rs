@@ -82,15 +82,19 @@ fn reader_accepts_br_on_null_encoding() {
 
 #[test]
 fn reader_accepts_br_on_non_null_encoding() {
-    // block { ref.null func; br_on_non_null 0 }
-    //
     // `br_on_non_null $l : [t* (ref null ht)] -> [t*]` — branches *with* the
-    // reference when non-null, otherwise pops it and falls through.
+    // reference when non-null, otherwise pops it and falls through. The ref
+    // is the LAST of the target label's expected values (function-references
+    // Overview: "the branch target label must end with a non-null reference
+    // type"), so the label CANNOT be void — the old void-block form here was
+    // an invalid module a conforming validator rejects.
     let wasm = module_with_body(&[
-        0x02, 0x40, // block (void)
+        0x02, 0x70, // block (result funcref)
         0xd0, 0x70, //   ref.null func
         0xd6, 0x00, //   br_on_non_null 0
+        0xd0, 0x70, //   ref.null func (fallthrough block result)
         0x0b, // end
+        0x1a, // drop
         0x41, 0x00, // i32.const 0
     ]);
     vybe_platform_wasm::read_wasm(&wasm).expect("br_on_non_null (0xd6) must decode");

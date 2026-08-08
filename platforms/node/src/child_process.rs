@@ -188,12 +188,44 @@ pub fn register(vm: &mut VM) {
                 None
             };
 
+            // options.env — Node semantics: the provided object REPLACES the
+            // child environment entirely (same contract execSync implements).
+            let env_vars: Option<Vec<(String, String)>> =
+                if let Some(Value::Object(opts)) = args.get(2) {
+                    let o = opts.lock().unwrap();
+                    match o.properties.get("env") {
+                        Some(Value::Object(env_obj)) => {
+                            let env = env_obj.lock().unwrap();
+                            Some(
+                                env.properties
+                                    .iter()
+                                    .filter_map(|(k, v)| match v {
+                                        Value::String(s) => {
+                                            Some((k.to_string(), s.to_string()))
+                                        }
+                                        _ => None,
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
             let mut cmd = Command::new(&command);
             for a in &cmd_args {
                 cmd.arg(a);
             }
             if let Some(dir) = cwd {
                 cmd.current_dir(dir);
+            }
+            if let Some(vars) = &env_vars {
+                cmd.env_clear();
+                for (k, v) in vars {
+                    cmd.env(k, v);
+                }
             }
 
             if let Some(ref inp) = input {

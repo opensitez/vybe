@@ -281,14 +281,14 @@ fn parse_import_details(data: &[u8]) -> Result<Vec<ImportDetail>, String> {
     Ok(imports)
 }
 
-/// The VM's internal bytecode carries bulk-memory/table indices as a fixed
-/// u8. A spec module may use any u32 index; rather than silently truncating
-/// (`as u8`) during translation — which mis-decodes a VALID module — reject
-/// it loudly here until the internal width is widened.
-fn check_u8_immediate_ceiling(idx: u32, what: &str) -> Result<(), String> {
-    if idx > u8::MAX as u32 {
+/// The VM's internal bytecode carries bulk-memory/table indices as fixed
+/// u16 BE (the VM's uniform index width). A spec module may use any u32
+/// index; rather than silently truncating during translation — which
+/// mis-decodes a VALID module — reject anything wider loudly.
+fn check_u16_immediate_ceiling(idx: u32, what: &str) -> Result<(), String> {
+    if idx > u16::MAX as u32 {
         return Err(format!(
-            "Unsupported: {what} {idx} exceeds the VM's u8 immediate width (max 255)"
+            "Unsupported: {what} {idx} exceeds the VM's u16 immediate width (max 65535)"
         ));
     }
     Ok(())
@@ -1098,11 +1098,15 @@ fn validate_instruction_stream(
                 }
             }
             0x25 => {
+                let (idx, _) = read_leb128_u32(&code[pos..]);
+                check_u16_immediate_ceiling(idx, "table.get table index")?;
                 skip_leb128(code, &mut pos);
                 st.pop(1, "table.get")?;
                 st.push(1);
             }
             0x26 => {
+                let (idx, _) = read_leb128_u32(&code[pos..]);
+                check_u16_immediate_ceiling(idx, "table.set table index")?;
                 skip_leb128(code, &mut pos);
                 st.pop(2, "table.set")?;
             }
@@ -1116,11 +1120,15 @@ fn validate_instruction_stream(
                 }
             }
             0x3F => {
-                skip_leb128(code, &mut pos);
+                let (memidx, read) = read_leb128_u32(&code[pos..]);
+                pos += read;
+                check_u16_immediate_ceiling(memidx, "memory.size memory index")?;
                 st.push(1); // memory.size
             }
             0x40 => {
-                skip_leb128(code, &mut pos);
+                let (memidx, read) = read_leb128_u32(&code[pos..]);
+                pos += read;
+                check_u16_immediate_ceiling(memidx, "memory.grow memory index")?;
                 st.pop(1, "memory.grow")?;
                 st.push(1);
             }
@@ -1188,20 +1196,29 @@ fn validate_instruction_stream(
                 let (depth, read) = read_leb128_u32(&code[pos..]);
                 pos += read;
                 let arity = st.label_arity(depth)?;
-                let name = if op == 0xD5 {
-                    "br_on_null"
-                } else {
-                    "br_on_non_null"
-                };
-                // Both consume the nullable reference from the top of stack.
-                st.pop(1, name)?;
-                // The label's own arity must still be satisfied on the branch
-                // edge; validate it is present, then restore for fallthrough.
-                st.pop(arity, name)?;
-                st.push(arity);
                 if op == 0xD5 {
-                    // Fallthrough re-types the ref as non-null and keeps it.
+                    // br_on_null: `[t* (ref null ht)] -> [t* (ref ht)]`.
+                    // Branches with [t*] (the null is DROPPED), so the
+                    // label arity excludes the ref; the fallthrough keeps
+                    // the ref re-typed non-null.
+                    st.pop(1, "br_on_null")?;
+                    st.pop(arity, "br_on_null")?;
+                    st.push(arity);
                     st.push(1);
+                } else {
+                    // br_on_non_null: `[t* (ref null ht)] -> [t*]`.
+                    // Branches WITH the ref — it is the LAST of the
+                    // label's expected values, not in addition to them —
+                    // and the fallthrough drops it.
+                    if arity == 0 {
+                        return Err(
+                            "Invalid WASM: br_on_non_null target label expects no values"
+                                .into(),
+                        );
+                    }
+                    st.pop(1, "br_on_non_null")?;
+                    st.pop(arity - 1, "br_on_non_null")?;
+                    st.push(arity - 1);
                 }
             }
             0xE0 => {
@@ -1315,8 +1332,10 @@ fn validate_instruction_stream(
                         if data_idx as usize >= data_count {
                             return Err("Invalid WASM: memory.init data index out of range".into());
                         }
-                        check_u8_immediate_ceiling(data_idx, "memory.init data index")?;
-                        skip_leb128(code, &mut pos);
+                        check_u16_immediate_ceiling(data_idx, "memory.init data index")?;
+                        let (memidx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u16_immediate_ceiling(memidx, "memory.init memory index")?;
                         st.pop(3, "memory.init")?;
                     }
                     0x09 => {
@@ -1325,15 +1344,21 @@ fn validate_instruction_stream(
                         if data_idx as usize >= data_count {
                             return Err("Invalid WASM: data.drop index out of range".into());
                         }
-                        check_u8_immediate_ceiling(data_idx, "data.drop data index")?;
+                        check_u16_immediate_ceiling(data_idx, "data.drop data index")?;
                     }
                     0x0A => {
-                        skip_leb128(code, &mut pos);
-                        skip_leb128(code, &mut pos);
+                        let (dst_mem, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u16_immediate_ceiling(dst_mem, "memory.copy dst memory")?;
+                        let (src_mem, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u16_immediate_ceiling(src_mem, "memory.copy src memory")?;
                         st.pop(3, "memory.copy")?;
                     }
                     0x0B => {
-                        skip_leb128(code, &mut pos);
+                        let (memidx, read) = read_leb128_u32(&code[pos..]);
+                        pos += read;
+                        check_u16_immediate_ceiling(memidx, "memory.fill memory index")?;
                         st.pop(3, "memory.fill")?;
                     }
                     0x0C => {
@@ -1344,7 +1369,7 @@ fn validate_instruction_stream(
                                 "Invalid WASM: table.init element index out of range".into()
                             );
                         }
-                        check_u8_immediate_ceiling(elem_idx, "table.init element index")?;
+                        check_u16_immediate_ceiling(elem_idx, "table.init element index")?;
                         skip_leb128(code, &mut pos);
                         st.pop(3, "table.init")?;
                     }
@@ -1355,34 +1380,34 @@ fn validate_instruction_stream(
                         if elem_idx as usize >= elem_count {
                             return Err("Invalid WASM: elem.drop index out of range".into());
                         }
-                        check_u8_immediate_ceiling(elem_idx, "elem.drop element index")?;
+                        check_u16_immediate_ceiling(elem_idx, "elem.drop element index")?;
                     }
                     0x0E => {
                         let (dst_table, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u8_immediate_ceiling(dst_table, "table.copy dst table")?;
+                        check_u16_immediate_ceiling(dst_table, "table.copy dst table")?;
                         let (src_table, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u8_immediate_ceiling(src_table, "table.copy src table")?;
+                        check_u16_immediate_ceiling(src_table, "table.copy src table")?;
                         st.pop(3, "table.copy")?;
                     }
                     0x0F => {
                         let (table_idx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u8_immediate_ceiling(table_idx, "table.grow table index")?;
+                        check_u16_immediate_ceiling(table_idx, "table.grow table index")?;
                         st.pop(2, "table.grow")?;
                         st.push(1);
                     }
                     0x10 => {
                         let (table_idx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u8_immediate_ceiling(table_idx, "table.size table index")?;
+                        check_u16_immediate_ceiling(table_idx, "table.size table index")?;
                         st.push(1); // table.size
                     }
                     0x11 => {
                         let (table_idx, read) = read_leb128_u32(&code[pos..]);
                         pos += read;
-                        check_u8_immediate_ceiling(table_idx, "table.fill table index")?;
+                        check_u16_immediate_ceiling(table_idx, "table.fill table index")?;
                         st.pop(3, "table.fill")?;
                     }
                     // Spec: an unrecognised sub-opcode is a MALFORMED module.
@@ -1475,7 +1500,12 @@ fn validate_instruction_stream(
                     }
                 }
             }
-            _ => {}
+            // Spec: an unknown opcode is MALFORMED, not skippable — and a
+            // silent skip cannot consume immediates it does not know,
+            // desyncing the whole byte walk.
+            other => {
+                return Err(format!("Invalid WASM: unknown opcode 0x{other:02X}"));
+            }
         }
     }
     // The implicit end of the function body: exactly the declared
@@ -1533,23 +1563,27 @@ fn decode_standard_wasm(
         .map(|(m, n, _)| (m.clone(), n.clone()))
         .collect();
     let mut func_arities: Vec<u8> = Vec::with_capacity(import_func_count + func_type_indices.len());
+    // Result counts per function index (imports first, then locals) — the
+    // CALL_REF/RETURN_CALL immediates carry (argc, results) so a decoded
+    // call's functype survives re-emission exactly.
+    let mut func_results: Vec<u8> = Vec::with_capacity(import_func_count + func_type_indices.len());
     for d in &import_details {
         if d.kind == 0 {
-            func_arities.push(
-                types
-                    .get(d.type_index as usize)
-                    .map(|(params, _)| params.len() as u8)
-                    .unwrap_or(0),
-            );
+            let (arity, results) = types
+                .get(d.type_index as usize)
+                .map(|(params, results)| (params.len() as u8, results.len() as u8))
+                .unwrap_or((0, 0));
+            func_arities.push(arity);
+            func_results.push(results);
         }
     }
     for &type_idx in &func_type_indices {
-        func_arities.push(
-            types
-                .get(type_idx as usize)
-                .map(|(params, _)| params.len() as u8)
-                .unwrap_or(0),
-        );
+        let (arity, results) = types
+            .get(type_idx as usize)
+            .map(|(params, results)| (params.len() as u8, results.len() as u8))
+            .unwrap_or((0, 0));
+        func_arities.push(arity);
+        func_results.push(results);
     }
 
     // Parse exports to find function names
@@ -1629,6 +1663,7 @@ fn decode_standard_wasm(
             local_count,
             &func_imports,
             &func_arities,
+            &func_results,
             uses_memory64,
             uses_table64,
             &types,
@@ -1719,6 +1754,7 @@ fn translate_wasm_to_chunk(
     wasm_local_count: u32,
     func_imports: &[(String, String)],
     func_arities: &[u8],
+    func_results: &[u8],
     uses_memory64: bool,
     uses_table64: bool,
     types: &[(Vec<u8>, Vec<u8>)],
@@ -1759,8 +1795,13 @@ fn translate_wasm_to_chunk(
             0x00 => chunk.emit_op(Op::UNREACHABLE, 0),
             0x01 => {} // nop
             0x09 => {
+                // Legacy EH rethrow: depth immediate, U32Leb internally
+                // (matching the dispatch arm's LEB read — the old 0xEE
+                // selector block here desynced the VM's depth read).
                 chunk.emit_op(Op::RETHROW, 0);
-                read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
+                let (depth, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_leb_u32(depth, 0);
             }
             // throw tagidx (0x08) — raise the tag with its payload on the stack.
             0x08 => {
@@ -1779,7 +1820,7 @@ fn translate_wasm_to_chunk(
             // `$skip` block, and record each clause's spec target label; the
             // matching `end` emits the trampolines (see 0x0B).
             0x1F => {
-                let result_count = read_block_result_count(wasm, &mut pos);
+                let (_bt_params, result_count) = read_blocktype_counts(wasm, &mut pos, types);
                 let (clause_count, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 let mut pairs: Vec<(u8, u16)> = Vec::with_capacity(clause_count as usize);
@@ -1815,8 +1856,8 @@ fn translate_wasm_to_chunk(
 
             // block blocktype — forward jump target
             0x02 => {
-                let result_count = read_block_result_count(wasm, &mut pos);
-                chunk.emit_block_typed(0, result_count);
+                let (params, results) = read_blocktype_counts(wasm, &mut pos, types);
+                chunk.emit_block_params(0, params, results);
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
                     eh: None });
@@ -1824,8 +1865,8 @@ fn translate_wasm_to_chunk(
 
             // loop blocktype — backward jump target
             0x03 => {
-                let result_count = read_block_result_count(wasm, &mut pos);
-                chunk.emit_loop_typed(0, result_count);
+                let (params, results) = read_blocktype_counts(wasm, &mut pos, types);
+                chunk.emit_loop_params(0, params, results);
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
                     eh: None });
@@ -1833,12 +1874,8 @@ fn translate_wasm_to_chunk(
 
             // if blocktype — conditional block
             0x04 => {
-                let result_count = read_block_result_count(wasm, &mut pos);
-                if result_count == 0 {
-                    chunk.emit_if(0);
-                } else {
-                    chunk.emit_if_value(0);
-                }
+                let (params, results) = read_blocktype_counts(wasm, &mut pos, types);
+                chunk.emit_if_params(0, params, results);
                 label_stack.push(LabelInfo {
                     emitted_span: 1,
                     eh: None });
@@ -1912,11 +1949,26 @@ fn translate_wasm_to_chunk(
             }
             0x0F => chunk.emit_op(Op::RETURN, 0),
             0x18 => {
+                // Legacy EH delegate: depth immediate, U32Leb internally
+                // (same desync fix as rethrow above).
                 chunk.emit_op(Op::DELEGATE, 0);
-                read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
+                let (depth, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_leb_u32(depth, 0);
             }
             0x1A => chunk.emit_op(Op::DROP, 0),
             0x1B => chunk.emit_op(Op::SELECT, 0),
+
+            // select t* — typed select. The valtype vector only refines
+            // validation; the VM's uniform boxed values make the runtime
+            // behavior identical to `select`, so consume the vector and
+            // emit SELECT_T.
+            0x1C => {
+                let (count, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                pos += count as usize; // valtype bytes
+                chunk.emit_op(Op::SELECT_T, 0);
+            }
 
             // call funcidx — WASM direct call by function index. The
             // VM-internal argc byte comes from the callee's function type
@@ -1926,6 +1978,7 @@ fn translate_wasm_to_chunk(
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
                 let argc = func_arities.get(idx as usize).copied().unwrap_or(0);
+                let results = func_results.get(idx as usize).copied().unwrap_or(1);
                 let import_count = func_imports.len() as u32;
                 if idx < import_count {
                     chunk.emit_call(idx as u16, argc, 0);
@@ -1949,7 +2002,7 @@ fn translate_wasm_to_chunk(
                     for i in 0..argc as u16 {
                         chunk.emit_op_u16(Op::LOCAL_GET, base + i, 0);
                     }
-                    chunk.emit_op_u8(Op::CALL_REF, argc, 0);
+                    chunk.emit_op_u8_u8(Op::CALL_REF, argc, results, 0);
                 }
             }
 
@@ -2205,12 +2258,14 @@ fn translate_wasm_to_chunk(
                 read_emit_memarg_for_memory_width(&mut chunk, wasm, &mut pos, uses_memory64);
             }
             0x3F => {
-                chunk.emit_op(Op::MEMORY_SIZE, 0);
-                read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
+                let (memidx, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op_u16(Op::MEMORY_SIZE, memidx as u16, 0);
             }
             0x40 => {
-                chunk.emit_op(Op::MEMORY_GROW, 0);
-                read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
+                let (memidx, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                chunk.emit_op_u16(Op::MEMORY_GROW, memidx as u16, 0);
             }
 
             // f32 arithmetic — ALL opcodes
@@ -2285,6 +2340,58 @@ fn translate_wasm_to_chunk(
             }
             0xD1 => chunk.emit_op(Op::REF_IS_NULL, 0),
 
+            // ref.eq / ref.as_non_null — direct, no immediates.
+            0xD3 => chunk.emit_op(Op::REF_EQ, 0),
+            0xD4 => chunk.emit_op(Op::REF_AS_NON_NULL, 0),
+
+            // br_on_null / br_on_non_null (function-references). The
+            // internal ops carry a compiler-patched i16 BYTE offset, not a
+            // label depth, so lower through the translated IF/BR machinery
+            // instead (one synthesized runtime label => inner br depth is
+            // 1 + the remapped label depth). Spec: br_on_null branches
+            // WITHOUT the null (dropping it) and falls through WITH the
+            // value; br_on_non_null branches WITH the value and falls
+            // through without the dropped null.
+            0xD5 | 0xD6 => {
+                let (label, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let depth = 1 + emitted_br_depth(&label_stack, label);
+                let scratch = chunk.alloc_scratch(1);
+                chunk.emit_op_u16(Op::LOCAL_TEE, scratch, 0);
+                chunk.emit_op(Op::REF_IS_NULL, 0);
+                if byte == 0xD6 {
+                    chunk.emit_op(Op::I32_EQZ, 0);
+                }
+                chunk.emit_if_params(0, 0, 0);
+                if byte == 0xD6 {
+                    chunk.emit_op_u16(Op::LOCAL_GET, scratch, 0);
+                }
+                chunk.emit_br(depth, 0);
+                chunk.emit_end(0);
+                if byte == 0xD5 {
+                    chunk.emit_op_u16(Op::LOCAL_GET, scratch, 0);
+                }
+            }
+
+            // ref.func funcidx (function-references / reference-types) — a
+            // funcref to a LOCAL function becomes REF_FUNC on its chunk
+            // (chunks start at 1; script is chunk 0). A funcref to an
+            // imported function has no chunk to reference; the validator
+            // range-checks the index, and the import case keeps the raw
+            // function index (imports execute via `call`, not funcrefs).
+            0xD2 => {
+                let (idx, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let import_count = func_imports.len() as u32;
+                if idx >= import_count {
+                    let chunk_idx = 1 + (idx - import_count) as u16;
+                    chunk.emit_op_u16(Op::REF_FUNC, chunk_idx, 0);
+                    chunk.emit(0, 0); // 0 upvalues
+                } else {
+                    chunk.emit_i32_const(idx as i32, 0);
+                }
+            }
+
             // global.get/set — a DECODED module's globals, named by index.
             // Not routed through `primitives::globals`: that is the compiler's
             // funnel for a module's own global namespace, and this crate sits
@@ -2306,12 +2413,12 @@ fn translate_wasm_to_chunk(
             0x25 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u8(Op::TABLE_GET, idx as u8, 0);
+                chunk.emit_op_u16(Op::TABLE_GET, idx as u16, 0);
             }
             0x26 => {
                 let (idx, _) = read_leb128_u32(&wasm[pos..]);
                 skip_leb128(wasm, &mut pos);
-                chunk.emit_op_u8(Op::TABLE_SET, idx as u8, 0);
+                chunk.emit_op_u16(Op::TABLE_SET, idx as u16, 0);
             }
 
             // call_indirect
@@ -2335,6 +2442,84 @@ fn translate_wasm_to_chunk(
                 chunk.emit(expected_results, 0);
             }
 
+            // return_call_indirect (tail-call proposal) — same immediates
+            // and internal shape as call_indirect, tail-call dispatch.
+            0x13 => {
+                let (type_idx, read) = read_leb128_u32(&wasm[pos..]);
+                pos += read;
+                let (table_idx, read) = read_leb128_u32(&wasm[pos..]);
+                pos += read;
+                let (argc, expected_results) = types
+                    .get(type_idx as usize)
+                    .map(|(params, results)| (params.len() as u8, results.len() as u8))
+                    .unwrap_or((0, 0));
+                chunk.emit_op_u8_u8(Op::RETURN_CALL_INDIRECT, argc, table_idx as u8, 0);
+                chunk.emit(expected_results, 0);
+            }
+
+            // return_call funcidx (tail-call proposal).
+            0x12 => {
+                let (idx, _) = read_leb128_u32(&wasm[pos..]);
+                skip_leb128(wasm, &mut pos);
+                let argc = func_arities.get(idx as usize).copied().unwrap_or(0);
+                let results = func_results.get(idx as usize).copied().unwrap_or(1);
+                let import_count = func_imports.len() as u32;
+                if idx < import_count {
+                    // Tail call to a host import: imports execute natively
+                    // with no VM frame, so `call` + `return` is behaviorally
+                    // identical (no stack growth to elide).
+                    chunk.emit_call(idx as u16, argc, 0);
+                    chunk.emit_op(Op::RETURN, 0);
+                } else {
+                    // Local function: funcref model, staged exactly like the
+                    // 0x10 arm, but dispatched through RETURN_CALL so the
+                    // current frame is reused (spec tail call).
+                    let chunk_idx = 1 + (idx - import_count) as u16;
+                    let base = if argc > 0 {
+                        chunk.alloc_scratch(argc as u16)
+                    } else {
+                        0
+                    };
+                    for i in (0..argc as u16).rev() {
+                        chunk.emit_op_u16(Op::LOCAL_SET, base + i, 0);
+                    }
+                    chunk.emit_op_u16(Op::REF_FUNC, chunk_idx, 0);
+                    chunk.emit(0, 0); // 0 upvalues
+                    for i in 0..argc as u16 {
+                        chunk.emit_op_u16(Op::LOCAL_GET, base + i, 0);
+                    }
+                    chunk.emit_op_u8_u8(Op::RETURN_CALL, argc, results, 0);
+                }
+            }
+
+            // call_ref / return_call_ref (function-references / tail-call).
+            // Spec stack is [args…, funcref] with the funcref on TOP; the
+            // VM's CALL_REF wants the callee BELOW the args. Stage funcref
+            // and args in scratch locals and re-push in VM order.
+            0x14 | 0x15 => {
+                let (type_idx, read) = read_leb128_u32(&wasm[pos..]);
+                pos += read;
+                let (argc, results) = types
+                    .get(type_idx as usize)
+                    .map(|(params, results)| (params.len() as u8, results.len() as u8))
+                    .unwrap_or((0, 1));
+                let base = chunk.alloc_scratch(argc as u16 + 1);
+                chunk.emit_op_u16(Op::LOCAL_SET, base + argc as u16, 0); // funcref
+                for i in (0..argc as u16).rev() {
+                    chunk.emit_op_u16(Op::LOCAL_SET, base + i, 0);
+                }
+                chunk.emit_op_u16(Op::LOCAL_GET, base + argc as u16, 0);
+                for i in 0..argc as u16 {
+                    chunk.emit_op_u16(Op::LOCAL_GET, base + i, 0);
+                }
+                let call_op = if byte == 0x14 {
+                    Op::CALL_REF
+                } else {
+                    Op::RETURN_CALL_REF
+                };
+                chunk.emit_op_u8_u8(call_op, argc, results, 0);
+            }
+
             // 0xFC prefix — nontrapping-float-to-int (0x00–0x07) + bulk-memory/table ops
             0xFC => {
                 let (sub, read) = read_leb128_u32(&wasm[pos..]);
@@ -2351,60 +2536,64 @@ fn translate_wasm_to_chunk(
                     0x08 => {
                         let (data_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u8(Op::MEMORY_INIT, data_idx as u8, 0);
-                        read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
+                        let (memidx, _) = read_leb128_u32(&wasm[pos..]);
+                        skip_leb128(wasm, &mut pos);
+                        chunk.emit_op_u16_u16(Op::MEMORY_INIT, data_idx as u16, memidx as u16, 0);
                     }
                     0x09 => {
                         let (data_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u8(Op::DATA_DROP, data_idx as u8, 0);
+                        chunk.emit_op_u16(Op::DATA_DROP, data_idx as u16, 0);
                     }
                     0x0A => {
-                        chunk.emit_op(Op::MEMORY_COPY, 0);
-                        read_emit_optional_memidx(&mut chunk, wasm, &mut pos); // dst memory
-                        read_emit_optional_memidx(&mut chunk, wasm, &mut pos); // src memory
+                        let (dst_mem, _) = read_leb128_u32(&wasm[pos..]);
+                        skip_leb128(wasm, &mut pos);
+                        let (src_mem, _) = read_leb128_u32(&wasm[pos..]);
+                        skip_leb128(wasm, &mut pos);
+                        chunk.emit_op_u16_u16(Op::MEMORY_COPY, dst_mem as u16, src_mem as u16, 0);
                     }
                     0x0B => {
-                        chunk.emit_op(Op::MEMORY_FILL, 0);
-                        read_emit_optional_memidx(&mut chunk, wasm, &mut pos);
+                        let (memidx, _) = read_leb128_u32(&wasm[pos..]);
+                        skip_leb128(wasm, &mut pos);
+                        chunk.emit_op_u16(Op::MEMORY_FILL, memidx as u16, 0);
                     }
                     0x0C => {
                         let (elem_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op(Op::TABLE_INIT, 0);
-                        chunk.emit(elem_idx as u8, 0);
-                        chunk.emit(table_idx as u8, 0);
+                        chunk.emit_op_u16(Op::TABLE_INIT, elem_idx as u16, 0);
+                        chunk.emit((table_idx >> 8) as u8, 0);
+                        chunk.emit((table_idx & 0xff) as u8, 0);
                     }
                     0x0D => {
                         let (elem_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u8(Op::ELEM_DROP, elem_idx as u8, 0);
+                        chunk.emit_op_u16(Op::ELEM_DROP, elem_idx as u16, 0);
                     }
                     0x0E => {
                         let (dst_table, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
                         let (src_table, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op(Op::TABLE_COPY, 0);
-                        chunk.emit(dst_table as u8, 0);
-                        chunk.emit(src_table as u8, 0);
+                        chunk.emit_op_u16(Op::TABLE_COPY, dst_table as u16, 0);
+                        chunk.emit((src_table >> 8) as u8, 0);
+                        chunk.emit((src_table & 0xff) as u8, 0);
                     }
                     0x0F => {
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u8(Op::TABLE_GROW, table_idx as u8, 0);
+                        chunk.emit_op_u16(Op::TABLE_GROW, table_idx as u16, 0);
                     }
                     0x10 => {
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u8(Op::TABLE_SIZE, table_idx as u8, 0);
+                        chunk.emit_op_u16(Op::TABLE_SIZE, table_idx as u16, 0);
                     }
                     0x11 => {
                         let (table_idx, _) = read_leb128_u32(&wasm[pos..]);
                         skip_leb128(wasm, &mut pos);
-                        chunk.emit_op_u8(Op::TABLE_FILL, table_idx as u8, 0);
+                        chunk.emit_op_u16(Op::TABLE_FILL, table_idx as u16, 0);
                     }
                     _ => {}
                 }
@@ -2484,8 +2673,12 @@ fn translate_wasm_to_chunk(
                 emit_threads_prefixed(&mut chunk, sub, wasm, &mut pos, uses_memory64);
             }
 
-            // Unknown — skip
-            _ => {}
+            // Unreachable for spec input: the validator rejects unknown
+            // opcodes before translation. If validator/translate coverage
+            // ever drifts, emit a trap at this exact position instead of
+            // silently skipping bytes (a skip cannot consume immediates it
+            // does not know, and the desync corrupts the whole chunk).
+            _ => chunk.emit_op(Op::UNREACHABLE, 0),
         }
     }
 
@@ -3514,33 +3707,20 @@ fn read_emit_leb_u32(chunk: &mut Chunk, data: &[u8], pos: &mut usize) -> u32 {
     value
 }
 
-fn read_emit_optional_memidx(chunk: &mut Chunk, data: &[u8], pos: &mut usize) -> u32 {
-    let (value, read) = read_leb128_u32(&data[*pos..]);
-    *pos += read;
-    emit_explicit_memidx(chunk, value);
-    value
-}
-
-/// Emit the VM's multi-memory selector.
-///
-/// SINGLE SOURCE OF TRUTH for the layout is the VM
-/// (`dispatch::read_optional_memidx_immediate`): a **fixed 4-byte** block
-/// `0xEE 0x00 <memidx u16 BE>`. VM instructions are always 4 bytes, so the
-/// selector must be 4 too or the following instruction loses alignment and
-/// execution desyncs. A LEB-encoded memidx here would be 3 bytes for small
-/// values — one short — which ran the interpreter off the end of the code.
-fn emit_explicit_memidx(chunk: &mut Chunk, value: u32) {
-    chunk.emit(0xEE, 0);
-    chunk.emit(0x00, 0);
-    chunk.emit((value >> 8) as u8, 0);
-    chunk.emit((value & 0xFF) as u8, 0);
-}
+// (The 0xEE multi-memory selector emitters are deleted: memidx is a fixed
+// u16 immediate on memory.size/grow/fill/copy/init now, declared in their
+// OperandFormat, and rethrow/delegate carry their U32Leb depth directly.)
 
 fn read_emit_memarg(chunk: &mut Chunk, data: &[u8], pos: &mut usize) {
-    let align = read_emit_leb_u32(chunk, data, pos);
-    let _offset = read_emit_leb_u32(chunk, data, pos);
+    // Core loads/stores carry the marker-tagged optional memarg internally
+    // (`SimdMemArg` treatment) — the spec binary's memarg is mandatory, so
+    // stamp the 0x80 presence marker on the align field going in.
+    let (align, read) = read_leb128_u32(&data[*pos..]);
+    *pos += read;
+    chunk.emit_leb_u32(align | 0x80, 0);
+    copy_leb128(data, pos, chunk);
     if align & 0x40 != 0 {
-        let _memidx = read_emit_leb_u32(chunk, data, pos);
+        copy_leb128(data, pos, chunk);
     }
 }
 
@@ -3558,7 +3738,11 @@ fn read_emit_memarg_for_memory_width(
 }
 
 fn read_emit_memarg64(chunk: &mut Chunk, data: &[u8], pos: &mut usize) {
-    let align = read_emit_leb_u32(chunk, data, pos);
+    // Memory64 variant: same marker treatment, plus the 0x100 flag so the
+    // offset reads back as a u64 LEB.
+    let (align, read) = read_leb128_u32(&data[*pos..]);
+    *pos += read;
+    chunk.emit_leb_u32(align | 0x80 | 0x100, 0);
     let (_offset, read) = read_leb128_u64_local(&data[*pos..]);
     for byte in &data[*pos..*pos + read] {
         chunk.emit(*byte, 0);
@@ -3626,10 +3810,20 @@ fn skip_heaptype(data: &[u8], pos: &mut usize) {
     skip_leb128(data, pos);
 }
 
-fn read_block_result_count(data: &[u8], pos: &mut usize) -> u8 {
-    let first = data.get(*pos).copied().unwrap_or(0x40);
-    skip_leb128(data, pos);
-    if first == 0x40 { 0 } else { 1 }
+/// Translate-side blocktype decode: same spec decode as the validator's
+/// `decode_blocktype` (0x40 empty / valtype shorthand incl. ref-heaptype
+/// forms / s33 typeidx with full params+results), clamped to the internal
+/// u8 counts. Validation has already rejected malformed blocktypes, so a
+/// decode failure here degrades to (0, 1) rather than panicking.
+fn read_blocktype_counts(
+    data: &[u8],
+    pos: &mut usize,
+    types: &[(Vec<u8>, Vec<u8>)],
+) -> (u8, u8) {
+    match decode_blocktype(data, pos, types) {
+        Ok((params, results)) => (params.min(255) as u8, results.min(255) as u8),
+        Err(_) => (0, 1),
+    }
 }
 
 fn read_leb128_i32(data: &[u8]) -> (i32, usize) {

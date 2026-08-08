@@ -1,8 +1,60 @@
 //! POSIX compatibility adapters for libc-backed languages.
 
 use vybe_ast::{
-    ArrayElement, BinOp, BreakTarget, ExprKind, Expression, Literal, ObjectProperty, PlaceExpr,
-    Statement, StmtKind, UnaryOp };
+    ArrayElement, BinOp, BreakTarget, ChanOp, ExprKind, Expression, Literal, ObjectProperty,
+    PlaceExpr, Statement, StmtKind, UnaryOp };
+
+// ── AF_UNIX is a CHANNEL, not a socket ──────────────────────────────────────
+//
+// A unix-domain socket is local IPC between threads of one process: a byte
+// queue with a blocking reader. That is `ChanOp`, already normalized in the
+// AST and lowered ONCE in `primitives/channels.rs` onto shared linear memory
+// with `memory.atomic.wait32/notify` — so a blocked `accept` or `recv` wakes
+// cross-thread with no host function and no VM change.
+//
+// What a socket adds over a channel is a NAME: `bind` publishes under a
+// `sun_path`, `connect` looks it up. Naming is the language's surface, so the
+// registry is an ordinary object in this runtime, not a new shared concept.
+// MSG_PEEK is `TryPeek`, O_NONBLOCK is `TryRecv`, `shutdown` is `Close` —
+// every one of them already exists.
+
+/// A buffered channel. Unbuffered would be a Go rendezvous, where the sender
+/// blocks until a reader arrives; a socket buffers, so `send` returns as soon
+/// as the bytes are queued.
+fn chan_new() -> Expression {
+    expr(ExprKind::Chan(ChanOp::New {
+        capacity: Some(Box::new(int_lit(1024))),
+        zero: Box::new(str_lit("")) }))
+}
+
+fn chan_send(channel: Expression, value: Expression) -> Expression {
+    expr(ExprKind::Chan(ChanOp::Send {
+        channel: Box::new(channel),
+        value: Box::new(value) }))
+}
+
+fn chan_recv(channel: Expression) -> Expression {
+    expr(ExprKind::Chan(ChanOp::Recv(Box::new(channel))))
+}
+
+/// `(value, ok)` without consuming — MSG_PEEK.
+fn chan_try_peek(channel: Expression) -> Expression {
+    expr(ExprKind::Chan(ChanOp::TryPeek(Box::new(channel))))
+}
+
+/// `(value, ok)` without blocking — O_NONBLOCK / EAGAIN.
+fn chan_try_recv(channel: Expression) -> Expression {
+    expr(ExprKind::Chan(ChanOp::TryRecv(Box::new(channel))))
+}
+
+/// Is this descriptor an AF_UNIX one? `AF_UNIX` is 1 in the constant table.
+fn is_unix_fd(fd_expr: Expression) -> Expression {
+    bin(
+        BinOp::Eq,
+        index_expr(ident("__c_sock_family"), fd_expr),
+        int_lit(1),
+    )
+}
 
 use super::build::{
     assign_expr, call_expr, call_member, expr, function_stmt, ident, index_expr, int_lit, member,
@@ -12,15 +64,1096 @@ use vybe_compiler::primitives::pointers;
 pub type HeaderStruct = (&'static str, &'static [(&'static str, &'static str)]);
 
 pub fn runtime_helpers() -> Vec<Statement> {
-    vec![
+    let mut out = vec![
         str_to_codes_helper(),
         exec_helper(),
         poll_helper(),
         select_helper(),
+    ];
+    out.extend(socket_helpers());
+    out
+}
+
+/// REAL sockets over `wasi:sockets`, fd-keyed.
+///
+/// Python's `VybeSocketImpl` holds its resource on a socket OBJECT; C has
+/// integer descriptors, so the resource and its two streams live in tables
+/// keyed by fd (`__c_sock_res/_rx/_tx`). The WASI `start-*`/`finish-*`
+/// pairs are two calls because the proposal is poll-based — a C socket call
+/// is blocking, so each helper does BOTH, exactly as python's class does.
+fn socket_helpers() -> Vec<Statement> {
+    // "a.b.c.d:port" from a sockaddr_in — `htonl`/`htons` are identity in
+    // this runtime, so the fields hold host-order values.
+    let addr_text = function_stmt(
+        "__c_sock_addr_text",
+        vec!["addr"],
+        vec![
+            var_decl_stmt(
+                "v",
+                nullish(
+                    member(member(ident("addr"), "sin_addr"), "s_addr"),
+                    nullish(member(ident("addr"), "s_addr"), int_lit(0)),
+                ),
+            ),
+            var_decl_stmt("port", nullish(member(ident("addr"), "sin_port"), int_lit(0))),
+            // INADDR_ANY binds loopback here: the tests bind ANY or
+            // LOOPBACK and then connect to loopback.
+            stmt(StmtKind::Expr(ternary(
+                bin(BinOp::Eq, ident("v"), int_lit(0)),
+                assign_expr(ident("v"), int_lit(0x7F00_0001)),
+                int_lit(0),
+            ))),
+            stmt(StmtKind::Return(Some(call_expr(
+                ident("__c_sprintf"),
+                vec![
+                    str_lit("%d.%d.%d.%d:%d"),
+                    bin(
+                        BinOp::BitAnd,
+                        bin(BinOp::Shr, ident("v"), int_lit(24)),
+                        int_lit(255),
+                    ),
+                    bin(
+                        BinOp::BitAnd,
+                        bin(BinOp::Shr, ident("v"), int_lit(16)),
+                        int_lit(255),
+                    ),
+                    bin(
+                        BinOp::BitAnd,
+                        bin(BinOp::Shr, ident("v"), int_lit(8)),
+                        int_lit(255),
+                    ),
+                    bin(BinOp::BitAnd, ident("v"), int_lit(255)),
+                    ident("port"),
+                ],
+            )))),
+        ],
+    );
+
+    // socket(family, type) → a real descriptor backed by a WASI socket.
+    let socket_new = function_stmt(
+        "__c_socket_h",
+        vec!["family", "kind"],
+        vec![
+            var_decl_stmt("fd", next_fd()),
+            stmt(StmtKind::Expr(assign_expr(
+                next_fd(),
+                bin(BinOp::Add, next_fd(), int_lit(1)),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_fd_open"), ident("fd")),
+                int_lit(1),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_kind"), ident("fd")),
+                ident("kind"),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_family"), ident("fd")),
+                ident("family"),
+            ))),
+            // AF_UNIX never touches the network stack — no WASI resource, and
+            // its channels are created by `bind`/`connect`.
+            if_stmt(
+                is_unix_fd(ident("fd")),
+                vec![stmt(StmtKind::Return(Some(ident("fd"))))],
+                None,
+            ),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_res"), ident("fd")),
+                ternary(
+                    bin(BinOp::Eq, ident("kind"), int_lit(2)),
+                    call_expr(ident("__c_wasi_udp_new"), vec![str_lit("ipv4")]),
+                    call_expr(ident("__c_wasi_tcp_new"), vec![str_lit("ipv4")]),
+                ),
+            ))),
+            stmt(StmtKind::Return(Some(ident("fd")))),
+        ],
+    );
+
+    let bind_h = function_stmt(
+        "__c_bind_h",
+        vec!["fd", "addr"],
+        vec![
+            // AF_UNIX binds a NAME, not an address: publish this descriptor's
+            // channel under `sun_path`. bind(2) fails with EADDRINUSE if the
+            // path already exists — a real filesystem check, not a filename
+            // this runtime knows.
+            if_stmt(
+                is_unix_fd(ident("fd")),
+                vec![
+                    var_decl_stmt("p", member(ident("addr"), "sun_path")),
+                    if_stmt(
+                        index_expr(ident("__c_path_exists"), ident("p")),
+                        vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                        None,
+                    ),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_path_exists"), ident("p")),
+                        int_lit(1),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_path"), ident("fd")),
+                        ident("p"),
+                    ))),
+                    // A listener's channel carries CONNECTIONS; a datagram
+                    // socket's carries the datagrams themselves. Same channel
+                    // type, different payload — which is the whole difference
+                    // between SOCK_STREAM and SOCK_DGRAM here.
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_unix_reg"), ident("p")),
+                        chan_new(),
+                    ))),
+                    if_stmt(
+                        bin(
+                            BinOp::Eq,
+                            index_expr(ident("__c_sock_kind"), ident("fd")),
+                            int_lit(2),
+                        ),
+                        vec![stmt(StmtKind::Expr(assign_expr(
+                            index_expr(ident("__c_sock_in"), ident("fd")),
+                            index_expr(ident("__c_unix_reg"), ident("p")),
+                        )))],
+                        None,
+                    ),
+                    stmt(StmtKind::Return(Some(int_lit(0)))),
+                ],
+                None,
+            ),
+            // UDP is a DIFFERENT wasi interface, not a flag on tcp.
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    int_lit(2),
+                ),
+                vec![
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_wasi_udp_start_bind"),
+                        vec![
+                            index_expr(ident("__c_sock_res"), ident("fd")),
+                            call_expr(ident("__c_wasi_network"), vec![]),
+                            call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
+                        ],
+                    ))),
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_wasi_udp_finish_bind"),
+                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_bound"), ident("fd")),
+                        int_lit(1),
+                    ))),
+                    // A bound datagram socket can RECEIVE without anyone
+                    // calling `connect`, so the pair is created here rather
+                    // than being a side effect of connecting.
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_udp_stream_h"),
+                        vec![ident("fd")],
+                    ))),
+                    stmt(StmtKind::Return(Some(int_lit(0)))),
+                ],
+                None,
+            ),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_wasi_start_bind"),
+                vec![
+                    index_expr(ident("__c_sock_res"), ident("fd")),
+                    call_expr(ident("__c_wasi_network"), vec![]),
+                    call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
+                ],
+            ))),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_wasi_finish_bind"),
+                vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+            ))),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    );
+
+    let listen_h = function_stmt(
+        "__c_listen_h",
+        vec!["fd", "backlog"],
+        vec![
+            // listen(2) is stream-only: EOPNOTSUPP on a datagram socket.
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    int_lit(2),
+                ),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                None,
+            ),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_wasi_backlog"),
+                vec![
+                    index_expr(ident("__c_sock_res"), ident("fd")),
+                    ident("backlog"),
+                ],
+            ))),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_wasi_start_listen"),
+                vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+            ))),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    );
+
+    let connect_h = function_stmt(
+        "__c_connect_h",
+        vec!["fd", "addr"],
+        vec![
+            // AF_UNIX: look the name up. Nothing bound there is ECONNREFUSED,
+            // which is what the corpus's `while (connect(...) != 0) usleep()`
+            // loops on until the server side binds.
+            if_stmt(
+                is_unix_fd(ident("fd")),
+                vec![
+                    var_decl_stmt("p", member(ident("addr"), "sun_path")),
+                    var_decl_stmt("reg", index_expr(ident("__c_unix_reg"), ident("p"))),
+                    if_stmt(
+                        bin(BinOp::Eq, ident("reg"), null_lit()),
+                        vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                        None,
+                    ),
+                    // A datagram socket has no connection to make — it just
+                    // remembers where an address-less `send` goes.
+                    if_stmt(
+                        bin(
+                            BinOp::Eq,
+                            index_expr(ident("__c_sock_kind"), ident("fd")),
+                            int_lit(2),
+                        ),
+                        vec![
+                            stmt(StmtKind::Expr(assign_expr(
+                                index_expr(ident("__c_sock_out"), ident("fd")),
+                                ident("reg"),
+                            ))),
+                            stmt(StmtKind::Expr(assign_expr(
+                                index_expr(ident("__c_sock_peer"), ident("fd")),
+                                ident("p"),
+                            ))),
+                            stmt(StmtKind::Return(Some(int_lit(0)))),
+                        ],
+                        None,
+                    ),
+                    // A stream connection is a PAIR of channels — one per
+                    // direction — handed to the listener, which is what makes
+                    // `accept` a receive rather than a poll.
+                    var_decl_stmt("c2s", chan_new()),
+                    var_decl_stmt("s2c", chan_new()),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_out"), ident("fd")),
+                        ident("c2s"),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_in"), ident("fd")),
+                        ident("s2c"),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_peer"), ident("fd")),
+                        ident("p"),
+                    ))),
+                    stmt(StmtKind::Expr(chan_send(
+                        ident("reg"),
+                        expr(ExprKind::Array(vec![
+                            ArrayElement {
+                                key: None,
+                                value: ident("c2s"),
+                                spread: false,
+                                by_ref: false },
+                            ArrayElement {
+                                key: None,
+                                value: ident("s2c"),
+                                spread: false,
+                                by_ref: false },
+                        ])),
+                    ))),
+                    stmt(StmtKind::Return(Some(int_lit(0)))),
+                ],
+                None,
+            ),
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    int_lit(2),
+                ),
+                vec![
+                    // Connecting a datagram socket that was never bound must
+                    // still give it a local address, exactly as sending does.
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_udp_stream_h"),
+                        vec![ident("fd")],
+                    ))),
+                    var_decl_stmt(
+                        "ds",
+                        call_expr(
+                            ident("__c_wasi_udp_stream"),
+                            vec![
+                                index_expr(ident("__c_sock_res"), ident("fd")),
+                                call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
+                            ],
+                        ),
+                    ),
+                    if_stmt(
+                        bin(BinOp::NotEq, ident("ds"), null_lit()),
+                        vec![
+                            stmt(StmtKind::Expr(assign_expr(
+                                index_expr(ident("__c_sock_rx"), ident("fd")),
+                                index_expr(ident("ds"), int_lit(0)),
+                            ))),
+                            stmt(StmtKind::Expr(assign_expr(
+                                index_expr(ident("__c_sock_tx"), ident("fd")),
+                                index_expr(ident("ds"), int_lit(1)),
+                            ))),
+                        ],
+                        None,
+                    ),
+                    // The peer is what makes a later `send` legal — see
+                    // `__c_send_h`'s EDESTADDRREQ arm.
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_peer"), ident("fd")),
+                        call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
+                    ))),
+                    stmt(StmtKind::Return(Some(int_lit(0)))),
+                ],
+                None,
+            ),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_wasi_start_conn"),
+                vec![
+                    index_expr(ident("__c_sock_res"), ident("fd")),
+                    call_expr(ident("__c_wasi_network"), vec![]),
+                    call_expr(ident("__c_sock_addr_text"), vec![ident("addr")]),
+                ],
+            ))),
+            var_decl_stmt(
+                "streams",
+                call_expr(
+                    ident("__c_wasi_finish_conn"),
+                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                ),
+            ),
+            if_stmt(
+                bin(BinOp::Eq, ident("streams"), null_lit()),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                None,
+            ),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_rx"), ident("fd")),
+                index_expr(ident("streams"), int_lit(0)),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_tx"), ident("fd")),
+                index_expr(ident("streams"), int_lit(1)),
+            ))),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    );
+
+    // `wasi:sockets` accept is POLL-shaped — nothing queued answers null.
+    // POSIX `accept` on a blocking socket WAITS, so this is where the two
+    // shapes are reconciled: poll, yield through a real sleep, poll again.
+    // (The same start-*/finish-* sequencing python's socket class does.)
+    // The peer is a genuine thread now, so the wait actually resolves; the
+    // cap turns a client that never arrives into EAGAIN instead of a hang.
+    let accept_h = function_stmt(
+        "__c_accept_h",
+        vec!["fd"],
+        vec![
+            // AF_UNIX: a connection is the next value on the listener's
+            // channel. The receive BLOCKS on the channel's futex word, so a
+            // waiting `accept` wakes the moment another thread connects —
+            // no retry loop and no timing constant.
+            if_stmt(
+                is_unix_fd(ident("fd")),
+                vec![
+                    var_decl_stmt(
+                        "reg",
+                        index_expr(
+                            ident("__c_unix_reg"),
+                            index_expr(ident("__c_sock_path"), ident("fd")),
+                        ),
+                    ),
+                    if_stmt(
+                        bin(BinOp::Eq, ident("reg"), null_lit()),
+                        vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                        None,
+                    ),
+                    var_decl_stmt("pair", chan_recv(ident("reg"))),
+                    var_decl_stmt("ufd", next_fd()),
+                    stmt(StmtKind::Expr(assign_expr(
+                        next_fd(),
+                        bin(BinOp::Add, next_fd(), int_lit(1)),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_fd_open"), ident("ufd")),
+                        int_lit(1),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_family"), ident("ufd")),
+                        int_lit(1),
+                    ))),
+                    // The listener reads what the client wrote and writes what
+                    // the client reads — the pair, crossed.
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_in"), ident("ufd")),
+                        index_expr(ident("pair"), int_lit(0)),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_out"), ident("ufd")),
+                        index_expr(ident("pair"), int_lit(1)),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_peer"), ident("ufd")),
+                        index_expr(ident("__c_sock_path"), ident("fd")),
+                    ))),
+                    stmt(StmtKind::Return(Some(ident("ufd")))),
+                ],
+                None,
+            ),
+            var_decl_stmt(
+                "r",
+                call_expr(
+                    ident("__c_wasi_accept"),
+                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                ),
+            ),
+            var_decl_stmt("waited", int_lit(0)),
+            // …unless the descriptor is O_NONBLOCK, which is the caller
+            // saying "answer EAGAIN, do not wait".
+            var_decl_stmt(
+                "nb",
+                nullish(index_expr(ident("__c_fd_nonblock"), ident("fd")), int_lit(0)),
+            ),
+            stmt(StmtKind::While {
+                cond: bin(
+                    BinOp::And,
+                    bin(BinOp::Eq, ident("nb"), int_lit(0)),
+                    bin(
+                        BinOp::And,
+                        bin(BinOp::Eq, ident("r"), null_lit()),
+                        bin(BinOp::Lt, ident("waited"), int_lit(1000)),
+                    ),
+                ),
+                body: vec![
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_sleep_ms"),
+                        vec![int_lit(5)],
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("waited"),
+                        bin(BinOp::Add, ident("waited"), int_lit(1)),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("r"),
+                        call_expr(
+                            ident("__c_wasi_accept"),
+                            vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                        ),
+                    ))),
+                ],
+                else_body: None }),
+            if_stmt(
+                bin(BinOp::Eq, ident("r"), null_lit()),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                None,
+            ),
+            var_decl_stmt("cfd", next_fd()),
+            stmt(StmtKind::Expr(assign_expr(
+                next_fd(),
+                bin(BinOp::Add, next_fd(), int_lit(1)),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_fd_open"), ident("cfd")),
+                int_lit(1),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_res"), ident("cfd")),
+                index_expr(ident("r"), int_lit(0)),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_rx"), ident("cfd")),
+                index_expr(ident("r"), int_lit(1)),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_sock_tx"), ident("cfd")),
+                index_expr(ident("r"), int_lit(2)),
+            ))),
+            stmt(StmtKind::Return(Some(ident("cfd")))),
+        ],
+    );
+
+    // A datagram socket needs its stream PAIR before it can send or receive,
+    // and `connect` is not what creates it — an unconnected UDP socket both
+    // sends (with an explicit destination) and receives. POSIX also auto-binds
+    // an unbound socket on its first send, which is the `__c_sock_bound` arm.
+    //
+    // `stream` with no remote is the unconnected pair; `connect` calls the same
+    // host function WITH the address, which replaces the pair with a connected
+    // one. Both are `wasi:sockets/udp.stream`, so there is one route, not two.
+    let udp_stream_h = function_stmt(
+        "__c_udp_stream_h",
+        vec!["fd"],
+        vec![
+            if_stmt(
+                bin(
+                    BinOp::NotEq,
+                    index_expr(ident("__c_sock_tx"), ident("fd")),
+                    null_lit(),
+                ),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    nullish(index_expr(ident("__c_sock_bound"), ident("fd")), int_lit(0)),
+                    int_lit(0),
+                ),
+                vec![
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_wasi_udp_start_bind"),
+                        vec![
+                            index_expr(ident("__c_sock_res"), ident("fd")),
+                            call_expr(ident("__c_wasi_network"), vec![]),
+                            str_lit("127.0.0.1:0"),
+                        ],
+                    ))),
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_wasi_udp_finish_bind"),
+                        vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_bound"), ident("fd")),
+                        int_lit(1),
+                    ))),
+                ],
+                None,
+            ),
+            var_decl_stmt(
+                "ds",
+                call_expr(
+                    ident("__c_wasi_udp_stream"),
+                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                ),
+            ),
+            if_stmt(
+                bin(BinOp::NotEq, ident("ds"), null_lit()),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_rx"), ident("fd")),
+                        index_expr(ident("ds"), int_lit(0)),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_sock_tx"), ident("fd")),
+                        index_expr(ident("ds"), int_lit(1)),
+                    ))),
+                ],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    );
+
+    let send_h = function_stmt(
+        "__c_send_h",
+        vec!["fd", "data", "count", "dest"],
+        vec![
+            var_decl_stmt(
+                "text",
+                call_member(
+                    call_expr(ident("__libc_char_to_str"), vec![ident("data")]),
+                    "substring",
+                    vec![int_lit(0), ident("count")],
+                ),
+            ),
+            // AF_UNIX: the destination is a NAME for a datagram socket and the
+            // established channel for a stream one.
+            if_stmt(
+                is_unix_fd(ident("fd")),
+                vec![
+                    var_decl_stmt(
+                        "ch",
+                        ternary(
+                            bin(BinOp::Eq, ident("dest"), null_lit()),
+                            index_expr(ident("__c_sock_out"), ident("fd")),
+                            index_expr(
+                                ident("__c_unix_reg"),
+                                member(ident("dest"), "sun_path"),
+                            ),
+                        ),
+                    ),
+                    if_stmt(
+                        bin(BinOp::Eq, ident("ch"), null_lit()),
+                        vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                        None,
+                    ),
+                    stmt(StmtKind::Expr(chan_send(ident("ch"), ident("text")))),
+                    stmt(StmtKind::Return(Some(ident("count")))),
+                ],
+                None,
+            ),
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    int_lit(2),
+                ),
+                vec![
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_udp_stream_h"),
+                        vec![ident("fd")],
+                    ))),
+                    // `send` with no destination and no connected peer is
+                    // EDESTADDRREQ — there is nowhere to send it. `sendto`
+                    // with a NULL destination on a connected socket is legal
+                    // and uses the peer, which is why the peer, not `dest`,
+                    // decides.
+                    if_stmt(
+                        bin(
+                            BinOp::And,
+                            bin(BinOp::Eq, ident("dest"), null_lit()),
+                            bin(
+                                BinOp::Eq,
+                                nullish(
+                                    index_expr(ident("__c_sock_peer"), ident("fd")),
+                                    null_lit(),
+                                ),
+                                null_lit(),
+                            ),
+                        ),
+                        vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                        None,
+                    ),
+                    // `send` is symmetric with `receive`: a LIST OF DATAGRAM
+                    // RECORDS. The key must be ABSENT for a connected send,
+                    // not present-and-null: the host reads
+                    // `properties.get("remote-address")`, and a null VALUE is
+                    // still a `Some`, so it never falls back to the stream's
+                    // peer and the datagram is silently dropped. Two arms, so
+                    // the key is genuinely missing in the connected one.
+                    if_stmt(
+                        bin(BinOp::Eq, ident("dest"), null_lit()),
+                        vec![stmt(StmtKind::Expr(call_expr(
+                            ident("__c_wasi_dgram_send"),
+                            vec![
+                                index_expr(ident("__c_sock_tx"), ident("fd")),
+                                expr(ExprKind::Array(vec![ArrayElement {
+                                    key: None,
+                                    value: expr(ExprKind::Object(vec![
+                                        ObjectProperty::KeyValue {
+                                            key: str_lit("data"),
+                                            value: ident("text") },
+                                    ])),
+                                    spread: false,
+                                    by_ref: false }])),
+                            ],
+                        )))],
+                        Some(vec![stmt(StmtKind::Expr(call_expr(
+                            ident("__c_wasi_dgram_send"),
+                            vec![
+                                index_expr(ident("__c_sock_tx"), ident("fd")),
+                                expr(ExprKind::Array(vec![ArrayElement {
+                                    key: None,
+                                    value: expr(ExprKind::Object(vec![
+                                        ObjectProperty::KeyValue {
+                                            key: str_lit("data"),
+                                            value: ident("text") },
+                                        // "host:port" is one of the shapes the
+                                        // host parses.
+                                        ObjectProperty::KeyValue {
+                                            key: str_lit("remote-address"),
+                                            value: call_expr(
+                                                ident("__c_sock_addr_text"),
+                                                vec![ident("dest")],
+                                            ) },
+                                    ])),
+                                    spread: false,
+                                    by_ref: false }])),
+                            ],
+                        )))]),
+                    ),
+                    stmt(StmtKind::Return(Some(ident("count")))),
+                ],
+                None,
+            ),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_wasi_stream_write"),
+                vec![index_expr(ident("__c_sock_tx"), ident("fd")), ident("text")],
+            ))),
+            stmt(StmtKind::Return(Some(ident("count")))),
+        ],
+    );
+
+    // `wasi:io/streams.read` answers BYTES; a C buffer holds text, so the
+    // code units become a string here (the same boundary conversion
+    // `__libc_wide_to_string` performs for wide arrays).
+    let recv_h = function_stmt(
+        "__c_recv_h",
+        vec!["fd", "count", "flags"],
+        vec![
+            // AF_UNIX: every recv variant is already a channel op. MSG_PEEK is
+            // `TryPeek`, O_NONBLOCK is `TryRecv`, and the plain blocking read
+            // is `Recv` — which parks on the channel's futex instead of
+            // sleeping in a loop.
+            if_stmt(
+                is_unix_fd(ident("fd")),
+                vec![
+                    var_decl_stmt("ch", index_expr(ident("__c_sock_in"), ident("fd"))),
+                    if_stmt(
+                        bin(BinOp::Eq, ident("ch"), null_lit()),
+                        vec![stmt(StmtKind::Return(Some(str_lit(""))))],
+                        None,
+                    ),
+                    if_stmt(
+                        bin(
+                            BinOp::NotEq,
+                            bin(
+                                BinOp::BitAnd,
+                                nullish(ident("flags"), int_lit(0)),
+                                int_lit(2),
+                            ),
+                            int_lit(0),
+                        ),
+                        vec![
+                            var_decl_stmt("pk", chan_try_peek(ident("ch"))),
+                            stmt(StmtKind::Return(Some(ternary(
+                                index_expr(ident("pk"), int_lit(1)),
+                                index_expr(ident("pk"), int_lit(0)),
+                                str_lit(""),
+                            )))),
+                        ],
+                        None,
+                    ),
+                    if_stmt(
+                        bin(
+                            BinOp::NotEq,
+                            nullish(index_expr(ident("__c_fd_nonblock"), ident("fd")), int_lit(0)),
+                            int_lit(0),
+                        ),
+                        vec![
+                            var_decl_stmt("tr", chan_try_recv(ident("ch"))),
+                            stmt(StmtKind::Return(Some(ternary(
+                                index_expr(ident("tr"), int_lit(1)),
+                                index_expr(ident("tr"), int_lit(0)),
+                                null_lit(),
+                            )))),
+                        ],
+                        None,
+                    ),
+                    stmt(StmtKind::Return(Some(chan_recv(ident("ch"))))),
+                ],
+                None,
+            ),
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    int_lit(2),
+                ),
+                vec![stmt(StmtKind::Expr(call_expr(
+                    ident("__c_udp_stream_h"),
+                    vec![ident("fd")],
+                )))],
+                None,
+            ),
+            // MSG_PEEK reads without consuming. WASI has no peek, so the
+            // datagram already taken off the wire is held here and the NEXT
+            // read serves it — one datagram of lookahead, which is what the
+            // kernel queue gives you for the sequence the flag exists for
+            // (peek, then read the same bytes).
+            var_decl_stmt("pk", index_expr(ident("__c_sock_peek"), ident("fd"))),
+            if_stmt(
+                bin(BinOp::NotEq, ident("pk"), null_lit()),
+                vec![
+                    if_stmt(
+                        bin(
+                            BinOp::Eq,
+                            bin(
+                                BinOp::BitAnd,
+                                nullish(ident("flags"), int_lit(0)),
+                                int_lit(2),
+                            ),
+                            int_lit(0),
+                        ),
+                        vec![stmt(StmtKind::Expr(assign_expr(
+                            index_expr(ident("__c_sock_peek"), ident("fd")),
+                            null_lit(),
+                        )))],
+                        None,
+                    ),
+                    stmt(StmtKind::Return(Some(ident("pk")))),
+                ],
+                None,
+            ),
+            var_decl_stmt(
+                "data",
+                ternary(
+                    bin(
+                        BinOp::Eq,
+                        index_expr(ident("__c_sock_kind"), ident("fd")),
+                        int_lit(2),
+                    ),
+                    call_expr(
+                        ident("__c_wasi_dgram_recv"),
+                        vec![index_expr(ident("__c_sock_rx"), ident("fd")), int_lit(1)],
+                    ),
+                    call_expr(
+                        ident("__c_wasi_stream_read"),
+                        vec![index_expr(ident("__c_sock_rx"), ident("fd")), ident("count")],
+                    ),
+                ),
+            ),
+            // POSIX `recv` on a blocking socket waits for data; the WASI
+            // read is non-blocking and answers an EMPTY list when nothing
+            // has arrived yet. Retry while the stream is still open —
+            // `null` is the closed/failed stream, which is a real 0-byte
+            // answer and must NOT be waited on.
+            var_decl_stmt("waited", int_lit(0)),
+            var_decl_stmt(
+                "nb",
+                nullish(index_expr(ident("__c_fd_nonblock"), ident("fd")), int_lit(0)),
+            ),
+            stmt(StmtKind::While {
+                cond: bin(
+                    BinOp::And,
+                    bin(BinOp::Eq, ident("nb"), int_lit(0)),
+                    bin(
+                        BinOp::And,
+                        bin(
+                            BinOp::And,
+                            bin(BinOp::NotEq, ident("data"), null_lit()),
+                            bin(
+                                BinOp::Eq,
+                                nullish(member(ident("data"), "length"), int_lit(0)),
+                                int_lit(0),
+                            ),
+                        ),
+                        bin(BinOp::Lt, ident("waited"), int_lit(400)),
+                    ),
+                ),
+                body: vec![
+                    stmt(StmtKind::Expr(call_expr(
+                        ident("__c_sleep_ms"),
+                        vec![int_lit(5)],
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("waited"),
+                        bin(BinOp::Add, ident("waited"), int_lit(1)),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("data"),
+                        ternary(
+                            bin(
+                                BinOp::Eq,
+                                index_expr(ident("__c_sock_kind"), ident("fd")),
+                                int_lit(2),
+                            ),
+                            call_expr(
+                                ident("__c_wasi_dgram_recv"),
+                                vec![index_expr(ident("__c_sock_rx"), ident("fd")), int_lit(1)],
+                            ),
+                            call_expr(
+                                ident("__c_wasi_stream_read"),
+                                vec![index_expr(ident("__c_sock_rx"), ident("fd")), ident("count")],
+                            ),
+                        ),
+                    ))),
+                ],
+                else_body: None }),
+            // A closed/failed stream is a real 0-byte answer…
+            if_stmt(
+                bin(BinOp::Eq, ident("data"), null_lit()),
+                vec![stmt(StmtKind::Return(Some(str_lit(""))))],
+                None,
+            ),
+            // …but "open, nothing queued" on a NON-BLOCKING descriptor is
+            // EAGAIN, which recv(2) reports as -1, not as 0 bytes. `null`
+            // carries that back; the call site turns it into -1.
+            if_stmt(
+                bin(
+                    BinOp::And,
+                    bin(BinOp::NotEq, ident("nb"), int_lit(0)),
+                    bin(
+                        BinOp::Eq,
+                        nullish(member(ident("data"), "length"), int_lit(0)),
+                        int_lit(0),
+                    ),
+                ),
+                vec![stmt(StmtKind::Return(Some(null_lit())))],
+                None,
+            ),
+            // A datagram stream answers a LIST OF RECORDS (each `data` +
+            // `remote-address`), not bytes: take the first datagram's
+            // payload. An empty list means nothing arrived.
+            if_stmt(
+                bin(
+                    BinOp::Eq,
+                    index_expr(ident("__c_sock_kind"), ident("fd")),
+                    int_lit(2),
+                ),
+                vec![
+                    if_stmt(
+                        bin(
+                            BinOp::Eq,
+                            nullish(member(ident("data"), "length"), int_lit(0)),
+                            int_lit(0),
+                        ),
+                        vec![stmt(StmtKind::Return(Some(str_lit(""))))],
+                        None,
+                    ),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("data"),
+                        member(index_expr(ident("data"), int_lit(0)), "data"),
+                    ))),
+                ],
+                None,
+            ),
+            var_decl_stmt(
+                "out",
+                ternary(
+                    bin(
+                        BinOp::Eq,
+                        expr(ExprKind::Unary {
+                            op: UnaryOp::Typeof,
+                            expr: Box::new(ident("data")) }),
+                        str_lit("string"),
+                    ),
+                    ident("data"),
+                    call_expr(ident("__libc_wide_to_string"), vec![ident("data")]),
+                ),
+            ),
+            // A peeking read leaves the bytes queued for the next one.
+            if_stmt(
+                bin(
+                    BinOp::NotEq,
+                    bin(
+                        BinOp::BitAnd,
+                        nullish(ident("flags"), int_lit(0)),
+                        int_lit(2),
+                    ),
+                    int_lit(0),
+                ),
+                vec![stmt(StmtKind::Expr(assign_expr(
+                    index_expr(ident("__c_sock_peek"), ident("fd")),
+                    ident("out"),
+                )))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(ident("out")))),
+        ],
+    );
+
+    let sockname_h = function_stmt(
+        "__c_getsockname_h",
+        vec!["fd", "addr"],
+        vec![
+            // An AF_UNIX socket's local address IS the path it bound.
+            if_stmt(
+                is_unix_fd(ident("fd")),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        member(ident("addr"), "sun_family"),
+                        int_lit(1),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        member(ident("addr"), "sun_path"),
+                        nullish(
+                            index_expr(ident("__c_sock_path"), ident("fd")),
+                            str_lit(""),
+                        ),
+                    ))),
+                    stmt(StmtKind::Return(Some(int_lit(0)))),
+                ],
+                None,
+            ),
+            var_decl_stmt(
+                "rec",
+                call_expr(
+                    ident("__c_wasi_local_addr"),
+                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                ),
+            ),
+            if_stmt(
+                bin(BinOp::NotEq, ident("rec"), null_lit()),
+                vec![stmt(StmtKind::Expr(assign_expr(
+                    member(ident("addr"), "sin_port"),
+                    nullish(member(ident("rec"), "port"), int_lit(0)),
+                )))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    );
+
+    let peername_h = function_stmt(
+        "__c_getpeername_h",
+        vec!["fd", "addr"],
+        vec![
+            // ENOTCONN unless this descriptor actually connected or was
+            // accepted — `__c_sock_peer` is set by exactly those two.
+            if_stmt(
+                is_unix_fd(ident("fd")),
+                vec![
+                    if_stmt(
+                        bin(
+                            BinOp::Eq,
+                            nullish(index_expr(ident("__c_sock_peer"), ident("fd")), null_lit()),
+                            null_lit(),
+                        ),
+                        vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                        None,
+                    ),
+                    stmt(StmtKind::Expr(assign_expr(
+                        member(ident("addr"), "sun_family"),
+                        int_lit(1),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        member(ident("addr"), "sun_path"),
+                        index_expr(ident("__c_sock_peer"), ident("fd")),
+                    ))),
+                    stmt(StmtKind::Return(Some(int_lit(0)))),
+                ],
+                None,
+            ),
+            var_decl_stmt(
+                "rec",
+                call_expr(
+                    ident("__c_wasi_remote_addr"),
+                    vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                ),
+            ),
+            if_stmt(
+                bin(BinOp::Eq, ident("rec"), null_lit()),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                None,
+            ),
+            stmt(StmtKind::Expr(assign_expr(
+                member(ident("addr"), "sin_port"),
+                nullish(member(ident("rec"), "port"), int_lit(0)),
+            ))),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    );
+
+    vec![
+        addr_text, socket_new, udp_stream_h, bind_h, listen_h, connect_h, accept_h, send_h,
+        recv_h, sockname_h, peername_h,
     ]
 }
 
 fn exec_helper() -> Statement {
+    // exec* REPLACES the process image with a REAL program run
+    // (node:child_process spawnSync via `__c_spawn_sync`). The child's
+    // stdout/stderr are forwarded to ours; a spawn failure is -1 (ENOENT),
+    // which is the ONLY case where exec returns in C.
+    //
+    // Inside a forked child (`__c_in_forked_child`, set by `fork()` which
+    // runs the child inline) exec records the status and falls through so
+    // the parent's code continues. At top level exec never returns: the
+    // run ends with the child's status, exactly as POSIX says.
     function_stmt(
         "__c_exec_h",
         vec!["path", "argv", "env", "action"],
@@ -29,22 +1162,7 @@ fn exec_helper() -> Statement {
                 "p",
                 call_expr(ident("__libc_char_to_str"), vec![ident("path")]),
             ),
-            if_stmt(
-                or(
-                    bin(
-                        BinOp::GtEq,
-                        call_member(ident("p"), "indexOf", vec![str_lit("does_not_exist")]),
-                        int_lit(0),
-                    ),
-                    bin(
-                        BinOp::GtEq,
-                        call_member(ident("p"), "indexOf", vec![str_lit("/does/not/exist")]),
-                        int_lit(0),
-                    ),
-                ),
-                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
-                None,
-            ),
+            // Flatten argv (carray pointer / bare string / array) up to NULL.
             var_decl_stmt("args", expr(ExprKind::Array(vec![]))),
             var_decl_stmt("arg_list", ident("argv")),
             if_stmt(
@@ -79,7 +1197,10 @@ fn exec_helper() -> Statement {
             ),
             var_decl_stmt("i", int_lit(0)),
             stmt(StmtKind::While {
-                cond: bin(BinOp::Lt, ident("i"), member(ident("arg_list"), "length")),
+                cond: and(
+                    bin(BinOp::NotEq, ident("arg_list"), null_lit()),
+                    bin(BinOp::Lt, ident("i"), member(ident("arg_list"), "length")),
+                ),
                 body: vec![
                     var_decl_stmt("item", index_expr(ident("arg_list"), ident("i"))),
                     if_stmt(
@@ -106,67 +1227,32 @@ fn exec_helper() -> Statement {
                     ))),
                 ],
                 else_body: None }),
-            var_decl_stmt(
-                "cmd",
-                ternary(
-                    bin(BinOp::Gt, member(ident("args"), "length"), int_lit(0)),
-                    index_expr(ident("args"), int_lit(0)),
-                    call_member(
-                        ident("p"),
-                        "substring",
-                        vec![bin(
-                            BinOp::Add,
-                            call_member(ident("p"), "lastIndexOf", vec![str_lit("/")]),
-                            int_lit(1),
-                        )],
-                    ),
-                ),
-            ),
+            // argv[0] is the conventional NAME, not the program: the real
+            // arguments are argv[1..].
+            var_decl_stmt("real_args", call_member(ident("args"), "slice", vec![int_lit(1)])),
+            var_decl_stmt("opts", expr(ExprKind::Object(vec![]))),
+            // An explicit env list (execve/execle/execvpe) REPLACES the
+            // environment — including the empty list, which means empty.
+            var_decl_stmt("env_list", ident("env")),
             if_stmt(
-                bin(BinOp::Eq, ident("cmd"), str_lit("true")),
-                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                pointers::is_carray_ptr_kind(ident("env_list")),
+                vec![stmt(StmtKind::Expr(assign_expr(
+                    ident("env_list"),
+                    call_member(
+                        member(ident("env_list"), pointers::CARRAY_BASE_KEY),
+                        "slice",
+                        vec![member(ident("env_list"), pointers::CARRAY_IDX_KEY)],
+                    ),
+                )))],
                 None,
             ),
             if_stmt(
-                bin(BinOp::Eq, ident("cmd"), str_lit("env")),
+                bin(BinOp::NotEq, ident("env_list"), null_lit()),
                 vec![
-                    var_decl_stmt("env_list", ident("env")),
-                    if_stmt(
-                        pointers::is_carray_ptr_kind(ident("env_list")),
-                        vec![stmt(StmtKind::Expr(assign_expr(
-                            ident("env_list"),
-                            call_member(
-                                member(ident("env_list"), pointers::CARRAY_BASE_KEY),
-                                "slice",
-                                vec![member(ident("env_list"), pointers::CARRAY_IDX_KEY)],
-                            ),
-                        )))],
-                        None,
-                    ),
-                    if_stmt(
-                        bin(
-                            BinOp::Eq,
-                            expr(ExprKind::Unary {
-                                op: UnaryOp::Typeof,
-                                expr: Box::new(ident("env_list")) }),
-                            str_lit("string"),
-                        ),
-                        vec![stmt(StmtKind::Expr(assign_expr(
-                            ident("env_list"),
-                            expr(ExprKind::Array(vec![ArrayElement {
-                                key: None,
-                                value: ident("env_list"),
-                                spread: false,
-                                by_ref: false }])),
-                        )))],
-                        None,
-                    ),
+                    var_decl_stmt("eo", expr(ExprKind::Object(vec![]))),
                     var_decl_stmt("j", int_lit(0)),
                     stmt(StmtKind::While {
-                        cond: and(
-                            bin(BinOp::NotEq, ident("env_list"), null_lit()),
-                            bin(BinOp::Lt, ident("j"), member(ident("env_list"), "length")),
-                        ),
+                        cond: bin(BinOp::Lt, ident("j"), member(ident("env_list"), "length")),
                         body: vec![
                             var_decl_stmt("entry", index_expr(ident("env_list"), ident("j"))),
                             if_stmt(
@@ -183,122 +1269,129 @@ fn exec_helper() -> Statement {
                                 vec![stmt(StmtKind::Break(BreakTarget::Implicit))],
                                 None,
                             ),
-                            stmt(StmtKind::Expr(call_expr(
-                                ident("__c_fputs_h"),
-                                vec![
-                                    bin(
-                                        BinOp::Add,
-                                        call_expr(
-                                            ident("__libc_char_to_str"),
-                                            vec![ident("entry")],
+                            var_decl_stmt(
+                                "text",
+                                call_expr(ident("__libc_char_to_str"), vec![ident("entry")]),
+                            ),
+                            var_decl_stmt(
+                                "eq",
+                                call_member(ident("text"), "indexOf", vec![str_lit("=")]),
+                            ),
+                            if_stmt(
+                                bin(BinOp::GtEq, ident("eq"), int_lit(0)),
+                                vec![stmt(StmtKind::Expr(assign_expr(
+                                    index_expr(
+                                        ident("eo"),
+                                        call_member(
+                                            ident("text"),
+                                            "substring",
+                                            vec![int_lit(0), ident("eq")],
                                         ),
-                                        str_lit("\n"),
                                     ),
-                                    int_lit(1),
-                                ],
-                            ))),
+                                    call_member(
+                                        ident("text"),
+                                        "substring",
+                                        vec![bin(BinOp::Add, ident("eq"), int_lit(1))],
+                                    ),
+                                )))],
+                                None,
+                            ),
                             stmt(StmtKind::Expr(assign_expr(
                                 ident("j"),
                                 bin(BinOp::Add, ident("j"), int_lit(1)),
                             ))),
                         ],
                         else_body: None }),
-                    stmt(StmtKind::Return(Some(int_lit(0)))),
-                ],
-                None,
-            ),
-            if_stmt(
-                bin(BinOp::Eq, ident("cmd"), str_lit("echo")),
-                vec![
-                    var_decl_stmt(
-                        "text",
-                        call_member(
-                            call_member(ident("args"), "slice", vec![int_lit(1)]),
-                            "join",
-                            vec![str_lit(" ")],
-                        ),
-                    ),
                     stmt(StmtKind::Expr(assign_expr(
-                        ident("text"),
-                        bin(BinOp::Add, ident("text"), str_lit("\n")),
+                        member(ident("opts"), "env"),
+                        ident("eo"),
                     ))),
-                    if_stmt(
-                        and(
-                            bin(BinOp::NotEq, ident("action"), null_lit()),
-                            member(ident("action"), "openPath"),
-                        ),
-                        vec![stmt(StmtKind::Expr(assign_expr(
-                            index_expr(
-                                ident("__c_file_store"),
-                                member(ident("action"), "openPath"),
-                            ),
-                            ident("text"),
-                        )))],
-                        Some(vec![stmt(StmtKind::Expr(call_expr(
-                            ident("__c_fputs_h"),
-                            vec![ident("text"), int_lit(1)],
-                        )))]),
-                    ),
-                    stmt(StmtKind::Return(Some(int_lit(0)))),
                 ],
+                Some(vec![if_stmt(
+                    bin(BinOp::Eq, ident("__c_env_dirty"), int_lit(1)),
+                    vec![stmt(StmtKind::Expr(assign_expr(
+                        member(ident("opts"), "env"),
+                        ident("__c_env_obj"),
+                    )))],
+                    None,
+                )]),
+            ),
+            // Our own buffered stdout must land before the child's.
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_write_stdout"),
+                vec![ident("__c_stdout_buffer")],
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("__c_stdout_buffer"),
+                str_lit(""),
+            ))),
+            var_decl_stmt(
+                "r",
+                call_expr(
+                    ident("__c_spawn_sync"),
+                    vec![ident("p"), ident("real_args"), ident("opts")],
+                ),
+            ),
+            // Spawn failure — the one case where exec RETURNS (ENOENT).
+            if_stmt(
+                bin(BinOp::NotEq, nullish(member(ident("r"), "error"), null_lit()), null_lit()),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                 None,
             ),
+            // `posix_spawn_file_actions_addopen` redirects the child's
+            // stdout into a file instead of ours.
             if_stmt(
                 and(
-                    bin(BinOp::Eq, ident("cmd"), str_lit("sh")),
-                    bin(BinOp::Gt, member(ident("args"), "length"), int_lit(2)),
+                    bin(BinOp::NotEq, ident("action"), null_lit()),
+                    member(ident("action"), "openPath"),
                 ),
-                vec![
-                    var_decl_stmt("script", index_expr(ident("args"), int_lit(2))),
-                    if_stmt(
-                        bin(
-                            BinOp::GtEq,
-                            call_member(ident("script"), "indexOf", vec![str_lit("echo hi >&")]),
-                            int_lit(0),
-                        ),
-                        vec![
-                            stmt(StmtKind::Expr(assign_expr(
-                                index_expr(ident("__c_file_store"), str_lit("test_keep_fd.txt")),
-                                str_lit("hi\n"),
-                            ))),
-                            stmt(StmtKind::Return(Some(int_lit(0)))),
-                        ],
-                        None,
+                vec![stmt(StmtKind::Expr(assign_expr(
+                    index_expr(
+                        ident("__c_file_store"),
+                        member(ident("action"), "openPath"),
                     ),
-                    stmt(StmtKind::Return(Some(int_lit(0)))),
-                ],
-                None,
+                    member(ident("r"), "stdout"),
+                )))],
+                Some(vec![if_stmt(
+                    bin(BinOp::NotEq, member(ident("r"), "stdout"), str_lit("")),
+                    vec![stmt(StmtKind::Expr(call_expr(
+                        ident("__c_write_stdout"),
+                        vec![member(ident("r"), "stdout")],
+                    )))],
+                    None,
+                )]),
             ),
             if_stmt(
-                bin(
-                    BinOp::GtEq,
-                    call_member(ident("p"), "indexOf", vec![str_lit(".sh")]),
-                    int_lit(0),
-                ),
-                vec![
-                    if_stmt(
-                        bin(
-                            BinOp::GtEq,
-                            call_member(
-                                nullish(
-                                    index_expr(ident("__c_file_store"), ident("p")),
-                                    str_lit(""),
-                                ),
-                                "indexOf",
-                                vec![str_lit("echo script")],
-                            ),
-                            int_lit(0),
-                        ),
-                        vec![stmt(StmtKind::Expr(call_expr(
-                            ident("__c_fputs_h"),
-                            vec![str_lit("script\n"), int_lit(1)],
-                        )))],
-                        None,
-                    ),
-                    stmt(StmtKind::Return(Some(int_lit(0)))),
-                ],
+                bin(BinOp::NotEq, member(ident("r"), "stderr"), str_lit("")),
+                vec![stmt(StmtKind::Expr(call_expr(
+                    ident("__c_fputs_h"),
+                    vec![member(ident("r"), "stderr"), int_lit(2)],
+                )))],
                 None,
             ),
+            var_decl_stmt(
+                "st",
+                ternary(
+                    bin(BinOp::Eq, member(ident("r"), "status"), null_lit()),
+                    int_lit(2),
+                    member(ident("r"), "status"),
+                ),
+            ),
+            stmt(StmtKind::Expr(assign_expr(
+                ident("__c_child_status"),
+                ident("st"),
+            ))),
+            // In a forked child: record and fall through (the parent's code
+            // follows). At top level exec never returns — end the run.
+            if_stmt(
+                bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            stmt(StmtKind::Expr(call_expr(
+                ident("__c_exit_with_code"),
+                vec![ident("st")],
+            ))),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
     )
@@ -531,6 +1624,13 @@ fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
         op,
         left: Box::new(left),
         right: Box::new(right) })
+}
+
+/// The next free file descriptor. Held on an object so that a spawned
+/// thread — whose globals are a CLONE — allocates out of the same counter
+/// as its parent instead of reissuing descriptors the parent already owns.
+fn next_fd() -> Expression {
+    member(ident("__c_fd_seq"), "n")
 }
 
 pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
@@ -1052,10 +2152,10 @@ pub fn open(path: Expression, flags: Expression) -> Expression {
     );
     let fd = ident("__c_new_fd");
     expr(ExprKind::Sequence(vec![
-        assign_expr(fd.clone(), ident("__c_next_fd")),
+        assign_expr(fd.clone(), next_fd()),
         assign_expr(
-            ident("__c_next_fd"),
-            bin(BinOp::Add, ident("__c_next_fd"), int_lit(1)),
+            next_fd(),
+            bin(BinOp::Add, next_fd(), int_lit(1)),
         ),
         assign_expr(ident("__c_last_path"), path.clone()),
         assign_expr(index_expr(ident("__c_path_exists"), path), int_lit(1)),
@@ -1085,7 +2185,9 @@ pub fn open(path: Expression, flags: Expression) -> Expression {
 }
 
 pub fn close(fd: Expression) -> Expression {
-    expr(ExprKind::Sequence(vec![
+    // In an inline forked child, a close touches the CHILD's descriptor
+    // copies only — the parent keeps its own open (real fork semantics).
+    let body = expr(ExprKind::Sequence(vec![
         assign_expr(index_expr(ident("__c_fd_open"), fd.clone()), int_lit(0)),
         ternary(
             index_expr(ident("__c_pipe_is_reader"), fd.clone()),
@@ -1108,7 +2210,12 @@ pub fn close(fd: Expression) -> Expression {
         ),
         assign_expr(ident("__c_fd_closed"), int_lit(1)),
         int_lit(0),
-    ]))
+    ]));
+    ternary(
+        bin(BinOp::Eq, ident("__c_in_forked_child"), int_lit(1)),
+        int_lit(0),
+        body,
+    )
 }
 
 pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expression {
@@ -1194,15 +2301,15 @@ pub fn pipe(fds: Expression, cloexec: bool) -> Expression {
     let write_fd = ident("__c_pipe_w");
     let clo = if cloexec { int_lit(1) } else { int_lit(0) };
     expr(ExprKind::Sequence(vec![
-        assign_expr(read_fd.clone(), ident("__c_next_fd")),
+        assign_expr(read_fd.clone(), next_fd()),
         assign_expr(
-            ident("__c_next_fd"),
-            bin(BinOp::Add, ident("__c_next_fd"), int_lit(1)),
+            next_fd(),
+            bin(BinOp::Add, next_fd(), int_lit(1)),
         ),
-        assign_expr(write_fd.clone(), ident("__c_next_fd")),
+        assign_expr(write_fd.clone(), next_fd()),
         assign_expr(
-            ident("__c_next_fd"),
-            bin(BinOp::Add, ident("__c_next_fd"), int_lit(1)),
+            next_fd(),
+            bin(BinOp::Add, next_fd(), int_lit(1)),
         ),
         array_slot_set(fds.clone(), int_lit(0), read_fd.clone()),
         array_slot_set(fds, int_lit(1), write_fd.clone()),
@@ -1237,7 +2344,7 @@ pub fn pipe(fds: Expression, cloexec: bool) -> Expression {
 }
 
 pub fn dup(fd: Expression) -> Expression {
-    dup_at(fd, ident("__c_next_fd"), false)
+    dup_at(fd, next_fd(), false)
 }
 
 pub fn dup_at(fd: Expression, new_fd: Expression, cloexec: bool) -> Expression {
@@ -1254,11 +2361,11 @@ pub fn dup_at(fd: Expression, new_fd: Expression, cloexec: bool) -> Expression {
         expr(ExprKind::Sequence(vec![
             assign_expr(target_fd.clone(), new_fd),
             assign_expr(
-                ident("__c_next_fd"),
+                next_fd(),
                 ternary(
-                    bin(BinOp::GtEq, target_fd.clone(), ident("__c_next_fd")),
+                    bin(BinOp::GtEq, target_fd.clone(), next_fd()),
                     bin(BinOp::Add, target_fd.clone(), int_lit(1)),
-                    ident("__c_next_fd"),
+                    next_fd(),
                 ),
             ),
             assign_expr(
@@ -1307,9 +2414,10 @@ pub fn read(fd: Expression, buf: Expression, count: Expression) -> Expression {
     if matches!(buf.kind, ExprKind::Lit(Literal::Null)) {
         return int_lit(0);
     }
+    // No content on the fd means an empty read — never a canned string.
     let data = nullish(
         index_expr(ident("__c_fd_content_by_fd"), fd.clone()),
-        ternary(eq(count.clone(), int_lit(1)), str_lit("A"), str_lit("msg")),
+        str_lit(""),
     );
     let read_ok = expr(ExprKind::Sequence(vec![
         assign_expr(buf, data),
@@ -1319,14 +2427,16 @@ pub fn read(fd: Expression, buf: Expression, count: Expression) -> Expression {
         nullish(index_expr(ident("__c_fd_nonblock"), fd.clone()), int_lit(0)),
         int_lit(-1),
         ternary(
+            // read(2) on a pipe whose write end is closed, with nothing
+            // buffered, is end-of-file — 0, whatever the requested size. The
+            // `count != 3` that used to be ANDed in here made exactly one
+            // buffer size behave differently, which is a test's number, not a
+            // rule from the standard.
             and(
                 index_expr(ident("__c_pipe_writer_closed"), fd.clone()),
-                and(
-                    expr(ExprKind::Unary {
-                        op: UnaryOp::Not,
-                        expr: Box::new(index_expr(ident("__c_fd_content_by_fd"), fd.clone())) }),
-                    bin(BinOp::NotEq, count.clone(), int_lit(3)),
-                ),
+                expr(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(index_expr(ident("__c_fd_content_by_fd"), fd.clone())) }),
             ),
             int_lit(0),
             ternary(
@@ -1383,22 +2493,36 @@ pub fn write(fd: Expression, data: Expression, count: Expression) -> Expression 
         assign_expr(ident("__c_last_file_size"), count.clone()),
         count,
     ]));
+    // EPIPE: writing to a pipe/socketpair whose READING end is closed.
+    // `is_writer` gates it, so a plain file fd (no peer) never takes it.
+    let peer_closed = and(
+        index_expr(ident("__c_pipe_is_writer"), fd.clone()),
+        expr(ExprKind::Unary {
+            op: UnaryOp::Not,
+            expr: Box::new(index_expr(
+                ident("__c_fd_open"),
+                index_expr(ident("__c_pipe_peer"), fd.clone()),
+            )) }),
+    );
     ternary(
         or(
-            and(
-                index_expr(ident("__c_fd_nonblock"), fd.clone()),
-                bin(
-                    BinOp::GtEq,
-                    nullish(ident("__c_pipe_write_count"), int_lit(0)),
-                    int_lit(4096),
+            or(
+                and(
+                    index_expr(ident("__c_fd_nonblock"), fd.clone()),
+                    bin(
+                        BinOp::GtEq,
+                        nullish(ident("__c_pipe_write_count"), int_lit(0)),
+                        int_lit(4096),
+                    ),
                 ),
+                expr(ExprKind::Unary {
+                    op: UnaryOp::Not,
+                    expr: Box::new(or(
+                        index_expr(ident("__c_fd_open"), fd.clone()),
+                        bin(BinOp::Lt, fd, int_lit(3)),
+                    )) }),
             ),
-            expr(ExprKind::Unary {
-                op: UnaryOp::Not,
-                expr: Box::new(or(
-                    index_expr(ident("__c_fd_open"), fd.clone()),
-                    bin(BinOp::Lt, fd, int_lit(3)),
-                )) }),
+            peer_closed,
         ),
         int_lit(-1),
         write_ok,
@@ -1659,120 +2783,43 @@ pub fn s_isdir(mode: Expression) -> Expression {
     ternary(eq(mode, int_lit(16384)), int_lit(1), int_lit(0))
 }
 
-pub fn socket(kind: Option<Expression>, invalid_family: bool) -> Expression {
-    if invalid_family {
-        int_lit(-1)
-    } else {
-        let mut seq = vec![
-            assign_expr(ident("__c_fd_closed"), int_lit(0)),
-            assign_expr(ident("__c_fd_eof"), int_lit(0)),
-            assign_expr(ident("__c_has_peer"), int_lit(0)),
-        ];
-        if let Some(kind) = kind {
-            seq.push(assign_expr(ident("__c_socket_kind"), kind));
-        }
-        seq.push(int_lit(10));
-        expr(ExprKind::Sequence(seq))
-    }
-}
+// `socket`/`bind` used to live here, answering with the constant fd 10 and a
+// bind that failed only for the literal path `"test_unix_ext.sock"` — a test's
+// FILENAME compiled into the runtime. Both were already unreachable; the walker
+// routes through `__c_socket_h`/`__c_bind_h`, which open real descriptors.
 
-pub fn bind(addr: Option<Expression>) -> Expression {
-    let target = addr.map(arg_target);
-    let path = target.clone().map(|a| member(a, "sun_path"));
-    let unix_addr = target
-        .clone()
-        .map(|a| eq(member(a, "sun_family"), int_lit(1)))
-        .unwrap_or_else(|| int_lit(0));
-    let mut seq = vec![assign_expr(ident("__c_socket_bound_port"), int_lit(1234))];
-    if let Some(path) = path.clone() {
-        seq.push(assign_expr(
-            index_expr(ident("__c_path_exists"), path),
-            int_lit(1),
-        ));
-    }
-    seq.push(int_lit(0));
-    let bind_ok = expr(ExprKind::Sequence(seq));
-    if let Some(path) = path {
-        let existing_path = or(
-            index_expr(ident("__c_path_exists"), path.clone()),
-            eq(path.clone(), str_lit("test_unix_ext.sock")),
-        );
-        ternary(and(unix_addr, existing_path), int_lit(-1), bind_ok)
-    } else {
-        bind_ok
-    }
-}
-
-pub fn shutdown() -> Expression {
+/// `shutdown(fd, how)` — SHUT_WR(1)/SHUT_RDWR(2) end this side's writing,
+/// so the PEER reads EOF. SHUT_RD(0) only stops our own reading.
+pub fn shutdown(fd: Expression, how: Expression) -> Expression {
     expr(ExprKind::Sequence(vec![
+        ternary(
+            bin(BinOp::GtEq, how, int_lit(1)),
+            assign_expr(
+                index_expr(
+                    ident("__c_pipe_writer_closed"),
+                    index_expr(ident("__c_pipe_peer"), fd.clone()),
+                ),
+                int_lit(1),
+            ),
+            int_lit(0),
+        ),
         assign_expr(ident("__c_fd_content"), str_lit("")),
         assign_expr(ident("__c_fd_eof"), int_lit(1)),
         int_lit(0),
     ]))
 }
 
-pub fn connect(addr: Expression) -> Expression {
-    let target = arg_target(addr);
-    let missing_unix_path = eq(
-        member(target.clone(), "sun_path"),
-        str_lit("doesnotexist.sock"),
-    );
-    ternary(
-        expr(ExprKind::Binary {
-            op: BinOp::Or,
-            left: Box::new(eq(member(target, "sin_port"), int_lit(1))),
-            right: Box::new(missing_unix_path) }),
-        int_lit(-1),
-        expr(ExprKind::Sequence(vec![
-            assign_expr(ident("__c_has_peer"), int_lit(1)),
-            int_lit(0),
-        ])),
-    )
-}
-
-pub fn accept() -> Expression {
-    let accepted = expr(ExprKind::Sequence(vec![
-        assign_expr(ident("__c_has_peer"), int_lit(1)),
-        assign_expr(ident("__c_fd_closed"), int_lit(0)),
-        int_lit(11),
-    ]));
-    ternary(
-        nullish(ident("__c_nonblock"), int_lit(0)),
-        int_lit(-1),
-        accepted,
-    )
-}
-
-pub fn listen() -> Expression {
-    ternary(
-        eq(nullish(ident("__c_socket_kind"), int_lit(1)), int_lit(2)),
-        int_lit(-1),
-        int_lit(0),
-    )
-}
-
-pub fn get_name(kind: &str, addr: Expression) -> Expression {
-    let target = arg_target(addr);
-    let fill = expr(ExprKind::Sequence(vec![
-        assign_expr(member(target.clone(), "sin_family"), int_lit(2)),
-        assign_expr(
-            member(target.clone(), "sin_port"),
-            nullish(ident("__c_socket_bound_port"), int_lit(0)),
-        ),
-        assign_expr(member(target.clone(), "sun_family"), int_lit(1)),
-        assign_expr(member(target, "sun_path"), str_lit("test_unix4.sock")),
-        int_lit(0),
-    ]));
-    if kind == "getpeername" {
-        ternary(
-            nullish(ident("__c_has_peer"), int_lit(0)),
-            fill,
-            int_lit(-1),
-        )
-    } else {
-        fill
-    }
-}
+// `connect`/`accept`/`listen`/`get_name` used to live here. `connect` failed
+// only for the literal path `"doesnotexist.sock"`, `accept` answered the
+// constant fd 11, and `get_name` wrote `sun_path = "test_unix4.sock"` — which
+// is the EXPECTED OUTPUT of `unix_getsockname`, compiled in. All four were
+// already unreachable; `__c_connect_h`/`__c_accept_h`/`__c_listen_h`/
+// `__c_getsockname_h` are the live routes.
+//
+// AF_UNIX is what those four were standing in for, and it has no WASI
+// equivalent — it needs an in-process registry keyed by `sun_path`. That is
+// still to build; deleting the canned versions is what makes its absence
+// visible instead of green.
 
 pub fn getsockopt(opt: Expression, is_so_error: bool) -> Expression {
     expr(ExprKind::Sequence(vec![
@@ -1784,83 +2831,90 @@ pub fn getsockopt(opt: Expression, is_so_error: bool) -> Expression {
     ]))
 }
 
-pub fn send(data: Expression, count: Expression, plain_send: bool) -> Expression {
-    let send_ok = expr(ExprKind::Sequence(vec![
-        assign_expr(ident("__c_socket_data"), data),
-        assign_expr(
-            ident("__c_socket_zero_packet"),
-            eq(count.clone(), int_lit(0)),
-        ),
-        count,
-    ]));
-    if plain_send {
-        let unconnected_dgram = and(
-            eq(nullish(ident("__c_socket_kind"), int_lit(1)), int_lit(2)),
-            eq(nullish(ident("__c_has_peer"), int_lit(0)), int_lit(0)),
-        );
-        ternary(unconnected_dgram, int_lit(-1), send_ok)
-    } else {
-        send_ok
-    }
-}
-
-pub fn recv(
-    kind: &str,
-    buf: Expression,
-    count: Expression,
-    count_value: Option<i64>,
-) -> Expression {
-    let default_data = match (kind, count_value) {
-        ("recvfrom", Some(0)) => str_lit(""),
-        ("recvfrom", Some(1)) => str_lit("X"),
-        ("recvfrom", Some(3)) => str_lit("udp"),
-        ("recv", Some(1)) => str_lit("Y"),
-        ("recv", Some(2)) => str_lit("hi"),
-        ("recv", Some(3)) => str_lit("XYZ"),
-        ("recv", Some(4)) => str_lit("unix"),
-        _ => str_lit("") };
-    let recv_ok = expr(ExprKind::Sequence(vec![
-        assign_expr(buf, nullish(ident("__c_socket_data"), default_data)),
-        count,
-    ]));
-    ternary(
-        nullish(ident("__c_nonblock"), int_lit(0)),
-        int_lit(-1),
-        ternary(
-            nullish(ident("__c_socket_zero_packet"), int_lit(0)),
-            int_lit(0),
-            recv_ok,
-        ),
-    )
-}
+// `send`/`recv` used to live here, answering from a table keyed by the BYTE
+// COUNT — `("recv", Some(2)) => "hi"`, `("recvfrom", Some(3)) => "udp"` — which
+// is the expected output of the udp tests, not a socket implementation. Both
+// were already unreachable: the walker routes send/recv through `__c_send_h`
+// and `__c_recv_h`, which move real datagrams. Deleted rather than left as a
+// fallback, because a fallback that answers the test is worse than an error.
 
 pub fn socketpair(fds: Expression) -> Expression {
+    // A socketpair is BIDIRECTIONAL in-process IPC: two real descriptors,
+    // each other's peer, both readable and writable. Marking both as
+    // "writer" is what routes `write(a)` into the peer's buffer, so
+    // `read(b)` sees it — the same peer wiring `pipe()` uses, minus the
+    // one-way restriction. (It used to hand back the constants 20 and 21
+    // with nothing connected, so no data ever flowed.)
     let fds = arg_target(fds);
+    let a = ident("__c_sp_a");
+    let b = ident("__c_sp_b");
     expr(ExprKind::Sequence(vec![
-        array_slot_set(fds.clone(), int_lit(0), int_lit(20)),
-        array_slot_set(fds, int_lit(1), int_lit(21)),
+        assign_expr(a.clone(), next_fd()),
+        assign_expr(
+            next_fd(),
+            bin(BinOp::Add, next_fd(), int_lit(1)),
+        ),
+        assign_expr(b.clone(), next_fd()),
+        assign_expr(
+            next_fd(),
+            bin(BinOp::Add, next_fd(), int_lit(1)),
+        ),
+        array_slot_set(fds.clone(), int_lit(0), a.clone()),
+        array_slot_set(fds, int_lit(1), b.clone()),
+        assign_expr(index_expr(ident("__c_fd_open"), a.clone()), int_lit(1)),
+        assign_expr(index_expr(ident("__c_fd_open"), b.clone()), int_lit(1)),
+        assign_expr(index_expr(ident("__c_pipe_is_writer"), a.clone()), int_lit(1)),
+        assign_expr(index_expr(ident("__c_pipe_is_writer"), b.clone()), int_lit(1)),
+        assign_expr(index_expr(ident("__c_pipe_peer"), a.clone()), b.clone()),
+        assign_expr(index_expr(ident("__c_pipe_peer"), b), a),
         assign_expr(ident("__c_fd_closed"), int_lit(0)),
         assign_expr(ident("__c_fd_eof"), int_lit(0)),
         int_lit(0),
     ]))
 }
 
-pub fn sendmsg(msg: Expression) -> Expression {
+/// `sendmsg` is `send` with the destination and the payload read out of a
+/// `msghdr` instead of passed directly, so it routes through the same helper.
+/// One iovec is what the corpus uses; a real gather would loop `msg_iovlen`.
+pub fn sendmsg(fd: Expression, msg: Expression) -> Expression {
     let msg = arg_target(msg);
-    let iov = index_expr(member(msg, "msg_iov"), int_lit(0));
-    expr(ExprKind::Sequence(vec![
-        assign_expr(ident("__c_socket_data"), member(iov, "iov_base")),
-        int_lit(3),
-    ]))
+    let iov = index_expr(member(msg.clone(), "msg_iov"), int_lit(0));
+    // A zeroed `msg_name` means "no destination" — `struct msghdr m = {0}`
+    // leaves the integer 0 there, which is not `null`, so it must be
+    // normalized or `__c_sock_addr_text` would read an address out of a
+    // number.
+    let dest = ternary(
+        eq(member(msg.clone(), "msg_name"), int_lit(0)),
+        null_lit(),
+        member(msg, "msg_name"),
+    );
+    call_expr(
+        ident("__c_send_h"),
+        vec![fd, member(iov.clone(), "iov_base"), member(iov, "iov_len"), dest],
+    )
 }
 
-pub fn recvmsg(msg: Expression) -> Expression {
+/// `recvmsg` is `recv` scattering into the first iovec. Same helper, so
+/// MSG_PEEK and the blocking retry behave identically to a plain `recv`.
+pub fn recvmsg(fd: Expression, msg: Expression, flags: Expression) -> Expression {
     let msg = arg_target(msg);
     let iov = index_expr(member(msg, "msg_iov"), int_lit(0));
     expr(ExprKind::Sequence(vec![
-        assign_expr(member(iov, "iov_base"), str_lit("msg")),
-        assign_expr(ident("rbuf"), str_lit("msg")),
-        int_lit(3),
+        assign_expr(
+            ident("__c_recv_tmp"),
+            call_expr(
+                ident("__c_recv_h"),
+                vec![fd, member(iov.clone(), "iov_len"), flags],
+            ),
+        ),
+        ternary(
+            eq(ident("__c_recv_tmp"), null_lit()),
+            int_lit(-1),
+            expr(ExprKind::Sequence(vec![
+                assign_expr(member(iov, "iov_base"), ident("__c_recv_tmp")),
+                member(ident("__c_recv_tmp"), "length"),
+            ])),
+        ),
     ]))
 }
 
@@ -2352,63 +3406,39 @@ pub fn getlogin_r(buf: Expression) -> Expression {
 }
 
 pub fn fork() -> Expression {
-    let pending = nullish(ident("__c_pending_children"), int_lit(0));
+    // A real fork is impossible in one VM instance, so the child runs
+    // INLINE: `fork()` returns 0 (the child's answer), the child block
+    // executes immediately, and `exec`/`_exit` inside it fall through to
+    // the parent's code instead of terminating. `wait` then reports the
+    // recorded status. Serialized child-then-parent is exactly the
+    // ordering `wait()` enforces anyway.
     expr(ExprKind::Sequence(vec![
         assign_expr(
             ident("__c_pending_children"),
-            expr(ExprKind::Binary {
-                op: BinOp::Add,
-                left: Box::new(pending),
-                right: Box::new(int_lit(1)) }),
+            bin(BinOp::Add, nullish(ident("__c_pending_children"), int_lit(0)), int_lit(1)),
         ),
-        int_lit(1001),
+        assign_expr(ident("__c_in_forked_child"), int_lit(1)),
+        assign_expr(ident("__c_child_status"), int_lit(0)),
+        int_lit(0),
     ]))
 }
 
 pub fn wait(status: Option<Expression>) -> Expression {
     let pending = nullish(ident("__c_pending_children"), int_lit(0));
-    let mut child_seq = vec![assign_expr(
-        ident("__c_pending_children"),
-        expr(ExprKind::Binary {
-            op: BinOp::Sub,
-            left: Box::new(pending.clone()),
-            right: Box::new(int_lit(1)) }),
-    )];
-    child_seq.push(ternary(
-        nullish(ident("__c_mmap_buffer"), int_lit(0)),
+    let mut child_seq = vec![
         assign_expr(
-            index_expr(ident("__c_mmap_buffer"), int_lit(0)),
-            int_lit(80),
+            ident("__c_pending_children"),
+            bin(BinOp::Sub, pending.clone(), int_lit(1)),
         ),
-        int_lit(0),
-    ));
-    child_seq.push(ternary(
-        index_expr(ident("__c_path_exists"), str_lit("test_keep_fd.txt")),
-        assign_expr(
-            index_expr(ident("__c_file_store"), str_lit("test_keep_fd.txt")),
-            str_lit("hi\n"),
-        ),
-        int_lit(0),
-    ));
-    child_seq.push(ternary(
-        bin(
-            BinOp::GtEq,
-            call_member(
-                nullish(
-                    index_expr(ident("__c_file_store"), str_lit("test_script.sh")),
-                    str_lit(""),
-                ),
-                "indexOf",
-                vec![str_lit("echo script")],
-            ),
-            int_lit(0),
-        ),
-        call_expr(ident("__c_fputs_h"), vec![str_lit("script\n"), int_lit(1)]),
-        int_lit(0),
-    ));
+        // The inline child is finished by the time the parent waits.
+        assign_expr(ident("__c_in_forked_child"), int_lit(0)),
+    ];
     if let Some(status) = status {
         if !matches!(status.kind, ExprKind::Lit(Literal::Null)) {
-            child_seq.push(assign_expr(arg_target(status), int_lit(5)));
+            child_seq.push(assign_expr(
+                arg_target(status),
+                nullish(ident("__c_child_status"), int_lit(0)),
+            ));
         }
     }
     child_seq.push(int_lit(1001));

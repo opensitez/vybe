@@ -590,7 +590,7 @@ pub fn emit_set_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_br_if(1, line);
     get(&mut chunks[current], mapper, line);
     get(&mut chunks[current], index, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], array, line);
     get(&mut chunks[current], index, line);
@@ -650,7 +650,7 @@ pub fn emit_parallel_prefix(chunks: &mut [Chunk], current: usize, argc: u8, line
     get(&mut chunks[current], operator, line);
     get(&mut chunks[current], previous, line);
     get(&mut chunks[current], current_value, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     set(&mut chunks[current], value, line);
     get(&mut chunks[current], array, line);
     get(&mut chunks[current], index, line);

@@ -203,7 +203,7 @@ pub fn build_method_thunk_chunk(
                 chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
             }
             // arity - 1 because we dropped `this`.
-            chunk.emit_op_u8(Op::CALL_REF, method.arity - 1, line);
+            chunk.emit_op_u8_u8(Op::CALL_REF, method.arity - 1, 1, line);
             chunk.emit_op(Op::RETURN, line);
         }
         MethodTarget::Body(ops) => {
@@ -400,7 +400,7 @@ fn compile_body_offset(
                     "MethodOp::NewDotnet currently only supports argc=0; \
                      for arity-N factories, switch to a Host target or extend the DSL"
                 );
-                chunk.emit_op_u8(Op::CALL_REF, 0, line);
+                chunk.emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
             }
             MethodOp::SetField(field) => {
                 let key = chunk.add_constant(Value::String(Arc::from(field)));
@@ -566,7 +566,7 @@ pub fn build_constructor_chunk(
     if let Some(parent_name) = class.parent {
         // this = <Parent>()  — global_get parent ; call(0) ; local_set this ; drop
         vybe_compiler::primitives::globals::emit_read(&mut chunk, parent_name, line);
-        chunk.emit_op_u8(Op::CALL_REF, 0, line);
+        chunk.emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     } else {
         // Root class (Object): this = struct_new 0

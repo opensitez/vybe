@@ -160,7 +160,7 @@ fn emit_fire_cancellation_registrations(chunks: &mut [Chunk], current: usize, li
     vybe_compiler::primitives::loops::emit_loop_cond(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, regs_slot, line);
     collections::emit_pop(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     chunks[current].emit_op(Op::DROP, line);
     vybe_compiler::primitives::loops::emit_loop_end(chunks, current, loop_state, line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
@@ -423,12 +423,12 @@ fn emit_task_delay_timer_callback(chunks: &mut Vec<Chunk>, line: u32) -> usize {
     callback_chunks[0].emit_if(line);
     callback_chunks[0].emit_op_u16(Op::LOCAL_GET, 2, line);
     emit_operation_cancelled_exception(&mut callback_chunks, 0, line);
-    callback_chunks[0].emit_op_u8(Op::CALL_REF, 1, line);
+    callback_chunks[0].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     callback_chunks[0].emit_op(Op::DROP, line);
     callback_chunks[0].emit_else(line);
     callback_chunks[0].emit_op_u16(Op::LOCAL_GET, 1, line);
     callback_chunks[0].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
-    callback_chunks[0].emit_op_u8(Op::CALL_REF, 1, line);
+    callback_chunks[0].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     callback_chunks[0].emit_op(Op::DROP, line);
     callback_chunks[0].emit_end(line);
     callback_chunks[0].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);

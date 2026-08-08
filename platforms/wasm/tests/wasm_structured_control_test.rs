@@ -12,8 +12,7 @@ fn make_i32(chunk: &mut Chunk, v: i32) {
 }
 
 fn emit_if_typed(chunk: &mut Chunk, result_count: u8) {
-    chunk.emit_op(Op::IF, 0);
-    chunk.emit(result_count, 0);
+    chunk.emit_if_params(0, 0, result_count);
 }
 
 fn leb(out: &mut Vec<u8>, mut value: u32) {

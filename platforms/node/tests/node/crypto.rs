@@ -127,7 +127,7 @@ fn call_method(receiver: &Value, method: &str, args: Vec<Value>) -> Value {
         }
         argc += 1;
     }
-    chunk.emit_op_u8(Op::CALL_REF, argc as u8, 0);
+    chunk.emit_op_u8_u8(Op::CALL_REF, argc as u8, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     for (name, value) in arg_globals {

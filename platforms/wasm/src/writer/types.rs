@@ -42,10 +42,13 @@ pub struct WasmTypeContext {
     pub gc_type_count: u32,
     /// arity → WASM type index for (externref * arity) -> externref
     pub func_type_by_arity: std::collections::HashMap<u8, u32>,
-    /// Block-result count → WASM type index for `() -> externref^N`.
-    /// Populated only for N >= 2; multi-value block headers reference
-    /// these as their `blocktype` (signed-LEB128 typeidx).
-    pub block_type_by_results: std::collections::HashMap<u8, u32>,
+    /// `externref^M -> externref^N` functype indices keyed by
+    /// (param_count, result_count). Referenced by multi-value block
+    /// headers as their s33 typeidx `blocktype`, AND by the
+    /// call_indirect/return_call_indirect `(type $sig)` annotations
+    /// (which must match the callee's functype exactly, result count
+    /// included — first-seen-arity lookup is not exact).
+    pub block_type_by_results: std::collections::HashMap<(u8, u8), u32>,
     /// Type index for `(externref) -> ()` — the shape required by the
     /// tag section's exception tag (exception-handling proposal).
     pub exception_type_idx: u32,
@@ -183,10 +186,13 @@ pub fn build_type_context(
     ctx.byte_array_type_idx = gc_struct_pairs * 2 + 2;
     ctx.func_type_base = gc_type_count;
 
-    // Pre-scan chunks for BLOCK/LOOP result counts >= 2. Each distinct
-    // count gets its own `() -> externref^N` function type, which the
-    // block/loop emission references as a typeidx blocktype.
-    let mut block_result_counts: std::collections::BTreeSet<u8> = std::collections::BTreeSet::new();
+    // Pre-scan chunks for BLOCK/LOOP/IF blocktypes needing a typeidx: any
+    // (param_count, result_count) pair beyond the single-byte spec forms
+    // (0,0)=void and (0,1)=one valtype. Each distinct pair gets its own
+    // `externref^M -> externref^N` function type, referenced as an s33
+    // typeidx blocktype at emission.
+    let mut block_result_counts: std::collections::BTreeSet<(u8, u8)> =
+        std::collections::BTreeSet::new();
     for chunk in chunks {
         let code = &chunk.code;
         let mut bip = 0;
@@ -198,12 +204,34 @@ pub fn build_type_context(
                     || op == vybe_runtime::opcode::Op::LOOP
                     || op == vybe_runtime::opcode::Op::IF
                 {
-                    // Layout: group (2) + sub (2) + result_count (1) = 5 bytes total.
-                    if bip + 4 < code.len() {
-                        let count = code[bip + 4];
-                        if count >= 2 {
-                            block_result_counts.insert(count);
+                    // Layout: group (2) + sub (2) + params (1) + results (1).
+                    if bip + 5 < code.len() {
+                        let params = code[bip + 4];
+                        let results = code[bip + 5];
+                        if params > 0 || results >= 2 {
+                            block_result_counts.insert((params, results));
                         }
+                    }
+                } else if op == vybe_runtime::opcode::Op::CALL_INDIRECT
+                    || op == vybe_runtime::opcode::Op::RETURN_CALL_INDIRECT
+                {
+                    // Immediates: argc (1) + tableidx (1) + results (1).
+                    // The call's `(type $sig)` annotation must match the
+                    // callee's functype EXACTLY — including the result
+                    // count — so register the (params, results) pair.
+                    // Unlike blocktypes, (0,0)/(0,1) have no shorthand here.
+                    if bip + 6 < code.len() {
+                        block_result_counts.insert((code[bip + 4], code[bip + 6]));
+                    }
+                } else if op == vybe_runtime::opcode::Op::CALL_REF
+                    || op == vybe_runtime::opcode::Op::RETURN_CALL
+                    || op == vybe_runtime::opcode::Op::RETURN_CALL_REF
+                {
+                    // Immediates: argc (1) + results (1). Compilers emit
+                    // results=1 (uniform boxed ABI); reader-ingested calls
+                    // carry their functype's true result count.
+                    if bip + 5 < code.len() {
+                        block_result_counts.insert((code[bip + 4], code[bip + 5]));
                     }
                 }
                 bip += crate::writer::code::opcode_size(op, code, bip);
@@ -467,18 +495,21 @@ pub fn build_type_context(
             .or_insert(type_idx);
     }
 
-    // Block multi-value types: one `() -> externref^N` per distinct
-    // block/loop `result_count >= 2` found in the pre-scan. Index is
-    // recorded in `ctx.block_type_by_results` for the code emitter to
-    // look up when writing a typeidx blocktype.
+    // Block types: one `externref^M -> externref^N` per distinct
+    // (params, results) pair found in the pre-scan. Index is recorded in
+    // `ctx.block_type_by_results` for the code emitter to look up when
+    // writing an s33 typeidx blocktype.
     let block_type_base = ctx.func_type_base + import_count as u32 + chunks.len() as u32;
-    for (i, &count) in block_result_counts.iter().enumerate() {
+    for (i, &(params, results)) in block_result_counts.iter().enumerate() {
         let tidx = block_type_base + i as u32;
-        ctx.block_type_by_results.insert(count, tidx);
+        ctx.block_type_by_results.insert((params, results), tidx);
         out.push(TYPE_FUNC);
-        write_leb128_u32(&mut out, 0); // 0 params
-        write_leb128_u32(&mut out, count as u32); // N results
-        for _ in 0..count {
+        write_leb128_u32(&mut out, params as u32);
+        for _ in 0..params {
+            out.push(TYPE_EXTERNREF);
+        }
+        write_leb128_u32(&mut out, results as u32);
+        for _ in 0..results {
             out.push(TYPE_EXTERNREF);
         }
     }

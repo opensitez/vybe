@@ -63,5 +63,5 @@ pub fn emit_format_picture(chunks: &mut [Chunk], current: usize, argc: u8, line:
     vybe_compiler::primitives::globals::emit_read(chunk, "__vybe_vb_format", line);
     chunk.emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, picture_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 }

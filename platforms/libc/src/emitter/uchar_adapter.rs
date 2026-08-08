@@ -52,24 +52,46 @@ fn byte_at(src: Expression) -> Expression {
     })
 }
 
-/// `mbrtoc16(pc16, s, n, ps)` / `mbrtoc32(pc32, s, n, ps)` for single-byte input.
-/// Stores the first byte/code point when a destination is supplied and returns
-/// the number of consumed bytes, or 0 for an empty input/NUL.
+/// `mbrtoc16(pc16, s, n, ps)` / `mbrtoc32(pc32, s, n, ps)` with an array
+/// destination. Stores the next UTF-16 unit of the source and returns the
+/// consumed count (1), or 0 for an empty input/NUL.
+///
+/// The C `char*` surface here IS an ECMA string, so "one byte" is one UTF-16
+/// unit: a caller looping `s += mbrtoc16(...)` receives an astral character
+/// as its surrogate pair across two calls — exactly the unit sequence a
+/// `char16_t` buffer holds.
 pub fn mbrtoc(dst: Expression, src: Expression, n: Expression) -> Expression {
     let value = byte_at(src.clone());
     let write = pointers::carray_deref_write(dst, value.clone());
     e(ExprKind::Sequence(vec![
         write,
-        e(ExprKind::Ternary {
-            cond: Box::new(bin(
-                BinOp::Or,
-                bin(BinOp::Eq, n, lit_int(0)),
-                bin(BinOp::Eq, value, lit_int(0)),
-            )),
-            then: Box::new(lit_int(0)),
-            else_: Box::new(lit_int(1)),
-        }),
+        mbrtoc_consumed(n, value),
     ]))
+}
+
+/// `mbrtoc16(&c16, s, n, ps)` — the C11 SCALAR-destination idiom. The write
+/// is a plain assignment to the addressed local.
+pub fn mbrtoc_scalar(dst_lvalue: Expression, src: Expression, n: Expression) -> Expression {
+    let value = byte_at(src.clone());
+    e(ExprKind::Sequence(vec![
+        e(ExprKind::Assign {
+            target: Box::new(dst_lvalue),
+            value: Box::new(value.clone()),
+        }),
+        mbrtoc_consumed(n, value),
+    ]))
+}
+
+fn mbrtoc_consumed(n: Expression, value: Expression) -> Expression {
+    e(ExprKind::Ternary {
+        cond: Box::new(bin(
+            BinOp::Or,
+            bin(BinOp::Eq, n, lit_int(0)),
+            bin(BinOp::Eq, value, lit_int(0)),
+        )),
+        then: Box::new(lit_int(0)),
+        else_: Box::new(lit_int(1)),
+    })
 }
 
 /// `c16rtomb(s, c16, ps)` / `c32rtomb(s, c32, ps)` for ASCII code units.

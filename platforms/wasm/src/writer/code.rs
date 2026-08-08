@@ -204,8 +204,10 @@ fn count_temp_locals(chunk: &Chunk) -> u32 {
             ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16,
             ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16,
         ) {
-            if op == Op::CALL_REF {
-                // call_ref needs argc+1 temps (save args + table idx)
+            if op == Op::CALL_REF || op == Op::RETURN_CALL || op == Op::RETURN_CALL_REF {
+                // Dynamic callee-on-stack calls need argc+1 temps
+                // (save args + the funcref) to reorder into the spec
+                // `call_indirect`/`return_call_indirect` stack shape.
                 let call_argc = chunk.code.get(ip + 4).copied().unwrap_or(0) as u32;
                 need = need.max(call_argc + 1);
             } else if op == Op::ARRAY_SET || op == Op::STRUCT_SET {
@@ -248,44 +250,33 @@ fn is_binary_typed_op(op: Op) -> bool {
     || op == Op::EQ || op == Op::NE
 }
 
-fn next_bytes_decode_opcode(chunk: &Chunk, ip: usize) -> bool {
-    if ip + 3 >= chunk.code.len() {
-        return false;
-    }
-    let g = ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16;
-    let s = ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16;
-    Op::decode(g, s).is_some()
-}
-
-fn read_optional_memidx_immediate(chunk: &Chunk, ip: &mut usize) -> u32 {
-    // Multi-memory selector — must mirror the VM
-    // (`dispatch::read_optional_memidx_immediate`) exactly: a fixed 4-byte
-    // block `0xEE 0x00 <memidx u16 BE>`. The memidx lives *inside* those 4
-    // bytes; reading a further LEB after skipping them consumed the next
-    // instruction's opcode bytes.
-    if chunk.code.get(*ip) == Some(&0xEE) && chunk.code.get(*ip + 1) == Some(&0x00) {
-        let memidx = ((chunk.code[*ip + 2] as u32) << 8) | (chunk.code[*ip + 3] as u32);
-        *ip += 4;
-        return memidx;
-    }
-    if next_bytes_decode_opcode(chunk, *ip) {
-        return 0;
-    }
-    read_leb_u32(&chunk.code, ip)
-}
+// (The 0xEE selector reader is deleted: memory.size/grow/fill/copy/init
+// carry fixed u16 memidx immediates declared in their OperandFormat.)
 
 fn read_optional_memarg(chunk: &Chunk, ip: &mut usize, default_align: u32) -> (u32, u64, u32) {
-    if next_bytes_decode_opcode(chunk, *ip) {
+    // OPTIONAL marker-tagged memarg (`SimdMemArg` treatment) — must mirror
+    // the VM's `read_optional_memarg` exactly: present iff the first LEB
+    // carries 0x80 (instruction group-hi bytes are always 0x00, so the peek
+    // is unambiguous — no opcode-decode guessing); 0x100 = memory64 offset;
+    // 0x40 = memidx LEB follows. Absent → the op's natural alignment,
+    // offset 0, memory 0 — the spec binary always writes a memarg.
+    let mut probe = *ip;
+    let marker_align = read_leb_u32(&chunk.code, &mut probe);
+    if marker_align & 0x80 == 0 {
         return (default_align, 0, 0);
     }
-    let align = read_leb_u32(&chunk.code, ip);
-    let offset = read_leb_u32(&chunk.code, ip) as u64;
-    let memidx = if align & 0x40 != 0 {
+    *ip = probe;
+    let offset = if marker_align & 0x100 != 0 {
+        read_leb_u64(&chunk.code, ip)
+    } else {
+        read_leb_u32(&chunk.code, ip) as u64
+    };
+    let memidx = if marker_align & 0x40 != 0 {
         read_leb_u32(&chunk.code, ip)
     } else {
         0
     };
-    (align & !0x40, offset, memidx)
+    (marker_align & !0x1C0, offset, memidx)
 }
 
 fn emit_stack_switch_handlers(body: &mut Vec<u8>, chunk: &Chunk, op_start: usize) {
@@ -542,53 +533,45 @@ pub fn encode_code_section(
                 write_leb128_u32(&mut body, op.sub() as u32);
                 match op {
                     Op::MEMORY_INIT => {
-                        // spec: data_idx, memory_idx
-                        let data_idx = chunk.code[ip];
-                        ip += 1;
-                        let memidx = read_optional_memidx_immediate(chunk, &mut ip);
+                        // spec: data_idx, memory_idx (internal: u16 BE + u16 BE)
+                        let data_idx = read_u16(&chunk.code, &mut ip);
+                        let memidx = read_u16(&chunk.code, &mut ip);
                         write_leb128_u32(&mut body, data_idx as u32);
-                        write_leb128_u32(&mut body, memidx);
+                        write_leb128_u32(&mut body, memidx as u32);
                     }
                     Op::DATA_DROP => {
-                        let data_idx = chunk.code[ip];
-                        ip += 1;
+                        let data_idx = read_u16(&chunk.code, &mut ip);
                         write_leb128_u32(&mut body, data_idx as u32);
                     }
                     Op::MEMORY_COPY => {
                         // spec: dst_mem, src_mem
-                        let dst_mem = read_optional_memidx_immediate(chunk, &mut ip);
-                        let src_mem = read_optional_memidx_immediate(chunk, &mut ip);
-                        write_leb128_u32(&mut body, dst_mem);
-                        write_leb128_u32(&mut body, src_mem);
+                        let dst_mem = read_u16(&chunk.code, &mut ip);
+                        let src_mem = read_u16(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, dst_mem as u32);
+                        write_leb128_u32(&mut body, src_mem as u32);
                     }
                     Op::MEMORY_FILL => {
-                        let memidx = read_optional_memidx_immediate(chunk, &mut ip);
-                        write_leb128_u32(&mut body, memidx);
+                        let memidx = read_u16(&chunk.code, &mut ip);
+                        write_leb128_u32(&mut body, memidx as u32);
                     }
                     Op::TABLE_INIT => {
-                        let elem_idx = chunk.code[ip];
-                        ip += 1;
-                        let table_idx = chunk.code[ip];
-                        ip += 1;
+                        let elem_idx = read_u16(&chunk.code, &mut ip);
+                        let table_idx = read_u16(&chunk.code, &mut ip);
                         write_leb128_u32(&mut body, elem_idx as u32);
                         write_leb128_u32(&mut body, table_idx as u32);
                     }
                     Op::ELEM_DROP => {
-                        let elem_idx = chunk.code[ip];
-                        ip += 1;
+                        let elem_idx = read_u16(&chunk.code, &mut ip);
                         write_leb128_u32(&mut body, elem_idx as u32);
                     }
                     Op::TABLE_COPY => {
-                        let dst_table = chunk.code[ip];
-                        ip += 1;
-                        let src_table = chunk.code[ip];
-                        ip += 1;
+                        let dst_table = read_u16(&chunk.code, &mut ip);
+                        let src_table = read_u16(&chunk.code, &mut ip);
                         write_leb128_u32(&mut body, dst_table as u32);
                         write_leb128_u32(&mut body, src_table as u32);
                     }
                     Op::TABLE_GROW | Op::TABLE_SIZE | Op::TABLE_FILL => {
-                        let table_idx = chunk.code[ip];
-                        ip += 1;
+                        let table_idx = read_u16(&chunk.code, &mut ip);
                         write_leb128_u32(&mut body, table_idx as u32);
                     }
                     _ => {
@@ -651,8 +634,16 @@ fn emit_core_op(
         // call_indirect through the function table. (The old `Op::CALL`
         // alias for this shape is retired; spec `call` is a static import
         // call — see callimportretirement.md.)
-        _ if op == Op::CALL_REF => {
+        //
+        // `return_call` / `return_call_ref` share the internal shape
+        // (u8 argc, callee below the args) and the exact same staging;
+        // being tail calls they lower to spec `return_call_indirect`
+        // (0x13, tail-call proposal) instead of `call_indirect`.
+        _ if op == Op::CALL_REF || op == Op::RETURN_CALL || op == Op::RETURN_CALL_REF => {
+            let spec_byte: u8 = if op == Op::CALL_REF { 0x11 } else { 0x13 };
             let argc = chunk.code[*ip];
+            *ip += 1;
+            let results = chunk.code[*ip];
             *ip += 1;
             // Stack: [externref_funcref, arg1, ..., argN] — funcref is below args
             // call_indirect needs: [arg1, ..., argN, i32_table_idx]
@@ -676,9 +667,16 @@ fn emit_core_op(
             body.push(0x20);
             write_leb128_u32(body, temp_idx + argc as u32);
             emit_unbox_i32(body, rt_idx);
-            // 5. call_indirect with matching function type
-            if let Some(&type_idx) = type_ctx.func_type_by_arity.get(&argc) {
-                body.push(0x11); // call_indirect
+            // 5. call_indirect / return_call_indirect with the EXACT
+            // functype (argc externrefs -> results externrefs, from the
+            // op's own immediates); first-seen-arity is the fallback for
+            // pre-registry chunks.
+            if let Some(&type_idx) = type_ctx
+                .block_type_by_results
+                .get(&(argc, results))
+                .or_else(|| type_ctx.func_type_by_arity.get(&argc))
+            {
+                body.push(spec_byte);
                 write_leb128_u32(body, type_idx); // type index
                 write_leb128_u32(body, 0); // table index 0
             } else {
@@ -691,18 +689,24 @@ fn emit_core_op(
                 body.push(0x6F);
             }
         }
-        _ if op == Op::CALL_INDIRECT => {
+        _ if op == Op::CALL_INDIRECT || op == Op::RETURN_CALL_INDIRECT => {
+            let spec_byte: u8 = if op == Op::CALL_INDIRECT { 0x11 } else { 0x13 };
             let argc = chunk.code[*ip];
             *ip += 1;
             let table_idx = chunk.code[*ip];
             *ip += 1;
-            // Third immediate: the expected result count (part of the VM's
-            // runtime type-shape check). Not needed for the spec `call_indirect`
-            // (the `(type $sig)` index carries it), but must be consumed to keep
-            // `*ip` aligned.
+            // Third immediate: the expected result count. The spec
+            // `(type $sig)` annotation must carry it exactly — a
+            // first-seen-arity functype with a different result count is a
+            // structural mismatch (traps in a conforming engine).
+            let results = chunk.code[*ip];
             *ip += 1;
-            if let Some(&type_idx) = type_ctx.func_type_by_arity.get(&argc) {
-                body.push(0x11);
+            if let Some(&type_idx) = type_ctx
+                .block_type_by_results
+                .get(&(argc, results))
+                .or_else(|| type_ctx.func_type_by_arity.get(&argc))
+            {
+                body.push(spec_byte);
                 write_leb128_u32(body, type_idx);
                 write_leb128_u32(body, table_idx as u32);
             } else {
@@ -739,20 +743,22 @@ fn emit_core_op(
         _ if op == Op::END => {
             body.push(0x0B); // end
         }
-        // BLOCK/LOOP/IF carry a result_count byte (0=void, 1=externref, N≥2=type-idx).
-        // Translate to WASM blocktype (negative valtype or positive type-index LEB128).
+        // BLOCK/LOOP/IF carry (param_count, result_count) bytes. Translate
+        // to the spec blocktype: 0x40 void / one valtype / positive s33
+        // typeidx into the pre-registered externref^M -> externref^N types.
         _ if op == Op::BLOCK || op == Op::LOOP || op == Op::IF => {
-            let result_count = chunk.code[*ip];
-            *ip += 1;
+            let param_count = chunk.code[*ip];
+            let result_count = chunk.code[*ip + 1];
+            *ip += 2;
             body.push(op.sub() as u8); // 0x02 / 0x03 / 0x04
-            match result_count {
-                0 => body.push(TYPE_VOID),
-                1 => body.push(TYPE_EXTERNREF),
-                n => {
+            match (param_count, result_count) {
+                (0, 0) => body.push(TYPE_VOID),
+                (0, 1) => body.push(TYPE_EXTERNREF),
+                key => {
                     let tidx = *type_ctx
                         .block_type_by_results
-                        .get(&n)
-                        .expect("block multi-value type was not pre-registered");
+                        .get(&key)
+                        .expect("block functype was not pre-registered");
                     write_leb128_i32(body, tidx as i32);
                 }
             }
@@ -763,8 +769,8 @@ fn emit_core_op(
         }
         _ if op == Op::MEMORY_SIZE || op == Op::MEMORY_GROW => {
             body.push(op.sub() as u8);
-            let memidx = read_optional_memidx_immediate(chunk, ip);
-            write_leb128_u32(body, memidx);
+            let memidx = read_u16(&chunk.code, ip);
+            write_leb128_u32(body, memidx as u32);
         }
         // Memory load/store with alignment + offset
         _ if op == Op::I32_LOAD || op == Op::F32_LOAD => {
@@ -897,19 +903,19 @@ fn emit_core_op(
             );
         }
         // Reference-types `table.get tbl` / `table.set tbl` (core prefix).
-        // Bytecode carries a single-byte table index; WASM binary uses a
-        // LEB128 tableidx, so we widen on the way out.
+        // Bytecode carries a u16 BE table index; WASM binary uses a
+        // LEB128 tableidx, so we re-serialize on the way out.
         _ if op == Op::TABLE_GET => {
-            let tbl = chunk.code[*ip];
-            *ip += 1;
+            let tbl = ((chunk.code[*ip] as u32) << 8) | chunk.code[*ip + 1] as u32;
+            *ip += 2;
             body.push(0x25);
-            write_leb128_u32(body, tbl as u32);
+            write_leb128_u32(body, tbl);
         }
         _ if op == Op::TABLE_SET => {
-            let tbl = chunk.code[*ip];
-            *ip += 1;
+            let tbl = ((chunk.code[*ip] as u32) << 8) | chunk.code[*ip + 1] as u32;
+            *ip += 2;
             body.push(0x26);
-            write_leb128_u32(body, tbl as u32);
+            write_leb128_u32(body, tbl);
         }
         // Typed `select t` (0x1C): same stack semantics as untyped
         // `select` but carries a `vec(valtype)` operand. Our uniform ABI

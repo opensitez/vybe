@@ -23,7 +23,7 @@ fn table_get_returns_func_table_slot() {
     chunk.local_count = 1;
     // Push index 1, read from table 0.
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u8(Op::TABLE_GET, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_GET, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -37,7 +37,7 @@ fn table_get_traps_on_out_of_bounds() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u8(Op::TABLE_GET, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_GET, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let err = vm.run(vec![chunk]).unwrap_err().to_string();
@@ -54,7 +54,7 @@ fn table_set_writes_to_func_table_slot() {
     // table.set 0: stack order [index, value]
     chunk.emit_i32_const(0, 0);
     chunk.emit_i32_const(42, 0);
-    chunk.emit_op_u8(Op::TABLE_SET, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_SET, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -71,7 +71,7 @@ fn table_set_traps_on_out_of_bounds() {
     chunk.local_count = 1;
     chunk.emit_i32_const(5, 0);
     chunk.emit_i32_const(99, 0);
-    chunk.emit_op_u8(Op::TABLE_SET, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_SET, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -87,7 +87,7 @@ fn table_set_traps_on_out_of_bounds() {
 fn table_get_unknown_table_traps() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_i32_const(0, 0);
-    chunk.emit_op_u8(Op::TABLE_GET, 3, 0);
+    chunk.emit_op_u16(Op::TABLE_GET, 3, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
@@ -144,11 +144,11 @@ fn multi_table_routes_by_tableidx() {
     chunk.local_count = 2;
     // Read table 0[0], save; read table 1[0], add them.
     chunk.emit_i32_const(0, 0);
-    chunk.emit_op_u8(Op::TABLE_GET, 0, 0); // tableidx = 0
+    chunk.emit_op_u16(Op::TABLE_GET, 0, 0); // tableidx = 0
     chunk.emit_op_u16(Op::LOCAL_SET, 0, 0);
 
     chunk.emit_i32_const(0, 0);
-    chunk.emit_op_u8(Op::TABLE_GET, 1, 0); // tableidx = 1
+    chunk.emit_op_u16(Op::TABLE_GET, 1, 0); // tableidx = 1
     chunk.emit_op_u16(Op::LOCAL_SET, 1, 0);
 
     chunk.emit_op_u16(Op::LOCAL_GET, 0, 0);
@@ -175,7 +175,7 @@ fn table_grow_extends_selected_table() {
     // table.grow table 1 by 3 entries, init = null. Returns old size = 2.
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0); // init value
     chunk.emit_i32_const(3, 0);
-    chunk.emit_op_u8(Op::TABLE_GROW, 1, 0);
+    chunk.emit_op_u16(Op::TABLE_GROW, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -190,7 +190,7 @@ fn table_size_reports_selected_table_length() {
     vm.wasm_tables.push(vec![Value::Null; 7]);
 
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::TABLE_SIZE, 1, 0);
+    chunk.emit_op_u16(Op::TABLE_SIZE, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
@@ -200,7 +200,7 @@ fn table_size_reports_selected_table_length() {
 #[test]
 fn table_size_unknown_table_traps() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::TABLE_SIZE, 2, 0);
+    chunk.emit_op_u16(Op::TABLE_SIZE, 2, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
@@ -212,7 +212,7 @@ fn table_grow_unknown_table_traps() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op_u8(Op::TABLE_GROW, 2, 0);
+    chunk.emit_op_u16(Op::TABLE_GROW, 2, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let err = VM::new().run(vec![chunk]).unwrap_err().to_string();
@@ -228,7 +228,7 @@ fn table_fill_writes_requested_range() {
     chunk.emit_i32_const(1, 0);
     chunk.emit_i32_const(55, 0);
     chunk.emit_i32_const(3, 0);
-    chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_FILL, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -249,7 +249,7 @@ fn table_fill_oob_traps() {
     chunk.emit_i32_const(1, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(2, 0);
-    chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_FILL, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -263,7 +263,7 @@ fn table_fill_unknown_table_traps() {
     chunk.emit_i32_const(0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(0, 0);
-    chunk.emit_op_u8(Op::TABLE_FILL, 2, 0);
+    chunk.emit_op_u16(Op::TABLE_FILL, 2, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -280,7 +280,7 @@ fn table_fill_zero_count_at_table_end_is_noop() {
     chunk.emit_i32_const(2, 0);
     chunk.emit_i32_const(99, 0);
     chunk.emit_i32_const(0, 0);
-    chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_FILL, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -303,7 +303,7 @@ fn table_copy_overlapping_forward_preserves_source_snapshot() {
     chunk.emit_i32_const(1, 0);
     chunk.emit_i32_const(0, 0);
     chunk.emit_i32_const(3, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -321,7 +321,7 @@ fn table_copy_destination_oob_traps() {
     chunk.emit_i32_const(2, 0);
     chunk.emit_i32_const(0, 0);
     chunk.emit_i32_const(2, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -338,7 +338,7 @@ fn table_copy_source_oob_traps() {
     chunk.emit_i32_const(0, 0);
     chunk.emit_i32_const(2, 0);
     chunk.emit_i32_const(2, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -357,7 +357,7 @@ fn table_copy_routes_to_selected_extra_table() {
     chunk.emit_i32_const(1, 0);
     chunk.emit_i32_const(0, 0);
     chunk.emit_i32_const(2, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_COPY, 1, 1, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_COPY, 1, 1, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -381,7 +381,7 @@ fn table_copy_zero_count_at_table_end_is_noop() {
     chunk.emit_i32_const(2, 0);
     chunk.emit_i32_const(2, 0);
     chunk.emit_i32_const(0, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 
@@ -395,11 +395,11 @@ fn table_init_after_elem_drop_traps() {
     let mut vm = VM::new();
 
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::ELEM_DROP, 0, 0);
+    chunk.emit_op_u16(Op::ELEM_DROP, 0, 0);
     chunk.emit_i32_const(0, 0); // dst
     chunk.emit_i32_const(0, 0); // src
     chunk.emit_i32_const(0, 0); // count
-    chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_op(Op::RETURN, 0);
 

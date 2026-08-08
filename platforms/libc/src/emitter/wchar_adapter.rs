@@ -341,21 +341,41 @@ pub fn wcsdup(src: Expression) -> Expression {
 /// dispatch as string ops; the result array is built with `.push`.
 pub fn runtime_helpers() -> Vec<Statement> {
     // Build the FunctionDecl directly so the string param carries a type hint.
+    // wchar_t is a CODE POINT on wasm32 (as the compile-time literal arrays
+    // are), so the walk is codePointAt with a surrogate-pair stride — NOT a
+    // charCodeAt-per-unit walk, which pushed surrogate HALVES into the array
+    // and made wcslen disagree between literal and converted strings.
     let body = vec![
         var_decl("a", e(ExprKind::Array(Vec::new()))),
         var_decl("i", lit_int(0)),
+        var_decl("cp", lit_int(0)),
         while_stmt(
             lt(ident("i"), member(ident("s"), "length")),
             vec![
-                expr_stmt(call_member(
-                    ident("a"),
-                    "push",
-                    vec![call(
-                        ident("__c_char_code_at"),
+                expr_stmt(assign(
+                    ident("cp"),
+                    call(
+                        ident("__c_code_point_at"),
                         vec![ident("s"), ident("i")],
-                    )],
+                    ),
                 )),
-                incr("i"),
+                expr_stmt(call_member(ident("a"), "push", vec![ident("cp")])),
+                expr_stmt(assign(
+                    ident("i"),
+                    bin(
+                        BinOp::Add,
+                        ident("i"),
+                        e(ExprKind::Ternary {
+                            cond: Box::new(bin(
+                                BinOp::Gt,
+                                ident("cp"),
+                                lit_int(0xFFFF),
+                            )),
+                            then: Box::new(lit_int(2)),
+                            else_: Box::new(lit_int(1)),
+                        }),
+                    ),
+                )),
             ],
         ),
         expr_stmt(call_member(ident("a"), "push", vec![lit_int(0)])),
@@ -543,12 +563,13 @@ pub fn runtime_helpers() -> Vec<Statement> {
         ret(ident("i")),
     ];
 
-    // Decode a wide (int code-point) array to a JS string element-by-element.
-    // The C frontend's `String.fromCharCode` is single-arg only (spread `...arr`
-    // is unsupported — it maps to a fixed-arity `wasm:js-string.fromCharCode`),
-    // so we append one code point per iteration. Stops at the NUL terminator or
-    // the array end (handles both NUL-terminated buffers and NUL-free slices as
-    // produced by `wcsncmp`'s `a.slice(0, n)`).
+    // Decode a wide (int code-point) array to a JS string element-by-element,
+    // one code point per iteration (single-arg calls — spread `...arr` maps to
+    // a fixed-arity import). `__c_from_code_point` emits the surrogate PAIR
+    // for an astral element where `fromCharCode` would truncate it to a lone
+    // surrogate. Stops at the NUL terminator or the array end (handles both
+    // NUL-terminated buffers and NUL-free slices as produced by `wcsncmp`'s
+    // `a.slice(0, n)`).
     let wide_to_string_body = vec![
         var_decl("res", lit_str("")),
         var_decl("i", lit_int(0)),
@@ -565,9 +586,8 @@ pub fn runtime_helpers() -> Vec<Statement> {
                         ident("__c_str_concat"),
                         vec![
                             ident("res"),
-                            call_member(
-                                ident("String"),
-                                "fromCharCode",
+                            call(
+                                ident("__c_from_code_point"),
                                 vec![index(ident("arr"), ident("i"))],
                             ),
                         ],

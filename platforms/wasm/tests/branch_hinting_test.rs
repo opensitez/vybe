@@ -207,6 +207,7 @@ fn branch_hint_marks_exception_handler_as_unlikely() {
     // loop { br_if 0 } — the br_if inside a loop gets a branch hint
     let blk = f.emit_block(0);
     f.emit_op(Op::LOOP, 0);
+    f.emit(0u8, 0); // param_count = 0
     f.emit(0u8, 0); // result_count = 0
     f.emit_i32_const(0, 0);
     f.emit_br_if(0, 0); // back-edge → likely

@@ -438,7 +438,7 @@ pub fn emit_list_remove_all(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, list_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     chunks[current].emit_op(Op::ARRAY_GET, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, matched_slot, line);
 
@@ -579,7 +579,7 @@ pub fn emit_array_find(chunks: &mut [Chunk], current: usize, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
@@ -636,7 +636,7 @@ pub fn emit_array_find_last(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
@@ -733,7 +733,7 @@ pub fn emit_array_find_index(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);
@@ -810,7 +810,7 @@ pub fn emit_array_find_last_index(chunks: &mut [Chunk], current: usize, argc: u8
     chunk.emit_op_u16(Op::LOCAL_SET, elem_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(chunk, line);
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, idx_slot, line);

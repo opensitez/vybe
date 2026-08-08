@@ -57,7 +57,7 @@ fn emit_dotnet_format_value_call(
 
     chunk.emit_op_u16(Op::LOCAL_GET, format_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, width_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 3, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
 }
 
 /// Emit `String.Format(fmt, ...args)` at the call site.

@@ -762,9 +762,9 @@ fn core_reference_opcodes_have_spec_byte_values() {
 #[test]
 fn memory64_internal_ops_emit_standard_memory_bytes() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::MEMORY_SIZE, 0);
+    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
     chunk.emit_op(Op::DROP, 0);
@@ -803,7 +803,7 @@ fn memory64_ops_emit_i64_memory_limits_flag() {
     // off any instruction.
     chunk.memory_min_pages = vec![1];
     chunk.memory_is_64 = vec![true];
-    chunk.emit_op(Op::MEMORY_SIZE, 0);
+    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let bytes = wasm::write_wasm(&[chunk]);
@@ -845,7 +845,7 @@ fn table64_section_uses_i64_limits_flag() {
 fn multi_memory_memarg_emits_memory_index_bit_and_immediate() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_leb_u32(0x40 | 2, 0); // align=2, multi-memory memidx follows
+    chunk.emit_leb_u32(0x80 | 0x40 | 2, 0); // marker | memidx-follows | align=2
     chunk.emit_leb_u32(5, 0); // offset
     chunk.emit_leb_u32(1, 0); // memory index
     chunk.emit_op(Op::DROP, 0);
@@ -861,15 +861,14 @@ fn multi_memory_memarg_emits_memory_index_bit_and_immediate() {
 
 #[test]
 fn multi_memory_bulk_ops_emit_memory_index_immediates() {
+    // Non-default memory indices are fixed u16 immediates on the memory
+    // ops (declared in their OperandFormat — the 0xEE selector block is
+    // retired).
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::MEMORY_GROW, 0);
-    chunk.emit_leb_u32(1, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 1, 0);
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::MEMORY_COPY, 0);
-    chunk.emit_leb_u32(1, 0); // dst memory
-    chunk.emit_leb_u32(2, 0); // src memory
-    chunk.emit_op(Op::MEMORY_FILL, 0);
-    chunk.emit_leb_u32(1, 0);
+    chunk.emit_op_u16_u16(Op::MEMORY_COPY, 1, 2, 0);
+    chunk.emit_op_u16(Op::MEMORY_FILL, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let bytes = wasm::write_wasm(&[chunk]);
@@ -899,7 +898,9 @@ fn reader_preserves_multi_memory_load_memarg() {
     let chunks = wasm::read_wasm(&wasm).expect("standard wasm should decode");
     let code = &chunks[1].code;
     let enc = Op::I32_LOAD.encode();
-    let pattern: [u8; 7] = [enc[0], enc[1], enc[2], enc[3], 0x42, 0x05, 0x01];
+    // The reader stamps the internal presence marker on the align field:
+    // 0x42 | 0x80 = 0xC2 → LEB [0xC2, 0x01], then offset 0x05, memidx 0x01.
+    let pattern: [u8; 8] = [enc[0], enc[1], enc[2], enc[3], 0xC2, 0x01, 0x05, 0x01];
     assert!(
         code.windows(pattern.len()).any(|w| w == pattern),
         "reader must preserve multi-memory load memarg bytes"
@@ -926,16 +927,12 @@ fn reader_preserves_multi_memory_bulk_indices() {
     let mg = Op::MEMORY_GROW.encode();
     let mc = Op::MEMORY_COPY.encode();
     let mf = Op::MEMORY_FILL.encode();
-    // The multi-memory selector is a FIXED 4-byte block
-    // `0xEE 0x00 <memidx u16 BE>` — see the VM's
-    // `dispatch::read_optional_memidx_immediate`. VM instructions are 4 bytes,
-    // so the selector must be 4 as well to keep the next instruction aligned.
+    // The memory index is a fixed u16 BE immediate declared in each op's
+    // OperandFormat (memory.copy carries dst then src).
     let patterns: Vec<Vec<u8>> = vec![
-        vec![mg[0], mg[1], mg[2], mg[3], 0xEE, 0x00, 0x00, 0x01],
-        vec![
-            mc[0], mc[1], mc[2], mc[3], 0xEE, 0x00, 0x00, 0x01, 0xEE, 0x00, 0x00, 0x02,
-        ],
-        vec![mf[0], mf[1], mf[2], mf[3], 0xEE, 0x00, 0x00, 0x01],
+        vec![mg[0], mg[1], mg[2], mg[3], 0x00, 0x01],
+        vec![mc[0], mc[1], mc[2], mc[3], 0x00, 0x01, 0x00, 0x02],
+        vec![mf[0], mf[1], mf[2], mf[3], 0x00, 0x01],
     ];
     for pattern in &patterns {
         assert!(
@@ -1398,7 +1395,7 @@ fn roundtrip_multiple_functions() {
     main.emit_op_u16(Op::GLOBAL_GET, fn_name, 0);
     main.emit_i32_const(20, 0);
     main.emit_i32_const(22, 0);
-    main.emit_op_u8(Op::CALL_REF, 2, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
     main.emit_op(Op::RETURN, 0);
 
     // Run directly (round-trip for multi-chunk requires full linker support)
@@ -1567,4 +1564,425 @@ fn reader_f64_reinterpret_i64_roundtrip() {
         c.emit_op(Op::F64_REINTERPRET_I64, 0);
     });
     assert!((r.as_f64() - 1.0).abs() < 1e-10);
+}
+
+// ── Tail-call + function-references call instructions ──────────────────────
+//
+// Binary 0x12-0x15 (return_call, return_call_indirect, call_ref,
+// return_call_ref) were validated but silently SKIPPED by the translate
+// pass — without consuming their LEB immediates, desyncing the whole byte
+// walk. On the writer side the three RETURN_CALL* internal ops fell to the
+// raw-passthrough default arm, emitting malformed spec bytes.
+
+/// Format-driven scan: does the decoded chunk contain `want`?
+fn chunk_contains_op(chunk: &Chunk, want: Op) -> bool {
+    let mut ip = 0;
+    while ip + 4 <= chunk.code.len() {
+        let op = Op::decode(
+            ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16,
+            ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16,
+        );
+        match op {
+            Some(op) => {
+                if op == want {
+                    return true;
+                }
+                ip += 4 + op.operand_format().size_in(&chunk.code, ip + 4);
+            }
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Writer output embeds the internal bytecode in a "vybe" custom section,
+/// which `read_wasm` prefers over re-translating the spec bytes (the
+/// self-hosting round-trip). Strip custom sections so a read exercises the
+/// REAL spec encoding the writer produced.
+fn without_custom_sections(bytes: &[u8]) -> Vec<u8> {
+    let mut out = bytes[..8].to_vec();
+    let mut ip = 8;
+    while ip < bytes.len() {
+        let section_id = bytes[ip];
+        let start = ip;
+        ip += 1;
+        let size = read_leb_u32(bytes, &mut ip) as usize;
+        let end = ip + size;
+        if section_id != 0 {
+            out.extend_from_slice(&bytes[start..end]);
+        }
+        ip = end;
+    }
+    out
+}
+
+/// Decoded modules get an EMPTY script chunk; append glue that calls the
+/// first local function (0 args) so the module can execute.
+fn call_entry_glue(chunks: &mut [Chunk]) {
+    chunks[0].emit_op_u16(Op::REF_FUNC, 1, 0);
+    chunks[0].emit(0, 0); // 0 upvalues
+    chunks[0].emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
+    chunks[0].emit_op(Op::RETURN, 0);
+}
+
+#[test]
+fn reader_ingests_return_call_tail_recursion() {
+    // (func $entry (result i32) i32.const 5  i32.const 1  call $fact)
+    // (func $fact (param i32 i32) (result i32)
+    //   local.get 0  i32.eqz
+    //   (if (result i32) (then local.get 1)
+    //    (else n-1  n*acc  return_call $fact)))
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    // t0 = () -> i32, t1 = (i32, i32) -> i32
+    push_section(
+        &mut bytes,
+        1,
+        &[0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F],
+    );
+    push_section(&mut bytes, 3, &[0x02, 0x00, 0x01]);
+    let entry_body: &[u8] = &[
+        0x00, // no locals
+        0x41, 0x05, // i32.const 5
+        0x41, 0x01, // i32.const 1
+        0x10, 0x01, // call $fact
+        0x0B,
+    ];
+    let fact_body: &[u8] = &[
+        0x00, // no locals
+        0x20, 0x00, // local.get 0
+        0x45, // i32.eqz
+        0x04, 0x7F, // if (result i32)
+        0x20, 0x01, // local.get 1
+        0x05, // else
+        0x20, 0x00, 0x41, 0x01, 0x6B, // n - 1
+        0x20, 0x00, 0x20, 0x01, 0x6C, // n * acc
+        0x12, 0x01, // return_call $fact
+        0x0B, // end if
+        0x0B, // end body
+    ];
+    let mut code = vec![0x02, entry_body.len() as u8];
+    code.extend_from_slice(entry_body);
+    code.push(fact_body.len() as u8);
+    code.extend_from_slice(fact_body);
+    push_section(&mut bytes, 10, &code);
+
+    let mut chunks = wasm::read_wasm(&bytes).expect("tail-call module should decode");
+    assert!(
+        chunk_contains_op(&chunks[2], Op::RETURN_CALL),
+        "binary return_call must decode to RETURN_CALL"
+    );
+    call_entry_glue(&mut chunks);
+    let r = VM::new().run(chunks).expect("run failed");
+    assert_eq!(r.as_i32(), 120, "fact(5) via return_call must be 120");
+}
+
+/// (i32) -> i32 chain: entry pushes 40, `call_ref $f`; f tail-calls g via
+/// `return_call_ref`; g adds 2. Exercises 0xD2 ref.func in a body plus both
+/// call_ref forms, with the spec operand order (funcref on TOP of the args).
+fn call_ref_chain_module() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\0asm");
+    bytes.extend_from_slice(&[1, 0, 0, 0]);
+    // t0 = () -> i32, t1 = (i32) -> i32
+    push_section(
+        &mut bytes,
+        1,
+        &[0x02, 0x60, 0x00, 0x01, 0x7F, 0x60, 0x01, 0x7F, 0x01, 0x7F],
+    );
+    push_section(&mut bytes, 3, &[0x03, 0x00, 0x01, 0x01]);
+    let entry_body: &[u8] = &[
+        0x00, // no locals
+        0x41, 0x28, // i32.const 40
+        0xD2, 0x01, // ref.func $f
+        0x14, 0x01, // call_ref t1
+        0x0B,
+    ];
+    let f_body: &[u8] = &[
+        0x00, // no locals
+        0x20, 0x00, // local.get 0
+        0xD2, 0x02, // ref.func $g
+        0x15, 0x01, // return_call_ref t1
+        0x0B,
+    ];
+    let g_body: &[u8] = &[
+        0x00, // no locals
+        0x20, 0x00, // local.get 0
+        0x41, 0x02, // i32.const 2
+        0x6A, // i32.add
+        0x0B,
+    ];
+    let mut code = vec![0x03, entry_body.len() as u8];
+    code.extend_from_slice(entry_body);
+    code.push(f_body.len() as u8);
+    code.extend_from_slice(f_body);
+    code.push(g_body.len() as u8);
+    code.extend_from_slice(g_body);
+    push_section(&mut bytes, 10, &code);
+    bytes
+}
+
+#[test]
+fn reader_ingests_call_ref_with_ref_func() {
+    let mut chunks =
+        wasm::read_wasm(&call_ref_chain_module()).expect("call_ref module should decode");
+    assert!(
+        chunk_contains_op(&chunks[1], Op::CALL_REF),
+        "binary call_ref must decode to CALL_REF"
+    );
+    call_entry_glue(&mut chunks);
+    let r = VM::new().run(chunks).expect("run failed");
+    assert_eq!(r.as_i32(), 42, "40 through call_ref f -> return_call_ref g (+2)");
+}
+
+#[test]
+fn reader_ingests_return_call_ref() {
+    let chunks =
+        wasm::read_wasm(&call_ref_chain_module()).expect("call_ref module should decode");
+    assert!(
+        chunk_contains_op(&chunks[2], Op::RETURN_CALL_REF),
+        "binary return_call_ref must decode to RETURN_CALL_REF"
+    );
+}
+
+#[test]
+fn writer_lowers_return_call_ref_to_return_call_indirect() {
+    // Internal dynamic tail call (callee below args) must come out as spec
+    // `return_call_indirect` (0x13), not raw internal bytes.
+    let mut f = Chunk::new("f");
+    f.arity = 1;
+    f.local_count = 1;
+    f.emit_op_u16(Op::REF_FUNC, 2, 0);
+    f.emit(0, 0); // 0 upvalues
+    f.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    f.emit_op_u8_u8(Op::RETURN_CALL_REF, 1, 1, 0);
+
+    let mut inc = Chunk::new("inc");
+    inc.arity = 1;
+    inc.local_count = 1;
+    inc.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    inc.emit_i32_const(1, 0);
+    inc.emit_op(Op::I32_ADD, 0);
+    inc.emit_op(Op::RETURN, 0);
+
+    let mut main = Chunk::new("<script>");
+    main.emit_i32_const(0, 0);
+    main.emit_op(Op::RETURN, 0);
+    let bytes = wasm::write_wasm(&[main, f, inc]);
+    let decoded = wasm::read_wasm(&without_custom_sections(&bytes))
+        .expect("spec-bytes read failed");
+    assert!(
+        decoded
+            .iter()
+            .any(|c| chunk_contains_op(c, Op::RETURN_CALL_INDIRECT)),
+        "RETURN_CALL_REF must round-trip through spec return_call_indirect"
+    );
+}
+
+#[test]
+fn writer_lowers_return_call_to_return_call_indirect() {
+    let mut f = Chunk::new("f");
+    f.arity = 1;
+    f.local_count = 1;
+    f.emit_op_u16(Op::REF_FUNC, 2, 0);
+    f.emit(0, 0); // 0 upvalues
+    f.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    f.emit_op_u8_u8(Op::RETURN_CALL, 1, 1, 0);
+
+    let mut inc = Chunk::new("inc");
+    inc.arity = 1;
+    inc.local_count = 1;
+    inc.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    inc.emit_i32_const(1, 0);
+    inc.emit_op(Op::I32_ADD, 0);
+    inc.emit_op(Op::RETURN, 0);
+
+    let mut main = Chunk::new("<script>");
+    main.emit_i32_const(0, 0);
+    main.emit_op(Op::RETURN, 0);
+    let bytes = wasm::write_wasm(&[main, f, inc]);
+    let decoded = wasm::read_wasm(&without_custom_sections(&bytes))
+        .expect("spec-bytes read failed");
+    assert!(
+        decoded
+            .iter()
+            .any(|c| chunk_contains_op(c, Op::RETURN_CALL_INDIRECT)),
+        "RETURN_CALL must round-trip through spec return_call_indirect"
+    );
+}
+
+#[test]
+fn writer_emits_return_call_indirect_spec_byte() {
+    let mut f = Chunk::new("f");
+    f.arity = 1;
+    f.local_count = 1;
+    f.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    f.emit_i32_const(0, 0); // table slot 0
+    f.emit_op_u8_u8(Op::RETURN_CALL_INDIRECT, 1, 0, 0);
+    f.emit(1, 0); // expected results
+
+    let mut main = Chunk::new("<script>");
+    main.emit_i32_const(0, 0);
+    main.emit_op(Op::RETURN, 0);
+    let bytes = wasm::write_wasm(&[main, f]);
+    let decoded = wasm::read_wasm(&without_custom_sections(&bytes))
+        .expect("spec-bytes read failed");
+    assert!(
+        decoded
+            .iter()
+            .any(|c| chunk_contains_op(c, Op::RETURN_CALL_INDIRECT)),
+        "RETURN_CALL_INDIRECT must round-trip through spec 0x13"
+    );
+}
+
+/// Format-driven scan: the operand bytes of the first `want` in the chunk.
+fn find_op_operands(chunk: &Chunk, want: Op) -> Option<Vec<u8>> {
+    let mut ip = 0;
+    while ip + 4 <= chunk.code.len() {
+        let op = Op::decode(
+            ((chunk.code[ip] as u16) << 8) | chunk.code[ip + 1] as u16,
+            ((chunk.code[ip + 2] as u16) << 8) | chunk.code[ip + 3] as u16,
+        )?;
+        let size = op.operand_format().size_in(&chunk.code, ip + 4);
+        if op == want {
+            return Some(chunk.code[ip + 4..ip + 4 + size].to_vec());
+        }
+        ip += 4 + size;
+    }
+    None
+}
+
+#[test]
+fn writer_annotates_call_indirect_with_exact_result_count() {
+    // A two-result indirect call: the spec `(type $sig)` annotation must
+    // carry results=2 — the first-seen arity-1 functype (results=1) is a
+    // structural mismatch that traps in a conforming engine. Round-trip
+    // through the spec bytes and check the reader resolves the annotated
+    // functype back to (argc=1, results=2).
+    let mut f = Chunk::new("f");
+    f.arity = 1;
+    f.local_count = 1;
+    f.emit_op_u16(Op::LOCAL_GET, 0, 0);
+    f.emit_i32_const(0, 0); // table slot selector
+    f.emit_op_u8_u8(Op::CALL_INDIRECT, 1, 0, 0);
+    f.emit(2, 0); // expected results = 2
+    f.emit_op(Op::DROP, 0);
+    f.emit_op(Op::RETURN, 0);
+
+    let mut main = Chunk::new("<script>");
+    main.emit_i32_const(0, 0);
+    main.emit_op(Op::RETURN, 0);
+    let bytes = wasm::write_wasm(&[main, f]);
+    let decoded = wasm::read_wasm(&without_custom_sections(&bytes))
+        .expect("spec-bytes read failed");
+    let operands = decoded
+        .iter()
+        .find_map(|c| find_op_operands(c, Op::CALL_INDIRECT))
+        .expect("decoded module must contain call_indirect");
+    assert_eq!(
+        operands,
+        vec![1, 0, 2],
+        "call_indirect (argc, tableidx, results) must survive the spec round-trip"
+    );
+}
+
+// ── Unknown-opcode strictness + previously-skipped core instructions ───────
+//
+// The validator's default arm silently ACCEPTED unknown opcodes and the
+// translate loop silently SKIPPED them — without consuming immediates, so a
+// single unknown byte desynced the rest of the body. Spec: unknown opcodes
+// are malformed. Flipping the defaults exposed five instructions the
+// validator knew but translate dropped: select t* (0x1C), ref.eq (0xD3),
+// ref.as_non_null (0xD4), br_on_null (0xD5), br_on_non_null (0xD6).
+
+/// () -> i32 single-function module around `body_ops` (no trailing end).
+fn i32_result_module(body_ops: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\0asm");
+    out.extend_from_slice(&[1, 0, 0, 0]);
+    push_section(&mut out, 1, &[0x01, 0x60, 0x00, 0x01, 0x7F]);
+    push_section(&mut out, 3, &[0x01, 0x00]);
+    let mut body = vec![0x00]; // no locals
+    body.extend_from_slice(body_ops);
+    body.push(0x0B);
+    let mut code = vec![0x01, body.len() as u8];
+    code.extend_from_slice(&body);
+    push_section(&mut out, 10, &code);
+    out
+}
+
+#[test]
+fn reader_rejects_unknown_opcode_as_malformed() {
+    // 0x27 is unassigned in the core spec.
+    let err = wasm::read_wasm(&i32_result_module(&[0x27, 0x41, 0x2A]))
+        .expect_err("unknown opcode must be malformed");
+    assert!(
+        err.contains("unknown opcode"),
+        "expected unknown-opcode rejection, got: {err}"
+    );
+}
+
+#[test]
+fn reader_ingests_typed_select() {
+    // (select (i32.const 1) (i32.const 2) (i32.const 1) (result i32)) -> 1
+    let bytes = i32_result_module(&[
+        0x41, 0x01, // i32.const 1
+        0x41, 0x02, // i32.const 2
+        0x41, 0x01, // i32.const 1 (condition: true -> first)
+        0x1C, 0x01, 0x7F, // select t* with vec [i32]
+    ]);
+    let chunks = wasm::read_wasm(&bytes).expect("typed select must decode");
+    let r = VM::new().run(vec![chunks[1].clone()]).expect("run failed");
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn reader_ingests_ref_eq() {
+    // Two null externrefs are ref.eq -> 1.
+    let bytes = i32_result_module(&[
+        0xD0, 0x6F, // ref.null extern
+        0xD0, 0x6F, // ref.null extern
+        0xD3, // ref.eq
+    ]);
+    let chunks = wasm::read_wasm(&bytes).expect("ref.eq must decode");
+    let r = VM::new().run(vec![chunks[1].clone()]).expect("run failed");
+    assert_eq!(r.as_i32(), 1);
+}
+
+#[test]
+fn reader_ingests_br_on_null() {
+    // (block (ref.null extern) (br_on_null 0) (drop)) (i32.const 42):
+    // the null branches out of the block (dropping the null), so the
+    // fallthrough drop never runs and the result is 42.
+    let bytes = i32_result_module(&[
+        0x02, 0x40, // block (void)
+        0xD0, 0x6F, // ref.null extern
+        0xD5, 0x00, // br_on_null 0
+        0x1A, // drop (skipped by the branch)
+        0x0B, // end block
+        0x41, 0x2A, // i32.const 42
+    ]);
+    let chunks = wasm::read_wasm(&bytes).expect("br_on_null must decode");
+    let r = VM::new().run(vec![chunks[1].clone()]).expect("run failed");
+    assert_eq!(r.as_i32(), 42);
+}
+
+#[test]
+fn reader_ingests_br_on_non_null() {
+    // A null does NOT take the br_on_non_null branch: the null is dropped
+    // and execution falls through (the branch target is an externref-result
+    // block, since br_on_non_null branches WITH the value).
+    let bytes = i32_result_module(&[
+        0x02, 0x6F, // block (result externref)
+        0xD0, 0x6F, // ref.null extern
+        0xD6, 0x00, // br_on_non_null 0 (not taken: value is null)
+        0xD0, 0x6F, // ref.null extern (block result on the fallthrough path)
+        0x0B, // end block
+        0x1A, // drop
+        0x41, 0x07, // i32.const 7
+    ]);
+    let chunks = wasm::read_wasm(&bytes).expect("br_on_non_null must decode");
+    let r = VM::new().run(vec![chunks[1].clone()]).expect("run failed");
+    assert_eq!(r.as_i32(), 7);
 }

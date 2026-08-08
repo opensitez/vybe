@@ -258,7 +258,7 @@ fn emit_linq_comparer_equals_slots(
     chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 3, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
@@ -319,7 +319,7 @@ fn emit_linq_key_with_comparer(
     chunks[current].emit_op_u16(Op::LOCAL_GET, hash_fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, comparer_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunks[current].emit_end(line);
 
     chunks[current].emit_end(line);
@@ -491,7 +491,7 @@ pub fn emit_linq_sum_selector(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, mapped_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -674,7 +674,7 @@ pub fn emit_linq_distinct_by(chunks: &mut [Chunk], current: usize, line: u32) {
     // key = keyFn(elem)
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
 
     // if keys.indexOf(key) < 0 { keys.push(key); result.push(elem); }
@@ -728,7 +728,7 @@ pub fn emit_linq_distinct_by_comparer(chunks: &mut [Chunk], current: usize, line
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     emit_linq_key_with_comparer(chunks, current, comparer_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
 
@@ -977,7 +977,7 @@ pub fn emit_linq_count_pred(chunks: &mut [Chunk], current: usize, line: u32) {
     // out of it on the false branch.
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let if_block = chunks[current].emit_block(line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
@@ -1021,7 +1021,7 @@ pub fn emit_linq_all(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_else(line);
@@ -1058,7 +1058,7 @@ pub fn emit_linq_where(chunks: &mut [Chunk], current: usize, line: u32) {
     // if pred(elem): result.push(elem)  (structured skip block, cf. count_pred)
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     let if_block = chunks[current].emit_block(line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
@@ -1112,7 +1112,7 @@ pub fn emit_linq_any_pred(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     core_wasm::bool_const(&mut chunks[current], line, true);
@@ -1238,7 +1238,7 @@ pub fn emit_linq_skip_while(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_br_if(0, line); // not skipping → leave flag
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line); // pred still true → keep skipping
     chunks[current].emit_i32_const(0, line);
@@ -1299,7 +1299,7 @@ pub fn emit_linq_take_while(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_br_if(0, line); // already stopped → leave flag
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line); // pred true → keep taking
     chunks[current].emit_i32_const(0, line);
@@ -1358,7 +1358,7 @@ fn emit_linq_skip_take_while_indexed(chunks: &mut [Chunk], current: usize, line:
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(0, line);
     chunks[current].emit_i32_const(0, line);
@@ -1472,7 +1472,7 @@ pub fn emit_linq_aggregate(chunks: &mut [Chunk], current: usize, line: u32) {
         chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, acc_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, elem_local, line);
-        chunk.emit_op_u8(Op::CALL_REF, 2, line);
+        chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         chunk.emit_op_u16(Op::LOCAL_SET, acc_slot, line);
     }
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);
@@ -1520,7 +1520,7 @@ pub fn emit_linq_select(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -1556,7 +1556,7 @@ pub fn emit_linq_select_many(chunks: &mut [Chunk], current: usize, line: u32) {
     // mapped = fn(elem)
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, mapped_slot, line);
 
     // result = result.concat(mapped)
@@ -1603,7 +1603,7 @@ pub fn emit_linq_group_by(chunks: &mut [Chunk], current: usize, line: u32) {
     // key = keyFn(elem)
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_slot, line);
@@ -1774,12 +1774,12 @@ pub fn emit_linq_to_dictionary(chunks: &mut [Chunk], current: usize, line: u32) 
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, val_fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, val_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
@@ -1814,7 +1814,7 @@ pub fn emit_linq_to_dictionary_key(chunks: &mut [Chunk], current: usize, line: u
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
@@ -1851,7 +1851,7 @@ pub fn emit_linq_to_lookup(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, map_slot, line);
@@ -1925,7 +1925,7 @@ pub fn emit_linq_zip(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, zipped_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
@@ -2167,7 +2167,7 @@ fn emit_linq_set_filter_by(chunks: &mut [Chunk], current: usize, line: u32, keep
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     emit_linq_structural_key(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, elem_key_slot, line);
 
@@ -2497,7 +2497,7 @@ fn emit_linq_by_extreme(chunks: &mut [Chunk], current: usize, line: u32, want_ma
     chunks[current].emit_op_u16(Op::LOCAL_SET, best_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, best_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, bestkey_slot, line);
 
     let state = loops::emit_for_in_start(chunks, current, arr_slot, idx_slot, line);
@@ -2506,7 +2506,7 @@ fn emit_linq_by_extreme(chunks: &mut [Chunk], current: usize, line: u32, want_ma
     // key = fn(elem)
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, key_slot, line);
 
     // if key >/< bestKey { best = elem; bestKey = key }
@@ -2569,7 +2569,7 @@ pub fn emit_linq_aggregate_no_seed(chunks: &mut [Chunk], current: usize, line: u
         chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, acc_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, elem_local, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
     }
     loops::emit_for_in_end(chunks, current, idx_slot, state, line);

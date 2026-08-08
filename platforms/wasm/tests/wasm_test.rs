@@ -463,7 +463,7 @@ fn reinterpret_f64_i64() {
 fn memory_i32_load8_signed() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store 0xFF at addr 0
@@ -492,7 +492,7 @@ fn memory_i32_load8_signed() {
 fn memory_i32_load16() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store 0x8001 as i32 at addr 0
@@ -521,7 +521,7 @@ fn memory_i32_load16() {
 fn memory_f32_roundtrip() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store f32(3.14) at addr 0
@@ -652,11 +652,11 @@ fn roundtrip_memory_ops() {
 
     // memory.grow 1
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // memory.size → should be 1
-    chunk.emit_op(Op::MEMORY_SIZE, 0);
+    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let wasm_bytes = wasm::write_wasm(&vec![chunk]);
@@ -798,7 +798,7 @@ fn atomic_rmw_add() {
     let mut chunk = Chunk::new("test");
     // Grow memory
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 100 at addr 0
     chunk.emit_i32_const(0, 0);
@@ -819,7 +819,7 @@ fn atomic_rmw_add() {
 fn atomic_cmpxchg() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 50 at addr 0
     chunk.emit_i32_const(0, 0);
@@ -914,7 +914,7 @@ fn call_ref_basic() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0); // 0 upvalues
     script.emit_f64_const(21.0, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let result = run_chunks(vec![script, double_chunk]);
     match result {
@@ -943,7 +943,7 @@ fn call_ref_preserves_array_argument() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
     script.emit_op_u16(Op::GLOBAL_GET, g_array, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let mut vm = VM::new();
     vm.globals.insert("__call_ref_arg_array".into(), array);
@@ -974,7 +974,8 @@ fn emit_leb_u64(out: &mut Chunk, mut value: u64) {
 #[test]
 fn memory64_grow_and_load() {
     fn emit_memarg64(out: &mut Chunk, align: u32, offset: u64, memidx: u32) {
-        let encoded_align = if memidx == 0 { align } else { align | 0x40 };
+        // 0x80 = present marker, 0x100 = memory64 (u64 offset LEB follows).
+        let encoded_align = 0x80 | 0x100 | if memidx == 0 { align } else { align | 0x40 };
         out.emit_leb_u32(encoded_align, 0);
         let mut value = offset;
         loop {
@@ -996,7 +997,7 @@ fn memory64_grow_and_load() {
     let mut chunk = Chunk::new("test");
     // Grow with i64
     chunk.emit_i64_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
     // Store 42 at i64 addr 0
     chunk.emit_i64_const(0, 0);
@@ -1017,18 +1018,18 @@ fn memory64_grow_and_load() {
 fn memory64_load_store_apply_memarg_offset() {
     let mut chunk = Chunk::new("test");
     chunk.emit_i64_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_i64_const(4, 0);
     chunk.emit_i32_const(99, 0);
     chunk.emit_op(Op::I32_STORE, 0);
-    chunk.emit_leb_u32(2, 0); // align
+    chunk.emit_leb_u32(2 | 0x80 | 0x100, 0); // marker | memory64 | align
     emit_leb_u64(&mut chunk, 8); // offset: effective address is 12
 
     chunk.emit_i64_const(4, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
-    chunk.emit_leb_u32(2, 0);
+    chunk.emit_leb_u32(2 | 0x80 | 0x100, 0);
     emit_leb_u64(&mut chunk, 8);
 
     let result = run_chunks(vec![chunk]);

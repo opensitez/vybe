@@ -101,7 +101,7 @@ pub fn emit_generate(chunks: &mut [Chunk], current: usize, line: u32) {
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, supplier_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -158,7 +158,7 @@ fn emit_iterate_with_predicate_timing(
     if predicate_before_push && argc == 3 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, predicate_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
         vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_br_if(1, line);
@@ -172,7 +172,7 @@ fn emit_iterate_with_predicate_timing(
     if !predicate_before_push && argc == 3 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, predicate_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
         vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
         vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_br_if(1, line);
@@ -180,7 +180,7 @@ fn emit_iterate_with_predicate_timing(
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     increment_index(chunks, current, index_slot, line);
     chunks[current].emit_br(0, line);
@@ -346,7 +346,7 @@ pub fn emit_extreme_value(chunks: &mut [Chunk], current: usize, argc: u8, is_min
         chunks[current].emit_op_u16(Op::LOCAL_GET, comparator_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, best_slot, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         chunks[current].emit_i32_const(0, line);
         if is_min {
             vybe_compiler::primitives::ops::emit_dyn_lt(&mut chunks[current], line);
@@ -969,10 +969,10 @@ fn emit_collect_to_map(
     chunks[current].emit_op_u16(Op::LOCAL_GET, result_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, key_mapper_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_mapper_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     collections::emit_set(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -1003,7 +1003,7 @@ fn emit_collect_to_collection(
     chunks[current].emit_op_u16(Op::LOCAL_SET, supplier_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, supplier_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 0, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
@@ -1121,7 +1121,7 @@ fn emit_collect_collecting_and_then(
     chunks[current].emit_op_u16(Op::LOCAL_SET, intermediate_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, finisher_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, intermediate_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, result_slot, line);
 }
 
@@ -1280,7 +1280,7 @@ fn emit_collect_grouping(
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, classifier_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     if preseed_partitions {
         vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
         chunks[current].emit_if_value(line);
@@ -1375,7 +1375,7 @@ fn emit_collect_partitioning(
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, classifier_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     emit_partition_bucket_add(
@@ -1521,7 +1521,7 @@ fn emit_group_list_step(
     chunks[current].emit_i32_const(1, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, bucket_slot, line);
@@ -1538,7 +1538,7 @@ fn emit_group_list_step(
     chunks[current].emit_i32_const(1, line);
     collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
     chunks[current].emit_else(line);
@@ -1805,7 +1805,7 @@ fn emit_while_slice(chunks: &mut [Chunk], current: usize, keep_prefix: bool, lin
     chunks[current].emit_op_u16(Op::LOCAL_GET, array_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, index_slot, line);
     collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
     vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_br_if(1, line);

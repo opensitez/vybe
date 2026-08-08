@@ -83,8 +83,7 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     chunks[current].emit(0u8, line); // upvalue count
     chunks[current].emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op(Op::CALL_REF, line);
-    chunks[current].emit(2u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 }
 
 /// Emit a direct sprintf helper call when the caller already has
@@ -106,8 +105,7 @@ pub fn emit_sprintf_from_array(chunks: &mut Vec<Chunk>, current: usize, line: u3
     chunks[current].emit(0u8, line); // upvalue count
     chunks[current].emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op(Op::CALL_REF, line);
-    chunks[current].emit(2u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 }
 
 /// Ensure the helper chunk exists in the chunk list.  Uses the chunk name
@@ -157,8 +155,7 @@ pub fn emit_sscanf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
     chunks[current].emit(0u8, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, inp_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    chunks[current].emit_op(Op::CALL_REF, line);
-    chunks[current].emit(2u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 }
 
 fn ensure_sscanf_chunk(chunks: &mut Vec<Chunk>) -> usize {
@@ -542,6 +539,22 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         hc(&mut c, num_num, 1);
         c.emit_op(Op::I32_FROM_F64, 0);
         ls(&mut c, WIDTH);
+        // A negative `*` width is the `-` flag plus |width| (C 7.21.6.1p5).
+        {
+            let nw = c.emit_block(0);
+            lg(&mut c, WIDTH);
+            ci(&mut c, 0);
+            c.emit_op(Op::I32_GE_S, 0);
+            c.emit_br_if(0, 0);
+            ci(&mut c, 1);
+            ls(&mut c, FLEFT);
+            ci(&mut c, 0);
+            lg(&mut c, WIDTH);
+            c.emit_op(Op::I32_SUB, 0);
+            ls(&mut c, WIDTH);
+            c.emit_end(0);
+            c.patch_block(nw);
+        }
         inc(&mut c, AIDX);
         inc(&mut c, I);
         c.emit_end(0);
@@ -589,6 +602,45 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         c.emit_op(Op::I32_NE, 0);
         c.emit_br_if(0, 0);
         inc(&mut c, I);
+        // `%.*` — the precision comes from the NEXT argument (C 7.21.6.1p5);
+        // a negative value is treated as if the precision were omitted (-1).
+        let nostar = c.emit_block(0);
+        {
+            let ps = c.emit_block(0);
+            lg(&mut c, I);
+            lg(&mut c, FLEN);
+            c.emit_op(Op::I32_GE_S, 0);
+            c.emit_br_if(0, 0);
+            lg(&mut c, FMT);
+            lg(&mut c, I);
+            hc(&mut c, str_ccat, 2);
+            c.emit_op(Op::I32_FROM_F64, 0);
+            ci(&mut c, 42);
+            c.emit_op(Op::I32_NE, 0);
+            c.emit_br_if(0, 0);
+            lg(&mut c, ARGS);
+            lg(&mut c, AIDX);
+            hc(&mut c, arr_at, 2);
+            hc(&mut c, num_num, 1);
+            c.emit_op(Op::I32_FROM_F64, 0);
+            ls(&mut c, PREC);
+            inc(&mut c, AIDX);
+            inc(&mut c, I);
+            {
+                let nn = c.emit_block(0);
+                lg(&mut c, PREC);
+                ci(&mut c, 0);
+                c.emit_op(Op::I32_GE_S, 0);
+                c.emit_br_if(0, 0);
+                ci(&mut c, -1);
+                ls(&mut c, PREC);
+                c.emit_end(0);
+                c.patch_block(nn);
+            }
+            c.emit_br(1, 0); // star consumed — skip the digit path
+            c.emit_end(0);
+            c.patch_block(ps);
+        }
         core_wasm::i32_const(&mut c, 0, 0);
         ls(&mut c, PREC);
         let pl = c.emit_block(0);
@@ -617,6 +669,8 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
         c.patch_loop(plp);
         c.emit_end(0);
         c.patch_block(pl);
+        c.emit_end(0);
+        c.patch_block(nostar);
         read_ch(&mut c, FMT, I, FLEN, CH, str_ccat);
         c.emit_end(0);
         c.patch_block(dot);

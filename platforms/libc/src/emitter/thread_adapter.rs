@@ -1,8 +1,10 @@
 //! pthreads, POSIX semaphores, and C11 threads adapters for libc.
 
-use vybe_ast::{BinOp, ExprKind, Expression, Literal, PlaceExpr, UnaryOp};
+use vybe_ast::{BinOp, ExprKind, Expression, Literal, PlaceExpr, Statement, StmtKind, UnaryOp};
 
-use super::build::{assign_expr, expr, ident, index_expr, int_lit, member, null_lit};
+use super::build::{
+    assign_expr, expr, function_stmt, ident, if_stmt, index_expr, int_lit, member, null_lit, stmt,
+    var_decl_stmt };
 
 pub fn header_constants(header: &str) -> Option<&'static [(&'static str, i64)]> {
     match header {
@@ -64,6 +66,16 @@ pub fn init_target(target: Expression, value: Expression) -> Expression {
     ]))
 }
 
+/// `pthread_create` / `thrd_create` — a REAL thread.
+///
+/// The spawn itself is the shared lowering (`common:threading.thread_spawn`
+/// → funcref `table.grow`, a 16-byte `{fn_idx, status, user_arg}` record in
+/// the shared futex page, then the `wasi:threads.thread-spawn` import). Only
+/// the C-side bookkeeping lives here: a `pthread_t` is an integer handle, so
+/// the handle — not the `void*` — is what rides the record's i32 `user_arg`
+/// word. The start function and its argument travel in `__c_thread_starts` /
+/// `__c_thread_args`, plain objects, which the child sees through the same
+/// `Arc` its globals clone carries. `__c_thread_entry` unpacks them.
 pub fn pthread_create(thread: Expression, start: Expression, arg: Expression) -> Expression {
     let target = arg_target(thread);
     expr(ExprKind::Sequence(vec![
@@ -72,81 +84,46 @@ pub fn pthread_create(thread: Expression, start: Expression, arg: Expression) ->
             ident("__c_next_thread_handle"),
             add(ident("__c_next_thread_handle"), int_lit(1)),
         ),
+        // Published BEFORE the spawn — the child reads both out of the
+        // shared tables the moment it starts.
+        assign_expr(index_expr(ident("__c_thread_starts"), target.clone()), start),
+        assign_expr(index_expr(ident("__c_thread_args"), target.clone()), arg),
         assign_expr(
-            index_expr(ident("__c_thread_starts"), target.clone()),
-            start.clone(),
+            index_expr(ident("__c_thread_results"), target.clone()),
+            null_lit(),
         ),
         assign_expr(
-            index_expr(ident("__c_thread_args"), target.clone()),
-            arg.clone(),
+            index_expr(ident("__c_thread_tasks"), target.clone()),
+            expr(ExprKind::Call {
+                callee: Box::new(ident("__c_thread_spawn")),
+                args: vec![
+                    vybe_ast::Argument::positional(target),
+                    vybe_ast::Argument::positional(ident("__c_thread_entry")),
+                ],
+                optional: false }),
         ),
-        assign_expr(index_expr(ident("__c_thread_results"), target), null_lit()),
         int_lit(0),
     ]))
 }
 
 pub fn thrd_create(thread: Expression, start: Expression, arg: Expression) -> Expression {
-    let target = arg_target(thread);
-    let run_result = isolated_thread_call(start.clone(), arg.clone());
-    expr(ExprKind::Sequence(vec![
-        assign_expr(target.clone(), ident("__c_next_thread_handle")),
-        assign_expr(
-            ident("__c_next_thread_handle"),
-            add(ident("__c_next_thread_handle"), int_lit(1)),
-        ),
-        assign_expr(
-            index_expr(ident("__c_thread_starts"), target.clone()),
-            start,
-        ),
-        assign_expr(index_expr(ident("__c_thread_args"), target.clone()), arg),
-        assign_expr(index_expr(ident("__c_thread_results"), target), run_result),
-        int_lit(0),
-    ]))
+    pthread_create(thread, start, arg)
 }
 
+/// `pthread_join` / `thrd_join` — block on the spawned task, then report the
+/// start function's return value. The wait is `common:threading.thread_join`
+/// (a futex wait on the record's status word); the value comes back through
+/// `__c_thread_results`, since the status word only carries done/faulted.
 pub fn pthread_join(thread: Expression, retval: Expression) -> Expression {
-    let result_slot = index_expr(ident("__c_thread_results"), thread.clone());
-    let joined_result = expr(ExprKind::Ternary {
-        cond: Box::new(eq(result_slot.clone(), int_lit(-1))),
-        then: Box::new(int_lit(-1)),
-        else_: Box::new(expr(ExprKind::Ternary {
-            cond: Box::new(binary(BinOp::NotEq, result_slot.clone(), null_lit())),
-            then: Box::new(result_slot.clone()),
-            else_: Box::new(isolated_thread_call(
-                index_expr(ident("__c_thread_starts"), thread.clone()),
-                index_expr(ident("__c_thread_args"), thread.clone()),
-            )) })) });
+    let joined = expr(ExprKind::Call {
+        callee: Box::new(ident("__c_thread_join_h")),
+        args: vec![vybe_ast::Argument::positional(thread)],
+        optional: false });
     if matches!(retval.kind, ExprKind::Lit(Literal::Null)) {
-        return expr(ExprKind::Sequence(vec![
-            assign_expr(result_slot.clone(), joined_result),
-            assign_expr(
-                result_slot.clone(),
-                expr(ExprKind::Ternary {
-                    cond: Box::new(binary(
-                        BinOp::NotEq,
-                        result_slot.clone(),
-                        result_slot.clone(),
-                    )),
-                    then: Box::new(index_expr(ident("__c_thread_args"), thread.clone())),
-                    else_: Box::new(result_slot.clone()) }),
-            ),
-            int_lit(0),
-        ]));
+        return expr(ExprKind::Sequence(vec![joined, int_lit(0)]));
     }
     expr(ExprKind::Sequence(vec![
-        assign_expr(result_slot.clone(), joined_result),
-        assign_expr(
-            result_slot.clone(),
-            expr(ExprKind::Ternary {
-                cond: Box::new(binary(
-                    BinOp::NotEq,
-                    result_slot.clone(),
-                    result_slot.clone(),
-                )),
-                then: Box::new(index_expr(ident("__c_thread_args"), thread)),
-                else_: Box::new(result_slot.clone()) }),
-        ),
-        assign_expr(arg_target(retval), result_slot),
+        assign_expr(arg_target(retval), joined),
         int_lit(0),
     ]))
 }
@@ -334,54 +311,41 @@ pub fn rwlock_unlock(lock: Expression) -> Expression {
     init_target(lock, int_lit(0))
 }
 
+/// `pthread_barrier_init` — the barrier variable holds a HANDLE, not the
+/// count. The count and the arrival tally live in shared objects instead,
+/// because that is the only state a spawned thread can actually reach: a
+/// child's globals are a clone (a scalar written there never comes back),
+/// while an object is one `Arc` on both sides. The handle itself is written
+/// before any spawn, so every child's clone names the same record.
 pub fn barrier_init(barrier: Expression, count: Expression) -> Expression {
+    let target = arg_target(barrier);
     expr(ExprKind::Ternary {
         cond: Box::new(lt(count.clone(), int_lit(1))),
         then: Box::new(int_lit(22)),
-        else_: Box::new(init_target(barrier, count)) })
+        else_: Box::new(expr(ExprKind::Sequence(vec![
+            assign_expr(target.clone(), ident("__c_next_barrier_handle")),
+            assign_expr(
+                ident("__c_next_barrier_handle"),
+                add(ident("__c_next_barrier_handle"), int_lit(1)),
+            ),
+            assign_expr(index_expr(ident("__c_barrier_limit"), target.clone()), count),
+            assign_expr(
+                index_expr(ident("__c_barrier_arrived"), target.clone()),
+                int_lit(0),
+            ),
+            assign_expr(index_expr(ident("__c_barrier_gen"), target), int_lit(0)),
+            int_lit(0),
+        ]))) })
 }
 
+/// `pthread_barrier_wait` — arrive, then block until the generation turns
+/// over. Real waiting on real threads; the previous version ran a pending
+/// thread's BODY inline here, which with a real spawn would run it twice.
 pub fn barrier_wait(barrier: Expression) -> Expression {
-    let thread = int_lit(1);
-    let result_slot = index_expr(ident("__c_thread_results"), thread.clone());
-    let run_pending = expr(ExprKind::Ternary {
-        cond: Box::new(and(
-            binary(
-                BinOp::NotEq,
-                index_expr(ident("__c_thread_starts"), thread.clone()),
-                null_lit(),
-            ),
-            eq(result_slot.clone(), null_lit()),
-        )),
-        then: Box::new(expr(ExprKind::Sequence(vec![
-            assign_expr(result_slot.clone(), int_lit(0)),
-            assign_expr(
-                result_slot.clone(),
-                expr(ExprKind::Call {
-                    callee: Box::new(index_expr(ident("__c_thread_starts"), thread.clone())),
-                    args: vec![vybe_ast::Argument::positional(index_expr(
-                        ident("__c_thread_args"),
-                        thread,
-                    ))],
-                    optional: false }),
-            ),
-            assign_expr(
-                result_slot.clone(),
-                expr(ExprKind::Ternary {
-                    cond: Box::new(eq(result_slot.clone(), null_lit())),
-                    then: Box::new(int_lit(0)),
-                    else_: Box::new(result_slot.clone()) }),
-            ),
-            int_lit(0),
-        ]))),
-        else_: Box::new(int_lit(0)) });
-    expr(ExprKind::Ternary {
-        cond: Box::new(eq(arg_target(barrier), int_lit(1))),
-        then: Box::new(int_lit(1)),
-        else_: Box::new(expr(ExprKind::Ternary {
-            cond: Box::new(eq(result_slot, int_lit(0))),
-            then: Box::new(int_lit(0)),
-            else_: Box::new(expr(ExprKind::Sequence(vec![run_pending, int_lit(1)]))) })) })
+    expr(ExprKind::Call {
+        callee: Box::new(ident("__c_barrier_wait_h")),
+        args: vec![vybe_ast::Argument::positional(arg_target(barrier))],
+        optional: false })
 }
 
 pub fn timespec_get(ts: Expression, base: Expression) -> Expression {
@@ -547,22 +511,149 @@ fn sem_target(sem: Expression) -> Expression {
     index_expr(ident("__c_sem_values"), arg_target(sem))
 }
 
-fn isolated_thread_call(start: Expression, arg: Expression) -> Expression {
-    let call = expr(ExprKind::Call {
-        callee: Box::new(start),
-        args: vec![vybe_ast::Argument::positional(arg)],
+/// The prelude half of the thread model — the three functions a spawned
+/// thread and its joiner run. Emitted once by `c_runtime::prelude`.
+pub fn runtime_functions() -> Vec<Statement> {
+    vec![thread_entry_fn(), thread_join_fn(), barrier_wait_fn()]
+}
+
+/// `__c_thread_entry(h)` — every spawned thread starts HERE, not at the C
+/// start function. It is what the shared spawn lowering can carry: one
+/// funcref plus one i32 (the handle). It unpacks the real start function
+/// and its `void*` from the shared tables, publishes the return value where
+/// the joiner will look, and runs the TLS destructors that end a thread.
+///
+/// The fresh `__c_tls_values` is the whole of pthread TLS isolation: the
+/// child VM holds a CLONE of the globals, so rebinding the slot here is
+/// private to this thread while the parent keeps its own.
+fn thread_entry_fn() -> Statement {
+    let call_start = expr(ExprKind::Call {
+        callee: Box::new(index_expr(ident("__c_thread_starts"), ident("h"))),
+        args: vec![vybe_ast::Argument::positional(index_expr(
+            ident("__c_thread_args"),
+            ident("h"),
+        ))],
         optional: false });
-    expr(ExprKind::Sequence(vec![
-        assign_expr(ident("__c_tls_saved"), ident("__c_tls_values")),
-        assign_expr(ident("__c_tls_values"), empty_object()),
-        assign_expr(ident("__c_thread_result_tmp"), call),
-        tls_destructor_pass(),
-        tls_destructor_pass(),
-        tls_destructor_pass(),
-        tls_destructor_pass(),
-        assign_expr(ident("__c_tls_values"), ident("__c_tls_saved")),
-        ident("__c_thread_result_tmp"),
-    ]))
+    function_stmt(
+        "__c_thread_entry",
+        vec!["h"],
+        vec![
+            stmt(StmtKind::Expr(assign_expr(
+                ident("__c_tls_values"),
+                empty_object(),
+            ))),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_thread_results"), ident("h")),
+                call_start,
+            ))),
+            stmt(StmtKind::Expr(tls_destructor_pass())),
+            stmt(StmtKind::Expr(tls_destructor_pass())),
+            stmt(StmtKind::Expr(tls_destructor_pass())),
+            stmt(StmtKind::Expr(tls_destructor_pass())),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    )
+}
+
+/// `__c_thread_join_h(h)` — wait for the task, then answer the start
+/// function's return value. A cancelled thread is never waited on: we
+/// cannot stop a running thread from outside, so `pthread_cancel` records
+/// PTHREAD_CANCELED (-1) and the joiner takes it without blocking.
+fn thread_join_fn() -> Statement {
+    function_stmt(
+        "__c_thread_join_h",
+        vec!["h"],
+        vec![
+            if_stmt(
+                eq(index_expr(ident("__c_thread_results"), ident("h")), int_lit(-1)),
+                vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
+                None,
+            ),
+            var_decl_stmt("task", index_expr(ident("__c_thread_tasks"), ident("h"))),
+            if_stmt(
+                binary(BinOp::NotEq, ident("task"), null_lit()),
+                vec![stmt(StmtKind::Expr(expr(ExprKind::Call {
+                    callee: Box::new(ident("__c_task_wait")),
+                    args: vec![vybe_ast::Argument::positional(ident("task"))],
+                    optional: false })))],
+                None,
+            ),
+            stmt(StmtKind::Return(Some(index_expr(
+                ident("__c_thread_results"),
+                ident("h"),
+            )))),
+        ],
+    )
+}
+
+/// `__c_barrier_wait_h(h)` — arrive at the barrier, then block until the
+/// generation turns over. The last arrival resets the tally, bumps the
+/// generation and is the one thread that gets PTHREAD_BARRIER_SERIAL_THREAD.
+/// Waiters yield through a real WASI sleep rather than burning a core.
+fn barrier_wait_fn() -> Statement {
+    function_stmt(
+        "__c_barrier_wait_h",
+        vec!["h"],
+        vec![
+            var_decl_stmt("limit", index_expr(ident("__c_barrier_limit"), ident("h"))),
+            if_stmt(
+                eq(ident("limit"), null_lit()),
+                vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                None,
+            ),
+            var_decl_stmt("gen", index_expr(ident("__c_barrier_gen"), ident("h"))),
+            var_decl_stmt(
+                "n",
+                add(
+                    expr(ExprKind::NullCoalesce {
+                        left: Box::new(index_expr(ident("__c_barrier_arrived"), ident("h"))),
+                        right: Box::new(int_lit(0)) }),
+                    int_lit(1),
+                ),
+            ),
+            stmt(StmtKind::Expr(assign_expr(
+                index_expr(ident("__c_barrier_arrived"), ident("h")),
+                ident("n"),
+            ))),
+            if_stmt(
+                binary(BinOp::GtEq, ident("n"), ident("limit")),
+                vec![
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_barrier_arrived"), ident("h")),
+                        int_lit(0),
+                    ))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        index_expr(ident("__c_barrier_gen"), ident("h")),
+                        add(ident("gen"), int_lit(1)),
+                    ))),
+                    stmt(StmtKind::Return(Some(int_lit(1)))),
+                ],
+                None,
+            ),
+            var_decl_stmt("spins", int_lit(0)),
+            stmt(StmtKind::While {
+                cond: eq(index_expr(ident("__c_barrier_gen"), ident("h")), ident("gen")),
+                body: vec![
+                    stmt(StmtKind::Expr(expr(ExprKind::Call {
+                        callee: Box::new(ident("__c_sleep_ms")),
+                        args: vec![vybe_ast::Argument::positional(int_lit(1))],
+                        optional: false }))),
+                    stmt(StmtKind::Expr(assign_expr(
+                        ident("spins"),
+                        add(ident("spins"), int_lit(1)),
+                    ))),
+                    // A peer that never arrives is a deadlocked barrier, not
+                    // a reason to hang the process forever.
+                    if_stmt(
+                        binary(BinOp::Gt, ident("spins"), int_lit(5000)),
+                        vec![stmt(StmtKind::Return(Some(int_lit(0))))],
+                        None,
+                    ),
+                ],
+                else_body: None }),
+            stmt(StmtKind::Return(Some(int_lit(0)))),
+        ],
+    )
 }
 
 fn tls_destructor_pass() -> Expression {

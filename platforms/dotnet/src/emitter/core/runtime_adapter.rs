@@ -178,8 +178,7 @@ fn emit_tostring_runtime(chunk: &mut Chunk, argc: u8, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
     chunk.emit_op_u16(Op::LOCAL_GET, fmt, line);
     chunk.emit_f64_const(0.0, line);
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(3, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
     chunk.emit_else(line);
     // Non-numeric: the format is a no-op, take the ordinary dispatch.
     chunk.emit_op_u16(Op::LOCAL_GET, recv, line);
@@ -292,8 +291,7 @@ fn emit_tostring_dispatch(chunk: &mut Chunk, line: u32) {
     // Has a `ToString` role member: call it with the receiver.
     chunk.emit_op_u16(Op::LOCAL_GET, func, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj, line);
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, result, line);
     chunk.emit_end(line);
 

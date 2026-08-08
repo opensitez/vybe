@@ -251,7 +251,7 @@ fn function_receives_args_at_slots_0_and_1() {
     script.emit(0, 0); // 0 upvalues
     script.emit_f64_const(10.0, 0);
     script.emit_f64_const(20.0, 0);
-    script.emit_op_u8(Op::CALL_REF, 2, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -280,7 +280,7 @@ fn function_with_local_beyond_args() {
     script.emit(0, 0);
     script.emit_f64_const(3.0, 0);
     script.emit_f64_const(4.0, 0);
-    script.emit_op_u8(Op::CALL_REF, 2, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -524,7 +524,7 @@ fn round_trip_function_call() {
     script.emit(0, 0);
     script.emit_f64_const(2.0, 0);
     script.emit_f64_const(3.0, 0);
-    script.emit_op_u8(Op::CALL_REF, 2, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut add_fn = Chunk::new("add");
@@ -913,7 +913,7 @@ fn function_zero_args() {
 
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
-    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -940,7 +940,7 @@ fn function_three_args() {
     script.emit_f64_const(1.0, 0);
     script.emit_f64_const(2.0, 0);
     script.emit_f64_const(3.0, 0);
-    script.emit_op_u8(Op::CALL_REF, 3, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 3, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -977,14 +977,14 @@ fn recursive_function_fibonacci() {
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fib.emit_f64_const(1.0, 0);
     fib.emit_op(Op::F64_SUB, 0);
-    fib.emit_op_u8(Op::CALL_REF, 1, 0);
+    fib.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     fib.emit_op_u16(Op::REF_FUNC, 1, 0);
     fib.emit(0, 0);
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fib.emit_f64_const(2.0, 0);
     fib.emit_op(Op::F64_SUB, 0);
-    fib.emit_op_u8(Op::CALL_REF, 1, 0);
+    fib.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     fib.emit_op(Op::F64_ADD, 0);
     fib.emit_op(Op::RETURN, 0);
@@ -993,7 +993,7 @@ fn recursive_function_fibonacci() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
     script.emit_f64_const(10.0, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();
@@ -1217,6 +1217,16 @@ fn prefix_0xFF_holds_zero_opcodes() {
             "0xFF 0x{sub:02X} decoded — prefix 0xFF must hold zero opcodes"
         );
     }
+    // The canon prefix (0xF0) is equally empty: the CM defines canon
+    // built-ins as (core func) definitions — functions, not instructions —
+    // so they resolve as imports under module "canon" and are reached via
+    // spec `call`. Stale 0xF0 bytecode must fail decode loudly.
+    for sub in 0x00..=0xFFu16 {
+        assert!(
+            Op::decode(0xF0, sub).is_none(),
+            "0xF0 0x{sub:02X} decoded — canon built-ins are imports, not opcodes"
+        );
+    }
     assert_eq!(Op::BR.group(), 0x00);
     assert_eq!(Op::BR.sub(), 0x0C);
 }
@@ -1425,7 +1435,7 @@ fn return_inside_block_does_not_poison_caller_labels() {
     let mut script = Chunk::new("<script>");
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0);
-    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     script.emit_op(Op::DROP, 0);
     script.emit_i32_const(0, 0);
     script.emit_if_value(0);
@@ -1504,7 +1514,7 @@ fn round_trip_three_functions_chained_calls() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0); // f1
     script.emit(0, 0); // uv_count
     script.emit_f64_const(2.0, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut f1 = Chunk::new("f1");
@@ -1515,7 +1525,7 @@ fn round_trip_three_functions_chained_calls() {
     f1.emit_op_u16(Op::LOCAL_GET, 0, 0); // x
     f1.emit_f64_const(1.0, 0);
     f1.emit_op(Op::F64_ADD, 0);
-    f1.emit_op_u8(Op::CALL_REF, 1, 0);
+    f1.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     f1.emit_op(Op::RETURN, 0);
 
     let mut f2 = Chunk::new("f2");
@@ -1717,7 +1727,7 @@ fn five_args_each_go_to_correct_slot() {
     for i in 1..=5 {
         script.emit_f64_const(i as f64, 0);
     }
-    script.emit_op_u8(Op::CALL_REF, 5, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 5, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut f = Chunk::new("combo");
@@ -1758,7 +1768,7 @@ fn local_set_on_arg_slot_overwrites_arg() {
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0); // uv_count
     script.emit_f64_const(7.0, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     script.emit_op(Op::RETURN, 0);
 
     let mut f = Chunk::new("clobber_arg");
@@ -2539,7 +2549,7 @@ fn multi_value_return_pushes_n_results_on_caller_stack() {
     // it with 0 args, then sum the three results that land on the stack.
     script.emit_op_u16(Op::REF_FUNC, 1, 0);
     script.emit(0, 0); // uv_count = 0
-    script.emit_op_u8(Op::CALL_REF, 0, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     // Stack now holds [100, 10, 1] — sum them to 111.
     script.emit_op(Op::F64_ADD, 0);
     script.emit_op(Op::F64_ADD, 0);
@@ -3260,7 +3270,7 @@ fn relaxed_simd_laneselect_picks_by_mask_high_bit() {
 #[test]
 fn table_size_returns_current_size() {
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::TABLE_SIZE, 0, 0); // table index 0
+    chunk.emit_op_u16(Op::TABLE_SIZE, 0, 0); // table index 0
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vm.wasm_tables = vec![Vec::new()]; // declare table 0 (empty)
@@ -3272,9 +3282,9 @@ fn table_grow_returns_old_size_and_resizes() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(3, 0);
-    chunk.emit_op_u8(Op::TABLE_GROW, 0, 0); // table index 0
+    chunk.emit_op_u16(Op::TABLE_GROW, 0, 0); // table index 0
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op_u8(Op::TABLE_SIZE, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_SIZE, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vm.wasm_tables = vec![Vec::new()]; // declare table 0 (grown by the op)
@@ -3286,15 +3296,15 @@ fn table_fill_assigns_value_across_range() {
     let mut chunk = Chunk::new("<script>");
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(5, 0);
-    chunk.emit_op_u8(Op::TABLE_GROW, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_i32_const(1, 0);
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     chunk.emit_i32_const(3, 0);
-    chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_FILL, 0, 0);
 
-    chunk.emit_op_u8(Op::TABLE_SIZE, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_SIZE, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     let mut vm = VM::new();
     vm.wasm_tables = vec![Vec::new()]; // declare table 0 (grown + filled by the ops)

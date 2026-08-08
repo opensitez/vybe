@@ -221,6 +221,14 @@ fn shared_emit_accessors(class_name: &str) -> Vec<(String, NamespaceNode)> {
     let ro = |g: &str| namespaces::property(Some(emit(g)), None);
     let entries: &[(&str, NamespaceNode)] = &match class_name.to_ascii_lowercase().as_str() {
         "stringbuilder" => vec![
+            // The INDEXER, as the data it always was. `sb[i]` and `sb[i] = c`
+            // were a hand-written pair in the shared compiler, selected by a
+            // language-family check; declaring both directions here lets the
+            // index sites ask the tree which accessors the receiver's type
+            // owns. Both directions are declared together on purpose — a read
+            // and a write that disagree about the storage shape is the bug the
+            // pair was gated to avoid.
+            ("item", rw("dotnet.sb_index_get", "dotnet.sb_index_set")),
             ("length", rw("dotnet.sb_length", "dotnet.sb_set_length")),
             (
                 "capacity",

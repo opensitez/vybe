@@ -271,17 +271,9 @@ fn standard_exported_memory_module() -> Vec<u8> {
     out
 }
 
-fn emit_memarg(c: &mut Chunk, align: u32, offset: u32, memidx: u32) {
-    let encoded_align = if memidx == 0 { align } else { align | 0x40 };
-    c.emit_leb_u32(encoded_align, 0);
-    c.emit_leb_u32(offset, 0);
-    if memidx != 0 {
-        c.emit_leb_u32(memidx, 0);
-    }
-}
-
 fn emit_memarg64(c: &mut Chunk, align: u32, offset: u64, memidx: u32) {
-    let encoded_align = if memidx == 0 { align } else { align | 0x40 };
+    // 0x80 = present marker, 0x100 = memory64 (u64 offset LEB follows).
+    let encoded_align = 0x80 | 0x100 | if memidx == 0 { align } else { align | 0x40 };
     c.emit_leb_u32(encoded_align, 0);
     let mut value = offset;
     loop {
@@ -826,7 +818,7 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     let mut grow = Chunk::new("<grow>");
     grow.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
     grow.emit_i64_const(2, 0);
-    grow.emit_op_u8(Op::TABLE_GROW, 0, 0);
+    grow.emit_op_u16(Op::TABLE_GROW, 0, 0);
     let result = vm.run(vec![grow]).unwrap();
     assert_eq!(result.as_i64(), 3);
     assert_eq!(vm.wasm_tables[0].len(), 5);
@@ -834,20 +826,20 @@ fn spec_table64_runtime_uses_i64_indices_and_results() {
     let mut chunk = Chunk::new("<table64>");
     chunk.emit_i64_const(1, 0);
     chunk.emit_i32_const(7, 0);
-    chunk.emit_op_u8(Op::TABLE_SET, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_SET, 0, 0);
 
     chunk.emit_i64_const(2, 0);
     chunk.emit_i32_const(9, 0);
     chunk.emit_i64_const(2, 0);
-    chunk.emit_op_u8(Op::TABLE_FILL, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_FILL, 0, 0);
 
     chunk.emit_i64_const(3, 0);
     chunk.emit_i64_const(1, 0);
     chunk.emit_i64_const(2, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_COPY, 0, 0, 0);
 
     chunk.emit_i64_const(3, 0);
-    chunk.emit_op_u8(Op::TABLE_GET, 0, 0);
+    chunk.emit_op_u16(Op::TABLE_GET, 0, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 7);
@@ -873,7 +865,7 @@ fn spec_table64_init_copies_element_segment_with_i64_indices() {
     chunk.emit_i64_const(3, 0);
     chunk.emit_i64_const(1, 0);
     chunk.emit_i64_const(2, 0);
-    chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk]).expect("table64.init should copy");
@@ -921,17 +913,19 @@ fn decoded_standard_module_uses_memidx_for_f64_store_and_load() {
     let function = chunks.remove(1);
     let fs = Op::F64_STORE.encode();
     let fl = Op::F64_LOAD.encode();
+    // Internal memarg carries the presence marker: align 0x43 | 0x80 = 0xC3
+    // → LEB [0xC3, 0x01], then offset 0x00, then memidx 0x01.
     assert!(
         function
             .code
-            .windows(7)
-            .any(|w| w == [fs[0], fs[1], fs[2], fs[3], 0x43, 0x00, 0x01])
+            .windows(8)
+            .any(|w| w == [fs[0], fs[1], fs[2], fs[3], 0xC3, 0x01, 0x00, 0x01])
     );
     assert!(
         function
             .code
-            .windows(7)
-            .any(|w| w == [fl[0], fl[1], fl[2], fl[3], 0x43, 0x00, 0x01])
+            .windows(8)
+            .any(|w| w == [fl[0], fl[1], fl[2], fl[3], 0xC3, 0x01, 0x00, 0x01])
     );
 
     let mut vm = VM::new();
@@ -1023,7 +1017,7 @@ fn memory_size_reports_correct_size() {
     let mut vm = VM::new();
     vm.memory.resize(2 * 65536, 0); // 2 pages
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op(Op::MEMORY_SIZE, 0);
+    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
     let r = vm.run(vec![chunk]).unwrap();
     assert_eq!(r.as_i32(), 2, "memory.size should return page count");
 }
@@ -1034,7 +1028,7 @@ fn memory_grow_increases_size_and_returns_old() {
     vm.memory.resize(65536, 0); // 1 page
     let mut chunk = Chunk::new("<script>");
     chunk.emit_i32_const(2, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     let r = vm.run(vec![chunk]).unwrap();
     assert_eq!(r.as_i32(), 1, "memory.grow returns old size in pages");
     assert_eq!(vm.memory.len(), 3 * 65536, "memory grew by 2 pages");
@@ -1049,7 +1043,7 @@ fn memory_fill_in_memory_zero() {
     chunk.emit_i32_const(8, 0);
     chunk.emit_i32_const(0xAB, 0);
     chunk.emit_i32_const(4, 0);
-    chunk.emit_op(Op::MEMORY_FILL, 0);
+    chunk.emit_op_u16(Op::MEMORY_FILL, 0, 0);
     // Load back byte at addr 8
     chunk.emit_i32_const(8, 0);
     chunk.emit_op(Op::I32_LOAD8_U, 0);

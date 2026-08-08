@@ -135,7 +135,7 @@ fn invoke_method(receiver: &Value, method: &str) -> Value {
     chunk.emit_op_u16(Op::GLOBAL_GET, method_ci, 0);
     let recv_ci = chunk.intern_string_constant(&recv_name);
     chunk.emit_op_u16(Op::GLOBAL_GET, recv_ci, 0);
-    chunk.emit_op_u8(Op::CALL_REF, 1, 0);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let mut vm = VM::new();

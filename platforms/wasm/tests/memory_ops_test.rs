@@ -14,14 +14,14 @@ fn memory_grow_and_size() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     // memory_size (initial = 0 pages)
-    chunk.emit_op(Op::MEMORY_SIZE, 0);
+    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
     // Grow by 1 page (64KB)
     chunk.emit_op(Op::DROP, 0);
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     // memory_grow returns old size
     chunk.emit_op(Op::DROP, 0);
-    chunk.emit_op(Op::MEMORY_SIZE, 0);
+    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), 1); // 1 page after grow
 }
@@ -34,7 +34,7 @@ fn memory_grow_returns_minus_one_when_max_exceeded() {
 
     let mut chunk = Chunk::new("<script>");
     chunk.emit_i32_const(1, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     assert_eq!(result.as_i32(), -1);
@@ -157,7 +157,7 @@ fn call_indirect_basic() {
     main.emit(0, 0); // 0 upvalues
     // For call_indirect, we need the table index on stack
     // Just use regular call for now since func_table setup is complex
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let result = vm.run(vec![main, f]).unwrap();
     assert_eq!(result.as_f64(), 42.0);
@@ -226,7 +226,7 @@ fn function_in_separate_chunk_callable() {
     main.emit_op_u16(Op::GLOBAL_GET, name, 0);
     main.emit_f64_const(10.0, 0);
     main.emit_f64_const(20.0, 0);
-    main.emit_op_u8(Op::CALL_REF, 2, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
 
     let result = vm.run(vec![main, f]).unwrap();
     assert_eq!(result.as_f64(), 30.0);
@@ -255,7 +255,7 @@ fn multiple_chunks_cross_call() {
     let dbl_name = quad.add_constant(Value::String(Arc::from("double")));
     quad.emit_op_u16(Op::GLOBAL_GET, dbl_name, 0);
     quad.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    quad.emit_op_u8(Op::CALL_REF, 1, 0);
+    quad.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     quad.emit_op(Op::RETURN, 0);
 
     let mut main = Chunk::new("<script>");
@@ -273,7 +273,7 @@ fn multiple_chunks_cross_call() {
     // Call quad(5)
     main.emit_op_u16(Op::GLOBAL_GET, q_name, 0);
     main.emit_f64_const(5.0, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let result = vm.run(vec![main, double, quad]).unwrap();
     assert_eq!(result.as_f64(), 10.0); // double(5) = 10
@@ -300,7 +300,7 @@ fn call_indirect_vm_function() {
     main.emit_i32_const(0, 0);
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0); // 0 upvalues
-    main.emit_op_u8(Op::TABLE_SET, 0, 0);
+    main.emit_op_u16(Op::TABLE_SET, 0, 0);
 
     // call_indirect table 0 with index 0, 0 args, 1 result.
     // `call_indirect` is `U8_U8_U8`: argc, tableidx, expected_results. The
@@ -416,12 +416,12 @@ fn i32_load_store_apply_memarg_offset() {
         c.emit_i32_const(4, 0);
         c.emit_i32_const(0x1122_3344, 0);
         c.emit_op(Op::I32_STORE, 0);
-        c.emit_leb_u32(2, 0); // natural i32 alignment
+        c.emit_leb_u32(2 | 0x80, 0); // presence marker | natural i32 alignment
         c.emit_leb_u32(8, 0); // effective address = 4 + 8
 
         c.emit_i32_const(0, 0);
         c.emit_op(Op::I32_LOAD, 0);
-        c.emit_leb_u32(2, 0);
+        c.emit_leb_u32(2 | 0x80, 0);
         c.emit_leb_u32(12, 0);
     });
     assert_eq!(r.as_i32(), 0x1122_3344);
@@ -434,12 +434,12 @@ fn f64_load_store_apply_memarg_offset() {
         c.emit_i32_const(5, 0);
         c.emit_f64_const(6.25, 0);
         c.emit_op(Op::F64_STORE, 0);
-        c.emit_leb_u32(3, 0);
+        c.emit_leb_u32(3 | 0x80, 0);
         c.emit_leb_u32(9, 0);
 
         c.emit_i32_const(0, 0);
         c.emit_op(Op::F64_LOAD, 0);
-        c.emit_leb_u32(3, 0);
+        c.emit_leb_u32(3 | 0x80, 0);
         c.emit_leb_u32(14, 0);
     });
     assert_eq!(r.as_f64(), 6.25);
@@ -452,12 +452,12 @@ fn f32_load_store_apply_memarg_offset() {
         c.emit_i32_const(3, 0);
         c.emit_f64_const((-2.5f32) as f64, 0);
         c.emit_op(Op::F32_STORE, 0);
-        c.emit_leb_u32(2, 0);
+        c.emit_leb_u32(2 | 0x80, 0);
         c.emit_leb_u32(17, 0);
 
         c.emit_i32_const(0, 0);
         c.emit_op(Op::F32_LOAD, 0);
-        c.emit_leb_u32(2, 0);
+        c.emit_leb_u32(2 | 0x80, 0);
         c.emit_leb_u32(20, 0);
     });
     assert_eq!(r.as_f64() as f32, -2.5f32);
@@ -470,12 +470,12 @@ fn i64_load16_s_applies_memarg_offset() {
         c.emit_i32_const(6, 0);
         c.emit_i64_const(-1234, 0);
         c.emit_op(Op::I64_STORE16, 0);
-        c.emit_leb_u32(1, 0);
+        c.emit_leb_u32(1 | 0x80, 0);
         c.emit_leb_u32(12, 0);
 
         c.emit_i32_const(0, 0);
         c.emit_op(Op::I64_LOAD16_S, 0);
-        c.emit_leb_u32(1, 0);
+        c.emit_leb_u32(1 | 0x80, 0);
         c.emit_leb_u32(18, 0);
     });
     assert_eq!(r.as_i64(), -1234);

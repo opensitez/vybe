@@ -87,7 +87,7 @@ fn memory_fill_writes_byte_to_range() {
         push_i32(c, 10);
         push_i32(c, 0xAB);
         push_i32(c, 5);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
     });
     assert_eq!(read_byte(&vm, 9), 0x00); // before range untouched
     for addr in 10..15 {
@@ -102,7 +102,7 @@ fn memory_fill_zero_count_is_noop() {
         push_i32(c, 0);
         push_i32(c, 0xFF);
         push_i32(c, 0); // count = 0
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
     });
     assert_eq!(read_byte(&vm, 0), 0x00);
 }
@@ -113,7 +113,7 @@ fn memory_fill_zero_count_at_memory_end_is_noop() {
         push_i32(c, 64);
         push_i32(c, 0xFF);
         push_i32(c, 0);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
     });
     assert_eq!(read_byte(&vm, 63), 0x00);
 }
@@ -125,11 +125,11 @@ fn memory_fill_zero_byte_clears_range() {
         push_i32(c, 4);
         push_i32(c, 0xFF);
         push_i32(c, 4);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
         push_i32(c, 5);
         push_i32(c, 0x00);
         push_i32(c, 2);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
     });
     assert_eq!(read_byte(&vm, 4), 0xFF); // before cleared range
     assert_eq!(read_byte(&vm, 5), 0x00);
@@ -143,7 +143,7 @@ fn memory_fill_oob_traps() {
         push_i32(c, 2);
         push_i32(c, 0xAA);
         push_i32(c, 3);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
     });
     assert!(err.contains("out of bounds") || err.contains("trap"));
 }
@@ -157,12 +157,12 @@ fn memory_copy_non_overlapping() {
         push_i32(c, 20);
         push_i32(c, 0x55);
         push_i32(c, 4);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
         // Copy to dst [0..4]
         push_i32(c, 0); // dst
         push_i32(c, 20); // src
         push_i32(c, 4); // count
-        c.emit_op(Op::MEMORY_COPY, 0);
+        c.emit_op_u16_u16(Op::MEMORY_COPY, 0, 0, 0);
     });
     for addr in 0..4 {
         assert_eq!(read_byte(&vm, addr), 0x55);
@@ -176,12 +176,12 @@ fn memory_copy_zero_count_is_noop() {
         push_i32(c, 10);
         push_i32(c, 0xFF);
         push_i32(c, 4);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
         // Copy 0 bytes — destination stays untouched
         push_i32(c, 0);
         push_i32(c, 10);
         push_i32(c, 0);
-        c.emit_op(Op::MEMORY_COPY, 0);
+        c.emit_op_u16_u16(Op::MEMORY_COPY, 0, 0, 0);
     });
     assert_eq!(read_byte(&vm, 0), 0x00);
 }
@@ -192,11 +192,11 @@ fn memory_copy_zero_count_at_memory_end_is_noop() {
         push_i32(c, 0);
         push_i32(c, 0xAA);
         push_i32(c, 1);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
         push_i32(c, 64);
         push_i32(c, 64);
         push_i32(c, 0);
-        c.emit_op(Op::MEMORY_COPY, 0);
+        c.emit_op_u16_u16(Op::MEMORY_COPY, 0, 0, 0);
     });
     assert_eq!(read_byte(&vm, 0), 0xAA);
 }
@@ -208,11 +208,11 @@ fn memory_copy_overlapping_forward() {
         push_i32(c, 0);
         push_i32(c, 0x77);
         push_i32(c, 4);
-        c.emit_op(Op::MEMORY_FILL, 0);
+        c.emit_op_u16(Op::MEMORY_FILL, 0, 0);
         push_i32(c, 2); // dst
         push_i32(c, 0); // src
         push_i32(c, 4); // count
-        c.emit_op(Op::MEMORY_COPY, 0);
+        c.emit_op_u16_u16(Op::MEMORY_COPY, 0, 0, 0);
     });
     assert_eq!(read_byte(&vm, 2), 0x77);
     assert_eq!(read_byte(&vm, 5), 0x77);
@@ -224,7 +224,7 @@ fn memory_copy_source_oob_traps() {
         push_i32(c, 0);
         push_i32(c, 2);
         push_i32(c, 3);
-        c.emit_op(Op::MEMORY_COPY, 0);
+        c.emit_op_u16_u16(Op::MEMORY_COPY, 0, 0, 0);
     });
     assert!(err.contains("out of bounds") || err.contains("trap"));
 }
@@ -235,7 +235,7 @@ fn memory_copy_destination_oob_traps() {
         push_i32(c, 2);
         push_i32(c, 0);
         push_i32(c, 3);
-        c.emit_op(Op::MEMORY_COPY, 0);
+        c.emit_op_u16_u16(Op::MEMORY_COPY, 0, 0, 0);
     });
     assert!(err.contains("out of bounds") || err.contains("trap"));
 }
@@ -246,7 +246,7 @@ fn memory_copy_destination_oob_traps() {
 fn data_drop_does_not_trap() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::DATA_DROP, 0, 0); // data segment index 0
+    chunk.emit_op_u16(Op::DATA_DROP, 0, 0); // data segment index 0
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk]).expect("data.drop should not trap");
 }
@@ -258,7 +258,7 @@ fn memory_init_zero_count_without_drop_is_noop() {
     push_i32(&mut chunk, 0); // dst
     push_i32(&mut chunk, 0); // src offset
     push_i32(&mut chunk, 0); // count
-    chunk.emit_op_u8(Op::MEMORY_INIT, 0, 0);
+    chunk.emit_op_u16_u16(Op::MEMORY_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     vm.run(vec![chunk])
@@ -337,11 +337,11 @@ fn memory_init_after_data_drop_zero_length_ok_nonzero_traps() {
     // out-of-bounds trap (not a distinct "dropped" error class).
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::DATA_DROP, 0, 0);
+    chunk.emit_op_u16(Op::DATA_DROP, 0, 0);
     push_i32(&mut chunk, 0); // dst
     push_i32(&mut chunk, 0); // src offset
     push_i32(&mut chunk, 0); // count
-    chunk.emit_op_u8(Op::MEMORY_INIT, 0, 0);
+    chunk.emit_op_u16_u16(Op::MEMORY_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk])
         .expect("zero-length memory.init at offset 0 on a dropped segment must not trap");
@@ -349,11 +349,11 @@ fn memory_init_after_data_drop_zero_length_ok_nonzero_traps() {
     let mut vm = VM::new();
     vm.memory.resize(1024, 0);
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::DATA_DROP, 0, 0);
+    chunk.emit_op_u16(Op::DATA_DROP, 0, 0);
     push_i32(&mut chunk, 0); // dst
     push_i32(&mut chunk, 0); // src offset
     push_i32(&mut chunk, 1); // count — reads past the zero-length segment
-    chunk.emit_op_u8(Op::MEMORY_INIT, 0, 0);
+    chunk.emit_op_u16_u16(Op::MEMORY_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     let err = vm
         .run(vec![chunk])
@@ -382,7 +382,7 @@ fn table_copy_copies_entries() {
     push_i32(&mut chunk, 4); // dst
     push_i32(&mut chunk, 0); // src
     push_i32(&mut chunk, 4); // count
-    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0); // dst_table=0, src_table=0
+    chunk.emit_op_u16_u16(Op::TABLE_COPY, 0, 0, 0); // dst_table=0, src_table=0
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk]).expect("table.copy should not trap");
 
@@ -401,7 +401,7 @@ fn table_copy_overlapping_backward() {
     push_i32(&mut chunk, 1); // dst
     push_i32(&mut chunk, 0); // src
     push_i32(&mut chunk, 4); // count
-    chunk.emit_op_u8_u8(Op::TABLE_COPY, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_COPY, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk])
         .expect("table.copy overlapping should not trap");
@@ -456,7 +456,7 @@ fn decoded_standard_table_copy_preserves_distinct_source_and_destination_tables(
 fn elem_drop_does_not_trap() {
     let mut vm = VM::new();
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::ELEM_DROP, 0, 0);
+    chunk.emit_op_u16(Op::ELEM_DROP, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk]).expect("elem.drop should not trap");
 }
@@ -472,7 +472,7 @@ fn table_init_stub_does_not_trap() {
     push_i32(&mut chunk, 2); // dst
     push_i32(&mut chunk, 1); // src offset
     push_i32(&mut chunk, 2); // count
-    chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
     vm.run(vec![chunk]).expect("table.init should not trap");
 
@@ -609,7 +609,7 @@ fn table_init_source_oob_traps() {
     push_i32(&mut chunk, 0); // dst
     push_i32(&mut chunk, 0); // src offset
     push_i32(&mut chunk, 2); // count exceeds segment
-    chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let err = vm
@@ -627,7 +627,7 @@ fn table_init_destination_oob_traps() {
     push_i32(&mut chunk, 0); // dst
     push_i32(&mut chunk, 0); // src offset
     push_i32(&mut chunk, 2); // count exceeds table
-    chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let err = vm
@@ -641,11 +641,11 @@ fn table_init_after_elem_drop_traps() {
     let mut vm = VM::new();
     vm.wasm_tables = vec![vec![Value::Null; 8]];
     let mut chunk = Chunk::new("<script>");
-    chunk.emit_op_u8(Op::ELEM_DROP, 0, 0);
+    chunk.emit_op_u16(Op::ELEM_DROP, 0, 0);
     push_i32(&mut chunk, 0); // dst
     push_i32(&mut chunk, 0); // src offset
     push_i32(&mut chunk, 0); // count
-    chunk.emit_op_u8_u8(Op::TABLE_INIT, 0, 0, 0);
+    chunk.emit_op_u16_u16(Op::TABLE_INIT, 0, 0, 0);
     chunk.emit_op(Op::RETURN, 0);
 
     let err = vm

@@ -18,10 +18,11 @@
 //! | `elem.drop`            | ✅ |
 //!
 //! The 0xFC-prefix emitter in `code.rs` is NOT pass-through: it reads the
-//! internal fixed-width immediates (u8 indices, optional `0xEE`
-//! multi-memory selector blocks) and re-serializes them as the spec's LEB
-//! immediates. The reader does the inverse, and its validation pass
-//! rejects indices above the internal u8 width instead of truncating.
+//! internal fixed-width immediates (u16 BE indices, including the
+//! multi-memory memidx on memory.init/copy/fill) and re-serializes them
+//! as the spec's LEB immediates. The reader does the inverse, and its
+//! validation pass rejects indices above the internal u16 width instead
+//! of truncating.
 
 use vybe_runtime::Chunk;
 

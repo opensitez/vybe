@@ -117,9 +117,9 @@ pub fn build_constructor_chunk(
         vybe_compiler::primitives::globals::emit_read(&mut chunk, parent_name, line);
         if arity > 0 && class.ctor_arity == 1 && parent_name != "TObject" {
             chunk.emit_op_u16(Op::LOCAL_GET, 0, line);
-            chunk.emit_op_u8(Op::CALL_REF, 1, line);
+            chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
         } else {
-            chunk.emit_op_u8(Op::CALL_REF, 0, line);
+            chunk.emit_op_u8_u8(Op::CALL_REF, 0, 1, line);
         }
         chunk.emit_op_u16(Op::LOCAL_SET, this_slot, line);
     } else {

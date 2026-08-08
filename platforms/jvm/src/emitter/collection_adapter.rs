@@ -907,7 +907,7 @@ pub fn emit_collection_extreme(
     get(&mut chunks[current], comparator, line);
     get(&mut chunks[current], value, line);
     get(&mut chunks[current], best, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 2, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     core_wasm::i32_const(&mut chunks[current], line, 0);
     if min {
         ops::emit_dyn_lt(&mut chunks[current], line);
