@@ -606,7 +606,7 @@ pub fn emit_resource_dispose(chunk: &mut Chunk, slot: u16, dispose_method: &str,
     chunk.emit_br_if(0, line);
     // Stack: [method]. Push receiver and CALL_REF(1). Drop result.
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_op(Op::DROP, line);
     // Skipped path leaves `method` (null/undef) on stack — the END
     // closes the block, after which we DROP unconditionally.

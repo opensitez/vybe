@@ -380,7 +380,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_const(Value::String(Arc::from("F12")));
         self.emit_const(Value::F64(0.0));
-        self.emit_u8(Op::CALL_REF, 3);
+        self.emit_u8_u8(Op::CALL_REF, 3, 1);
         let parse_float = self.import("ecma:number", "parseFloat");
         self.emit_host_call(parse_float, 1);
         self.chunk().emit_else(line);

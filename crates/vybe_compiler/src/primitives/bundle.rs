@@ -225,7 +225,7 @@ pub fn emit_call_push_func(chunk: &mut Chunk, global_name: &str, line: u32) {
 
 /// Emit call_ref after func + args are on stack.
 pub fn emit_call_invoke(chunk: &mut Chunk, argc: u8, line: u32) {
-    chunk.emit_op_u8(Op::CALL_REF, argc, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
 }
 
 /// Append referenced runtime helper chunks and register them as global_inits.
@@ -287,7 +287,7 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
 /// For multi-arg calls, use the push_func/invoke pair.
 pub fn emit_call(chunk: &mut Chunk, global_name: &str, argc: u8, line: u32) {
     crate::primitives::globals::emit_read(chunk, global_name, line);
-    chunk.emit_op_u8(Op::CALL_REF, argc, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
 }
 
 fn referenced_helper_exports(chunks: &[Chunk]) -> BTreeSet<&'static str> {

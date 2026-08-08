@@ -182,8 +182,7 @@ pub fn emit_compare(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, cmp, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-    chunk.emit_op(Op::CALL_REF, line);
-    chunk.emit(2, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 
     chunk.emit_end(line);
     chunk.emit_end(line);

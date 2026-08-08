@@ -6,6 +6,20 @@
 
 use super::*;
 
+// Primitive fallbacks for `emit_rich_binop`, which takes the fallback as a
+// `fn(&mut Chunk, u32)` so a slot and its primitive op stay one decision. The
+// comparison and `Add` slots already had `ops::emit_dyn_*` to pass; the plain
+// arithmetic ops have no dynamic form, so they are named here.
+fn emit_f64_sub(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_SUB, line);
+}
+fn emit_f64_mul(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_MUL, line);
+}
+fn emit_f64_div(chunk: &mut Chunk, line: u32) {
+    chunk.emit_op(Op::F64_DIV, line);
+}
+
 impl Compiler {
     pub(super) fn emit_to_primitive(&mut self, hint: &str) {
         let value_slot = self.define_local("__to_primitive_value");
@@ -549,6 +563,10 @@ impl Compiler {
     /// name here even by accident — and the same code reaches Python's
     /// `__add__`, Dart's `operator +` and C#'s `operator+` because all three
     /// fill `ProtocolSlot::Add`.
+    ///
+    /// `Sub`/`Mul`/`Div` reach it too — this used to be wired for `Add` alone,
+    /// so a C# `operator -` compiled to a bare `F64_SUB` that never asked the
+    /// class, which is what `uses_rich_operators` promised in its own doc.
     fn emit_rich_binop(&mut self, slot: vybe_ast::ProtocolSlot, fallback: fn(&mut Chunk, u32)) {
         let line = self.line;
         let rhs_slot = self.define_local("__rich_op_rhs");
@@ -644,6 +662,8 @@ impl Compiler {
             BinOp::Sub => {
                 if self.profile.dynamic_numeric_dispatch {
                     self.emit_js_dynamic_arith("sub", NumberArith::Sub);
+                } else if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::Sub, emit_f64_sub);
                 } else {
                     if self.profile.ecma_operator_coercion {
                         self.coerce_top_two_to_number();
@@ -654,6 +674,8 @@ impl Compiler {
             BinOp::Mul => {
                 if self.profile.dynamic_numeric_dispatch {
                     self.emit_js_dynamic_arith("mul", NumberArith::Mul);
+                } else if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::Mul, emit_f64_mul);
                 } else {
                     if self.profile.ecma_operator_coercion {
                         self.coerce_top_two_to_number();
@@ -664,6 +686,8 @@ impl Compiler {
             BinOp::Div => {
                 if self.profile.dynamic_numeric_dispatch {
                     self.emit_js_dynamic_arith("div", NumberArith::Div);
+                } else if self.uses_rich_operators() {
+                    self.emit_rich_binop(vybe_ast::ProtocolSlot::Div, emit_f64_div);
                 } else {
                     if self.profile.ecma_operator_coercion {
                         self.coerce_top_two_to_number();
@@ -1308,7 +1332,7 @@ impl Compiler {
                     self.set_js_this_from_stack();
                     self.emit_u16(Op::LOCAL_GET, method_slot);
                     self.emit_u16(Op::LOCAL_GET, lhs_slot);
-                    self.emit_u8(Op::CALL_REF, 1);
+                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
                     {
                         let line = self.line;
                         // Convert dynamic result to Bool (consistent with

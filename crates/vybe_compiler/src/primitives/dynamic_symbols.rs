@@ -221,7 +221,7 @@ pub fn emit_resolver_stack_invoke(
             chunk.emit_if(line);
             chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
-            chunk.emit_op_u8(Op::CALL_REF, 1, line);
+            chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             chunk.emit_op(Op::DROP, line);
             chunk.emit_else(line);
             // Through `emit_invoke_method`, not a raw `ecma:value.invokeMethod`
@@ -242,7 +242,7 @@ pub fn emit_resolver_stack_invoke(
         None => {
             chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
-            chunk.emit_op_u8(Op::CALL_REF, 1, line);
+            chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
             chunk.emit_op(Op::DROP, line);
         }
     }
@@ -452,7 +452,7 @@ pub fn emit_receiver_missing_symbol_get(
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
     let argc = if include_receiver_arg { 2 } else { 1 };
-    chunks[current].emit_op_u8(Op::CALL_REF, argc, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
     chunks[current].emit_else(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);

@@ -739,12 +739,12 @@ pub fn emit_sort_by_key_in_place(chunks: &mut [Chunk], current: usize, line: u32
     lget(chunk, arr, line);
     lget(chunk, j, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     lget(chunk, key_fn, line);
     lget(chunk, arr, line);
     lget(chunk, best, line);
     chunk.emit_op(Op::ARRAY_GET, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     crate::primitives::ops::emit_dyn_lt(chunk, line);
     chunk.emit_if(line);
     lget(chunk, j, line);
@@ -996,7 +996,7 @@ pub fn emit_runtime_helper_call(
     for i in 0..argc as u16 {
         chunks[current].emit_op_u16(Op::LOCAL_GET, base + i, line);
     }
-    chunks[current].emit_op_u8(Op::CALL_REF, argc, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
 }
 
 /// Pack N consecutive stack values into a new array (was the
@@ -1450,7 +1450,7 @@ pub fn emit_sorted_push_func(chunk: &mut Chunk, line: u32) {
 
 /// Invoke __vybe_sorted after [func, arg] are on stack.
 pub fn emit_sorted_invoke(chunk: &mut Chunk, line: u32) {
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
 }
 
 /// reversed(iterable). Stack: [seq] → [reversed_array]. Inlined polymorphic

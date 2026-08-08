@@ -191,7 +191,7 @@ impl Compiler {
                             self.set_js_this_from_stack();
                         }
                         self.emit_var_get(name);
-                        self.emit_u8(Op::CALL_REF, 0);
+                        self.emit_u8_u8(Op::CALL_REF, 0, 1);
                         if saved_js_this.is_some() {
                             let result_slot = self.define_local("__js_stmt_result");
                             self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -220,7 +220,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, obj_tmp);
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
                         self.emit(Op::DROP);
                     }
                     _ => {
@@ -350,7 +350,14 @@ impl Compiler {
                         }
                     }
                 }
-                if self.profile.namespaces.use_dotnet && targets.len() == 1 {
+                // `h = h + handler` is a delegate COMBINE only when the thing
+                // being assigned is a delegate. The gate used to be the
+                // language plus a test on the RIGHT operand alone — and that
+                // test answers true for a bare lambda and for any member whose
+                // field names a defined method, so `total = total + obj.count`
+                // was a delegate combine waiting to happen. Asking what the
+                // TARGET is makes the question the right one.
+                if targets.len() == 1 && self.expr_is_delegate_typed(&targets[0]) {
                     if let ExprKind::Binary { op, left, right } = &value.kind {
                         if self.assign_target_matches_expr(&targets[0], left)
                             && self.is_csharp_delegate_handler_expr(right)
@@ -504,8 +511,10 @@ impl Compiler {
             }
 
             StmtKind::CompoundAssign { target, op, value } => {
-                if self.profile.namespaces.use_dotnet
-                    && matches!(op, CompoundOp::Add | CompoundOp::Sub)
+                // Same question as the `h = h + handler` form above: the
+                // TARGET decides whether `+=` is a delegate combine.
+                if matches!(op, CompoundOp::Add | CompoundOp::Sub)
+                    && self.expr_is_delegate_typed(target)
                     && self.is_csharp_delegate_handler_expr(value)
                 {
                     match op {
@@ -1942,20 +1951,6 @@ impl Compiler {
                     self.enum_flags.remove(&cname);
                 }
 
-                match self.profile.name.as_str() {
-                    "dart" => {
-                        self.compile_dart_enum_decl(
-                            name,
-                            interfaces,
-                            body_members,
-                            members,
-                            stmt.span,
-                        )?;
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-
                 let mut next_val = 0i64;
                 let mut value_names = HashMap::new();
                 for m in members {
@@ -1977,7 +1972,19 @@ impl Compiler {
                         .entry(leaf.to_string())
                         .or_insert(value_names);
                 }
-                self.compile_shared_enum_decl(name, interfaces, body_members, members, stmt.span)?;
+                // No declared base: `Enum` is not a class any frontend defines
+                // (dart named it here and it resolved to nothing), so passing it
+                // would be a dangling parent rather than a shared base. If a
+                // real `Enum` base lands, it belongs on the AST node for every
+                // language at once, not as one language's string.
+                self.compile_shared_enum_decl(
+                    name,
+                    None,
+                    interfaces,
+                    body_members,
+                    members,
+                    stmt.span,
+                )?;
                 self.defined_globals.insert(cname);
             }
 
@@ -2145,7 +2152,7 @@ impl Compiler {
                     .any(|(mn, _)| mn.eq_ignore_ascii_case("__static_init__"))
                 {
                     self.emit_global_read("__static_init__");
-                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit_u8_u8(Op::CALL_REF, 0, 1);
                     self.emit(Op::DROP);
                 }
 
@@ -3694,118 +3701,87 @@ impl Compiler {
         )
     }
 
+    /// THE enum lowering — one shape for every language. See
+    /// `documentation/enumunificationplan.md`.
+    ///
+    /// A member is an OBJECT, not a bare ordinal:
+    /// `{ __type, name, index, value, …constructor fields }`. That is the shape
+    /// dart, jvm and php each already built separately, and it is what makes a
+    /// member survive crossing frontends — an ordinal cannot answer `->name`
+    /// from PHP or `.name()` from Java, and const-folding member READS to
+    /// ordinals is exactly why java's walker refused this node
+    /// (`languages/java/src/walker.rs`).
+    ///
+    /// What each language does differently — render as the name, as `Type.name`,
+    /// or as the ordinal, and what `(int)e` yields — is a DECLARATION on the
+    /// type (the `ToString` and `Int` slots), not a fork here.
+    ///
+    /// `parent` carries the declared base (dart names `Enum`); languages that
+    /// declare none pass `None`.
     pub(super) fn compile_shared_enum_decl(
         &mut self,
         name: &str,
+        parent: Option<&str>,
         interfaces: &[String],
         body_members: &[ClassMember],
         members: &[EnumMember],
         span: Span,
     ) -> Result<(), String> {
+        use crate::primitives::enum_lowering;
+
         let static_modifiers = {
             let mut modifiers = Modifiers::default();
             modifiers.is_static = true;
             modifiers
         };
         let mut synthetic_members = body_members.to_vec();
-        let mut next_val = 0i64;
+        let values = enum_lowering::member_values(members);
 
-        for member in members {
-            let (value_expr, numeric_value) = if let Some(value) = &member.value {
-                if let ExprKind::Lit(Literal::Int(n)) = &value.kind {
-                    next_val = *n;
-                    (value.clone(), Some(*n))
-                } else {
-                    // Non-literal member value (e.g. `1 << 0`): the forward
-                    // field still works, but we can't key a compile-time
-                    // reverse entry off it, so skip its reverse map entry.
-                    (value.clone(), None)
-                }
-            } else {
-                (
-                    Expression::new(ExprKind::Lit(Literal::Int(next_val))),
-                    Some(next_val),
-                )
-            };
-            // Forward entry: `Color.Red = 0`.
+        enum_lowering::install(
+            name,
+            members,
+            &values,
+            &mut synthetic_members,
+            // Properties, not methods: every language reaching this path reads
+            // `e.name` / `e.value` / `e.index` and `Type.values` as data. The
+            // JVM spellings (`c.name()`, `Color.values()`) come from the JVM
+            // walkers, which declare their own `Surface`.
+            enum_lowering::Surface::PROPERTIES,
+        );
+
+        // Reverse entries: `Color[0] = "Red"`. Kept as the NAME, and kept at
+        // all, because every existing `value → name` reader (ToString/GetName/
+        // `emit_value_to_name`) resolves through this map rather than through
+        // the members.
+        for (member, (_, numeric)) in members.iter().zip(&values) {
+            let Some(nv) = numeric else { continue };
             synthetic_members.push(ClassMember::Field {
-                name: member.name.clone(),
-                type_hint: Some(name.to_string()),
-                init: Some(value_expr),
-                modifiers: static_modifiers.clone(),
-                with_events: false,
-                array_bounds: None });
-            // Reverse entry: `Color[0] = "Red"` — the TypeScript numeric-enum
-            // shape, so `value → name` lookups (ToString/GetName) can read the
-            // enum object at runtime (`EnumType[value]`) instead of relying on
-            // compile-time ordinal tables. Keyed by the value's string form,
-            // which an integer index resolves to.
-            if let Some(nv) = numeric_value {
-                synthetic_members.push(ClassMember::Field {
-                    name: nv.to_string(),
-                    type_hint: None,
-                    init: Some(Expression::string(&member.name)),
-                    modifiers: static_modifiers.clone(),
-                    with_events: false,
-                    array_bounds: None });
-            }
-            next_val += 1;
-        }
-
-        self.compile_enum_decl_as_class(name, None, interfaces, synthetic_members, span)
-    }
-
-    pub(super) fn compile_dart_enum_decl(
-        &mut self,
-        name: &str,
-        interfaces: &[String],
-        body_members: &[ClassMember],
-        members: &[EnumMember],
-        span: Span,
-    ) -> Result<(), String> {
-        let mut synthetic_members = body_members.to_vec();
-        let static_modifiers = {
-            let mut modifiers = Modifiers::default();
-            modifiers.is_static = true;
-            modifiers
-        };
-        let mut values_array = Vec::new();
-
-        for (index, member) in members.iter().enumerate() {
-            let obj_expr = Expression::new(ExprKind::Object(vec![
-                ObjectProperty::KeyValue {
-                    key: Expression::string("index"),
-                    value: Expression::new(ExprKind::Lit(Literal::Int(index as i64))) },
-                ObjectProperty::KeyValue {
-                    key: Expression::string("name"),
-                    value: Expression::string(&member.name) },
-                ObjectProperty::KeyValue {
-                    key: Expression::string("__type"),
-                    value: Expression::string(name) },
-            ]));
-            synthetic_members.push(ClassMember::Field {
-                name: member.name.clone(),
+                name: nv.to_string(),
                 type_hint: None,
-                init: Some(obj_expr.clone()),
+                init: Some(Expression::string(&member.name)),
                 modifiers: static_modifiers.clone(),
                 with_events: false,
                 array_bounds: None });
-            values_array.push(ArrayElement {
-                key: None,
-                value: obj_expr,
-                spread: false,
-                by_ref: false });
         }
 
-        synthetic_members.push(ClassMember::Field {
-            name: "values".into(),
-            type_hint: None,
-            init: Some(Expression::new(ExprKind::Array(values_array))),
-            modifiers: static_modifiers,
-            with_events: false,
-            array_bounds: None });
+        self.compile_enum_decl_as_class(name, parent, interfaces, synthetic_members, span)?;
 
-        self.compile_enum_decl_as_class(name, Some("Enum"), interfaces, synthetic_members, span)
+        // RUN the static initializer that builds the constants. The JVM
+        // frontends inject this call themselves (`lang_enum::inject_static_init_
+        // calls`); no other language has an injector, and without the call every
+        // constant reads `undefined`. Emitted here, right after the class is
+        // defined, which is exactly when a constant naming its own class
+        // resolves.
+        let init_call = Expression::new(ExprKind::Call {
+            callee: Box::new(Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(name)),
+                field: enum_lowering::STATIC_INIT.to_string(),
+                null_safe: false })),
+            args: vec![],
+            optional: false });
+        self.compile_expr(&init_call)?;
+        self.emit(Op::DROP);
+        Ok(())
     }
 
     /// Member names a class pattern's POSITIONAL sub-patterns test, resolved at
@@ -4854,7 +4830,7 @@ impl Compiler {
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
                         self.emit_u16(Op::LOCAL_GET, value_tmp);
-                        self.emit_u8(Op::CALL_REF, 2);
+                        self.emit_u8_u8(Op::CALL_REF, 2, 1);
                         self.emit(Op::DROP);
 
                         self.chunk().emit_else(line);
@@ -4954,7 +4930,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, setter_tmp);
                     self.emit_u16(Op::LOCAL_GET, receiver_tmp);
                     self.emit_u16(Op::LOCAL_GET, value_tmp);
-                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit_u8_u8(Op::CALL_REF, 2, 1);
                     self.emit(Op::DROP);
                     self.chunk().emit_end(line);
                     return Ok(());
@@ -5163,7 +5139,7 @@ impl Compiler {
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit_u8_u8(Op::CALL_REF, 2, 1);
                     self.emit(Op::DROP);
 
                     self.chunk().emit_else(line);
@@ -5196,42 +5172,13 @@ impl Compiler {
                     self.chunk().emit_end(line);
                     return Ok(());
                 }
-                if self.profile.namespaces.use_dotnet {
-                    self.compile_expr(object)?;
-                    if !Self::is_pointer_runtime_field(field) {
-                        self.emit_autoderef_pointer_cell();
-                    }
-                    let obj_tmp = self.define_local("__member_set_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_tmp);
-
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    let setter_key = self.str_const(&format!("__set_{}", field_name));
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, setter_key);
-                    let setter_tmp = self.define_local("__member_setter");
-                    self.emit_u16(Op::LOCAL_SET, setter_tmp);
-
-                    self.emit_u16(Op::LOCAL_GET, setter_tmp);
-                    self.emit(Op::REF_IS_NULL);
-                    let line = self.line;
-                    self.chunk().emit_if(line);
-
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_u16(Op::LOCAL_GET, tmp);
-                    let idx = self.str_const(&field_name);
-                    self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
-
-                    self.chunk().emit_else(line);
-
-                    self.emit_u16(Op::LOCAL_GET, setter_tmp);
-                    self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.emit_u8(Op::CALL_REF, 2);
-                    self.emit(Op::DROP);
-
-                    self.chunk().emit_end(line);
-                    return Ok(());
-                }
-
+                // No compile-time `__set_<field>` probe here. The name-keyed
+                // `STRUCT_SET` the fall-through emits IS the accessor protocol:
+                // the VM looks the setter up (exact key AND lowercased, which
+                // the emitted probe never did) and invokes it with `[obj, val]`,
+                // otherwise writes the property. An emitted probe was a second
+                // copy of that dispatch, reachable only by whichever languages
+                // had set a flag.
                 self.compile_expr(object)?;
                 if !Self::is_pointer_runtime_field(field) {
                     self.emit_autoderef_pointer_cell();
@@ -5345,7 +5292,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
-                    self.chunk().emit_op_u8(Op::CALL_REF, 3, line);
+                    self.chunk().emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
                     self.emit(Op::DROP);
                     return Ok(());
                 }
@@ -5802,36 +5749,17 @@ impl Compiler {
                     self.emit_common("dotnet.observable_collection_set_index", 3, line);
                     self.emit(Op::DROP);
                     return Ok(());
+                // The write direction of the same declared indexer the READ side
+                // in `expressions.rs` resolves. One tree entry answers both, so
+                // the storage shape is agreed by construction.
+                } else if let Some((_, set_emit)) = self.declared_indexer_emits(object) {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, index)?;
+                    self.emit_u16(Op::LOCAL_GET, tmp);
+                    self.emit_common(&set_emit, 3, line);
+                    self.emit(Op::DROP);
+                    return Ok(());
                 } else if self.profile.namespaces.use_dotnet {
-                    // `StringBuilder` is the one type name here that is NOT
-                    // exclusive to the dotnet tree — jvm registers it too. And
-                    // `dotnet.sb_index_set` is a PLATFORM-owned emit: the
-                    // `dotnet` prefix only dispatches when
-                    // `vybe_platform_dotnet` is linked, which kotlin/python are
-                    // not. Ungating this would emit an unroutable name in a
-                    // Kotlin `sb[i] = c`. Gate stays until the pair moves to a
-                    // shared `common:` primitive; the READ side in
-                    // `expressions.rs` is gated identically so the two agree
-                    // about the storage shape.
-                    if self
-                        .infer_expr_type_hint(object)
-                        .as_deref()
-                        .map(Self::normalize_type_hint)
-                        .is_some_and(|type_hint| {
-                            type_hint
-                                .rsplit('.')
-                                .next()
-                                .is_some_and(|name| name.eq_ignore_ascii_case("StringBuilder"))
-                        })
-                    {
-                        self.compile_expr(object)?;
-                        self.compile_collection_key(object, index)?;
-                        self.emit_u16(Op::LOCAL_GET, tmp);
-                        self.emit_common("dotnet.sb_index_set", 3, line);
-                        self.emit(Op::DROP);
-                        return Ok(());
-                    }
-
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     let obj_tmp = self.define_local("__index_set_obj");
@@ -5860,7 +5788,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     self.compile_collection_key(object, index)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    self.emit_u8(Op::CALL_REF, 3);
+                    self.emit_u8_u8(Op::CALL_REF, 3, 1);
                     self.emit(Op::DROP);
 
                     self.chunk().emit_end(line);

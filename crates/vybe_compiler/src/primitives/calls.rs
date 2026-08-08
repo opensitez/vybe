@@ -668,7 +668,7 @@ impl Compiler {
         } else {
             self.emit_var_get(name);
         }
-        self.emit_u8(Op::CALL_REF, 0);
+        self.emit_u8_u8(Op::CALL_REF, 0, 1);
 
         let obj_slot = self.define_local("__fortran_type_ctor_obj");
         self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -1317,11 +1317,12 @@ impl Compiler {
         if self.profile.pads_trailing_optional_arg && receiver_slot.is_none() && arg_slots.len() == 1
         {
             inst!(self, core_wasm::undefined);
-            self.emit_u8(Op::CALL_REF, 2);
+            self.emit_u8_u8(Op::CALL_REF, 2, 1);
         } else {
-            self.emit_u8(
+            self.emit_u8_u8(
                 Op::CALL_REF,
                 (arg_slots.len() + usize::from(receiver_slot.is_some())) as u8,
+                1,
             );
         }
         self.restore_js_this_after_call(saved_js_this, "__js_arg_call_result");
@@ -1363,7 +1364,7 @@ impl Compiler {
         }
         self.stamp_multi_value_row_slot(rest_slot);
         self.emit_u16(Op::LOCAL_GET, rest_slot);
-        self.emit_u8(Op::CALL_REF, argc as u8);
+        self.emit_u8_u8(Op::CALL_REF, argc as u8, 1);
         self.restore_js_this_after_call(saved_js_this, "__js_rest_arg_call_result");
     }
 
@@ -1421,6 +1422,82 @@ impl Compiler {
                 self.compile_expr_with_value_copy(&arg.value)?
             }
         }
+        Ok(())
+    }
+
+    /// A namespaced function reached through a member chain — `Ns\f(...)`,
+    /// `Program.Bump(...)`.
+    ///
+    /// Consults the callee's DECLARED parameter modes, which the three sites
+    /// sharing this shape did not: they compiled every argument with a plain
+    /// `compile_expr` and never unpacked a result. So a by-reference
+    /// parameter reached this way took a copy, and the same function called
+    /// by its bare name aliased correctly — a vb `Sub` in a `Module`
+    /// container is exactly that pair.
+    fn emit_namespaced_function_call(
+        &mut self,
+        source_function: &str,
+        args: &[Argument],
+    ) -> Result<(), String> {
+        // `source_function` is already canonical — the key modes are
+        // registered under.
+        let param_modes = self
+            .function_param_modes
+            .get(source_function)
+            .cloned()
+            .map(|modes| {
+                // A chunk may carry its receiver as parameter 0; the declared
+                // modes then lead with it and every user argument sits one
+                // position later.
+                let offset = usize::from(modes.len() == args.len() + 1);
+                modes[offset.min(modes.len())..].to_vec()
+            });
+        let needs_packed_result = param_modes.as_ref().is_some_and(|modes| {
+            modes
+                .iter()
+                .any(|mode| self.mode_needs_call_writeback(*mode))
+        });
+
+        self.emit_global_read(source_function);
+        for (index, arg) in args.iter().enumerate() {
+            match param_modes
+                .as_ref()
+                .and_then(|modes| modes.get(index).copied())
+            {
+                Some(mode) if self.mode_needs_ref_aware_call_handling(mode) => {
+                    self.compile_ref_aware_call_arg(arg, mode)?
+                }
+                _ => self.compile_expr(&arg.value)?,
+            }
+        }
+        self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
+
+        // An `Alias` argument was handed a reference and the callee returned a
+        // plain value — there is no pack to read, and reading one would store
+        // `undefined` over the caller's storage.
+        if !needs_packed_result {
+            return Ok(());
+        }
+        let pack_slot = self.define_local("__namespaced_fn_ref_call_pack");
+        self.emit_u16(Op::LOCAL_SET, pack_slot);
+        let mut ref_out_index = 1usize;
+        for (index, arg) in args.iter().enumerate() {
+            if !param_modes
+                .as_ref()
+                .and_then(|modes| modes.get(index).copied())
+                .is_some_and(|mode| self.mode_needs_call_writeback(mode))
+            {
+                continue;
+            }
+            self.emit_u16(Op::LOCAL_GET, pack_slot);
+            self.emit_const(Value::F64(ref_out_index as f64));
+            common::collections::emit_get(&mut self.chunks, self.current, self.line);
+            self.compile_assign_target(&arg.value)?;
+            ref_out_index += 1;
+        }
+        self.emit_u16(Op::LOCAL_GET, pack_slot);
+        self.emit_const(Value::F64(0.0));
+        common::collections::emit_get(&mut self.chunks, self.current, self.line);
         Ok(())
     }
 
@@ -1506,7 +1583,7 @@ impl Compiler {
             }
         }
 
-        self.emit_u8(Op::CALL_REF, argc as u8);
+        self.emit_u8_u8(Op::CALL_REF, argc as u8, 1);
     }
 
     fn emit_dispatch_and_store_from_arg_slots(
@@ -2268,7 +2345,7 @@ impl Compiler {
 
         if fixed_count == 0 && args.len() == 1 && args[0].spread {
             self.compile_expr(&args[0].value)?;
-            self.emit_u8(Op::CALL_REF, argc as u8);
+            self.emit_u8_u8(Op::CALL_REF, argc as u8, 1);
             return Ok(());
         }
 
@@ -2307,7 +2384,7 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, rest_slot);
         }
 
-        self.emit_u8(Op::CALL_REF, argc as u8);
+        self.emit_u8_u8(Op::CALL_REF, argc as u8, 1);
         Ok(())
     }
 
@@ -2918,7 +2995,7 @@ impl Compiler {
                     for a in &args[1..] {
                         self.compile_expr(&a.value)?;
                     }
-                    self.emit_u8(Op::RETURN_CALL, (args.len() - 1) as u8);
+                    self.emit_u8_u8(Op::RETURN_CALL, (args.len() - 1) as u8, 1);
                     return Ok(());
                 }
                 if self.scope().resolve(name).is_some() {
@@ -2926,7 +3003,7 @@ impl Compiler {
                     for a in args {
                         self.compile_expr(&a.value)?;
                     }
-                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                     return Ok(());
                 }
             }
@@ -2966,7 +3043,16 @@ impl Compiler {
         // (namespace qualifiers are ignored, matching how the class name used
         // to resolve as a global). Guarded so a user function/class/local of
         // the same name, or a method call on an instance, is left alone.
-        if self.profile.namespaces.use_dotnet {
+        //
+        // No language gate: the deciding question is whether THIS profile's
+        // namespace tree registers a control type by that name, which
+        // `type_scopes` already scopes. `canonical_control_name` alone cannot
+        // decide it — it is a shared table holding generic words (`image`,
+        // `panel`, `label`, `container`, `slider`), so an undefined `label(...)`
+        // call in a language with no GUI surface would otherwise become a
+        // control. Registration is the signal; the shared table only maps a
+        // framework's spelling onto the canonical role.
+        {
             let parts = self.flatten_member_chain(callee);
             if let Some(last) = parts.last() {
                 let canonical = common::gui::canonical_control_name(last);
@@ -2976,6 +3062,10 @@ impl Compiler {
                     .map_or(false, |f| self.scope().resolve(f).is_some());
                 if !canonical.is_empty()
                     && !first_is_local
+                    && vybe_runtime::namespaces::is_registered_type(
+                        &self.profile.namespaces.type_scopes,
+                        last,
+                    )
                     && !self.defined_functions.contains(&canon_last)
                     && !self.defined_classes.contains(&canon_last)
                 {
@@ -3088,11 +3178,12 @@ impl Compiler {
             field,
             null_safe } = &callee.kind
         {
-            if self.profile.namespaces.use_dotnet
-                && !*null_safe
-                && field.eq_ignore_ascii_case("ToString")
-                && args.is_empty()
-            {
+            // No language gate: the decision below is entirely the TREE's —
+            // "does the receiver's declared type own a 0-arg `ToString`?" — and
+            // `namespace_tree_instance_method_owner` is scoped by `type_scopes`,
+            // so a language whose tree declares no such member takes the same
+            // generic branch it took before.
+            if !*null_safe && field.eq_ignore_ascii_case("ToString") && args.is_empty() {
                 if let Some(type_hint) = self.infer_expr_type_hint(object) {
                     let resolved = self.resolve_source_type_alias(&type_hint);
                     if self
@@ -3351,7 +3442,7 @@ impl Compiler {
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                     // Store result as this
                     let self_kw = self.profile.self_keyword.clone();
                     if let Some(slot) = self
@@ -3422,7 +3513,7 @@ impl Compiler {
                         }
                         self.emit_const(Value::String(Arc::from(cur_canon.as_str())));
                         self.emit_const(Value::String(Arc::from(canon_field.as_str())));
-                        self.emit_u8(Op::CALL_REF, 3);
+                        self.emit_u8_u8(Op::CALL_REF, 3, 1);
                     } else {
                         // ECMA `super` resolves from the method's
                         // [[HomeObject]].[[Prototype]] at call time. For
@@ -3462,7 +3553,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                        self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
                     }
                     return Ok(());
                 }
@@ -3561,9 +3652,19 @@ impl Compiler {
             // `type_scopes`, and lets jvm/flutter/plib receivers resolve
             // instance methods against THEIR OWN registered surface.
             let class_name = resolve_receiver_type_hint(self, object);
-            if self.profile.namespaces.use_dotnet
-                && field.eq_ignore_ascii_case("Reverse")
+            // `Reverse(index, count)` on a receiver whose type did not resolve.
+            // The gate is the profile's own `runtime_collection_scope`:
+            // `scope_declares_member_arity` is false on an empty scope, so only
+            // a language that declares a collection surface carrying a 2-arg
+            // `Reverse` reaches here. A TYPED receiver never gets this far —
+            // `lookup_type_instance_target` below resolves it from the tree.
+            if field.eq_ignore_ascii_case("Reverse")
                 && arg_exprs.len() == 2
+                && vybe_runtime::namespaces::scope_declares_member_arity(
+                    &scope_segments(&self.profile.namespaces.runtime_collection_scope),
+                    field,
+                    2,
+                )
                 && !self.direct_receiver_has_own_pending_method(object, field)
             {
                 self.compile_expr(object)?;
@@ -3589,7 +3690,20 @@ impl Compiler {
                         field,
                         arg_exprs.len() as u8,
                     ) {
-                        if self.profile.namespaces.use_dotnet && field.eq_ignore_ascii_case("Add") {
+                        // `owner[key].Add(v)` — the element is read, appended to,
+                        // and written back. The profile's own collection scope
+                        // is the gate, matching every other collection site
+                        // here; the surrounding `lookup_type_instance_target`
+                        // has already agreed the receiver type declares `Add`.
+                        if field.eq_ignore_ascii_case("Add")
+                            && vybe_runtime::namespaces::scope_declares_member_arity(
+                                &scope_segments(
+                                    &self.profile.namespaces.runtime_collection_scope,
+                                ),
+                                field,
+                                arg_exprs.len() as u8,
+                            )
+                        {
                             if let ExprKind::Index {
                                 object: indexed_owner,
                                 index,
@@ -3815,11 +3929,7 @@ impl Compiler {
                 if let Some(source_function) =
                     self.resolve_namespaced_function_identity(&source_member_parts.join("."))
                 {
-                    self.emit_global_read(&source_function);
-                    for a in &arg_exprs {
-                        self.compile_expr(a)?;
-                    }
-                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    self.emit_namespaced_function_call(&source_function, args)?;
                     return Ok(());
                 }
             }
@@ -3877,6 +3987,36 @@ impl Compiler {
                             .filter(|signature| signature.has_rest)
                             .cloned()
                     });
+                // Declared parameter modes for the callee. `Alias` must be
+                // passed AS a reference and never written back; `Ref`/`Out`
+                // are copy-in/copy-out and must be. Without this lookup the
+                // route decided both questions from the call-site `&`
+                // spelling alone, so a callee-declares language (php `&$x`,
+                // vb `ByRef`) aliased nothing, and a call-site-spells
+                // language (c# `ref`) read a write-back pack off a plain
+                // return value and clobbered the caller with `undefined`.
+                //
+                // Keyed the way `classes.rs` registers a method: qualified
+                // first, then the bare name. Deliberately not consulted for a
+                // rest call — `emit_known_rest_call_from_local` packs the
+                // trailing arguments, so position no longer names a
+                // parameter and the modes would misalign.
+                let static_param_modes = if rest_signature.is_some() {
+                    None
+                } else {
+                    let qualified = self.canon(&format!("{}.{}", class_canon, field));
+                    self.function_param_modes
+                        .get(&qualified)
+                        .cloned()
+                        .or_else(|| self.function_param_modes.get(&self.canon(field)).cloned())
+                        .map(|modes| {
+                            // A method chunk may carry its receiver as
+                            // parameter 0; the declared modes then lead with
+                            // it and every user argument sits one later.
+                            let offset = usize::from(modes.len() == args.len() + 1);
+                            modes[offset.min(modes.len())..].to_vec()
+                        })
+                };
                 if let Some(signature) = rest_signature.as_ref() {
                     self.emit_known_rest_call_from_local(
                         fn_tmp,
@@ -3886,8 +4026,16 @@ impl Compiler {
                     )?;
                 } else {
                     let mut arg_slots = Vec::with_capacity(arg_exprs.len());
-                    for (index, arg) in arg_exprs.iter().enumerate() {
-                        self.compile_expr(arg)?;
+                    for (index, arg) in args.iter().enumerate() {
+                        match static_param_modes
+                            .as_ref()
+                            .and_then(|modes| modes.get(index).copied())
+                        {
+                            Some(mode) if self.mode_needs_ref_aware_call_handling(mode) => {
+                                self.compile_ref_aware_call_arg(arg, mode)?
+                            }
+                            _ => self.compile_expr(&arg.value)?,
+                        }
                         let arg_slot =
                             self.define_local(&format!("__static_container_arg_{}", index));
                         self.emit_u16(Op::LOCAL_SET, arg_slot);
@@ -3912,12 +4060,29 @@ impl Compiler {
                         self.emit_call_ref_with_arg_slots(fn_tmp, receiver, &arg_slots);
                     }
                 }
-                if args.iter().any(|arg| arg.by_ref) {
+                // Which arguments the callee actually wrote back. With
+                // declared modes only `Ref`/`Out` are packed: an `Alias` was
+                // handed a reference, the callee returned a plain value, and
+                // reading a pack slot off it stores `undefined` over the
+                // caller's storage. Without modes the compiler has no
+                // signature for this callee, so the call-site spelling stays
+                // the only evidence there is.
+                let writeback: Vec<bool> = match static_param_modes.as_ref() {
+                    Some(modes) => (0..args.len())
+                        .map(|index| {
+                            modes
+                                .get(index)
+                                .copied()
+                                .is_some_and(|mode| self.mode_needs_call_writeback(mode))
+                        })
+                        .collect(),
+                    None => args.iter().map(|arg| arg.by_ref).collect() };
+                if writeback.iter().any(|packed| *packed) {
                     let pack_slot = self.define_local("__static_container_by_ref_pack");
                     self.emit_u16(Op::LOCAL_SET, pack_slot);
                     let mut ref_out_index = 1usize;
-                    for arg in args {
-                        if !arg.by_ref {
+                    for (index, arg) in args.iter().enumerate() {
+                        if !writeback[index] {
                             continue;
                         }
                         self.emit_u16(Op::LOCAL_GET, pack_slot);
@@ -4304,7 +4469,7 @@ impl Compiler {
                             for slot in &arg_slots {
                                 self.emit_u16(Op::LOCAL_GET, *slot);
                             }
-                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                            self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
 
                             if !needs_packed_result {
                                 return Ok(());
@@ -4433,11 +4598,7 @@ impl Compiler {
                 if let Some(source_function) =
                     self.resolve_namespaced_function_identity(&parts.join("."))
                 {
-                    self.emit_global_read(&source_function);
-                    for a in &arg_exprs {
-                        self.compile_expr(a)?;
-                    }
-                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    self.emit_namespaced_function_call(&source_function, args)?;
                     return Ok(());
                 }
 
@@ -4471,7 +4632,7 @@ impl Compiler {
                                 for a in &arg_exprs {
                                     self.compile_expr(a)?;
                                 }
-                                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                                 return Ok(());
                             }
                             Some(super::resolver::Resolution::Tree(
@@ -4517,8 +4678,20 @@ impl Compiler {
                                     },
                                 ),
                             ) => {
-                                if self.profile.namespaces.use_dotnet
-                                    && module.eq_ignore_ascii_case("ecma:number")
+                                // `Convert.ToInt32(c)` where `c` is a CHAR is the
+                                // same operation as the `(int)c` cast: read the
+                                // code point, don't parse the text. .NET picks
+                                // that overload by STATIC type, which is why the
+                                // test is compile-time only — at runtime both a
+                                // char and `"5"` are one-character strings, and
+                                // a runtime rule would break `ToInt32("5")`.
+                                //
+                                // Routed through the `char`/`int` COERCION SLOT
+                                // so there is ONE declaration of what widening a
+                                // char means, shared with the cast arm in
+                                // `expressions.rs`. A language that binds no
+                                // slot keeps plain `parseInt`.
+                                if module.eq_ignore_ascii_case("ecma:number")
                                     && func.eq_ignore_ascii_case("parseInt")
                                     && arg_exprs.len() == 1
                                 {
@@ -4530,11 +4703,24 @@ impl Compiler {
                                             })
                                         }
                                         _ => false };
-                                    if is_char_like {
-                                        self.compile_expr(arg_exprs[0])?;
-                                        inst!(self, core_wasm::i32_const, 0);
-                                        fn_call!(self, "wasm:js-string", "charCodeAt", 2);
-                                        return Ok(());
+                                    let bound = self
+                                        .profile
+                                        .builtin_slots
+                                        .get(
+                                            vybe_ast::builtin_slots::BuiltinType::Char,
+                                            vybe_ast::ProtocolSlot::Int,
+                                        )
+                                        .map(str::to_string);
+                                    if let (true, Some(target)) = (is_char_like, bound.as_deref()) {
+                                        if let Some(vybe_runtime::profile::BuiltinEmit::Common(
+                                            emit,
+                                        )) = vybe_runtime::profile::parse_emit_target(target)
+                                        {
+                                            self.compile_expr(arg_exprs[0])?;
+                                            let line = self.line;
+                                            self.emit_common(&emit, 1, line);
+                                            return Ok(());
+                                        }
                                     }
                                 }
                                 for a in &arg_exprs {
@@ -4614,9 +4800,10 @@ impl Compiler {
                                                         // Fallback: STRUCT_GET the method and call_ref
                                                         let idx = self.str_const(method_name);
                                                         self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
-                                                        self.emit_u8(
+                                                        self.emit_u8_u8(
                                                             Op::CALL_REF,
                                                             arg_exprs.len() as u8,
+                                                            1,
                                                         );
                                                     }
                                                 }
@@ -4627,7 +4814,7 @@ impl Compiler {
                                                 for a in &arg_exprs {
                                                     self.compile_expr(a)?;
                                                 }
-                                                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                                                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                                             }
                                         }
                                         return Ok(());
@@ -4654,7 +4841,7 @@ impl Compiler {
                                     for a in &arg_exprs {
                                         self.compile_expr(a)?;
                                     }
-                                    self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                                    self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
                                     return Ok(());
                                 }
 
@@ -4678,7 +4865,7 @@ impl Compiler {
                                     for a in &arg_exprs {
                                         self.compile_expr(a)?;
                                     }
-                                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                                    self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                                 }
                                 return Ok(());
                             }
@@ -4853,7 +5040,7 @@ impl Compiler {
                                                 _ => {
                                                     let midx = self.str_const(method_name);
                                                     self.emit_struct_field_op(Op::STRUCT_GET, 0, midx);
-                                                    self.emit_u8(Op::CALL_REF, argc);
+                                                    self.emit_u8_u8(Op::CALL_REF, argc, 1);
                                                 }
                                             }
                                         } else {
@@ -4862,7 +5049,7 @@ impl Compiler {
                                             for a in &arg_exprs {
                                                 self.compile_expr(a)?;
                                             }
-                                            self.emit_u8(Op::CALL_REF, argc);
+                                            self.emit_u8_u8(Op::CALL_REF, argc, 1);
                                         }
                                         handled = true;
                                         break;
@@ -4919,7 +5106,7 @@ impl Compiler {
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                     return Ok(());
                 }
             }
@@ -4934,11 +5121,7 @@ impl Compiler {
                 if let Some(source_function) =
                     self.resolve_namespaced_function_identity(&source_member_parts.join("."))
                 {
-                    self.emit_global_read(&source_function);
-                    for a in &arg_exprs {
-                        self.compile_expr(a)?;
-                    }
-                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    self.emit_namespaced_function_call(&source_function, args)?;
                     return Ok(());
                 }
             }
@@ -5071,7 +5254,7 @@ impl Compiler {
                                 for slot in &arg_slots {
                                     self.emit_u16(Op::LOCAL_GET, *slot);
                                 }
-                                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                                 let pack_slot = self.define_local("__js_static_ref_call_pack");
                                 self.emit_u16(Op::LOCAL_SET, pack_slot);
                                 self.restore_js_this(saved_js_this);
@@ -5121,7 +5304,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                        self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                         let result_slot = self.define_local("__js_static_method_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.restore_js_this(saved_js_this);
@@ -5202,7 +5385,7 @@ impl Compiler {
                             for slot in &arg_slots {
                                 self.emit_u16(Op::LOCAL_GET, *slot);
                             }
-                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                            self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
 
                             if !needs_packed_result {
                                 return Ok(());
@@ -5349,7 +5532,7 @@ impl Compiler {
                             for a in &arg_exprs {
                                 self.compile_expr(a)?;
                             }
-                            self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                            self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                             return Ok(());
                         }
                     }
@@ -5421,9 +5604,19 @@ impl Compiler {
         // fallback for dynamically-typed receivers.
         if let ExprKind::Member { object, field, .. } = &callee.kind {
             let class_name = resolve_receiver_type_hint(self, object);
-            if self.profile.namespaces.use_dotnet
-                && field.eq_ignore_ascii_case("Reverse")
+            // `Reverse(index, count)` on a receiver whose type did not resolve.
+            // The gate is the profile's own `runtime_collection_scope`:
+            // `scope_declares_member_arity` is false on an empty scope, so only
+            // a language that declares a collection surface carrying a 2-arg
+            // `Reverse` reaches here. A TYPED receiver never gets this far —
+            // `lookup_type_instance_target` below resolves it from the tree.
+            if field.eq_ignore_ascii_case("Reverse")
                 && arg_exprs.len() == 2
+                && vybe_runtime::namespaces::scope_declares_member_arity(
+                    &scope_segments(&self.profile.namespaces.runtime_collection_scope),
+                    field,
+                    2,
+                )
                 && !self.direct_receiver_has_own_pending_method(object, field)
             {
                 self.compile_expr(object)?;
@@ -6259,7 +6452,7 @@ impl Compiler {
                                 common::collections::emit_get(&mut self.chunks, self.current, l);
                             }
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
-                            self.emit_u8(Op::CALL_REF, 3);
+                            self.emit_u8_u8(Op::CALL_REF, 3, 1);
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             // i++
                             self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -6366,7 +6559,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -6402,7 +6595,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
-                        self.emit_u8(Op::CALL_REF, 2);
+                        self.emit_u8_u8(Op::CALL_REF, 2, 1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -6622,7 +6815,7 @@ impl Compiler {
                             common::collections::emit_get(&mut self.chunks, self.current, l);
                         }
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
-                        self.emit_u8(Op::CALL_REF, 3);
+                        self.emit_u8_u8(Op::CALL_REF, 3, 1);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         // i--
                         self.emit_u16(Op::LOCAL_GET, idx_slot);
@@ -6670,7 +6863,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -6726,7 +6919,7 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_SET, elem_slot2);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, elem_slot2);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -6788,7 +6981,7 @@ impl Compiler {
                         // if fn(elem) → remove
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
                         self.emit_u16(Op::LOCAL_GET, ra_elem);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
                         {
                             let line = self.line;
                             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
@@ -6828,7 +7021,7 @@ impl Compiler {
                         // Fallback: call as regular method
                         self.emit_u16(Op::LOCAL_GET, arr_slot);
                         self.emit_u16(Op::LOCAL_GET, fn_slot);
-                        self.emit_u8(Op::CALL_REF, 2);
+                        self.emit_u8_u8(Op::CALL_REF, 2, 1);
                     }
                 }
                 return Ok(());
@@ -6852,7 +7045,7 @@ impl Compiler {
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                    self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                     return Ok(());
                 }
             }
@@ -6870,7 +7063,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                        self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
                         return Ok(());
                     }
 
@@ -6891,7 +7084,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                        self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                         return Ok(());
                     }
                 }
@@ -6992,7 +7185,7 @@ impl Compiler {
                 for arg in &arg_exprs {
                     self.compile_expr(arg)?;
                 }
-                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                 let result_slot = self.define_local("__js_private_call_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
                 self.restore_js_this(saved_js_this);
@@ -7402,7 +7595,7 @@ impl Compiler {
                         for slot in &arg_slots {
                             self.emit_u16(Op::LOCAL_GET, *slot);
                         }
-                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                        self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
                         self.chunk().emit_end(line);
                         self.chunk().emit_end(line);
                         // close the two member-present guards
@@ -7457,7 +7650,7 @@ impl Compiler {
                         for a in &arg_exprs {
                             self.compile_expr(a)?;
                         }
-                        self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                        self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
                     }
                     self.emit_u16(Op::LOCAL_SET, js_result_slot);
                     self.emit_const(Value::I32(1));
@@ -7701,7 +7894,7 @@ impl Compiler {
                         for arg in &arg_exprs {
                             self.compile_expr(arg)?;
                         }
-                        self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                        self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                         let result_slot = self.define_local("__js_private_static_call_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.restore_js_this(saved_js_this);
@@ -7788,25 +7981,9 @@ impl Compiler {
                 let receiver_is_delegate = receiver_type_hint
                     .as_deref()
                     .is_some_and(|type_hint| Self::is_callable_type_hint(type_hint))
-                    || (self.profile.namespaces.use_dotnet
-                        && receiver_type_hint.as_deref().is_some_and(|type_hint| {
-                            let normalized = Self::normalize_type_hint(type_hint);
-                            !self.defined_classes.contains(&self.canon(&normalized))
-                                && !matches!(
-                                    normalized.to_ascii_lowercase().as_str(),
-                                    "object"
-                                        | "system.object"
-                                        | "string"
-                                        | "system.string"
-                                        | "integer"
-                                        | "int"
-                                        | "int32"
-                                        | "system.int32"
-                                        | "boolean"
-                                        | "bool"
-                                        | "system.boolean"
-                                )
-                        }))
+                    || receiver_type_hint
+                        .as_deref()
+                        .is_some_and(|type_hint| self.type_hint_is_delegate_like(type_hint))
                     || matches!(
                         object.kind,
                         ExprKind::Lambda { .. } | ExprKind::AddressOf(_)
@@ -8027,9 +8204,21 @@ impl Compiler {
                     self.finish_buffered_generator_method_dispatch(result_slot);
                     return Ok(());
                 }
-                let primitive_tostring_if = if self.profile.namespaces.use_dotnet
-                    && arg_exprs.is_empty()
+                // A RUNTIME probe: if the receiver turns out to be a primitive,
+                // `x.ToString()` is the built-in string conversion rather than a
+                // member lookup. WHICH conversion is the `to_string` slot, so the
+                // gate is "does this profile declare one for a built-in" —
+                // `builtinslotplan.md` §2c's runtime path — not who the language is.
+                let primitive_tostring_if = if arg_exprs.is_empty()
                     && field.eq_ignore_ascii_case("ToString")
+                    && self
+                        .profile
+                        .builtin_slots
+                        .get(
+                            vybe_ast::builtin_slots::BuiltinType::String,
+                            vybe_ast::ProtocolSlot::ToString,
+                        )
+                        .is_some()
                 {
                     let type_tmp = self.define_local("__dotnet_tostring_type");
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -8059,7 +8248,14 @@ impl Compiler {
                     self.chunk().emit_if_value(line);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     let line = self.line;
-                    common::strings::emit_to_string(self.chunk(), line);
+                    // The gate above asks whether a `to_string` is declared;
+                    // this emits the one that WINS for this receiver. It used
+                    // to call the ECMA coercion unconditionally, so the slot
+                    // decided only whether the probe ran and never what it did
+                    // — `5.0.toString()` answered "5" in a language whose
+                    // doubles render "5.0".
+                    let target = self.primitive_to_string_target(object);
+                    self.emit_to_string_slot(target.as_deref(), line);
                     self.chunk().emit_else(line);
                     Some(line)
                 } else {
@@ -8081,7 +8277,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                    self.emit_u8(Op::CALL_REF, 1);
+                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                     self.chunk().emit_end(line);
@@ -8535,9 +8731,21 @@ impl Compiler {
                 }
                 return Ok(());
             }
-            let primitive_tostring_if = if self.profile.namespaces.use_dotnet
-                && arg_exprs.is_empty()
+            // A RUNTIME probe: if the receiver turns out to be a primitive,
+            // `x.ToString()` is the built-in string conversion rather than a
+            // member lookup. WHICH conversion is the `to_string` slot, so the
+            // gate is "does this profile declare one for a built-in" —
+            // `builtinslotplan.md` §2c's runtime path — not who the language is.
+            let primitive_tostring_if = if arg_exprs.is_empty()
                 && field.eq_ignore_ascii_case("ToString")
+                && self
+                    .profile
+                    .builtin_slots
+                    .get(
+                        vybe_ast::builtin_slots::BuiltinType::String,
+                        vybe_ast::ProtocolSlot::ToString,
+                    )
+                    .is_some()
             {
                 let type_tmp = self.define_local("__dotnet_tostring_type");
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
@@ -8567,7 +8775,11 @@ impl Compiler {
                 self.chunk().emit_if_value(line);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 let line = self.line;
-                common::strings::emit_to_string(self.chunk(), line);
+                // Same correction as the buffered-generator copy of this probe
+                // above: the gate says a `to_string` exists, this emits the one
+                // that wins for THIS receiver rather than the ECMA coercion.
+                let target = self.primitive_to_string_target(object);
+                self.emit_to_string_slot(target.as_deref(), line);
                 self.chunk().emit_else(line);
                 Some(line)
             } else {
@@ -8589,7 +8801,7 @@ impl Compiler {
 
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
-                self.emit_u8(Op::CALL_REF, 1);
+                self.emit_u8_u8(Op::CALL_REF, 1, 1);
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 self.chunk().emit_end(line);
@@ -9137,7 +9349,7 @@ impl Compiler {
                                 for slot in &arg_slots {
                                     self.emit_u16(Op::LOCAL_GET, *slot);
                                 }
-                                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
 
                                 if !needs_packed_result {
                                     return Ok(());
@@ -9255,24 +9467,7 @@ impl Compiler {
             if !is_known_func {
                 let is_delegate_typed = self.lookup_var_type_hint(name).is_some_and(|type_hint| {
                     Self::is_callable_type_hint(type_hint)
-                        || (self.profile.namespaces.use_dotnet && {
-                            let normalized = Self::normalize_type_hint(type_hint);
-                            !self.defined_classes.contains(&self.canon(&normalized))
-                                && !matches!(
-                                    normalized.to_ascii_lowercase().as_str(),
-                                    "object"
-                                        | "system.object"
-                                        | "string"
-                                        | "system.string"
-                                        | "integer"
-                                        | "int"
-                                        | "int32"
-                                        | "system.int32"
-                                        | "boolean"
-                                        | "bool"
-                                        | "system.boolean"
-                                )
-                        })
+                        || self.type_hint_is_delegate_like(type_hint)
                 });
                 if is_delegate_typed {
                     self.emit_var_get(name);
@@ -9583,7 +9778,7 @@ impl Compiler {
                                 self.line,
                             );
                         }
-                        self.emit_u8(Op::CALL_REF, signature.param_names.len() as u8);
+                        self.emit_u8_u8(Op::CALL_REF, signature.param_names.len() as u8, 1);
                         self.chunk().emit_end(line);
                         return Ok(());
                     }
@@ -9698,7 +9893,7 @@ impl Compiler {
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
                 }
-                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
 
                 self.chunk().emit_else(line);
                 self.emit_u16(Op::LOCAL_GET, callee_slot);
@@ -9731,7 +9926,7 @@ impl Compiler {
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
                 }
-                self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
                 self.chunk().emit_end(line);
 
                 self.chunk().emit_else(line);
@@ -9740,7 +9935,7 @@ impl Compiler {
                 for a in &arg_exprs {
                     self.compile_expr(a)?;
                 }
-                self.emit_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8);
+                self.emit_u8_u8(Op::CALL_REF, (arg_exprs.len() + 1) as u8, 1);
                 self.chunk().emit_end(line);
                 self.chunk().emit_end(line);
                 return Ok(());
@@ -10065,7 +10260,7 @@ impl Compiler {
                 // leaving [callee, ..args] for CALL_REF.
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.set_js_this_from_stack();
-                self.emit_u8(Op::CALL_REF, arg_exprs.len() as u8);
+                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                 let result_slot = self.define_local("__js_idx_result");
                 self.emit_u16(Op::LOCAL_SET, result_slot);
                 self.restore_js_this(saved_js_this);

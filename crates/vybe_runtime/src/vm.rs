@@ -419,6 +419,73 @@ impl<'a> HostContext<'a> {
 /// Host function signature.
 pub type HostFn = Arc<dyn Fn(&mut HostContext, &[Value]) -> Value + Send + Sync>;
 
+/// Component Model canonical built-ins the VM implements natively. The CM
+/// defines these as `(core func)` DEFINITIONS a component wires into a core
+/// instance's imports — functions, not instructions — so a core module
+/// reaches them via spec `call` on an import under the "canon" module,
+/// exactly like the jspi/wasi-threads VM-implemented imports. The 0xF0
+/// instruction prefix that used to carry them is being retired.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CanonBuiltin {
+    /// `(canon lift ...)` — typeidx rides the stack (top), above the value.
+    Lift,
+    /// `(canon lower ...)` — typeidx rides the stack (top), above the value.
+    Lower,
+    TaskReturn,
+    TaskCancel,
+    SubtaskCancel,
+    SubtaskDrop,
+    WaitableSetNew,
+    WaitableSetWait,
+    WaitableSetPoll,
+    WaitableJoin,
+    StreamNew,
+    StreamRead,
+    StreamWrite,
+    StreamCancelRead,
+    StreamDropReadable,
+    StreamDropWritable,
+    FutureNew,
+    FutureDropReadable,
+    FutureDropWritable,
+    BackpressureInc,
+    BackpressureDec,
+    ContextGet,
+    ContextSet,
+}
+
+impl CanonBuiltin {
+    /// CM canonical names (Binary.md spellings) → builtin.
+    pub fn by_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "lift" => Self::Lift,
+            "lower" => Self::Lower,
+            "task.return" => Self::TaskReturn,
+            "task.cancel" => Self::TaskCancel,
+            "subtask.cancel" => Self::SubtaskCancel,
+            "subtask.drop" => Self::SubtaskDrop,
+            "waitable-set.new" => Self::WaitableSetNew,
+            "waitable-set.wait" => Self::WaitableSetWait,
+            "waitable-set.poll" => Self::WaitableSetPoll,
+            "waitable.join" => Self::WaitableJoin,
+            "stream.new" => Self::StreamNew,
+            "stream.read" => Self::StreamRead,
+            "stream.write" => Self::StreamWrite,
+            "stream.cancel-read" => Self::StreamCancelRead,
+            "stream.drop-readable" => Self::StreamDropReadable,
+            "stream.drop-writable" => Self::StreamDropWritable,
+            "future.new" => Self::FutureNew,
+            "future.drop-readable" => Self::FutureDropReadable,
+            "future.drop-writable" => Self::FutureDropWritable,
+            "backpressure.inc" => Self::BackpressureInc,
+            "backpressure.dec" => Self::BackpressureDec,
+            "context.get" => Self::ContextGet,
+            "context.set" => Self::ContextSet,
+            _ => return None,
+        })
+    }
+}
+
 /// WASM import resolution target. An import can resolve to:
 /// - A host function (provided by the embedder)
 /// - A component-exported function (another module's code)
@@ -458,7 +525,11 @@ pub enum ImportTarget {
     /// linear memory: `{fn_table_index: i32, status_word: i32}` (the
     /// wasi-libc pthread_create pattern). No thread OPCODE exists — this
     /// import is the whole surface.
-    WasiThreadSpawn }
+    WasiThreadSpawn,
+    /// Component Model canonical built-in (module "canon"), VM-implemented —
+    /// see [`CanonBuiltin`]. Args/results ride the operand stack; the
+    /// builtin body pops what it needs.
+    Canon(CanonBuiltin) }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallFrame {
@@ -2220,6 +2291,9 @@ impl VM {
                 ImportTarget::StringConst(s) => {
                     self.import_table.push(ImportTarget::StringConst(s));
                 }
+                ImportTarget::Canon(b) => {
+                    self.import_table.push(ImportTarget::Canon(b));
+                }
             }
         }
 
@@ -2911,6 +2985,11 @@ impl VM {
         }
         if module == "wasm:string-constants" {
             return Ok(ImportTarget::StringConst(Arc::from(name)));
+        }
+        if module == "canon" {
+            if let Some(b) = CanonBuiltin::by_name(name) {
+                return Ok(ImportTarget::Canon(b));
+            }
         }
         if let Some(idx) = self.resolve_host_function_index(module, name) {
             return Ok(ImportTarget::Host(idx));

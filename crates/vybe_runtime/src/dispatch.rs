@@ -253,7 +253,9 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
         ip += 4;
 
         if op == Op::BLOCK || op == Op::LOOP || op == Op::IF {
-            ip += 1; // skip result_count byte
+            // Skip the blocktype immediates format-driven (U8_U8: params +
+            // results) so this walk can never disagree with the declaration.
+            ip += op.operand_format().size_in(code, ip);
             stack.push(opcode_start);
         } else if op == Op::TRY_TABLE {
             // Spec `try_table` IS a block instruction: it opens a
@@ -904,32 +906,350 @@ impl VM {
         }
     }
 
-    fn next_bytes_decode_opcode(&self) -> bool {
-        let f = self.frame();
-        let code = &self.chunks[f.chunk_index].code;
-        f.ip + 3 < code.len()
-            && Op::decode(
-                ((code[f.ip] as u16) << 8) | code[f.ip + 1] as u16,
-                ((code[f.ip + 2] as u16) << 8) | code[f.ip + 3] as u16,
-            )
-            .is_some()
+    /// Execute a Component Model canonical built-in (VM-implemented import
+    /// under module "canon" — see `ImportTarget::Canon`). Args and results
+    /// ride the operand stack; each builtin pops exactly its own args.
+    pub(crate) fn exec_canon_builtin(
+        &mut self,
+        b: crate::vm::CanonBuiltin,
+    ) -> Result<(), VMError> {
+        use crate::value::ObjectKind;
+        use crate::vm::CanonBuiltin as B;
+        match b {
+            B::Lift => {
+                // canon lift — args [value, typeidx]: convert core value to
+                // component interface type. For now: if value is an object,
+                // stamp its type_id. In full CM, this would validate/convert
+                // the value shape.
+                let type_idx = self.pop().as_i32() as usize;
+                let val = self.pop();
+                if let Value::Object(ref obj) = val {
+                    let mut o = obj.lock().unwrap();
+                    if o.type_id == 0 && type_idx < self.type_registry.types.len() {
+                        o.type_id = type_idx;
+                    }
+                }
+                self.push(val)?;
+            }
+            B::Lower => {
+                // canon lower — args [value, typeidx]: convert component
+                // interface type to core value. For now: validate type_id
+                // matches, strip interface metadata.
+                let type_idx = self.pop().as_i32() as usize;
+                let val = self.pop();
+                if let Value::Object(ref obj) = val {
+                    let o = obj.lock().unwrap();
+                    if type_idx < self.type_registry.types.len() && o.type_id != type_idx {
+                        // Type mismatch — could trap, for now allow
+                    }
+                }
+                self.push(val)?;
+            }
+            B::TaskReturn => {
+                // canon task.return — pop result, mark active task as Returned.
+                // A second task.return on the same task is a trap per spec.
+                let result = self.pop();
+                if let Some(task) = self.cm_tasks.last_mut() {
+                    if !task.mark_returned() {
+                        return Err(VMError::new(
+                            "task.return called twice on same task (trap)",
+                        ));
+                    }
+                }
+                // Push the result back — the function body may continue running.
+                self.push(result)?;
+            }
+            B::TaskCancel => {
+                // canon task.cancel — cancel the current task.
+                if let Some(task) = self.cm_tasks.last_mut() {
+                    task.phase = crate::cm_task::TaskPhase::Returned;
+                }
+            }
+            B::SubtaskCancel => {
+                // canon subtask.cancel — pops subtask handle (i32), cancels the subtask.
+                let handle = self.pop().as_i32() as u32;
+                let fid = if let Some(crate::handle_table::HandleEntry::Subtask {
+                    future_id,
+                    ..
+                }) = self.handle_table.get(handle)
+                {
+                    Some(*future_id)
+                } else {
+                    None
+                };
+                if let Some(fid) = fid {
+                    let mut el = self.event_loop.borrow_mut();
+                    if let Some(fiber) =
+                        el.reject_future(fid, Value::String(Arc::from("cancelled")))
+                    {
+                        el.immediate
+                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                    }
+                }
+            }
+            B::SubtaskDrop => {
+                // canon subtask.drop — pops subtask handle (i32), removes from handle table.
+                let handle = self.pop().as_i32() as u32;
+                self.handle_table.remove(handle);
+            }
+            B::WaitableSetNew => {
+                // canon waitable-set.new — create a new waitable set, push its handle (i32).
+                let set_id = self.waitable_sets.create();
+                self.push(Value::I32(set_id as i32))?;
+            }
+            B::WaitableSetWait => {
+                // canon waitable-set.wait — pops [set_handle_i32, memory_ptr_i32];
+                // writes (event_code, handle_id, 0) to memory; pushes event_code (i32).
+                // If nothing is ready, returns NONE immediately (MVP — true blocking TBD).
+                let memory_ptr = self.pop().as_i32() as usize;
+                let set_handle = self.pop().as_i32() as u32;
+                let ready = {
+                    let el = self.event_loop.borrow();
+                    self.waitable_sets
+                        .get(set_handle)
+                        .and_then(|set| set.poll_ready(&el))
+                };
+                let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
+                if memory_ptr + 12 <= self.memory.len() {
+                    self.memory.store_i32(memory_ptr, code as i32)?;
+                    self.memory.store_i32(memory_ptr + 4, handle_id as i32)?;
+                    self.memory.store_i32(memory_ptr + 8, 0)?;
+                }
+                self.push(Value::I32(code as i32))?;
+            }
+            B::WaitableSetPoll => {
+                // canon waitable-set.poll — non-blocking version of waitable-set.wait.
+                // Pushes EventCode::None (0) immediately if nothing is ready.
+                let memory_ptr = self.pop().as_i32() as usize;
+                let set_handle = self.pop().as_i32() as u32;
+                let ready = {
+                    let el = self.event_loop.borrow();
+                    self.waitable_sets
+                        .get(set_handle)
+                        .and_then(|set| set.poll_ready(&el))
+                };
+                let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
+                if memory_ptr + 12 <= self.memory.len() {
+                    self.memory.store_i32(memory_ptr, code as i32)?;
+                    self.memory.store_i32(memory_ptr + 4, handle_id as i32)?;
+                    self.memory.store_i32(memory_ptr + 8, 0)?;
+                }
+                self.push(Value::I32(code as i32))?;
+            }
+            B::WaitableJoin => {
+                // canon waitable.join — pops [waitable_handle_i32, set_handle_i32];
+                // looks up waitable in handle table, adds to set.
+                let set_handle = self.pop().as_i32() as u32;
+                let waitable_handle = self.pop().as_i32() as u32;
+                let waitable = match self.handle_table.get(waitable_handle) {
+                    Some(crate::handle_table::HandleEntry::ReadableStreamEnd(sid)) => {
+                        Some(crate::waitable::Waitable::Stream(*sid))
+                    }
+                    Some(crate::handle_table::HandleEntry::ReadableFutureEnd(fid)) => {
+                        Some(crate::waitable::Waitable::Future(*fid))
+                    }
+                    Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) => {
+                        Some(crate::waitable::Waitable::Subtask(*future_id))
+                    }
+                    _ => None };
+                if let Some(w) = waitable {
+                    if let Some(set) = self.waitable_sets.get_mut(set_handle) {
+                        set.join(w);
+                    }
+                }
+            }
+            B::StreamNew => {
+                // canon stream.new — create a stream; push readable_handle
+                // and writable_handle (i32).
+                let stream_id = self.event_loop.borrow_mut().create_stream();
+                let rd = self
+                    .handle_table
+                    .insert(crate::handle_table::HandleEntry::ReadableStreamEnd(stream_id));
+                let wr = self
+                    .handle_table
+                    .insert(crate::handle_table::HandleEntry::WritableStreamEnd(stream_id));
+                self.push(Value::I32(rd as i32))?;
+                self.push(Value::I32(wr as i32))?;
+            }
+            B::StreamWrite => {
+                let item = self.pop();
+                let val = self.pop();
+                // The stream is either the high-level Stream value or a
+                // CM3 writable-end i32 handle (canon stream.new pushes
+                // i32 handles per CanonicalABI §HandleTable).
+                let stream_id = match val {
+                    Value::Object(ref obj) => {
+                        let o = obj.lock().unwrap();
+                        if let ObjectKind::Stream { id } = o.kind {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    }
+                    Value::I32(handle) => match self.handle_table.get(handle as u32) {
+                        Some(crate::handle_table::HandleEntry::WritableStreamEnd(id)) => Some(*id),
+                        _ => None },
+                    _ => None };
+                if let Some(stream_id) = stream_id {
+                    let mut el = self.event_loop.borrow_mut();
+                    if let Some(fiber) = el.stream_push(stream_id, item) {
+                        el.immediate
+                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                    }
+                }
+            }
+            B::StreamDropReadable => {
+                // canon stream.drop-readable — pops readable stream handle.
+                let handle = self.pop().as_i32() as u32;
+                if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(sid)) =
+                    self.handle_table.remove(handle)
+                {
+                    // Close the stream so waiting writers don't block forever.
+                    let mut el = self.event_loop.borrow_mut();
+                    if let Some(fiber) = el.stream_close(sid) {
+                        el.immediate
+                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                    }
+                }
+            }
+            B::StreamDropWritable => {
+                // canon stream.drop-writable — pops writable stream handle.
+                let handle = self.pop().as_i32() as u32;
+                if let Some(crate::handle_table::HandleEntry::WritableStreamEnd(sid)) =
+                    self.handle_table.remove(handle)
+                {
+                    // Closing the write end signals EOF to the reader.
+                    let mut el = self.event_loop.borrow_mut();
+                    if let Some(fiber) = el.stream_close(sid) {
+                        el.immediate
+                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                    }
+                }
+            }
+            B::StreamRead => {
+                // canon stream.read — pops the stream; pushes the next item,
+                // Null on EOF, or suspends the fiber until an item arrives.
+                let val = self.pop();
+                if let Value::Object(ref obj) = val {
+                    let o = obj.lock().unwrap();
+                    if let ObjectKind::Stream { id } = o.kind {
+                        let stream_id = id;
+                        drop(o);
+                        let has_item = self.event_loop.borrow().stream_has_item(stream_id);
+                        let is_eof = self.event_loop.borrow().stream_is_eof(stream_id);
+                        if has_item {
+                            let item = self
+                                .event_loop
+                                .borrow_mut()
+                                .stream_pop(stream_id)
+                                .unwrap_or(Value::Null);
+                            self.push(item)?;
+                        } else if is_eof {
+                            self.push(Value::Null)?;
+                        } else {
+                            let fiber = self.save_fiber();
+                            self.event_loop
+                                .borrow_mut()
+                                .suspend_stream_reader(stream_id, fiber);
+                            return Err(VMError::new(format!("__stream_read__:{}", stream_id)));
+                        }
+                    } else {
+                        drop(o);
+                        self.push(Value::Null)?;
+                    }
+                } else {
+                    self.push(Value::Null)?;
+                }
+            }
+            B::StreamCancelRead => {
+                // canon stream.cancel-read — pops the stream, closes it and
+                // resumes any suspended writer.
+                let val = self.pop();
+                if let Value::Object(ref obj) = val {
+                    let o = obj.lock().unwrap();
+                    if let ObjectKind::Stream { id } = o.kind {
+                        let stream_id = id;
+                        drop(o);
+                        let mut el = self.event_loop.borrow_mut();
+                        if let Some(fiber) = el.stream_close(stream_id) {
+                            el.immediate
+                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                        }
+                    }
+                }
+            }
+            B::FutureNew => {
+                // canon future.new — create a future; push readable_handle and writable_handle (i32).
+                let future_id = self.event_loop.borrow_mut().create_future();
+                let rd = self.handle_table.insert(
+                    crate::handle_table::HandleEntry::ReadableFutureEnd(future_id),
+                );
+                let wr = self.handle_table.insert(
+                    crate::handle_table::HandleEntry::WritableFutureEnd(future_id),
+                );
+                self.push(Value::I32(rd as i32))?;
+                self.push(Value::I32(wr as i32))?;
+            }
+            B::FutureDropReadable => {
+                // canon future.drop-readable — pops readable future handle (i32).
+                let handle = self.pop().as_i32() as u32;
+                self.handle_table.remove(handle);
+            }
+            B::FutureDropWritable => {
+                // canon future.drop-writable — pops writable future handle (i32).
+                let handle = self.pop().as_i32() as u32;
+                if let Some(crate::handle_table::HandleEntry::WritableFutureEnd(fid)) =
+                    self.handle_table.remove(handle)
+                {
+                    // Dropping the write end without resolving rejects the future.
+                    let mut el = self.event_loop.borrow_mut();
+                    if let Some(fiber) =
+                        el.reject_future(fid, Value::String(Arc::from("future dropped")))
+                    {
+                        el.immediate
+                            .push_back(crate::event_loop::Task::ResumeFiber(fiber));
+                    }
+                }
+            }
+            // canon backpressure.inc / backpressure.dec — CM3 replaced the
+            // boolean `backpressure.set` (retired) with a counter: the
+            // instance resists new calls while > 0. No args, no results.
+            B::BackpressureInc => {
+                if let Some(task) = self.cm_tasks.last_mut() {
+                    task.backpressure = task.backpressure.saturating_add(1);
+                }
+            }
+            B::BackpressureDec => {
+                if let Some(task) = self.cm_tasks.last_mut() {
+                    task.backpressure = task.backpressure.saturating_sub(1);
+                }
+            }
+            B::ContextGet => {
+                // canon context.get — pops index_i32, pushes context slot value.
+                let index = self.pop().as_i32() as usize;
+                let val = self
+                    .context_slots
+                    .get(index)
+                    .cloned()
+                    .unwrap_or(Value::Undefined);
+                self.push(val)?;
+            }
+            B::ContextSet => {
+                // canon context.set — pops [value, index_i32], sets context slot.
+                let index = self.pop().as_i32() as usize;
+                let val = self.pop();
+                if index >= self.context_slots.len() {
+                    self.context_slots.resize(index + 1, Value::Undefined);
+                }
+                self.context_slots[index] = val;
+            }
+        }
+        Ok(())
     }
 
-    pub(crate) fn read_optional_memidx_immediate(&mut self) -> usize {
-        let chunk_idx = self.frame().chunk_index;
-        let code = &self.chunks[chunk_idx].code;
-        let ip = self.frame().ip;
-        // Multi-memory selector. VM instructions are always 4 bytes, so the
-        // memidx selector is a fixed 4-byte block — `0xEE 0x00 <memidx u16 BE>`
-        // — keeping the following instruction 4-aligned. Only emitted for a
-        // non-default memory; absent means memidx 0.
-        if code.get(ip) == Some(&0xEE) && code.get(ip + 1) == Some(&0x00) {
-            let memidx = ((code[ip + 2] as usize) << 8) | (code[ip + 3] as usize);
-            self.frame_mut().ip = ip + 4;
-            return memidx;
-        }
-        0
-    }
+    // (The optional `0xEE 0x00 <memidx u16 BE>` selector reader is deleted:
+    // memory.size/grow/fill/copy/init carry fixed u16 memidx immediates now,
+    // declared in their OperandFormat so format-driven walks stay in sync.)
 
     /// Pop a stringref operand, trapping on a null reference (WASM stringref
     /// spec: every stringref-consuming op except `string.eq` traps on null).
@@ -997,33 +1317,25 @@ impl VM {
     }
 
     pub(crate) fn read_optional_memarg(&mut self) -> (usize, usize) {
-        // Explicit multi-memory selector: the compiler folds any static offset
-        // into the address, so a non-default memory is carried by the same
-        // fixed 4-byte `0xEE 0x00 <memidx u16 BE>` sentinel `memory.size`/`grow`
-        // use — keeping the stream 4-aligned. Offset is therefore 0 here.
-        // Checked before the opcode-lookahead so the sentinel is never mistaken
-        // for the next instruction.
-        {
-            let chunk_idx = self.frame().chunk_index;
-            let code = &self.chunks[chunk_idx].code;
-            let ip = self.frame().ip;
-            if code.get(ip) == Some(&0xEE) && code.get(ip + 1) == Some(&0x00) {
-                let memidx = ((code[ip + 2] as usize) << 8) | (code[ip + 3] as usize);
-                self.frame_mut().ip = ip + 4;
-                return (0, memidx);
-            }
-        }
-        if self.next_bytes_decode_opcode() {
-            return (0, 0);
-        }
+        // OPTIONAL marker-tagged memarg (`SimdMemArg` — the same shape the
+        // v128 loads/stores use): present iff the first LEB carries the 0x80
+        // marker. The peek is unambiguous — instruction group-hi bytes are
+        // always 0x00 — so there is NO opcode-decode guessing. 0x100 =
+        // memory64 (u64 offset), 0x40 = explicit memidx LEB follows (the
+        // spec multi-memory bit). Absent means align natural, offset 0,
+        // memory 0.
         let chunk_idx = self.frame().chunk_index;
         let code = &self.chunks[chunk_idx].code;
         let mut ip = self.frame().ip;
         let align = read_leb_u32(code, &mut ip);
-        // Offset is read as u64 so a 64-bit memory's memarg (memory64
-        // proposal) decodes correctly. A 32-bit u32 offset decodes to the
-        // same value, so this is backward-compatible.
-        let offset = read_leb_u64(code, &mut ip) as usize;
+        if align & 0x80 == 0 {
+            return (0, 0);
+        }
+        let offset = if align & 0x100 != 0 {
+            read_leb_u64(code, &mut ip) as usize
+        } else {
+            read_leb_u32(code, &mut ip) as usize
+        };
         let memidx = if align & 0x40 != 0 {
             read_leb_u32(code, &mut ip) as usize
         } else {
@@ -2104,7 +2416,7 @@ impl VM {
                 // `table.get tbl` — the index is i64 for a 64-bit (table64)
                 // table, else i32. table64 adds no new opcodes.
                 _ if op == Op::TABLE_GET => {
-                    let table_idx = self.read_byte() as usize;
+                    let table_idx = self.read_u16() as usize;
                     let idx = if self.tbl_is_64(table_idx) {
                         Self::table64_index(self.pop(), "table.get")?
                     } else {
@@ -2122,7 +2434,7 @@ impl VM {
                 // `table.set tbl` — pop value + index, write into table.
                 // Trap on out-of-bounds index per spec.
                 _ if op == Op::TABLE_SET => {
-                    let table_idx = self.read_byte() as usize;
+                    let table_idx = self.read_u16() as usize;
                     let val = self.pop();
                     let idx = if self.tbl_is_64(table_idx) {
                         Self::table64_index(self.pop(), "table.set")?
@@ -2417,6 +2729,10 @@ impl VM {
                     // Direct call through a function reference — same as call
                     // but the func ref is already on the stack (no table lookup).
                     let argc = self.read_byte() as usize;
+                    // Result count: carried for the writer's exact functype
+                    // annotation; the callee chunk's own result_arity drives
+                    // execution, so it is not read here.
+                    let _results = self.read_byte();
                     self.call_value(argc)?;
                 }
                 // Multi-value RETURN: the current chunk declares how many
@@ -2705,6 +3021,12 @@ impl VM {
                                 self.pop();
                             }
                             self.push(Value::String(s.clone()))?;
+                        }
+                        ImportTarget::Canon(b) => {
+                            // CM canonical built-in: args/results ride the
+                            // stack; the builtin pops exactly its own args
+                            // (the emitter's argc matches by construction).
+                            self.exec_canon_builtin(b)?;
                         }
                     }
                 }
@@ -3953,6 +4275,7 @@ impl VM {
                 // -- Tail call --
                 _ if op == Op::RETURN_CALL => {
                     let argc = self.read_byte() as usize;
+                    let _results = self.read_byte(); // writer-facing functype info
                     // Reuse current frame: move callee + args down to base-1.
                     // Stack: [..., callee, arg0, ..., argN-1]
                     // After: [..., callee, arg0, ..., argN-1] starting at base-1
@@ -4021,6 +4344,7 @@ impl VM {
                 }
                 _ if op == Op::RETURN_CALL_REF => {
                     let argc = self.read_byte() as usize;
+                    let _results = self.read_byte(); // writer-facing functype info
                     let old_base = self.frame().base;
                     let callee_idx = self.stack.len() - argc - 1;
                     for i in 0..=argc {
@@ -4033,7 +4357,7 @@ impl VM {
 
                 // -- Linear memory --
                 _ if op == Op::MEMORY_SIZE => {
-                    let memidx = self.read_optional_memidx_immediate();
+                    let memidx = self.read_u16() as usize;
                     let pages = self.mem_len(memidx) / 65536;
                     // memory64: page count is i64; 32-bit memory: i32.
                     if self.mem_is_64(memidx) {
@@ -4043,7 +4367,7 @@ impl VM {
                     }
                 }
                 _ if op == Op::MEMORY_GROW => {
-                    let memidx = self.read_optional_memidx_immediate();
+                    let memidx = self.read_u16() as usize;
                     let is64 = self.mem_is_64(memidx);
                     let pages = self.pop_mem_index(is64);
                     let old_pages = self.mem_grow(memidx, pages);
@@ -4281,7 +4605,11 @@ impl VM {
 
                 // -- Block/loop/if structured control (WASM-compliant) --
                 _ if op == Op::BLOCK => {
-                    let result_arity = self.read_byte(); // 0=void, 1=single, 2+=multi-value
+                    // Blocktype = (param_count, result_count). Params are
+                    // already on the stack (no runtime action); the label's
+                    // branch arity for a BLOCK is its RESULT count (spec).
+                    let _param_arity = self.read_byte();
+                    let result_arity = self.read_byte();
                     let ci = self.frame().chunk_index;
                     self.ensure_block_table(ci);
                     let end_ip = self.block_tables[&ci]
@@ -4296,18 +4624,26 @@ impl VM {
                         stack_height: self.stack.len() });
                 }
                 _ if op == Op::LOOP => {
-                    let result_arity = self.read_byte();
-                    // Loop target is the ip right after the blocktype byte —
+                    // Blocktype = (param_count, result_count). Spec: a `br`
+                    // to a LOOP label carries the loop's PARAMS — so the
+                    // label arity recorded here is the param count, not the
+                    // result count.
+                    let param_arity = self.read_byte();
+                    let _result_arity = self.read_byte();
+                    // Loop target is the ip right after the blocktype bytes —
                     // that is where `br 0` restarts (the loop body start).
                     let loop_body_start = self.frame().ip;
                     self.label_stack.push(LabelEntry {
                         target: loop_body_start,
                         is_loop: true,
                         is_try: false,
-                        result_arity,
+                        result_arity: param_arity,
                         stack_height: self.stack.len() });
                 }
                 _ if op == Op::IF => {
+                    // Blocktype = (param_count, result_count); label arity
+                    // for an IF is its RESULT count, like BLOCK.
+                    let _param_arity = self.read_byte();
                     let result_arity = self.read_byte();
                     let ci = self.frame().chunk_index;
                     self.ensure_block_table(ci);
@@ -4463,33 +4799,10 @@ impl VM {
                 }
 
                 // -- Component Model --
-                _ if op == Op::CANON_LIFT => {
-                    let type_idx = self.read_u16() as usize;
-                    // Lift: convert core value to component interface type.
-                    // For now: if value is an object, stamp its type_id.
-                    // In full CM, this would validate/convert the value shape.
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let mut o = obj.lock().unwrap();
-                        if o.type_id == 0 && type_idx < self.type_registry.types.len() {
-                            o.type_id = type_idx;
-                        }
-                    }
-                    self.push(val)?;
-                }
-                _ if op == Op::CANON_LOWER => {
-                    let type_idx = self.read_u16() as usize;
-                    // Lower: convert component interface type to core value.
-                    // For now: validate type_id matches, strip interface metadata.
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let o = obj.lock().unwrap();
-                        if type_idx < self.type_registry.types.len() && o.type_id != type_idx {
-                            // Type mismatch — could trap, for now allow
-                        }
-                    }
-                    self.push(val)?;
-                }
+                // No opcodes: canon built-ins are (core func) DEFINITIONS in
+                // the CM spec, not instructions. They resolve as imports under
+                // module "canon" (ImportTarget::Canon → exec_canon_builtin)
+                // and are reached via spec `call`. Prefix 0xF0 is empty.
 
                 // -- Shared-Everything Threads (shared GC objects) --
 
@@ -4497,8 +4810,8 @@ impl VM {
 
                 // -- Multi-Memory --
                 _ if op == Op::MEMORY_INIT => {
-                    let data_idx = self.read_byte() as u32;
-                    let memidx = self.read_optional_memidx_immediate() as usize;
+                    let data_idx = self.read_u16() as u32;
+                    let memidx = self.read_u16() as usize;
                     // Spec (bulk-memory Overview §data.drop): a dropped
                     // segment SHRINKS TO ZERO LENGTH — it may still be used
                     // by memory.init, "but only a zero-length access at
@@ -4538,7 +4851,7 @@ impl VM {
                 // proposal works: index 0 maps to `func_table`, indexes
                 // indexed directly in `wasm_tables`.
                 _ if op == Op::TABLE_SIZE => {
-                    let tidx = self.read_byte() as usize;
+                    let tidx = self.read_u16() as usize;
                     let size = self
                         .table_ref(tidx)
                         .ok_or_else(|| VMError::new("trap: table.size unknown table"))?
@@ -4551,7 +4864,7 @@ impl VM {
                     }
                 }
                 _ if op == Op::TABLE_GROW => {
-                    let tidx = self.read_byte() as usize;
+                    let tidx = self.read_u16() as usize;
                     let is64 = self.tbl_is_64(tidx);
                     let delta = self.pop_table_count(is64)?;
                     let init = self.pop();
@@ -4580,7 +4893,7 @@ impl VM {
                     }
                 }
                 _ if op == Op::TABLE_FILL => {
-                    let tidx = self.read_byte() as usize;
+                    let tidx = self.read_u16() as usize;
                     let is64 = self.tbl_is_64(tidx);
                     let count = self.pop_table_count(is64)?;
                     let value = self.pop();
@@ -4597,8 +4910,8 @@ impl VM {
                     }
                 }
                 _ if op == Op::TABLE_COPY => {
-                    let dst_table_idx = self.read_byte() as usize;
-                    let src_table_idx = self.read_byte() as usize;
+                    let dst_table_idx = self.read_u16() as usize;
+                    let src_table_idx = self.read_u16() as usize;
                     // table64: operands are i64 if either table is 64-bit.
                     let is64 = self.tbl_is_64(dst_table_idx) || self.tbl_is_64(src_table_idx);
                     let count = self.pop_table_count(is64)?;
@@ -4620,8 +4933,8 @@ impl VM {
                     destination[dst..dst + count].clone_from_slice(&values);
                 }
                 _ if op == Op::TABLE_INIT => {
-                    let elem_idx = self.read_byte() as u32;
-                    let table_idx = self.read_byte() as usize;
+                    let elem_idx = self.read_u16() as u32;
+                    let table_idx = self.read_u16() as usize;
                     if self.dropped_elems.contains(&elem_idx) {
                         return Err(VMError::new("table.init: element segment dropped"));
                     }
@@ -4646,16 +4959,16 @@ impl VM {
                     table[dst..dst + count].clone_from_slice(&values);
                 }
                 _ if op == Op::ELEM_DROP => {
-                    let elem_idx = self.read_byte() as u32;
+                    let elem_idx = self.read_u16() as u32;
                     self.dropped_elems.insert(elem_idx);
                 }
                 _ if op == Op::DATA_DROP => {
-                    let data_idx = self.read_byte() as u32;
+                    let data_idx = self.read_u16() as u32;
                     self.dropped_data.insert(data_idx);
                 }
                 _ if op == Op::MEMORY_COPY => {
-                    let dst_mem = self.read_optional_memidx_immediate();
-                    let src_mem = self.read_optional_memidx_immediate();
+                    let dst_mem = self.read_u16() as usize;
+                    let src_mem = self.read_u16() as usize;
                     // memory64: operands are i64 if either memory is 64-bit.
                     let is64 = self.mem_is_64(dst_mem) || self.mem_is_64(src_mem);
                     let count = self.pop_mem_index(is64);
@@ -4665,7 +4978,7 @@ impl VM {
                     self.write_memory_bytes(dst_mem, dst, &buf)?;
                 }
                 _ if op == Op::MEMORY_FILL => {
-                    let memidx = self.read_optional_memidx_immediate();
+                    let memidx = self.read_u16() as usize;
                     let is64 = self.mem_is_64(memidx);
                     let count = self.pop_mem_index(is64);
                     let val = self.pop().as_i32() as u8;
@@ -7381,326 +7694,9 @@ impl VM {
                     }
                 }
 
-                // -- CM3 / WASI 0.3 async (Track B) --
-                _ if op == Op::STREAM_READ => {
-                    use crate::value::ObjectKind;
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Stream { id } = o.kind {
-                            let stream_id = id;
-                            drop(o);
-                            let has_item = self.event_loop.borrow().stream_has_item(stream_id);
-                            let is_eof = self.event_loop.borrow().stream_is_eof(stream_id);
-                            if has_item {
-                                let item = self
-                                    .event_loop
-                                    .borrow_mut()
-                                    .stream_pop(stream_id)
-                                    .unwrap_or(Value::Null);
-                                self.push(item)?;
-                            } else if is_eof {
-                                self.push(Value::Null)?;
-                            } else {
-                                let fiber = self.save_fiber();
-                                self.event_loop
-                                    .borrow_mut()
-                                    .suspend_stream_reader(stream_id, fiber);
-                                return Err(VMError::new(format!("__stream_read__:{}", stream_id)));
-                            }
-                        } else {
-                            drop(o);
-                            self.push(Value::Null)?;
-                        }
-                    } else {
-                        self.push(Value::Null)?;
-                    }
-                }
-
-                _ if op == Op::STREAM_WRITE => {
-                    use crate::value::ObjectKind;
-                    let item = self.pop();
-                    let val = self.pop();
-                    // The stream is either the high-level Stream value or a
-                    // CM3 writable-end i32 handle (canon stream.new pushes
-                    // i32 handles per CanonicalABI §HandleTable).
-                    let stream_id = match val {
-                        Value::Object(ref obj) => {
-                            let o = obj.lock().unwrap();
-                            if let ObjectKind::Stream { id } = o.kind {
-                                Some(id)
-                            } else {
-                                None
-                            }
-                        }
-                        Value::I32(handle) => match self.handle_table.get(handle as u32) {
-                            Some(crate::handle_table::HandleEntry::WritableStreamEnd(id)) => {
-                                Some(*id)
-                            }
-                            _ => None },
-                        _ => None };
-                    if let Some(stream_id) = stream_id {
-                        let mut el = self.event_loop.borrow_mut();
-                        if let Some(fiber) = el.stream_push(stream_id, item) {
-                            el.immediate
-                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                        }
-                    }
-                }
-
-                _ if op == Op::STREAM_CANCEL_READ => {
-                    use crate::value::ObjectKind;
-                    let val = self.pop();
-                    if let Value::Object(ref obj) = val {
-                        let o = obj.lock().unwrap();
-                        if let ObjectKind::Stream { id } = o.kind {
-                            let stream_id = id;
-                            drop(o);
-                            let mut el = self.event_loop.borrow_mut();
-                            if let Some(fiber) = el.stream_close(stream_id) {
-                                el.immediate
-                                    .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                            }
-                        }
-                    }
-                }
-
-                // ── CM3 Canonical ABI — Track A ─────────────────────────────────
-                _ if op == Op::TASK_RETURN => {
-                    // canon task.return — pop result, mark active task as Returned.
-                    // A second task.return on the same task is a trap per spec.
-                    let result = self.pop();
-                    if let Some(task) = self.cm_tasks.last_mut() {
-                        if !task.mark_returned() {
-                            return Err(VMError::new(
-                                "task.return called twice on same task (trap)",
-                            ));
-                        }
-                    }
-                    // Push the result back — the function body may continue running.
-                    self.push(result)?;
-                }
-
-                _ if op == Op::TASK_CANCEL => {
-                    // canon task.cancel — cancel the current task.
-                    if let Some(task) = self.cm_tasks.last_mut() {
-                        task.phase = crate::cm_task::TaskPhase::Returned;
-                    }
-                }
-
-                _ if op == Op::SUBTASK_CANCEL => {
-                    // canon subtask.cancel — pops subtask handle (i32), cancels the subtask.
-                    let handle = self.pop().as_i32() as u32;
-                    let fid = if let Some(crate::handle_table::HandleEntry::Subtask {
-                        future_id,
-                        ..
-                    }) = self.handle_table.get(handle)
-                    {
-                        Some(*future_id)
-                    } else {
-                        None
-                    };
-                    if let Some(fid) = fid {
-                        let mut el = self.event_loop.borrow_mut();
-                        if let Some(fiber) =
-                            el.reject_future(fid, Value::String(Arc::from("cancelled")))
-                        {
-                            el.immediate
-                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                        }
-                    }
-                }
-
-                _ if op == Op::SUBTASK_DROP => {
-                    // canon subtask.drop — pops subtask handle (i32), removes from handle table.
-                    let handle = self.pop().as_i32() as u32;
-                    self.handle_table.remove(handle);
-                }
-
-                _ if op == Op::WAITABLE_SET_NEW => {
-                    // canon waitable-set.new — create a new waitable set, push its handle (i32).
-                    let set_id = self.waitable_sets.create();
-                    self.push(Value::I32(set_id as i32))?;
-                }
-
-                _ if op == Op::WAITABLE_JOIN => {
-                    // canon waitable.join — pops [waitable_handle_i32, set_handle_i32];
-                    // looks up waitable in handle table, adds to set.
-                    let set_handle = self.pop().as_i32() as u32;
-                    let waitable_handle = self.pop().as_i32() as u32;
-                    let waitable = match self.handle_table.get(waitable_handle) {
-                        Some(crate::handle_table::HandleEntry::ReadableStreamEnd(sid)) => {
-                            Some(crate::waitable::Waitable::Stream(*sid))
-                        }
-                        Some(crate::handle_table::HandleEntry::ReadableFutureEnd(fid)) => {
-                            Some(crate::waitable::Waitable::Future(*fid))
-                        }
-                        Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) => {
-                            Some(crate::waitable::Waitable::Subtask(*future_id))
-                        }
-                        _ => None };
-                    if let Some(w) = waitable {
-                        if let Some(set) = self.waitable_sets.get_mut(set_handle) {
-                            set.join(w);
-                        }
-                    }
-                }
-
-                _ if op == Op::WAITABLE_SET_WAIT => {
-                    // canon waitable-set.wait — pops [set_handle_i32, memory_ptr_i32];
-                    // writes (event_code, handle_id, 0) to memory; pushes event_code (i32).
-                    // If nothing is ready, returns NONE immediately (MVP — true blocking TBD).
-                    let memory_ptr = self.pop().as_i32() as usize;
-                    let set_handle = self.pop().as_i32() as u32;
-                    let ready = {
-                        let el = self.event_loop.borrow();
-                        self.waitable_sets
-                            .get(set_handle)
-                            .and_then(|set| set.poll_ready(&el))
-                    };
-                    let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
-                    if memory_ptr + 12 <= self.memory.len() {
-                        self.memory.store_i32(memory_ptr, code as i32)?;
-                        self.memory.store_i32(memory_ptr + 4, handle_id as i32)?;
-                        self.memory.store_i32(memory_ptr + 8, 0)?;
-                    }
-                    self.push(Value::I32(code as i32))?;
-                }
-
-                _ if op == Op::WAITABLE_SET_POLL => {
-                    // canon waitable-set.poll — non-blocking version of WAITABLE_SET_WAIT.
-                    // Pushes EventCode::None (0) immediately if nothing is ready.
-                    let memory_ptr = self.pop().as_i32() as usize;
-                    let set_handle = self.pop().as_i32() as u32;
-                    let ready = {
-                        let el = self.event_loop.borrow();
-                        self.waitable_sets
-                            .get(set_handle)
-                            .and_then(|set| set.poll_ready(&el))
-                    };
-                    let (code, handle_id) = ready.unwrap_or((crate::waitable::EventCode::None, 0));
-                    if memory_ptr + 12 <= self.memory.len() {
-                        self.memory.store_i32(memory_ptr, code as i32)?;
-                        self.memory.store_i32(memory_ptr + 4, handle_id as i32)?;
-                        self.memory.store_i32(memory_ptr + 8, 0)?;
-                    }
-                    self.push(Value::I32(code as i32))?;
-                }
-
-                _ if op == Op::STREAM_NEW => {
-                    // canon stream.new — create a stream; push readable_handle and writable_handle (i32).
-                    let stream_id = self.event_loop.borrow_mut().create_stream();
-                    let rd = self.handle_table.insert(
-                        crate::handle_table::HandleEntry::ReadableStreamEnd(stream_id),
-                    );
-                    let wr = self.handle_table.insert(
-                        crate::handle_table::HandleEntry::WritableStreamEnd(stream_id),
-                    );
-                    self.push(Value::I32(rd as i32))?;
-                    self.push(Value::I32(wr as i32))?;
-                }
-
-                _ if op == Op::STREAM_DROP_RD => {
-                    // canon stream.drop-readable — pops readable stream handle (i32).
-                    let handle = self.pop().as_i32() as u32;
-                    if let Some(crate::handle_table::HandleEntry::ReadableStreamEnd(sid)) =
-                        self.handle_table.remove(handle)
-                    {
-                        // Close the stream so waiting writers don't block forever.
-                        let mut el = self.event_loop.borrow_mut();
-                        if let Some(fiber) = el.stream_close(sid) {
-                            el.immediate
-                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                        }
-                    }
-                }
-
-                _ if op == Op::STREAM_DROP_WR => {
-                    // canon stream.drop-writable — pops writable stream handle (i32).
-                    let handle = self.pop().as_i32() as u32;
-                    if let Some(crate::handle_table::HandleEntry::WritableStreamEnd(sid)) =
-                        self.handle_table.remove(handle)
-                    {
-                        // Closing the write end signals EOF to the reader.
-                        let mut el = self.event_loop.borrow_mut();
-                        if let Some(fiber) = el.stream_close(sid) {
-                            el.immediate
-                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                        }
-                    }
-                }
-
-                _ if op == Op::FUTURE_NEW => {
-                    // canon future.new — create a future; push readable_handle and writable_handle (i32).
-                    let future_id = self.event_loop.borrow_mut().create_future();
-                    let rd = self.handle_table.insert(
-                        crate::handle_table::HandleEntry::ReadableFutureEnd(future_id),
-                    );
-                    let wr = self.handle_table.insert(
-                        crate::handle_table::HandleEntry::WritableFutureEnd(future_id),
-                    );
-                    self.push(Value::I32(rd as i32))?;
-                    self.push(Value::I32(wr as i32))?;
-                }
-
-                _ if op == Op::FUTURE_DROP_RD => {
-                    // canon future.drop-readable — pops readable future handle (i32).
-                    let handle = self.pop().as_i32() as u32;
-                    self.handle_table.remove(handle);
-                }
-
-                _ if op == Op::FUTURE_DROP_WR => {
-                    // canon future.drop-writable — pops writable future handle (i32).
-                    let handle = self.pop().as_i32() as u32;
-                    if let Some(crate::handle_table::HandleEntry::WritableFutureEnd(fid)) =
-                        self.handle_table.remove(handle)
-                    {
-                        // Dropping the write end without resolving rejects the future.
-                        let mut el = self.event_loop.borrow_mut();
-                        if let Some(fiber) =
-                            el.reject_future(fid, Value::String(Arc::from("future dropped")))
-                        {
-                            el.immediate
-                                .push_back(crate::event_loop::Task::ResumeFiber(fiber));
-                        }
-                    }
-                }
-
-                // canon backpressure.inc / backpressure.dec (0x24/0x25) —
-                // CM3 replaced the boolean `backpressure.set` (0x08, retired)
-                // with a counter: the instance resists new calls while > 0.
-                // No operands, no results.
-                _ if op == Op::BACKPRESSURE_INC => {
-                    if let Some(task) = self.cm_tasks.last_mut() {
-                        task.backpressure = task.backpressure.saturating_add(1);
-                    }
-                }
-                _ if op == Op::BACKPRESSURE_DEC => {
-                    if let Some(task) = self.cm_tasks.last_mut() {
-                        task.backpressure = task.backpressure.saturating_sub(1);
-                    }
-                }
-
-                _ if op == Op::CONTEXT_GET => {
-                    // canon context.get — pops index_i32, pushes context slot value.
-                    let index = self.pop().as_i32() as usize;
-                    let val = self
-                        .context_slots
-                        .get(index)
-                        .cloned()
-                        .unwrap_or(Value::Undefined);
-                    self.push(val)?;
-                }
-
-                _ if op == Op::CONTEXT_SET => {
-                    // canon context.set — pops [value, index_i32], sets context slot.
-                    let index = self.pop().as_i32() as usize;
-                    let val = self.pop();
-                    if index >= self.context_slots.len() {
-                        self.context_slots.resize(index + 1, Value::Undefined);
-                    }
-                    self.context_slots[index] = val;
-                }
+                // -- CM3 canon built-ins (stream/future/task/waitable/
+                // backpressure/context) -- no opcodes; they are "canon"-module
+                // imports executed by exec_canon_builtin via the CALL arm.
 
 // -- Iteration protocol --
                 // iter_get, iter_next: removed (non-WASM, were unused by compilers)

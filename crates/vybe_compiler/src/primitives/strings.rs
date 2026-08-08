@@ -144,6 +144,40 @@ pub fn emit_char_code(chunk: &mut Chunk, line: u32) {
     chunk.emit_end(line);
 }
 
+/// The CHARACTER a UTF-16 code UNIT names. Stack: [number] → [char-like]
+///
+/// The mirror of [`emit_char_code`]: `(char)65` in C#, `ChrW(65)` in VB — a code
+/// unit back to the one-character string a char IS at runtime. Coercing and
+/// truncating first is what makes `(char)65.9` an `A` rather than a trap.
+///
+/// Two near neighbours, and the difference is deliberate:
+/// [`emit_from_code_point`] is the same shape over `fromCodePoint`, which pairs
+/// a surrogate into one astral character — right for `char.ConvertFromUtf32`,
+/// wrong for a `char` cast, whose domain stops at `0xFFFF`. `str_from_char_code`
+/// in the dispatcher is the VARIADIC ECMA builtin `String.fromCharCode(a, b, …)`
+/// with no coercion at all — a library function, not a coercion.
+pub fn emit_from_char_code(chunk: &mut Chunk, line: u32) {
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    let from_char_code = chunk.add_import("wasm:js-string", "fromCharCode");
+    chunk.emit_call(from_char_code, 1, line);
+}
+
+/// The string a whole CODE POINT names. Stack: [number] → [string]
+///
+/// The mirror of [`emit_code_point_at`], and NOT `fromCharCode`: an astral
+/// code point (> 0xFFFF) becomes its surrogate PAIR — two UTF-16 units —
+/// where `fromCharCode` would truncate to a lone surrogate. This is the
+/// boundary op for code-point-typed C buffers (`wchar_t`/`char32_t`).
+pub fn emit_from_code_point(chunk: &mut Chunk, line: u32) {
+    let number = chunk.add_import("ecma:number", "Number");
+    chunk.emit_call(number, 1, line);
+    chunk.emit_op(Op::F64_FLOOR, line);
+    let from_code_point = chunk.add_import("wasm:js-string", "fromCodePoint");
+    chunk.emit_call(from_code_point, 1, line);
+}
+
 /// Trim whitespace. Stack: [string] → [string]
 pub fn emit_trim(chunk: &mut Chunk, line: u32) {
     let idx = chunk.add_import("ecma:string", "trim");

@@ -82,7 +82,7 @@ fn call_fewer_args_than_arity_padded_with_null() {
     main.emit(0, 0); // 0 upvalues
     main.emit_i32_const(5, 0);
     // call with 1 arg, but function arity is 3
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // func(a, b, c): returns b (which should be Null since not passed)
     let mut func = Chunk::new("check_padding");
@@ -111,7 +111,7 @@ fn call_more_args_than_arity() {
     main.emit_i32_const(10, 0);
     main.emit_i32_const(20, 0);
     main.emit_i32_const(30, 0);
-    main.emit_op_u8(Op::CALL_REF, 3, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 3, 1, 0);
 
     let mut func = Chunk::new("take_one");
     func.arity = 1;
@@ -136,7 +136,7 @@ fn call_exact_arity() {
     main.emit(0, 0);
     main.emit_i32_const(3, 0);
     main.emit_i32_const(4, 0);
-    main.emit_op_u8(Op::CALL_REF, 2, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
 
     let mut func = Chunk::new("add");
     func.arity = 2;
@@ -163,7 +163,7 @@ fn nested_function_calls_a_b_c() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_i32_const(2, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // chunk 1: A(x) => B(x * 3)
     let mut a = Chunk::new("A");
@@ -174,7 +174,7 @@ fn nested_function_calls_a_b_c() {
     a.emit_op_u16(Op::LOCAL_GET, 0, 0);
     a.emit_i32_const(3, 0);
     a.emit_op(Op::I32_MUL, 0);
-    a.emit_op_u8(Op::CALL_REF, 1, 0);
+    a.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     a.emit_op(Op::RETURN, 0);
 
     // chunk 2: B(x) => C(x + 1)
@@ -186,7 +186,7 @@ fn nested_function_calls_a_b_c() {
     b.emit_op_u16(Op::LOCAL_GET, 0, 0);
     b.emit_i32_const(1, 0);
     b.emit_op(Op::I32_ADD, 0);
-    b.emit_op_u8(Op::CALL_REF, 1, 0);
+    b.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     b.emit_op(Op::RETURN, 0);
 
     // chunk 3: C(x) => x * 10
@@ -215,7 +215,7 @@ fn recursive_fibonacci() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_i32_const(10, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // chunk 1: fib(n)
     let mut fib = Chunk::new("fib");
@@ -245,14 +245,14 @@ fn recursive_fibonacci() {
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fib.emit_i32_const(1, 0);
     fib.emit_op(Op::I32_SUB, 0);
-    fib.emit_op_u8(Op::CALL_REF, 1, 0); // fib(n-1)
+    fib.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0); // fib(n-1)
 
     fib.emit_op_u16(Op::REF_FUNC, 1, 0);
     fib.emit(0, 0);
     fib.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fib.emit_i32_const(2, 0);
     fib.emit_op(Op::I32_SUB, 0);
-    fib.emit_op_u8(Op::CALL_REF, 1, 0); // fib(n-2)
+    fib.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0); // fib(n-2)
 
     fib.emit_op(Op::I32_ADD, 0);
     fib.emit_op(Op::RETURN, 0);
@@ -270,7 +270,7 @@ fn recursive_factorial() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_i32_const(6, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let mut fact = Chunk::new("fact");
     fact.arity = 1;
@@ -290,7 +290,7 @@ fn recursive_factorial() {
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0);
     fact.emit_i32_const(1, 0);
     fact.emit_op(Op::I32_SUB, 0);
-    fact.emit_op_u8(Op::CALL_REF, 1, 0);
+    fact.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     fact.emit_op(Op::I32_MUL, 0);
     fact.emit_op(Op::RETURN, 0);
 
@@ -477,7 +477,7 @@ fn call_value_with_function_object() {
     // Load it back and call it
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     main.emit_i32_const(99, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // chunk 1: identity(x) => x
     let mut func = Chunk::new("identity");
@@ -499,7 +499,7 @@ fn call_value_non_callable_errors() {
     let mut main = Chunk::new("main");
     main.local_count = 1;
     main.emit_i32_const(42, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let mut vm = VM::new();
     let result = vm.run(vec![main]);
@@ -897,7 +897,7 @@ fn local_get_set_within_function() {
     main.local_count = 1;
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let mut func = Chunk::new("local_test");
     func.arity = 0;
@@ -928,12 +928,12 @@ fn locals_dont_leak_between_calls() {
     // call func_a
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     main.emit_op(Op::DROP, 0);
     // call func_b
     main.emit_op_u16(Op::REF_FUNC, 2, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     // chunk 1: func_a() { local 1 = 100; return 100; }
     let mut func_a = Chunk::new("func_a");
@@ -966,7 +966,7 @@ fn globals_persist_after_function_returns() {
     main.local_count = 1;
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     main.emit_op(Op::DROP, 0);
     let gname = main.add_constant(Value::String(Arc::from("val")));
     main.emit_op_u16(Op::GLOBAL_GET, gname, 0);
@@ -1028,11 +1028,11 @@ fn multiple_functions_sharing_globals() {
     main.local_count = 1;
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     main.emit_op(Op::DROP, 0);
     main.emit_op_u16(Op::REF_FUNC, 2, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let mut func_a = Chunk::new("func_a");
     func_a.arity = 0;
@@ -1068,7 +1068,7 @@ fn local_set_nested_doesnt_affect_outer() {
     main.local_count = 1;
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let mut outer = Chunk::new("outer");
     outer.arity = 0;
@@ -1078,7 +1078,7 @@ fn local_set_nested_doesnt_affect_outer() {
     // call inner
     outer.emit_op_u16(Op::REF_FUNC, 2, 0);
     outer.emit(0, 0);
-    outer.emit_op_u8(Op::CALL_REF, 0, 0);
+    outer.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     outer.emit_op(Op::DROP, 0); // discard inner's result
     // return local 1 (should still be 5)
     outer.emit_op_u16(Op::LOCAL_GET, 1, 0);
@@ -1345,7 +1345,7 @@ fn object_method_get_and_call() {
     main.emit_struct_field_op(Op::STRUCT_GET, 0, get_key, 0);
     // call it with obj as arg (acting as this)
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // chunk 1: greet(this) => "hi"
     let mut func = Chunk::new("greet");
@@ -1387,7 +1387,7 @@ fn object_multiple_methods_call_correct() {
     main.emit_struct_field_op(Op::STRUCT_GET, 0, get_mul, 0);
     main.emit_i32_const(3, 0);
     main.emit_i32_const(4, 0);
-    main.emit_op_u8(Op::CALL_REF, 2, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
 
     // chunk 1: add(a, b) => a + b
     let mut add_fn = Chunk::new("add");
@@ -1438,7 +1438,7 @@ fn object_method_receives_this() {
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     main.emit_struct_field_op(Op::STRUCT_GET, 0, get_method, 0);
     main.emit_op_u16(Op::LOCAL_GET, 1, 0); // pass obj as this
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // chunk 1: get_value(this) => this.value
     let mut func = Chunk::new("get_value");

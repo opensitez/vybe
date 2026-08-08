@@ -247,9 +247,15 @@ opcode_category! {
     // Control
     [0x00] unreachable => None, "unreachable";
     [0x01] nop => None, "nop";
-    [0x02] block => U8, "block";
-    [0x03] r#loop => U8, "loop";
-    [0x04] if_blk => U8, "if";
+    // Blocktype: TWO bytes — (param_count, result_count). The spec blocktype
+    // is an s33 (0x40 empty / valtype / positive typeidx); internally both
+    // counts are carried so the writer can reconstruct a full functype
+    // blocktype and the VM knows each label's branch arity (spec: br to a
+    // block/if label carries its RESULTS; br to a loop label carries its
+    // PARAMS).
+    [0x02] block => U8_U8, "block";
+    [0x03] r#loop => U8_U8, "loop";
+    [0x04] if_blk => U8_U8, "if";
     [0x05] else_blk => None, "else";
     [0x08] throw => U16, "throw";
     [0x09] rethrow => U32Leb, "rethrow";
@@ -269,10 +275,14 @@ opcode_category! {
     // retired; see callimportretirement.md.
     [0x10] call => U16_U8, "call";
     [0x11] call_indirect => U8_U8_U8, "call_indirect";
-    [0x12] return_call => U8, "return_call";
+    // Dynamic calls carry (argc, results) so the callee functype survives
+    // round-trips exactly: compilers emit results=1 (the uniform boxed-value
+    // ABI); the reader stamps the ingested functype's result count; the
+    // writer keys the exact (params, results) functype off both bytes.
+    [0x12] return_call => U8_U8, "return_call";
     [0x13] return_call_indirect => U8_U8_U8, "return_call_indirect";
-    [0x14] call_ref => U8, "call_ref";
-    [0x15] return_call_ref => U8, "return_call_ref";
+    [0x14] call_ref => U8_U8, "call_ref";
+    [0x15] return_call_ref => U8_U8, "return_call_ref";
     [0x1A] drop => None, "drop";
     [0x1B] select => None, "select";
     // Typed select carries a `vec(valtype)` — currently always 1 externref
@@ -289,36 +299,44 @@ opcode_category! {
     [0x24] global_set => U16, "global.set";
     // Reference-types table access (core prefix). Operand is a u8 table
     // index — Vybe's single function-table is index 0.
-    [0x25] table_get => U8, "table.get";
-    [0x26] table_set => U8, "table.set";
+    [0x25] table_get => U16, "table.get";
+    [0x26] table_set => U16, "table.set";
     // Memory load
-    [0x28] i32_load => None, "i32.load";
-    [0x29] i64_load => None, "i64.load";
-    [0x2A] f32_load => None, "f32.load";
-    [0x2B] f64_load => None, "f64.load";
-    [0x2C] i32_load8_s => None, "i32.load8_s";
-    [0x2D] i32_load8_u => None, "i32.load8_u";
-    [0x2E] i32_load16_s => None, "i32.load16_s";
-    [0x2F] i32_load16_u => None, "i32.load16_u";
-    [0x30] i64_load8_s => None, "i64.load8_s";
-    [0x31] i64_load8_u => None, "i64.load8_u";
-    [0x32] i64_load16_s => None, "i64.load16_s";
-    [0x33] i64_load16_u => None, "i64.load16_u";
-    [0x34] i64_load32_s => None, "i64.load32_s";
-    [0x35] i64_load32_u => None, "i64.load32_u";
+    // Loads/stores carry the OPTIONAL marker-tagged memarg (`SimdMemArg`
+    // treatment): present iff the first LEB has 0x80; 0x100 = memory64
+    // offset; 0x40 = explicit memidx follows (the spec multi-memory bit).
+    // Absent = align natural, offset 0, memory 0. The spec binary always
+    // writes a memarg; the writer materializes the defaults on the way out.
+    [0x28] i32_load => SimdMemArg, "i32.load";
+    [0x29] i64_load => SimdMemArg, "i64.load";
+    [0x2A] f32_load => SimdMemArg, "f32.load";
+    [0x2B] f64_load => SimdMemArg, "f64.load";
+    [0x2C] i32_load8_s => SimdMemArg, "i32.load8_s";
+    [0x2D] i32_load8_u => SimdMemArg, "i32.load8_u";
+    [0x2E] i32_load16_s => SimdMemArg, "i32.load16_s";
+    [0x2F] i32_load16_u => SimdMemArg, "i32.load16_u";
+    [0x30] i64_load8_s => SimdMemArg, "i64.load8_s";
+    [0x31] i64_load8_u => SimdMemArg, "i64.load8_u";
+    [0x32] i64_load16_s => SimdMemArg, "i64.load16_s";
+    [0x33] i64_load16_u => SimdMemArg, "i64.load16_u";
+    [0x34] i64_load32_s => SimdMemArg, "i64.load32_s";
+    [0x35] i64_load32_u => SimdMemArg, "i64.load32_u";
     // Memory store
-    [0x36] i32_store => None, "i32.store";
-    [0x37] i64_store => None, "i64.store";
-    [0x38] f32_store => None, "f32.store";
-    [0x39] f64_store => None, "f64.store";
-    [0x3A] i32_store8 => None, "i32.store8";
-    [0x3B] i32_store16 => None, "i32.store16";
-    [0x3C] i64_store8 => None, "i64.store8";
-    [0x3D] i64_store16 => None, "i64.store16";
-    [0x3E] i64_store32 => None, "i64.store32";
+    [0x36] i32_store => SimdMemArg, "i32.store";
+    [0x37] i64_store => SimdMemArg, "i64.store";
+    [0x38] f32_store => SimdMemArg, "f32.store";
+    [0x39] f64_store => SimdMemArg, "f64.store";
+    [0x3A] i32_store8 => SimdMemArg, "i32.store8";
+    [0x3B] i32_store16 => SimdMemArg, "i32.store16";
+    [0x3C] i64_store8 => SimdMemArg, "i64.store8";
+    [0x3D] i64_store16 => SimdMemArg, "i64.store16";
+    [0x3E] i64_store32 => SimdMemArg, "i64.store32";
     // Memory
-    [0x3F] memory_size => None, "memory.size";
-    [0x40] memory_grow => None, "memory.grow"; // memidx is an OPTIONAL immediate (read_optional_memidx), not a fixed u16
+    // Fixed u16 memidx immediate (multi-memory). The optional 0xEE selector
+    // block is retired for these ops: an undeclared conditional immediate
+    // desynced every format-driven walk (the memarg lesson, again).
+    [0x3F] memory_size => U16, "memory.size";
+    [0x40] memory_grow => U16, "memory.grow";
     // Numeric constants
     [0x41] i32_const => SlI32, "i32.const";
     [0x42] i64_const => SlI64, "i64.const";

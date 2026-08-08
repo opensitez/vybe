@@ -155,7 +155,7 @@ impl Compiler {
                 }
             }
         }
-        self.emit_u8(Op::CALL_REF, capture_bindings.len() as u8);
+        self.emit_u8_u8(Op::CALL_REF, capture_bindings.len() as u8, 1);
         Ok(())
     }
 

@@ -32,7 +32,7 @@ fn helper_reversed() {
     script.emit_op_u16(Op::REF_FUNC, rev_idx as u16, 0);
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // Get first element — should be 3
     script.emit_i32_const(0, 0);
@@ -65,7 +65,7 @@ fn helper_sorted() {
     script.emit_op_u16(Op::REF_FUNC, sort_idx as u16, 0);
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // First element should be 1 (smallest)
     script.emit_i32_const(0, 0);
@@ -96,7 +96,7 @@ fn helper_sorted_preserves_original() {
     script.emit_op_u16(Op::REF_FUNC, sort_idx as u16, 0);
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     script.emit_op(Op::DROP, 0); // discard sorted result
 
     // Original first element should still be 3
@@ -126,7 +126,7 @@ fn helper_min() {
     script.emit_op_u16(Op::REF_FUNC, min_idx as u16, 0);
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(result.as_i32(), 2);
@@ -148,7 +148,7 @@ fn helper_max() {
     script.emit_op_u16(Op::REF_FUNC, max_idx as u16, 0);
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(result.as_i32(), 8);
@@ -168,7 +168,7 @@ fn helper_pow() {
     script.emit(0, 0);
     script.emit_f64_const(2.0, 0);
     script.emit_i32_const(10, 0);
-    script.emit_op_u8(Op::CALL_REF, 2, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
 
     let result = run_with_prebuilt(script, helpers.chunks);
     assert_eq!(result.as_f64() as i32, 1024);
@@ -192,7 +192,7 @@ fn helper_enumerate() {
     script.emit_op_u16(Op::REF_FUNC, enum_idx as u16, 0);
     script.emit(0, 0);
     script.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    script.emit_op_u8(Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // Result length should be 2
     script.emit_op(Op::ARRAY_LENGTH, 0);

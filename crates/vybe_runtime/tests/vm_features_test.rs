@@ -20,9 +20,9 @@ fn memory_grow_and_size() {
     let mut chunk = Chunk::new("<test>");
     // Grow by 1 page (64KB)
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     // Result should be 0 (old size)
-    chunk.emit_op(Op::MEMORY_SIZE, 0);
+    chunk.emit_op_u16(Op::MEMORY_SIZE, 0, 0);
     // Size should now be 1
 
     let mut vm = VM::new();
@@ -35,7 +35,7 @@ fn memory_i32_store_load() {
     let mut chunk = Chunk::new("<test>");
     // Grow 1 page
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store 42 at address 100
@@ -59,7 +59,7 @@ fn memory_i32_store_load() {
 fn memory_f64_store_load() {
     let mut chunk = Chunk::new("<test>");
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     chunk.emit_f64_const(0.0, 0);
@@ -80,7 +80,7 @@ fn memory_f64_store_load() {
 fn memory_byte_store_load() {
     let mut chunk = Chunk::new("<test>");
     chunk.emit_f64_const(1.0, 0);
-    chunk.emit_op(Op::MEMORY_GROW, 0);
+    chunk.emit_op_u16(Op::MEMORY_GROW, 0, 0);
     chunk.emit_op(Op::DROP, 0);
 
     // Store byte 0xFF at address 0

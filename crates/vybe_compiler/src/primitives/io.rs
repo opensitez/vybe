@@ -14,10 +14,8 @@
 //! every write through [`emit_write_or_buffer`] makes capture correct by
 //! construction for every writer in every language, present and future.
 
-use std::sync::Arc;
-
 use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
+use vybe_runtime::Chunk;
 
 /// Emit print/log. Stack: [arg1, ..., argN] → []
 /// Routes to `web:console.log` — WHATWG `log(...data)`, variadic by spec
@@ -35,10 +33,11 @@ pub fn emit_print_with_import(chunk: &mut Chunk, import_idx: u16, arg_count: u8,
 /// Emit a raw byte write to stdout — NO implicit newline, unlike
 /// `wasi:logging/logging.log` which is one line-oriented record per call.
 ///
-/// Composes the WASI 0.3 surface: `canon stream.new` (STREAM_NEW) creates
-/// a `stream<u8>` as (readable, writable) i32 handles, the contents go in
-/// via STREAM_WRITE, the writable end closes (EOF), and the readable end
-/// is passed to `wasi:cli/stdout.write-via-stream(data: stream<u8>)`.
+/// Composes the WASI 0.3 surface: `canon stream.new` (a "canon"-module
+/// import, called via spec `call`) creates a `stream<u8>` as (readable,
+/// writable) i32 handles, the contents go in via `canon stream.write`,
+/// the writable end closes (EOF), and the readable end is passed to
+/// `wasi:cli/stdout.write-via-stream(data: stream<u8>)`.
 /// The returned `future<result<_, error-code>>` is discarded; both handle
 /// table entries are dropped afterwards per the canonical ABI.
 ///
@@ -54,24 +53,30 @@ pub fn emit_write_stdout_with_imports(
     line: u32,
     push_contents: impl FnOnce(&mut Chunk),
 ) {
+    // CM canonical built-ins are (core func) IMPORTS under module "canon"
+    // (the 0xF0 instruction prefix is retired) — spec `call` throughout.
+    let stream_new = chunk.add_import("canon", "stream.new");
+    let stream_write = chunk.add_import("canon", "stream.write");
+    let drop_wr = chunk.add_import("canon", "stream.drop-writable");
+    let drop_rd = chunk.add_import("canon", "stream.drop-readable");
     // canon stream.new → [rd, wr]
-    chunk.emit_op(Op::STREAM_NEW, line);
+    chunk.emit_call(stream_new, 0, line);
     chunk.emit_op_u16(Op::LOCAL_SET, wr_slot, line);
     chunk.emit_op_u16(Op::LOCAL_SET, rd_slot, line);
     // stream.write(wr, contents)
     chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
     push_contents(chunk);
-    chunk.emit_op(Op::STREAM_WRITE, line);
+    chunk.emit_call(stream_write, 2, line);
     // stream.drop-writable(wr) — signals EOF
     chunk.emit_op_u16(Op::LOCAL_GET, wr_slot, line);
-    chunk.emit_op(Op::STREAM_DROP_WR, line);
+    chunk.emit_call(drop_wr, 1, line);
     // wasi:cli/stdout.write-via-stream(rd) → future (discard)
     chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
     chunk.emit_call(write_idx, 1, line);
     chunk.emit_op(Op::DROP, line);
     // stream.drop-readable(rd)
     chunk.emit_op_u16(Op::LOCAL_GET, rd_slot, line);
-    chunk.emit_op(Op::STREAM_DROP_RD, line);
+    chunk.emit_call(drop_rd, 1, line);
 }
 
 /// Emit print to stderr. Stack: [message] → []
@@ -171,10 +176,6 @@ const OB_BUFFER: &str = "buffer";
 const OB_HANDLER: &str = "handler";
 const OB_CHUNK_SIZE: &str = "chunk_size";
 const OB_FLAGS: &str = "flags";
-
-fn key_const(chunk: &mut Chunk, key: &str) -> u16 {
-    chunk.add_constant(Value::String(Arc::from(key)))
-}
 
 fn global_get(chunk: &mut Chunk, key: &str, line: u32) {
     crate::primitives::globals::emit_read(chunk, key, line);
@@ -452,7 +453,7 @@ fn emit_ob_pop_and_flush(chunks: &mut [Chunk], current: usize, line: u32) {
     // buffer — matching the single-parameter handlers languages actually write.
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
-    chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     emit_write_or_buffer(chunks, current, line);
     chunks[current].emit_end(line);
 
@@ -504,7 +505,7 @@ pub fn emit_ob_flush(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, contents_slot, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
         emit_write_or_buffer(chunks, current, line);
         chunks[current].emit_end(line);
 
@@ -777,7 +778,7 @@ pub fn emit_ob_get_clean(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
-        chunks[current].emit_op_u8(Op::CALL_REF, 1, line);
+        chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunks[current].emit_end(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);

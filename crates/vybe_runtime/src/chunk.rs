@@ -609,6 +609,15 @@ impl Chunk {
         self.emit(second, line);
     }
 
+    /// Two u16 BE immediates (U16_U16 ops: table.init, table.copy, …).
+    pub fn emit_op_u16_u16(&mut self, op: Op, first: u16, second: u16, line: u32) {
+        self.emit_op(op, line);
+        self.emit((first >> 8) as u8, line);
+        self.emit((first & 0xff) as u8, line);
+        self.emit((second >> 8) as u8, line);
+        self.emit((second & 0xff) as u8, line);
+    }
+
     pub fn emit_leb_u32(&mut self, mut value: u32, line: u32) {
         loop {
             let mut byte = (value & 0x7f) as u8;
@@ -703,24 +712,42 @@ impl Chunk {
         self.emit_block_typed(line, 0)
     }
 
-    /// Emit BLOCK with explicit result count.
+    /// Emit BLOCK with explicit result count (no params).
     /// 0 = void, 1 = single externref, 2+ = multi-value (WASM encoder registers type).
     pub fn emit_block_typed(&mut self, line: u32, result_count: u8) -> usize {
+        self.emit_block_params(line, 0, result_count)
+    }
+
+    /// Emit BLOCK with a full (params, results) blocktype — spec multi-value.
+    pub fn emit_block_params(&mut self, line: u32, param_count: u8, result_count: u8) -> usize {
         self.emit_op(Op::BLOCK, line);
-        self.emit(result_count, line); // raw count; WASM encoder translates to blocktype
+        self.emit(param_count, line);
+        self.emit(result_count, line); // WASM encoder translates to blocktype
         self.code.len() - 1 // dummy patch pos — patch_block is a no-op
     }
 
     /// Emit a void LOOP. Returns (dummy_patch, loop_body_start).
-    /// `loop_body_start` is the ip right after the result_count byte —
+    /// `loop_body_start` is the ip right after the blocktype bytes —
     /// `br 0` inside the loop restarts there.
     pub fn emit_loop_s(&mut self, line: u32) -> (usize, usize) {
         self.emit_loop_typed(line, 0)
     }
 
-    /// Emit LOOP with explicit result count.
+    /// Emit LOOP with explicit result count (no params).
     pub fn emit_loop_typed(&mut self, line: u32, result_count: u8) -> (usize, usize) {
+        self.emit_loop_params(line, 0, result_count)
+    }
+
+    /// Emit LOOP with a full (params, results) blocktype — spec multi-value.
+    /// A `br` to the loop label carries the PARAMS (spec label arity).
+    pub fn emit_loop_params(
+        &mut self,
+        line: u32,
+        param_count: u8,
+        result_count: u8,
+    ) -> (usize, usize) {
         self.emit_op(Op::LOOP, line);
+        self.emit(param_count, line);
         self.emit(result_count, line);
         let dummy_patch = self.code.len() - 1;
         let loop_body_start = self.code.len();
@@ -744,15 +771,19 @@ impl Chunk {
     /// Caller must have an i32 on the stack (non-zero = enter then-body).
     /// Use `emitter::ops::emit_dyn_to_bool` first to coerce a Value → i32.
     pub fn emit_if(&mut self, line: u32) -> usize {
-        self.emit_op(Op::IF, line);
-        self.emit(0u8, line); // result_count=0 → void
-        self.code.len() - 1
+        self.emit_if_params(line, 0, 0) // void
     }
 
     /// Emit IF that leaves one externref on the stack (then/else both push one Value).
     pub fn emit_if_value(&mut self, line: u32) -> usize {
+        self.emit_if_params(line, 0, 1)
+    }
+
+    /// Emit IF with a full (params, results) blocktype — spec multi-value.
+    pub fn emit_if_params(&mut self, line: u32, param_count: u8, result_count: u8) -> usize {
         self.emit_op(Op::IF, line);
-        self.emit(1u8, line); // result_count=1 → externref
+        self.emit(param_count, line);
+        self.emit(result_count, line);
         self.code.len() - 1
     }
 

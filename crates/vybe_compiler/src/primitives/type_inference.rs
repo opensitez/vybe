@@ -49,8 +49,8 @@ impl Compiler {
         let mut current = self.current_class.as_deref();
         while let Some(class_name) = current {
             let pending = self.pending_classes.get(class_name)?;
-            if let Some(type_hint) = pending.instance_field_types.get(&canon_name) {
-                return Some(type_hint.as_str());
+            if let Some(field_type) = pending.instance_field_types.get(&canon_name) {
+                return Some(field_type.hint.as_str());
             }
             current = pending.parent.as_deref();
         }
@@ -440,14 +440,14 @@ impl Compiler {
                     if let Some(class_name) =
                         self.resolve_pending_class_name_for_type_hint(&receiver_type)
                     {
-                        if let Some(type_hint) = self
+                        if let Some(field_type) = self
                             .pending_classes
                             .get(class_name.as_str())
                             .and_then(|pending| {
                                 pending.instance_field_types.get(&self.canon(field))
                             })
                         {
-                            return Some(type_hint.clone());
+                            return Some(field_type.hint.clone());
                         }
                     }
                 }
@@ -1047,12 +1047,12 @@ impl Compiler {
         if in_progress.iter().any(|n| n == type_name) {
             return;
         }
-        let Some((fields, instance_member_names, field_value_types)) =
+        let Some((fields, instance_member_names, field_types)) =
             self.pending_classes.get(type_name).map(|pending| {
                 (
                     pending.fields.clone(),
                     pending.instance_member_names.clone(),
-                    pending.instance_field_value_types.clone(),
+                    pending.instance_field_types.clone(),
                 )
             })
         else {
@@ -1105,7 +1105,9 @@ impl Compiler {
             // Resolved in the declaration pass, keyed by the same storage name
             // this loop iterates. Nothing is derived from a spelling here — a
             // method member simply has no entry.
-            let nested = field_value_types.get(member_name).cloned();
+            let nested = field_types
+                .get(member_name)
+                .and_then(|field_type| field_type.value_type.clone());
 
             self.emit_u16(Op::LOCAL_GET, source_slot);
             self.emit_struct_field_op(Op::STRUCT_GET, 0, member_key);

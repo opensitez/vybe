@@ -46,7 +46,7 @@ fn call_ref_invokes_referenced_function() {
     let name_c = script.add_constant(Value::String(Arc::from("__identity")));
     script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
     script.emit_i32_const(7, 0);
-    script.emit_op_u8(opcode::Op::CALL_REF, 1, 0);
+    script.emit_op_u8_u8(opcode::Op::CALL_REF, 1, 1, 0);
 
     let mut identity = Chunk::new("identity");
     identity.arity = 1;
@@ -94,7 +94,7 @@ fn call_ref_with_multiple_args() {
     script.emit_op_u16(opcode::Op::GLOBAL_GET, name_c, 0);
     script.emit_i32_const(10, 0);
     script.emit_i32_const(32, 0);
-    script.emit_op_u8(opcode::Op::CALL_REF, 2, 0);
+    script.emit_op_u8_u8(opcode::Op::CALL_REF, 2, 1, 0);
 
     let mut add_fn = Chunk::new("add");
     add_fn.arity = 2;
@@ -113,7 +113,7 @@ fn call_ref_non_function_traps() {
     let mut vm = VM::new();
     let mut script = Chunk::new("<script>");
     script.emit_i32_const(123, 0);
-    script.emit_op_u8(opcode::Op::CALL_REF, 0, 0);
+    script.emit_op_u8_u8(opcode::Op::CALL_REF, 0, 1, 0);
 
     let err = vm.run(vec![script]).unwrap_err().to_string();
     assert!(err.contains("call") || err.contains("function"));

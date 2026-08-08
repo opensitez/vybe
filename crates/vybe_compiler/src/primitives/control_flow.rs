@@ -125,7 +125,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, iter_slot);
         self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, iter_fn_slot);
-        self.emit_u8(Op::CALL_REF, 0);
+        self.emit_u8_u8(Op::CALL_REF, 0, 1);
         self.emit_u16(Op::LOCAL_SET, it_slot);
 
         // Emit BLOCK + LOOP
@@ -143,7 +143,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, it_slot);
         self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, next_method_slot);
-        self.emit_u8(Op::CALL_REF, 0);
+        self.emit_u8_u8(Op::CALL_REF, 0, 1);
         self.emit_u16(Op::LOCAL_SET, step_slot);
 
         // ECMA-262 IteratorNext: next() must return an Object. A primitive
@@ -442,7 +442,7 @@ impl Compiler {
                     for arg in args {
                         self.compile_expr(&arg.value)?;
                     }
-                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                     return Ok(());
                 }
             }
@@ -1670,6 +1670,10 @@ impl Compiler {
         let l = self.line;
         self.chunks[self.current].emit_op_u8(op, v, l);
     }
+    pub(crate) fn emit_u8_u8(&mut self, op: Op, a: u8, b: u8) {
+        let l = self.line;
+        self.chunks[self.current].emit_op_u8_u8(op, a, b, l);
+    }
     /// Constant encoding lives in ONE place — `primitives::datetime::push_const`
     /// — so this method and the 1432 adapter call sites that use the free
     /// function cannot encode the same literal two different ways.
@@ -1724,7 +1728,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, iterator_slot);
         self.emit_global_write("__js_this");
         self.emit_u16(Op::LOCAL_GET, return_fn_slot);
-        self.emit_u8(Op::CALL_REF, 0);
+        self.emit_u8_u8(Op::CALL_REF, 0, 1);
         self.emit(Op::DROP);
         self.chunk().emit_end(line);
     }

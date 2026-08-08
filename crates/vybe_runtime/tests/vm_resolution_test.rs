@@ -267,7 +267,7 @@ fn call_fewer_args_pads_null() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_f64_const(10.0, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0); // only 1 arg
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0); // only 1 arg
 
     let result = vm.run(vec![main, f]).unwrap();
     assert!(matches!(result, Value::Null | Value::Undefined)); // 3rd arg padded with Undefined
@@ -395,7 +395,7 @@ fn method_on_object_via_struct_get_call() {
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
     main.emit_struct_field_op(Op::STRUCT_GET, 0, gx, 0);
     main.emit_op_u16(Op::LOCAL_GET, 1, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let result = vm.run(vec![main, method]).unwrap();
     assert_eq!(result.as_f64(), 11.0);
@@ -474,7 +474,7 @@ fn call_value_number_errors() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     chunk.emit_f64_const(42.0, 0);
-    chunk.emit_op_u8(Op::CALL_REF, 0, 0);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     let result = vm.run(vec![chunk]);
     assert!(result.is_err());
     assert!(format!("{}", result.unwrap_err()).contains("not callable"));
@@ -486,7 +486,7 @@ fn call_value_null_errors() {
     let mut chunk = Chunk::new("<script>");
     chunk.local_count = 1;
     chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    chunk.emit_op_u8(Op::CALL_REF, 0, 0);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     let result = vm.run(vec![chunk]);
     assert!(result.is_err());
 }

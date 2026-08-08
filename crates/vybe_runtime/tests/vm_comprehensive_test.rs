@@ -90,7 +90,7 @@ fn call_zero_args() {
     // ref_func chunk_index=1, upvalue_count=0
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0); // 0 upvalues
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let mut func = Chunk::new("func0");
     func.arity = 0;
@@ -110,7 +110,7 @@ fn call_one_arg() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_f64_const(5.0, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     let mut func = Chunk::new("add10");
     func.arity = 1;
@@ -133,7 +133,7 @@ fn call_two_args() {
     main.emit(0, 0);
     main.emit_f64_const(3.0, 0);
     main.emit_f64_const(7.0, 0);
-    main.emit_op_u8(Op::CALL_REF, 2, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
 
     let mut func = Chunk::new("mul");
     func.arity = 2;
@@ -157,7 +157,7 @@ fn call_three_args() {
     main.emit_i32_const(10, 0);
     main.emit_i32_const(20, 0);
     main.emit_i32_const(30, 0);
-    main.emit_op_u8(Op::CALL_REF, 3, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 3, 1, 0);
 
     let mut func = Chunk::new("sum3");
     func.arity = 3;
@@ -182,7 +182,7 @@ fn nested_function_calls() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_i32_const(5, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // chunk 1: outer(x) => calls inner(x+1)
     let mut outer = Chunk::new("outer");
@@ -193,7 +193,7 @@ fn nested_function_calls() {
     outer.emit_op_u16(Op::LOCAL_GET, 0, 0);
     outer.emit_i32_const(1, 0);
     outer.emit_op(Op::I32_ADD, 0);
-    outer.emit_op_u8(Op::CALL_REF, 1, 0);
+    outer.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     outer.emit_op(Op::RETURN, 0);
 
     // chunk 2: inner(x) => x * 2
@@ -218,7 +218,7 @@ fn recursive_call_factorial() {
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
     main.emit_i32_const(5, 0);
-    main.emit_op_u8(Op::CALL_REF, 1, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
 
     // chunk 1: fact(n)
     let mut fact = Chunk::new("fact");
@@ -240,7 +240,7 @@ fn recursive_call_factorial() {
     fact.emit_op_u16(Op::LOCAL_GET, 0, 0); // n
     fact.emit_i32_const(1, 0); // 1
     fact.emit_op(Op::I32_SUB, 0); // n-1
-    fact.emit_op_u8(Op::CALL_REF, 1, 0); // fact(n-1)
+    fact.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0); // fact(n-1)
     fact.emit_op(Op::I32_MUL, 0); // n * fact(n-1)
     fact.emit_op(Op::RETURN, 0);
 
@@ -1001,7 +1001,7 @@ fn function_return_value() {
     main.local_count = 1;
     main.emit_op_u16(Op::REF_FUNC, 1, 0);
     main.emit(0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let mut func = Chunk::new("greet");
     func.arity = 0;

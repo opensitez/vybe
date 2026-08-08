@@ -250,6 +250,13 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
         // `(Int, Mod)` is bound by Python (floored `%`), so `Int` can no longer
         // claim a blanket reason — only the slots nobody has measured.
         (T::Int, S::Mod) => return None,
+        // Same graduation, 2026-08-07: csharp/vb/powershell bind `(Int, Char)`
+        // (`(char)65` → "A") and `(Int, ToString)` / `(Double, ToString)`, so
+        // the blanket "no target chosen yet" below would now be stale for
+        // exactly these three pairs — which is the contradiction
+        // `no_language_binding_contradicts_an_unbound_reason` exists to catch.
+        // The rest of the numeric surface is still unmeasured.
+        (T::Int, S::Char) | (T::Int, S::ToString) | (T::Double, S::ToString) => return None,
         (T::Int, _) | (T::Double, _) | (T::BigInt, _) => {
             "No target chosen yet. The numeric slots were left out of the \
              default table deliberately: §3a measured STRING behaviour across \
@@ -626,6 +633,59 @@ impl Compiler {
         slot: ProtocolSlot,
     ) -> Option<&str> {
         self.profile.builtin_slots.get_or(defaults(), ty, slot)
+    }
+
+    /// How to render `expr` as a string, or `None` for the platform's ECMA
+    /// `String()` coercion.
+    ///
+    /// TWO rows, most specific first:
+    ///
+    /// 1. `(built-in type of expr, ToString)` — how THIS type renders.
+    ///    Python's `4.0` displays as `"4.0"` and Dart's as `"4.0"`, where ECMA
+    ///    `String()` answers `"4"`. That difference is a property of the
+    ///    TYPE, not of the site, so every rendering site gets it from one
+    ///    declaration instead of each front end wrapping its own values.
+    /// 2. `(String, ToString)` — the language's GENERAL rendering rule, which
+    ///    PHP declares for `.` (`true` → `"1"`, `null` → `""`).
+    ///
+    /// Falling from 1 to 2 is what keeps a language that declared only the
+    /// general rule unaffected: PHP binds no `(Double, ToString)`, so a float
+    /// operand still reaches `php.concat_stringify`.
+    pub(crate) fn to_string_target(&self, expr: &Expression) -> Option<String> {
+        self.builtin_type_of(expr)
+            .and_then(|ty| self.builtin_type_slot_target(ty, ProtocolSlot::ToString))
+            .or_else(|| self.builtin_type_slot_target(BuiltinType::String, ProtocolSlot::ToString))
+            .map(str::to_string)
+    }
+
+    /// The `to_string` bound for the receiver's OWN built-in type, never the
+    /// language's general rendering rule.
+    ///
+    /// This is what a primitive `x.ToString()` needs. The general row answers
+    /// "how does this language render ANY value", and for an object that
+    /// renderer calls `toString()` — so consulting it here would re-enter the
+    /// very call being compiled. The specific rows have no such loop: a
+    /// double's renderer formats a number and returns.
+    ///
+    /// `String` is excluded for the same reason and because it is a no-op
+    /// anyway — `"a".toString()` is `"a"`, which the ECMA coercion already
+    /// gives.
+    pub(crate) fn primitive_to_string_target(&self, expr: &Expression) -> Option<String> {
+        match self.builtin_type_of(expr)? {
+            BuiltinType::String => None,
+            ty => self
+                .builtin_type_slot_target(ty, ProtocolSlot::ToString)
+                .map(str::to_string) }
+    }
+
+    /// Render the value on TOS with the target [`to_string_target`] resolved,
+    /// or the ECMA `String()` coercion when nothing is bound.
+    ///
+    /// [`to_string_target`]: Self::to_string_target
+    pub(crate) fn emit_to_string_slot(&mut self, target: Option<&str>, line: u32) {
+        match target {
+            Some(target) => self.emit_slot_target(target, 1, line, "to_string"),
+            None => crate::primitives::strings::emit_to_string(self.chunk(), line) }
     }
 }
 

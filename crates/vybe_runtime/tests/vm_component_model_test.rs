@@ -1,6 +1,6 @@
 use std::sync::Arc;
-/// Tests for Component Model: canon_lift, canon_lower, type_import, type_export.
-use vybe_runtime::{Chunk, Op, TypeDef, VM, Value};
+/// Tests for Component Model: canon lift, canon lower, type_import, type_export.
+use vybe_runtime::{Chunk, TypeDef, VM, Value};
 
 #[test]
 fn canon_lift_stamps_type_id() {
@@ -17,8 +17,12 @@ fn canon_lift_stamps_type_id() {
     chunk.emit_string_const("Rex", 0);
     chunk.emit_array_new_fixed(0, 1, 0);
 
-    // canon_lift with Animal type
-    chunk.emit_op_u16(Op::CANON_LIFT, tid as u16, 0);
+    // canon lift with Animal type — a VM-implemented import under module
+    // "canon" (the CM defines canon built-ins as functions, not
+    // instructions); the typeidx rides the stack above the value.
+    let lift = chunk.add_import("canon", "lift");
+    chunk.emit_i32_const(tid as i32, 0);
+    chunk.emit_call(lift, 2, 0);
 
     let result = vm.run(vec![chunk]).unwrap();
     match &result {

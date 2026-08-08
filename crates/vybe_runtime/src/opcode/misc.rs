@@ -40,23 +40,27 @@ opcode_category! {
     [0x05] i64_trunc_sat_f32_u => None, "i64.trunc_sat_f32_u";
     [0x06] i64_trunc_sat_f64_s => None, "i64.trunc_sat_f64_s";
     [0x07] i64_trunc_sat_f64_u => None, "i64.trunc_sat_f64_u";
-    // Spec-correct operands:
-    //   memory.init   : u8 data_idx, u8 memory_idx (we encode 0, 0)
-    //   data.drop     : u8 data_idx
-    //   memory.copy   : u8 dst_mem, u8 src_mem  (both 0 for our one memory)
-    //   memory.fill   : u8 memory_idx
-    //   table.init    : u8 elem_idx, u8 table_idx
-    //   elem.drop     : u8 elem_idx
-    //   table.copy    : u8 dst_table, u8 src_table
-    //   table.grow/size/fill : u8 table_idx
-    [0x08] memory_init => U8, "memory.init";       // data_idx; mem_idx appended by emitter
-    [0x09] data_drop   => U8, "data.drop";
-    [0x0A] memory_copy => None, "memory.copy";     // emitter appends 0 0
-    [0x0B] memory_fill => None, "memory.fill";     // emitter appends 0
-    [0x0C] table_init  => U8_U8, "table.init";
-    [0x0D] elem_drop   => U8, "elem.drop";
-    [0x0E] table_copy  => U8_U8, "table.copy";
-    [0x0F] table_grow  => U8, "table.grow";        // u8 = table index
-    [0x10] table_size  => U8, "table.size";        // u8 = table index
-    [0x11] table_fill  => U8, "table.fill";        // u8 = table index
+    // Internal immediates are fixed u16 BE (the VM's uniform index width —
+    // spec indices are u32 LEBs; the reader rejects > u16::MAX loudly and
+    // the writer re-serializes as LEB):
+    //   memory.init   : u16 data_idx, u16 memidx
+    //   data.drop     : u16 data_idx
+    //   memory.copy   : u16 dst_mem, u16 src_mem
+    //   memory.fill   : u16 memidx
+    //   table.init    : u16 elem_idx, u16 table_idx
+    //   elem.drop     : u16 elem_idx
+    //   table.copy    : u16 dst_table, u16 src_table
+    //   table.grow/size/fill : u16 table_idx
+    // (The optional 0xEE memidx selector block is RETIRED — an undeclared
+    // conditional immediate desynced every format-driven walk.)
+    [0x08] memory_init => U16_U16, "memory.init";
+    [0x09] data_drop   => U16, "data.drop";
+    [0x0A] memory_copy => U16_U16, "memory.copy";
+    [0x0B] memory_fill => U16, "memory.fill";
+    [0x0C] table_init  => U16_U16, "table.init";
+    [0x0D] elem_drop   => U16, "elem.drop";
+    [0x0E] table_copy  => U16_U16, "table.copy";
+    [0x0F] table_grow  => U16, "table.grow";
+    [0x10] table_size  => U16, "table.size";
+    [0x11] table_fill  => U16, "table.fill";
 }

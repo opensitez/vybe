@@ -80,8 +80,7 @@ pub fn emit_sprintf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32
     chunks[current].emit(0u8, line); // upvalue count
     chunks[current].emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op(Op::CALL_REF, line);
-    chunks[current].emit(2u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 }
 
 /// Emit a direct sprintf helper call when the caller already has
@@ -103,8 +102,7 @@ pub fn emit_sprintf_from_array(chunks: &mut Vec<Chunk>, current: usize, line: u3
     chunks[current].emit(0u8, line); // upvalue count
     chunks[current].emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
-    chunks[current].emit_op(Op::CALL_REF, line);
-    chunks[current].emit(2u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 }
 
 /// Ensure the helper chunk exists in the chunk list.  Uses the chunk name
@@ -154,8 +152,7 @@ pub fn emit_sscanf(chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32)
     chunks[current].emit(0u8, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, inp_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fmt_slot, line);
-    chunks[current].emit_op(Op::CALL_REF, line);
-    chunks[current].emit(2u8, line);
+    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
 }
 
 fn ensure_sscanf_chunk(chunks: &mut Vec<Chunk>) -> usize {

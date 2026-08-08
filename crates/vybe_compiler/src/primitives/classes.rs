@@ -152,7 +152,7 @@ impl Compiler {
                 }
             };
             self.emit_global_read(&ctor_global);
-            self.emit_u8(Op::CALL_REF, 0);
+            self.emit_u8_u8(Op::CALL_REF, 0, 1);
         } else if is_value_type {
             self.emit_default_value_for_type_hint(type_hint);
         } else if self.profile.has_undefined_value {
@@ -907,8 +907,27 @@ impl Compiler {
         is_async: bool,
     ) -> Result<(), String> {
         let cname = self.canon(name);
-        self.defined_globals.insert(cname.clone());
-        self.defined_functions.insert(cname.clone());
+        // A function declaration BINDS its name in the enclosing scope — which
+        // is what `collect_declared_names` (mod.rs:1038) already reports it as.
+        // At module scope that binding is a global; inside another function it
+        // is a local of THAT frame, so two sibling frames each declaring `f`
+        // hold two bindings rather than racing for one global. Writing the
+        // global unconditionally meant the second frame compiled overwrote the
+        // first: two IIFEs each with `function f()` both resolved to the
+        // later one (`A B` printed `B B`).
+        //
+        // A language that keeps its callables in a namespace of their OWN
+        // declares it through `variable_namespace` (PHP's `$x` and `x()` are
+        // unrelated bindings — registry.rs:265). A function name there is not
+        // a variable binding at all, so it has no enclosing variable scope to
+        // land in and reaches the global function table: PHP's
+        // `function outer(){ function f(){} } outer(); f();` is legal and
+        // stays legal.
+        let binds_in_enclosing_scope = self.scopes.len() > 1 && self.variable_namespace.is_none();
+        if !binds_in_enclosing_scope {
+            self.defined_globals.insert(cname.clone());
+            self.defined_functions.insert(cname.clone());
+        }
         // Register top-level generator functions so `is_direct_generator_call`
         // detects them (`[...gen()]` spread, `foreach (gen() as ...)`). Scoped
         // to buffered-iterator languages (PHP): JS keeps its runtime
@@ -939,6 +958,11 @@ impl Compiler {
             self.function_return_types
                 .insert(cname.clone(), return_type.clone());
         }
+        // Reserve the binding BEFORE the body compiles, so a recursive nested
+        // call resolves to it as an upvalue into this frame instead of falling
+        // through to a global that has not been written yet. The value is
+        // stored into the slot once the closure exists, below.
+        let enclosing_fn_slot = binds_in_enclosing_scope.then(|| self.define_local(&cname));
         let name = &cname;
 
         let uses_js_arguments = self.profile.has_arguments_object
@@ -1489,9 +1513,21 @@ impl Compiler {
         } else if has_rest {
             self.emit_stamp_rest_metadata_on_stack(params.len().saturating_sub(1));
         }
-        self.emit_global_write(name);
+        // Through the resolver, not a raw `LOCAL_SET`: when an inner closure
+        // captures this name the frame boxes it into the shared env, and only
+        // `emit_var_set` knows to store through the box. A raw slot write left
+        // the box holding null, so the sibling closure's call found nothing.
+        if enclosing_fn_slot.is_some() {
+            self.emit_var_set(name);
+        } else {
+            self.emit_global_write(name);
+        }
         if let Some(callable_global) = self.source_function_callable_global_name(name) {
-            self.emit_global_read(name);
+            if enclosing_fn_slot.is_some() {
+                self.emit_var_get(name);
+            } else {
+                self.emit_global_read(name);
+            }
             self.emit_global_write(&callable_global);
         }
 
@@ -1921,7 +1957,7 @@ impl Compiler {
             .iter()
             .map(|(n, _, _, _)| n.clone())
             .collect();
-        let mut instance_field_types: HashMap<String, String> = class
+        let mut instance_field_types: HashMap<String, FieldType> = class
             .instance_fields
             .iter()
             .filter_map(|f| {
@@ -1933,26 +1969,9 @@ impl Compiler {
                             .unwrap_or_else(|| {
                                 self.js_member_storage_name_for_class(&class.name, &f.name)
                             }),
-                        Self::normalize_type_hint(t),
-                    )
-                })
-            })
-            .collect();
-        // Keyed exactly like `instance_field_types` above, so a lookup that
-        // finds a field's type also finds whether that type is a value type.
-        let instance_field_value_types: HashMap<String, String> = class
-            .instance_fields
-            .iter()
-            .filter_map(|f| {
-                f.value_type.as_ref().map(|value_type| {
-                    (
-                        field_storage_names
-                            .get(&self.canon(&f.name))
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                self.js_member_storage_name_for_class(&class.name, &f.name)
-                            }),
-                        value_type.clone(),
+                        FieldType {
+                            hint: Self::normalize_type_hint(t),
+                            value_type: f.value_type.clone() },
                     )
                 })
             })
@@ -1966,7 +1985,9 @@ impl Compiler {
                 } => {
                     instance_field_types
                         .entry(self.canon(name))
-                        .or_insert_with(|| Self::normalize_type_hint(type_hint));
+                        .or_insert_with(|| FieldType {
+                            hint: Self::normalize_type_hint(type_hint),
+                            value_type: None });
                 }
                 ClassMember::Property {
                     name,
@@ -1974,9 +1995,15 @@ impl Compiler {
                     modifiers,
                     ..
                 } if !modifiers.is_static => {
+                    // Events and properties are raw `ClassMember`s, not
+                    // `NormalField`s, so the declaration pass never resolved a
+                    // value type for them — `None` is what the separate map
+                    // held for these keys too.
                     instance_field_types
                         .entry(self.canon(name))
-                        .or_insert_with(|| Self::normalize_type_hint(type_hint));
+                        .or_insert_with(|| FieldType {
+                            hint: Self::normalize_type_hint(type_hint),
+                            value_type: None });
                 }
                 _ => {}
             }
@@ -2020,7 +2047,6 @@ impl Compiler {
                     .map(|method| method.canonical_name.clone())
                     .collect(),
                 instance_field_types,
-                instance_field_value_types,
                 static_fields: static_member_names,
                 static_field_types: class
                     .static_fields
@@ -2608,7 +2634,7 @@ impl Compiler {
                     .is_some_and(|rt| rt.eq_ignore_ascii_case(&class.name));
                 if returns_self_type && body_has_result_member_assign(&m.body) {
                     cc.emit_var_get(&class.name);
-                    cc.emit_u8(Op::CALL_REF, 0);
+                    cc.emit_u8_u8(Op::CALL_REF, 0, 1);
                 } else {
                     cc.emit_null();
                 }
@@ -2856,6 +2882,19 @@ impl Compiler {
 
             if let Some(getter) = &p.getter {
                 let get_name = format!("__get_{}", pname_canon);
+                // Publish this property's slot, the same way the method loop
+                // above publishes a method's. A PROPERTY fills a protocol role
+                // just as often as a method does — Dart spells `int get length`
+                // and `bool get isEmpty`, which are the shared `Len` and
+                // `IsEmpty` roles — and the normalizers already record it in
+                // `special_methods`. Only the METHOD loop consumed that, so a
+                // property's slot was computed and dropped, and a class's
+                // `length` stayed reachable by NAME alone. Keyed by the getter's
+                // storage name, because that is what the bind sites see.
+                if let Some(slot) = class_slots.get(p.canonical_name.as_str()) {
+                    self.current_class_slot_keys
+                        .insert(get_name.clone(), vybe_ast::protocol_slot_key(*slot));
+                }
                 let ci = self.chunks.len();
                 let chunk = common::functions::create_function_chunk(&get_name, 1);
                 self.chunks.push(chunk);
@@ -3208,7 +3247,7 @@ impl Compiler {
                 for expr in &this_args {
                     self.compile_expr(expr)?;
                 }
-                self.emit_u8(Op::CALL_REF, this_args.len() as u8);
+                self.emit_u8_u8(Op::CALL_REF, this_args.len() as u8, 1);
                 self.emit_u16(Op::LOCAL_SET, this_slot);
                 if let Some((body, _, _)) = ctor_body {
                     for stmt in body {
@@ -3354,7 +3393,7 @@ impl Compiler {
                                         self.compile_expr(a)?;
                                     }
                                     self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_u8(Op::CALL_REF, bargs.len() as u8 + 1);
+                                    self.emit_u8_u8(Op::CALL_REF, bargs.len() as u8 + 1, 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                 } else {
                                     let canon_name = self.canon(name);
@@ -3383,7 +3422,7 @@ impl Compiler {
                                     self.emit_default_js_new_target(name);
                                     self.emit_parent_ctor_value(parent_name);
                                     self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_u8(Op::CALL_REF, 1);
+                                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                 } else {
                                     let canon_name = self.canon(name);
@@ -3433,7 +3472,7 @@ impl Compiler {
                                         self.emit_u16(Op::LOCAL_GET, arg_index as u16);
                                     }
                                     self.emit_u16(Op::LOCAL_GET, this_slot);
-                                    self.emit_u8(Op::CALL_REF, count + 1);
+                                    self.emit_u8_u8(Op::CALL_REF, count + 1, 1);
                                     self.emit_u16(Op::LOCAL_SET, this_slot);
                                     inst!(self, core_wasm::i32_const, 1);
                                     self.emit_u16(Op::LOCAL_SET, parent_called_slot);
@@ -3445,7 +3484,7 @@ impl Compiler {
                                 self.chunks[self.current].emit_if(line);
                                 self.emit_u16(Op::LOCAL_GET, parent_ctor_slot);
                                 self.emit_u16(Op::LOCAL_GET, this_slot);
-                                self.emit_u8(Op::CALL_REF, 1);
+                                self.emit_u8_u8(Op::CALL_REF, 1, 1);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                                 self.chunks[self.current].emit_end(line);
                             } else {
@@ -3453,7 +3492,7 @@ impl Compiler {
                                     self.emit_u16(Op::LOCAL_GET, i as u16);
                                 }
                                 self.emit_u16(Op::LOCAL_GET, this_slot);
-                                self.emit_u8(Op::CALL_REF, user_arity + 1);
+                                self.emit_u8_u8(Op::CALL_REF, user_arity + 1, 1);
                                 self.emit_u16(Op::LOCAL_SET, this_slot);
                             }
                         } else if self.profile.ecma_error_object_shape
@@ -4057,14 +4096,14 @@ impl Compiler {
                 for arg_index in 0..count {
                     self.emit_u16(Op::LOCAL_GET, arg_index as u16);
                 }
-                self.emit_u8(Op::CALL_REF, count as u8);
+                self.emit_u8_u8(Op::CALL_REF, count as u8, 1);
                 self.emit_return_through_finally(1)?;
             }
             self.chunks[self.current].emit_end(line);
         }
         if let Some((_, _, helper_idx, helper_captures, _)) = helper_for_count(0) {
             emit_helper_ref(self, *helper_idx, helper_captures)?;
-            self.emit_u8(Op::CALL_REF, 0);
+            self.emit_u8_u8(Op::CALL_REF, 0, 1);
         } else {
             self.emit_null();
         }
@@ -4292,19 +4331,6 @@ impl Compiler {
                 }
                 let key = self.str_const(mname);
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, key);
-                // Publish the PROTOCOL SLOT alongside the method's own name, so
-                // a prototype-dispatch language (JS, PHP, Dart) reaches its
-                // roles through the same numeric key as a bind-dispatch one
-                // (Python, Ruby). Both paths install methods, so both have to
-                // stamp, or the slot exists in half the languages.
-                //
-                // `proto[slot] = proto[mname]`, emitted as its own sequence
-                // rather than folded into the install above: `STRUCT_SET` pops
-                // the VALUE and leaves the TARGET, so stamping mid-sequence
-                // would have to push the funcref a second time — the earlier
-                // shape dup'd the funcref and let it serve as both target and
-                // value, which stamped `fn[slot] = fn` (a cycle on the method
-                // object) and left the prototype without the slot entirely.
                 // Publish the PROTOCOL SLOT alongside the method's own name, so
                 // a prototype-dispatch language (JS, PHP, Dart) reaches its
                 // roles through the same numeric key as a bind-dispatch one
@@ -4597,7 +4623,7 @@ impl Compiler {
             self.set_js_this_from_stack();
             self.emit_u16(Op::REF_FUNC, *static_init_ci as u16);
             self.chunk().emit(0, line);
-            self.emit_u8(Op::CALL_REF, 0);
+            self.emit_u8_u8(Op::CALL_REF, 0, 1);
             let result_slot = self.define_local("__js_static_init_result");
             self.emit_u16(Op::LOCAL_SET, result_slot);
             self.restore_js_this(saved_js_this);
@@ -6065,7 +6091,7 @@ pub fn emit_auto_init_call(chunk: &mut Chunk, this_slot: u16, method_name: &str,
     let name_idx = chunk.add_constant(Value::String(Arc::from(method_name.to_lowercase())));
     chunk.emit_struct_field_op(Op::STRUCT_GET, 0, name_idx, line); // [method_ref]
     chunk.emit_op_u16(Op::LOCAL_GET, this_slot, line); // [method_ref, this]
-    chunk.emit_op_u8(Op::CALL_REF, 1, line); // call(1) → [result]
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line); // call(1) → [result]
     chunk.emit_op(Op::DROP, line); // []
 }
 

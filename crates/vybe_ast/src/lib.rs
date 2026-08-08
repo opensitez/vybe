@@ -2231,6 +2231,11 @@ pub enum ProtocolSlot {
     Bool,
     Int,    // Python __int__
     Float,  // Python __float__
+    /// Coerce to a CHARACTER — C# `(char)n`, Pascal `Chr(n)`. The mirror of
+    /// [`Int`](ProtocolSlot::Int) on a char, which reads a code point out;
+    /// this one puts one back. Named by `builtinslotplan.md` as the
+    /// replacement for `arrays.rs`'s `name == "pascal"` char coercion.
+    Char,
     Bytes,  // Python __bytes__
     Format, // Python __format__
     /// Serialization hooks — PHP `__serialize` / `__sleep`, `jsonSerialize`.
@@ -2289,7 +2294,17 @@ pub enum ProtocolSlot {
     RShift,
 
     // ── Container protocol ──────────────────────────────────────────
-    Len,      // len() / length / size / Count
+    Len, // len() / length / size / Count
+    /// Emptiness as its OWN question — Dart `isEmpty`, Java/Kotlin `isEmpty()`,
+    /// Ruby `empty?`, PHP `empty()`, C# `Any()`/`IsEmpty`, Pascal `IsEmpty`.
+    ///
+    /// Not derived from [`Len`](ProtocolSlot::Len) even though `len == 0`
+    /// answers it for most receivers: a lazy sequence can know it is non-empty
+    /// without counting, and a language that spells only `isEmpty` on a type
+    /// (Dart's `StringBuffer`) would otherwise have to publish a length it does
+    /// not mean. One slot per QUESTION is what keeps the spelling in the
+    /// language and the dispatch on the receiver.
+    IsEmpty,
     GetItem,  // Python __getitem__, Ruby [], Dart operator [], PHP offsetGet
     SetItem,  // Python __setitem__, Ruby []=, Dart operator []=, PHP offsetSet
     DelItem,  // Python __delitem__, PHP offsetUnset
@@ -2423,7 +2438,7 @@ impl ProtocolSlot {
     /// Generated from the same exhaustive `slot_id` match as
     /// [`Self::as_key`], so it cannot drift from the enum without `slot_id`
     /// failing to compile first.
-    pub const ALL: [ProtocolSlot; 101] = [
+    pub const ALL: [ProtocolSlot; 103] = [
         ProtocolSlot::Destructor,
         ProtocolSlot::ToString,
         ProtocolSlot::Repr,
@@ -2525,6 +2540,8 @@ impl ProtocolSlot {
         ProtocolSlot::IsSpace,
         ProtocolSlot::IsUpper,
         ProtocolSlot::IsLower,
+        ProtocolSlot::Char,
+        ProtocolSlot::IsEmpty,
     ];
 
     /// The slot's stable STRING key, for profile declarations.
@@ -2642,7 +2659,9 @@ impl ProtocolSlot {
             IsAlnum => "is_alnum",
             IsSpace => "is_space",
             IsUpper => "is_upper",
-            IsLower => "is_lower" }
+            IsLower => "is_lower",
+            Char => "char",
+            IsEmpty => "is_empty" }
     }
 
     /// The slot a profile's `slot = "..."` names, or `None` if unrecognised.
@@ -2754,6 +2773,8 @@ impl ProtocolSlot {
             "is_space" => IsSpace,
             "is_upper" => IsUpper,
             "is_lower" => IsLower,
+            "char" => Char,
+            "is_empty" => IsEmpty,
             _ => return None })
     }
 
@@ -2862,7 +2883,12 @@ impl ProtocolSlot {
             IsAlnum => 97,
             IsSpace => 98,
             IsUpper => 99,
-            IsLower => 100 }
+            IsLower => 100,
+            // Appended 2026-08-07 — the coerce-to-char slot.
+            Char => 101,
+            // Appended 2026-08-07 — emptiness, its own question (see the
+            // variant's doc). Ids continue from 101; existing ones unmoved.
+            IsEmpty => 102 }
     }
 }
 
@@ -4175,7 +4201,7 @@ mod protocol_slot_key_tests {
                 panic!("key {key:?} is shared by {other:?} and {slot:?}");
             }
         }
-        assert_eq!(count, 101, "ProtocolSlot::ALL lost a slot");
+        assert_eq!(count, 102, "ProtocolSlot::ALL lost a slot");
     }
 
     /// An unrecognised key is ignored, not an error: a profile written against

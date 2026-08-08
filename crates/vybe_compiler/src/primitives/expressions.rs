@@ -247,7 +247,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, handler_slot);
         self.emit_u16(Op::LOCAL_GET, obj_slot);
         self.emit_const(Value::String(Arc::from(field_name)));
-        self.chunk().emit_op_u8(Op::CALL_REF, 2, line);
+        self.chunk().emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         self.emit_u16(Op::LOCAL_SET, value_slot);
         self.chunk().emit_end(line);
 
@@ -894,7 +894,7 @@ impl Compiler {
                         .is_none_or(|arity| *arity == 0)
                 {
                     self.emit_var_get(name);
-                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit_u8_u8(Op::CALL_REF, 0, 1);
                     return Ok(());
                 }
 
@@ -1226,9 +1226,14 @@ impl Compiler {
                 if self.try_compile_python_set_binary_operator(op, left, right)? {
                     return Ok(());
                 }
-                if self.try_compile_csharp_binary_operator(op, left, right)? {
-                    return Ok(());
-                }
+                // `try_compile_csharp_binary_operator` stood here: a table of
+                // ECMA-335 operator spellings (`op_Equality`, `op_Addition`, …)
+                // in SHARED code, matching a .NET name to decide an operator.
+                // C# now publishes `ProtocolSlot::Eq`/`Add`/… from its walker
+                // like VB does, so the ordinary rich-operator path below asks
+                // the CLASS instead of matching a name — and a type that never
+                // declared an operator (an enum) no longer gets a call to one
+                // synthesized for it. See `flexclassplan.md` §2c-bis.
                 if self.try_compile_dotnet_datetime_timespan_binary_operator(op, left, right)? {
                     return Ok(());
                 }
@@ -1278,26 +1283,19 @@ impl Compiler {
                 // shared `to_string` is the default.
                 if self.profile.concat_stringifies_operands && *op == BinOp::Concat {
                     let line = self.line;
-                    // `[builtin_slots.string] to_string` — was
+                    // `to_string`, resolved PER OPERAND — was
                     // `LanguageHooks::concat_stringify`, looked up by language
-                    // NAME (builtinslotplan.md §3c). Undeclared falls back to
+                    // NAME (builtinslotplan.md §3c). Each operand asks its own
+                    // built-in type first and only then the language's general
+                    // rule, so Lua's `1.0 .. ""` renders `"1.0"` from
+                    // `[builtin_slots.double] to_string` while everything else
+                    // still reaches the general one. Undeclared falls back to
                     // the shared ECMA `String()` coercion, so a language that
                     // declares nothing is unaffected.
-                    let stringify = self
-                        .profile
-                        .builtin_slots
-                        .get(
-                            vybe_ast::builtin_slots::BuiltinType::String,
-                            vybe_ast::ProtocolSlot::ToString,
-                        )
-                        .map(str::to_string);
                     for operand in [left, right] {
+                        let stringify = self.to_string_target(operand);
                         self.compile_expr(operand)?;
-                        match &stringify {
-                            Some(target) => {
-                                self.emit_slot_target(target, 1, line, "string to_string")
-                            }
-                            None => common::strings::emit_to_string(self.chunk(), line) }
+                        self.emit_to_string_slot(stringify.as_deref(), line);
                     }
                     self.compile_binop(op);
                     return Ok(());
@@ -1761,7 +1759,7 @@ impl Compiler {
                     for a in args {
                         self.compile_expr(&a.value)?;
                     }
-                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                    self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                     self.chunk().emit_end(undef_line);
                     self.chunk().emit_end(line);
                 } else {
@@ -1812,13 +1810,30 @@ impl Compiler {
                         return Ok(());
                     }
                 }
-                // `Task<T>.Result` blocks until the task completes — a dotnet
-                // trait, not a VB one. Scoped to `name == "vb"` it left C#
-                // printing nothing for `t.Result`. `canon` matches the way the
-                // profile says identifiers match, so a case-sensitive dotnet
-                // language does not also catch a member named `result`.
-                if self.profile.namespaces.use_dotnet && self.canon(field) == self.canon("Result")
-                {
+                // Reading a task's result BLOCKS until it completes. That is a
+                // property of the receiver's TYPE, and the type says so itself:
+                // `Task` declares `Result` in the namespace tree
+                // (`component_classes_threading`). Asking the tree replaces a
+                // language gate that had already been wrong once — scoped to
+                // `name == "vb"` it left C# printing nothing for `t.Result`.
+                //
+                // A receiver whose declared type does NOT declare `Result`
+                // (a user class with its own `Result` property, any language
+                // with no task type) never reaches the probe, so an ordinary
+                // member read stays an ordinary member read.
+                let receiver_declares_result = self
+                    .infer_expr_type_hint(object)
+                    .map(|hint| self.resolve_source_type_alias(&hint))
+                    .map(|hint| Self::normalize_type_hint(&hint))
+                    .is_some_and(|hint| {
+                        vybe_runtime::namespaces::lookup_type_instance_member(
+                            &self.profile.namespaces.type_scopes,
+                            &hint,
+                            "Result",
+                        )
+                        .is_some()
+                    });
+                if receiver_declares_result && self.canon(field) == self.canon("Result") {
                     let obj_slot = self.define_local("__dotnet_task_result_obj");
                     let value_slot = self.define_local("__dotnet_task_result_value");
                     self.compile_expr(object)?;
@@ -2290,7 +2305,7 @@ impl Compiler {
                         && self.scope().resolve(obj_name).is_none();
                     if is_ctor && is_known_class {
                         self.emit_var_get(obj_name);
-                        self.emit_u8(Op::CALL_REF, 0);
+                        self.emit_u8_u8(Op::CALL_REF, 0, 1);
                         return Ok(());
                     }
 
@@ -2325,7 +2340,7 @@ impl Compiler {
                                 self.emit_u16(Op::LOCAL_SET, cls_tmp);
                                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                                 self.emit_u16(Op::LOCAL_GET, cls_tmp);
-                                self.emit_u8(Op::CALL_REF, 1);
+                                self.emit_u8_u8(Op::CALL_REF, 1, 1);
                                 return Ok(());
                             }
                         }
@@ -2373,11 +2388,32 @@ impl Compiler {
                                         ..
                                     },
                                 ),
-                            ) => {
+                            ) if crate::primitives::instructions::host::CapabilityContext::get()
+                                .functions
+                                .has(&module, &func) =>
+                            {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, 0);
                                 return Ok(());
                             }
+                            // An ESM namespace alias resolves `alias.member` to a
+                            // host import WITHOUT checking the member is an
+                            // exported function — fine for a CALL, wrong for a
+                            // bare member READ. JS aliases `Object` to
+                            // `ecma:object`, so `Object.prototype` resolved to a
+                            // host fn that does not exist and emitted an
+                            // unresolvable import. The registry is the one source
+                            // of truth for what the host exports; when it says no,
+                            // fall through to ordinary member access instead of
+                            // emitting an import that cannot link.
+                            Some(
+                                super::resolver::Resolution::HostImport { .. }
+                                | super::resolver::Resolution::Tree(
+                                    crate::primitives::namespaces::ResolutionTarget::HostCall {
+                                        ..
+                                    },
+                                ),
+                            ) => {}
                             Some(super::resolver::Resolution::Tree(
                                 crate::primitives::namespaces::ResolutionTarget::Const(value),
                             )) => {
@@ -2393,11 +2429,17 @@ impl Compiler {
                                     ) => {
                                         self.emit_common(&emit, 0, self.line);
                                     }
+                                    // Same registry check as the bare
+                                    // `HostImport` arm: never emit an import the
+                                    // host does not export.
                                     crate::primitives::namespaces::ResolutionTarget::HostCall {
                                         module,
                                         func,
                                         ..
-                                    } => {
+                                    } if crate::primitives::instructions::host::CapabilityContext::get()
+                                        .functions
+                                        .has(&module, &func) =>
+                                    {
                                         let idx = self.import(&module, &func);
                                         self.emit_host_call(idx, 0);
                                     }
@@ -2486,7 +2528,7 @@ impl Compiler {
                         self.chunk().emit_else(line);
                         self.emit_u16(Op::LOCAL_GET, getter_slot);
                         self.emit_js_current_this_value();
-                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
                         self.chunk().emit_end(line);
                         self.emit_u16(Op::LOCAL_SET, result_slot);
                         self.restore_js_this(saved_this);
@@ -2549,7 +2591,7 @@ impl Compiler {
                     self.set_js_this_from_stack();
                     self.emit_u16(Op::LOCAL_GET, getter_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.emit_u8(Op::CALL_REF, 1);
+                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
                     let result_slot = self.define_local("__js_private_member_result");
                     self.emit_u16(Op::LOCAL_SET, result_slot);
                     self.restore_js_this(saved_this);
@@ -2767,7 +2809,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, fn_slot);
                             self.emit_u16(Op::LOCAL_GET, fn_slot);
                             self.emit_u16(Op::LOCAL_GET, obj_slot);
-                            self.emit_u8(Op::CALL_REF, 1);
+                            self.emit_u8_u8(Op::CALL_REF, 1, 1);
                             return Ok(());
                         }
                     }
@@ -3187,7 +3229,7 @@ impl Compiler {
 
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    self.emit_u8(Op::CALL_REF, 1);
+                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
                     self.chunk().emit_else(line);
                     self.emit_u16(Op::LOCAL_GET, value_slot);
                     self.chunk().emit_end(line);
@@ -3355,7 +3397,7 @@ impl Compiler {
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, getter);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, key_slot);
-                    self.chunk().emit_op_u8(Op::CALL_REF, 2, line);
+                    self.chunk().emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
                     return Ok(());
                 }
                 // A Range used as the index is a slice operation
@@ -3779,35 +3821,17 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, val_slot);
                     self.chunk().emit_end(lookup_line);
                     self.chunk().emit_end(line);
+                // A receiver whose type declares a writable indexer reads
+                // through the accessor that type declared. The WRITE side in
+                // `statements.rs` asks the same question of the same tree
+                // entry, so the two directions cannot drift.
+                } else if let Some((get_emit, _)) = self.declared_indexer_emits(object) {
+                    self.compile_expr(object)?;
+                    self.compile_collection_key(object, index)?;
+                    let line = self.line;
+                    self.emit_common(&get_emit, 2, line);
+                    return Ok(());
                 } else if self.profile.namespaces.use_dotnet {
-                    // `StringBuilder` is the one type name here that is NOT
-                    // exclusive to the dotnet tree — jvm registers it too. And
-                    // `dotnet.sb_index_get` is a PLATFORM-owned emit: the
-                    // `dotnet` prefix only dispatches when
-                    // `vybe_platform_dotnet` is linked, which kotlin/python are
-                    // not. Ungating this would emit an unroutable name in a
-                    // Kotlin `sb[i]`, so the gate stays until the read/write
-                    // pair moves to a shared `common:` primitive. The WRITE side
-                    // in `statements.rs` is gated for the same reason — the two
-                    // must agree about the storage shape.
-                    if self
-                            .infer_expr_type_hint(object)
-                            .as_deref()
-                            .map(Self::normalize_type_hint)
-                            .is_some_and(|type_hint| {
-                                type_hint
-                                    .rsplit('.')
-                                    .next()
-                                    .is_some_and(|name| name.eq_ignore_ascii_case("StringBuilder"))
-                            })
-                    {
-                        self.compile_expr(object)?;
-                        self.compile_collection_key(object, index)?;
-                        let line = self.line;
-                        self.emit_common("dotnet.sb_index_get", 2, line);
-                        return Ok(());
-                    }
-
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__index_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -3848,7 +3872,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_GET, getter_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.compile_collection_key(object, index)?;
-                    self.emit_u8(Op::CALL_REF, 2);
+                    self.emit_u8_u8(Op::CALL_REF, 2, 1);
                     self.chunk().emit_end(getter_line);
                     if let Some(line) = null_safe_if {
                         self.chunk().emit_end(line);
@@ -4269,7 +4293,7 @@ impl Compiler {
                             "__js_prev_this_new_{}",
                             self.chunks[self.current].local_count
                         ));
-                        self.emit_u8(Op::CALL_REF, effective_len as u8);
+                        self.emit_u8_u8(Op::CALL_REF, effective_len as u8, 1);
                         self.restore_js_this(saved_this);
                         self.restore_js_new_target(saved_nt);
                         return Ok(());
@@ -4319,7 +4343,7 @@ impl Compiler {
                                     for a in args {
                                         self.compile_expr(&a.value)?;
                                     }
-                                    self.emit_u8(Op::CALL_REF, args.len() as u8);
+                                    self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                                     return Ok(());
                                 }
                             }
@@ -4339,7 +4363,7 @@ impl Compiler {
                             for a in args {
                                 self.compile_expr(&a.value)?;
                             }
-                            self.emit_u8(Op::CALL_REF, args.len() as u8);
+                            self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                             return Ok(());
                         }
                     }
@@ -4629,7 +4653,7 @@ impl Compiler {
                         for a in args {
                             self.compile_expr(&a.value)?;
                         }
-                        self.emit_u8(Op::CALL_REF, args.len() as u8);
+                        self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
 
                         if bare_str.eq_ignore_ascii_case("list")
                             || bare_str.eq_ignore_ascii_case("arraylist")
@@ -4673,7 +4697,7 @@ impl Compiler {
                                 for a in args {
                                     self.compile_expr(&a.value)?;
                                 }
-                                self.emit_u8(Op::CALL_REF, args.len() as u8);
+                                self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                                 return Ok(());
                             }
                         }
@@ -4703,7 +4727,7 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(&a.value)?;
                 }
-                self.emit_u8(Op::CALL_REF, args.len() as u8);
+                self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
             }
 
             // ── Assignment as expression ────────────────────────────────
@@ -5382,19 +5406,13 @@ impl Compiler {
                 // arm already conceded that with `ecma_to_primitive` — a bool
                 // for one language — so the general form is the binding.
                 //
-                // Same `[builtin_slots.string] to_string` the `.`/`..` concat
-                // operator reads (§3i). Interpolation was hardcoded to
-                // `strings::emit_to_string`, which is the ECMA coercion, so
-                // `"{$x}"` on a null printed `null` and on a missing array key
-                // `undefined` where PHP prints nothing.
-                let interp_to_string = self
-                    .profile
-                    .builtin_slots
-                    .get(
-                        vybe_ast::builtin_slots::BuiltinType::String,
-                        vybe_ast::ProtocolSlot::ToString,
-                    )
-                    .map(str::to_string);
+                // Same `to_string` the `.`/`..` concat operator reads (§3i),
+                // resolved PER SUBSTITUTION so a part whose built-in type is
+                // known uses that type's rule: `f"{x}"` on a Python float
+                // renders `4.0`, not ECMA `String()`'s `4`. Interpolation was
+                // hardcoded to `strings::emit_to_string`, which is the ECMA
+                // coercion, so `"{$x}"` on a null printed `null` and on a
+                // missing array key `undefined` where PHP prints nothing.
                 self.emit_const(Value::String(Arc::from("")));
                 let acc_slot = self.define_local("__interp_acc");
                 self.emit_u16(Op::LOCAL_SET, acc_slot);
@@ -5434,16 +5452,13 @@ impl Compiler {
                                 let line = self.line;
                                 common::strings::emit_to_string(self.chunk(), line);
                             } else {
+                                let interp_to_string = self.to_string_target(e);
                                 self.compile_expr(e)?;
                                 let value_slot = self.define_local("__interp_value");
                                 self.emit_u16(Op::LOCAL_SET, value_slot);
                                 self.emit_u16(Op::LOCAL_GET, value_slot);
                                 let line = self.line;
-                                match &interp_to_string {
-                                    Some(target) => {
-                                        self.emit_slot_target(target, 1, line, "string to_string")
-                                    }
-                                    None => common::strings::emit_to_string(self.chunk(), line) }
+                                self.emit_to_string_slot(interp_to_string.as_deref(), line);
                             }
                         }
                     }
@@ -5762,13 +5777,25 @@ impl Compiler {
                         }
                     }
 
-                    if self.profile.namespaces.use_dotnet && canon_type == "char" {
-                        self.compile_expr(inner)?;
-                        let num = self.import("ecma:number", "Number");
-                        self.emit_host_call(num, 1);
-                        self.emit(Op::F64_FLOOR);
-                        fn_call!(self, "wasm:js-string", "fromCharCode", 1);
-                        return Ok(());
+                    // Narrowing a number to a `char` is the MIRROR coercion, and
+                    // it reads the mirror slot: `[builtin_slots.int] char`. The
+                    // two directions are declared by the same profile and land
+                    // on the two halves of one primitive, so a language cannot
+                    // end up converting one way and not the other.
+                    if canon_type == "char" {
+                        if let Some(target) = self.profile.builtin_slots.get(
+                            vybe_ast::builtin_slots::BuiltinType::Int,
+                            vybe_ast::ProtocolSlot::Char,
+                        ) {
+                            if let Some(vybe_runtime::profile::BuiltinEmit::Common(emit)) =
+                                vybe_runtime::profile::parse_emit_target(target)
+                            {
+                                self.compile_expr(inner)?;
+                                let line = self.line;
+                                self.emit_common(&emit, 1, line);
+                                return Ok(());
+                            }
+                        }
                     }
 
                     // Widening a `char` to an integer reads its UTF-16 code
@@ -5783,7 +5810,19 @@ impl Compiler {
                         canon_type.as_str(),
                         "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort" | "sbyte"
                     ) {
+                        // A `char` CAST is char-like by its own shape, and the
+                        // inference pass does not carry a cast's type through:
+                        // `[int][char]'A'` measured 0 against real pwsh's 65,
+                        // because the operand read as "not a char" and fell to
+                        // `Number("A")`. The two casts are the two directions of
+                        // one coercion, so the inner one has to be visible to
+                        // the outer one.
                         let is_char_like = matches!(&inner.kind, ExprKind::Lit(Literal::Char(_)))
+                            || matches!(
+                                &inner.kind,
+                                ExprKind::Cast { type_name, .. }
+                                    if self.canon(type_name) == "char"
+                            )
                             || self
                                 .infer_expr_type_hint(inner)
                                 .is_some_and(|hint| Self::normalize_type_hint(&hint) == "char");
@@ -6078,7 +6117,7 @@ impl Compiler {
 
                             let value_slot = self.define_local("__cast_struct_value");
                             self.emit_global_read(&ctor_global);
-                            self.emit_u8(Op::CALL_REF, 0);
+                            self.emit_u8_u8(Op::CALL_REF, 0, 1);
                             self.emit_u16(Op::LOCAL_SET, value_slot);
 
                             if let Some(fields) = self
@@ -6119,7 +6158,7 @@ impl Compiler {
                     if shadows_cast {
                         self.emit_var_get(type_name);
                         self.compile_expr(inner)?;
-                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
                         return Ok(());
                     }
                 }
@@ -6526,7 +6565,7 @@ impl Compiler {
                                 for a in args {
                                     self.compile_expr(&a.value)?;
                                 }
-                                self.emit_u8(Op::CALL_REF, args.len() as u8);
+                                self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                             }
                             if let Some(slot) = self
                                 .scope()
@@ -6568,7 +6607,7 @@ impl Compiler {
                             for a in args {
                                 self.compile_expr(&a.value)?;
                             }
-                            self.emit_u8(Op::CALL_REF, args.len() as u8);
+                            self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                             let result_slot = self.define_local("__js_super_expr_result");
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.restore_js_this(saved_js_this);
@@ -6581,7 +6620,7 @@ impl Compiler {
                             for a in args {
                                 self.compile_expr(&a.value)?;
                             }
-                            self.emit_u8(Op::CALL_REF, (args.len() + 1) as u8);
+                            self.emit_u8_u8(Op::CALL_REF, (args.len() + 1) as u8, 1);
                         } else {
                             self.emit_null();
                         }
@@ -7127,7 +7166,7 @@ impl Compiler {
                         let getter_key = self.str_const(&getter_name);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, getter_key);
                         self.emit_u16(Op::LOCAL_GET, class_slot);
-                        self.emit_u8(Op::CALL_REF, 1);
+                        self.emit_u8_u8(Op::CALL_REF, 1, 1);
 
                         self.chunk().emit_else(line);
                         self.emit_js_private_brand_check(class_slot, &field_name)?;
@@ -7229,7 +7268,7 @@ impl Compiler {
                 self.emit_global_read(helper);
                 self.compile_expr(left)?;
                 self.compile_expr(right)?;
-                self.emit_u8(Op::CALL_REF, 2);
+                self.emit_u8_u8(Op::CALL_REF, 2, 1);
                 return Ok(true);
             }
         }
@@ -7315,77 +7354,6 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
         self.compile_binop(op);
         self.chunk().emit_end(line);
-        Ok(true)
-    }
-
-    fn try_compile_csharp_binary_operator(
-        &mut self,
-        op: &BinOp,
-        left: &Expression,
-        right: &Expression,
-    ) -> Result<bool, String> {
-        // No language gate: the operands must share a declared type whose class
-        // declares `op_Addition`/`op_Equality`/… — the CLR's mangled operator
-        // spellings. A class only carries those names if a frontend emitted
-        // them, so a language that does not speak them resolves nothing here
-        // and the caller falls through to the ordinary binary path.
-        let left_type = self.infer_expr_type_hint(left);
-        let right_type = self.infer_expr_type_hint(right);
-        let (Some(left_type), Some(right_type)) = (left_type, right_type) else {
-            return Ok(false);
-        };
-        if Self::normalize_type_hint(&left_type) != Self::normalize_type_hint(&right_type) {
-            return Ok(false);
-        }
-
-        let arg_exprs = [left, right];
-        let (method_name, negate_result) = match op {
-            BinOp::Add => ("op_Addition", false),
-            BinOp::Eq => ("op_Equality", false),
-            BinOp::NotEq
-                if self.pending_class_has_method_name_for_type(&left_type, "op_Inequality") =>
-            {
-                ("op_Inequality", false)
-            }
-            BinOp::NotEq
-                if self.pending_class_has_method_name_for_type(&left_type, "op_Equality") =>
-            {
-                ("op_Equality", true)
-            }
-            _ => return Ok(false) };
-
-        if let Some(chunk_idx) =
-            self.resolve_static_method_overload_chunk_for_type(&left_type, method_name, &arg_exprs)
-        {
-            self.emit_direct_static_method_call(chunk_idx, &arg_exprs)?;
-            if negate_result {
-                {
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                };
-            }
-            return Ok(true);
-        }
-
-        let Some(class_name) = self.resolve_pending_class_name_for_type_hint(&left_type) else {
-            return Ok(false);
-        };
-
-        let callee = Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident(&class_name)),
-            field: method_name.to_string(),
-            null_safe: false });
-        let args = vec![
-            Argument::positional(left.clone()),
-            Argument::positional(right.clone()),
-        ];
-        self.compile_call(&callee, &args)?;
-        if negate_result {
-            {
-                let line = self.line;
-                crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-            };
-        }
         Ok(true)
     }
 
@@ -7506,16 +7474,36 @@ impl Compiler {
         left: &Expression,
         right: &Expression,
     ) -> Result<bool, String> {
-        if !self.profile.namespaces.use_dotnet {
-            return Ok(false);
-        }
-
         let Some(left_type) = self.dotnet_expr_static_type(left) else {
             return Ok(false);
         };
         let Some(right_type) = self.dotnet_expr_static_type(right) else {
             return Ok(false);
         };
+        // Both operand types must be types a platform in scope actually
+        // registered. The name tests below match the SHORT name
+        // case-insensitively, so `DateTime` also matches Python's `datetime` —
+        // a 52/52 suite that these emits would have diverted. Asking the tree
+        // is what makes the match mean "the CLR `DateTime`" instead of "any
+        // type spelled like it": a language with no type scopes registers
+        // nothing and answers no.
+        //
+        // This is also what keeps the `dotnet.` emits below routable. The
+        // caller is the SHARED binary-operator chain, so every language reaches
+        // here, and a `dotnet.*` name only dispatches where
+        // `vybe_platform_dotnet` is linked. Verified: no other platform
+        // registers `DateTime`, `TimeSpan`, `Version` or `Duration` as a tree
+        // type — Dart's `DateTime` is a profile `[builtins]` entry, not a tree
+        // leaf — so the scoped lookup answers yes only where the emits resolve.
+        // Registering one of those names elsewhere BREAKS that, and the fix
+        // then is to declare the operators as members and read the emit out of
+        // the tree, the way the StringBuilder indexer does.
+        let scopes = &self.profile.namespaces.type_scopes;
+        if !vybe_runtime::namespaces::is_registered_type(scopes, &left_type)
+            || !vybe_runtime::namespaces::is_registered_type(scopes, &right_type)
+        {
+            return Ok(false);
+        }
 
         let emit = match op {
             BinOp::Add
@@ -7878,7 +7866,7 @@ pub fn emit_rich_arithmetic(
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
@@ -7922,7 +7910,7 @@ pub fn emit_rich_unary(
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
     fallback_fn(chunk, line);
@@ -7971,7 +7959,7 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let to_str = chunk.add_import("ecma:string", "String");
@@ -8002,7 +7990,7 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     crate::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -8135,7 +8123,7 @@ pub fn emit_rich_compare_locals(
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 2, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
     chunk.emit_else(line);
 
     // Not found: try compare-style methods like C# CompareTo / Ruby <=>.
@@ -8157,7 +8145,7 @@ pub fn emit_rich_compare_locals(
         chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-        chunk.emit_op_u8(Op::CALL_REF, 2, line);
+        chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
         core_wasm::i32_const(chunk, line, 0);
         fallback.emit(chunks, current, line);
         chunk = &mut chunks[current];
@@ -8220,7 +8208,7 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8(Op::CALL_REF, 1, line);
+    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);

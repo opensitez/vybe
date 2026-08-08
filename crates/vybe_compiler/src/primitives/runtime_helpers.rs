@@ -1019,7 +1019,7 @@ fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     crate::primitives::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op_u8(Op::CALL_REF, 2, 0);
+    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
     // result > 0 → swap needed
     core_wasm::i32_const(&mut c, 0, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
@@ -1321,7 +1321,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
-    c.emit_op_u8(Op::CALL_REF, 0, 0);
+    c.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     crate::primitives::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, it, 0);
 
@@ -1414,7 +1414,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
 
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
-    c.emit_op_u8(Op::CALL_REF, 0, 0);
+    c.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
     crate::primitives::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, step, 0);
 
@@ -1873,12 +1873,12 @@ fn build_minmax(imports: &mut Chunk) -> Chunk {
     // min = __vybe_min(arr); max = __vybe_max(arr); return [min, max]
     crate::primitives::globals::emit_read(&mut c, "__vybe_min", 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, min_g, 0);
 
     crate::primitives::globals::emit_read(&mut c, "__vybe_max", 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, max_g, 0);
 
     crate::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
@@ -2069,7 +2069,7 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
 
     crate::primitives::globals::emit_read(&mut c, "__vybe_iter_drain", 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, drained, 0);
 
     let drained_array = c.emit_block(0);
@@ -4472,7 +4472,7 @@ fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     // keyVal = keyFn(key)
     c.emit_op_u16(Op::LOCAL_GET, key_fn, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, key_val, 0);
 
     // j = i - 1
@@ -4495,7 +4495,7 @@ fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u8(Op::CALL_REF, 1, 0);
+    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, key_val, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);

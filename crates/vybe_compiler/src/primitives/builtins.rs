@@ -272,7 +272,7 @@ impl Compiler {
                 self.emit_global_read(helper);
                 self.emit_var_get(var_name);
                 self.compile_expr(args[1])?;
-                self.emit_u8(Op::CALL_REF, 2);
+                self.emit_u8_u8(Op::CALL_REF, 2, 1);
                 self.emit(Op::DROP);
                 self.emit_null();
                 return Ok(true);
@@ -2093,9 +2093,9 @@ impl Compiler {
                 // Multi-memory selector suffix from the wast walker
                 // (`i32.store@@mem1`, or `memory.copy@@mem<dst>@@mem<src>` with
                 // two indices): non-default linear memories. Strip the suffixes
-                // to resolve the base opcode; each selected memidx is emitted
-                // after the opcode as the VM's fixed 4-byte `0xEE 0x00 <u16>`
-                // selector, in order (one per positional memidx the VM reads).
+                // to resolve the base opcode; loads/stores carry the memidx in
+                // their marker-tagged memarg, memory.size/grow/fill/copy/init
+                // in their fixed u16 memidx immediates.
                 let (op_name, mem_selectors): (&str, Vec<u32>) = {
                     let mut parts = op_name.split("@@mem");
                     let base = parts.next().unwrap_or(op_name);
@@ -2113,6 +2113,38 @@ impl Compiler {
                 };
                 use vybe_runtime::opcode::OperandFormat;
                 let l = self.line;
+                // memory.size/grow/fill/copy/init: fixed u16 memidx
+                // immediate(s) (multi-memory), supplied by the `@@mem`
+                // selectors (default memory 0). memory.init's data segment
+                // index is the first folded arg; the generic U16/U16_U16 arms
+                // below would misread the memidx as a folded immediate.
+                if op == Op::MEMORY_SIZE
+                    || op == Op::MEMORY_GROW
+                    || op == Op::MEMORY_FILL
+                    || op == Op::MEMORY_COPY
+                    || op == Op::MEMORY_INIT
+                {
+                    let sel = |i: usize| mem_selectors.get(i).copied().unwrap_or(0) as u16;
+                    let (stack_args, imms): (&[_], Vec<u16>) = if op == Op::MEMORY_INIT {
+                        (
+                            &args[1..],
+                            vec![expr_const_u16(args.first().copied()), sel(0)],
+                        )
+                    } else if op == Op::MEMORY_COPY {
+                        (&args[..], vec![sel(0), sel(1)])
+                    } else {
+                        (&args[..], vec![sel(0)])
+                    };
+                    for a in stack_args {
+                        self.compile_expr(a)?;
+                    }
+                    self.chunk().emit_op_u16(op, imms[0], l);
+                    for imm in &imms[1..] {
+                        self.chunk().emit((imm >> 8) as u8, l);
+                        self.chunk().emit((imm & 0xff) as u8, l);
+                    }
+                    return Ok(());
+                }
                 match op.operand_format() {
                     // v128.const: args are all immediates — a shape token then
                     // the lane values — encoded to the 16-byte vector.
@@ -2125,8 +2157,12 @@ impl Compiler {
                     }
                     // Type/index immediate (array.new $t / array.get_s $t / …):
                     // fold puts the immediate first, then the stack operands.
+                    // NOTE all these arms: a FLAT fold (operands on the
+                    // enclosing block's stack, only immediates in the args)
+                    // supplies fewer args than immediates — slice with
+                    // `.get(..)` so that shape compiles instead of panicking.
                     OperandFormat::U16 => {
-                        for a in &args[1..] {
+                        for a in args.get(1..).unwrap_or(&[]) {
                             self.compile_expr(a)?;
                         }
                         let imm = expr_const_u16(args.first().copied());
@@ -2151,7 +2187,7 @@ impl Compiler {
                     // Lane ops (extract_lane / replace_lane): the fold puts the
                     // lane immediate first, then the stack operands.
                     OperandFormat::U8 => {
-                        for a in &args[1..] {
+                        for a in args.get(1..).unwrap_or(&[]) {
                             self.compile_expr(a)?;
                         }
                         let lane = expr_const_u8(args.first().copied());
@@ -2172,7 +2208,7 @@ impl Compiler {
                         // Only a lane byte is emitted — the VM's optional-memarg
                         // peek never consumes a byte because lane indices are
                         // < 0x80 (so the byte reads back as the lane).
-                        for a in args[1..].iter().rev() {
+                        for a in args.get(1..).unwrap_or(&[]).iter().rev() {
                             self.compile_expr(a)?;
                         }
                         let lane = expr_const_u8(args.first().copied());
@@ -2182,7 +2218,7 @@ impl Compiler {
                     // Two byte immediates then stack operands (call_indirect:
                     // argc, tableidx). The fold puts both immediates first.
                     OperandFormat::U8_U8 => {
-                        for a in &args[2..] {
+                        for a in args.get(2..).unwrap_or(&[]) {
                             self.compile_expr(a)?;
                         }
                         self.chunk().emit_op(op, l);
@@ -2193,7 +2229,7 @@ impl Compiler {
                     // argc, tableidx, expected result count). The fold puts all
                     // three immediates first.
                     OperandFormat::U8_U8_U8 => {
-                        for a in &args[3..] {
+                        for a in args.get(3..).unwrap_or(&[]) {
                             self.compile_expr(a)?;
                         }
                         self.chunk().emit_op(op, l);
@@ -2211,24 +2247,30 @@ impl Compiler {
                             self.chunk().emit(expr_const_u8(args.get(i).copied()), l);
                         }
                     }
+                    // Marker-tagged optional memarg (core + v128 loads/stores):
+                    // a non-default memory rides IN the memarg — 0x80 presence
+                    // marker + 0x40 memidx flag, offset 0 — NOT the 0xEE
+                    // selector block, which would break the unambiguous marker
+                    // peek. No selector → no memarg bytes at all.
+                    OperandFormat::SimdMemArg => {
+                        for a in args {
+                            self.compile_expr(a)?;
+                        }
+                        self.emit(op);
+                        for midx in &mem_selectors {
+                            self.chunk().emit_leb_u32(0x80 | 0x40, l);
+                            self.chunk().emit_leb_u32(0, l);
+                            self.chunk().emit_leb_u32(*midx, l);
+                        }
+                    }
                     // Plain opcode: operands on the stack, no immediate.
+                    // (The 0xEE selector blocks are retired — every op that
+                    // reads a memidx declares it in its OperandFormat now.)
                     _ => {
                         for a in args {
                             self.compile_expr(a)?;
                         }
                         self.emit(op);
-                        // Multi-memory selectors, read by the VM's
-                        // `read_optional_memarg`/`read_optional_memidx_immediate`.
-                        // VM instructions are always 4 bytes, so each selector is a
-                        // fixed 4-byte block (`0xEE 0x00 <memidx u16 BE>`) that keeps
-                        // the following instruction 4-aligned. `memory.copy` emits
-                        // two (dst then src); load/store/size/grow/fill emit one.
-                        for midx in &mem_selectors {
-                            self.chunk().emit(0xEE, l);
-                            self.chunk().emit(0x00, l);
-                            self.chunk().emit((midx >> 8) as u8, l);
-                            self.chunk().emit((midx & 0xff) as u8, l);
-                        }
                     }
                 }
             }
@@ -2522,6 +2564,24 @@ impl Compiler {
                 self.emit_host_call(write_idx, 2);
                 self.emit(Op::DROP);
                 // fputs/stdout_append return 0
+                self.emit_const(Value::I32(0));
+            }
+            "write_stderr" => {
+                // Same byte-faithful wasi:io path as `write_stdout`, on the
+                // wasi:cli/stderr stream — C stderr is unbuffered, so every
+                // write goes straight through.
+                self.compile_expr(args[0])?;
+                let text_slot = self.define_local("__c_wasi_stderr_text");
+                self.emit_u16(Op::LOCAL_SET, text_slot);
+                let stderr_idx = self.import("wasi:cli/stderr", "get-stderr");
+                let write_idx = self.import(
+                    "wasi:io/streams",
+                    "[method]output-stream.blocking-write-and-flush",
+                );
+                self.emit_host_call(stderr_idx, 0);
+                self.emit_u16(Op::LOCAL_GET, text_slot);
+                self.emit_host_call(write_idx, 2);
+                self.emit(Op::DROP);
                 self.emit_const(Value::I32(0));
             }
             "asc" => {
@@ -3341,7 +3401,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, arr_slot);
                     self.emit_global_read("__vybe_sort_in_place");
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
-                    self.emit_u8(Op::CALL_REF, 1);
+                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     common::collections::emit_reverse(&mut self.chunks, self.current, line);

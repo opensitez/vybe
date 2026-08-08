@@ -1122,7 +1122,7 @@ fn invoke_function_calls_another_vm_function() {
     outer.emit_op_u16(Op::REF_FUNC, 2, 0);
     outer.emit(0, 0); // 0 upvalues
     outer.emit_op_u16(Op::LOCAL_GET, 0, 0);
-    outer.emit_op_u8(Op::CALL_REF, 1, 0);
+    outer.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
     outer.emit_i32_const(1, 0);
     outer.emit_op(Op::I32_ADD, 0);
     outer.emit_op(Op::RETURN, 0);
@@ -1456,7 +1456,7 @@ fn call_value_on_number_errors() {
     main.local_count = 1;
     // Push a number, then try to call it
     main.emit_f64_const(42.0, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let result = vm.run(vec![main]);
     assert!(result.is_err(), "Expected error calling a number");
@@ -1476,7 +1476,7 @@ fn call_value_on_null_errors() {
     let mut main = Chunk::new("main");
     main.local_count = 1;
     main.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0);
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let result = vm.run(vec![main]);
     assert!(result.is_err(), "Expected error calling Null");
@@ -1501,7 +1501,7 @@ fn call_value_on_undefined_errors() {
         let ci = main.intern_string_constant(&name);
         main.emit_op_u16(Op::GLOBAL_GET, ci, 0);
     }
-    main.emit_op_u8(Op::CALL_REF, 0, 0);
+    main.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
 
     let result = vm.run(vec![main]);
     assert!(result.is_err(), "Expected error calling Undefined");

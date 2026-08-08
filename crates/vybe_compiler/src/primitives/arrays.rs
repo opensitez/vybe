@@ -52,6 +52,89 @@ impl Compiler {
         Ok(())
     }
 
+    /// Does this expression hold a DELEGATE? Answered from its declared type:
+    /// a spelling the language marks callable (`Action`, `Func<...>`, `() =>`),
+    /// or a declared type that names nothing real — see
+    /// [`Self::type_hint_is_delegate_like`]. An EVENT field counts too, since a
+    /// language that declares events stores a multicast delegate in them.
+    ///
+    /// Used to decide whether `h += handler` is a delegate combine or ordinary
+    /// addition. That has to be a question about the TARGET: a test on the
+    /// right-hand side alone says yes to a bare lambda and to any member whose
+    /// field names a defined method.
+    pub(super) fn expr_is_delegate_typed(&self, expr: &Expression) -> bool {
+        let Some(hint) = self.infer_expr_type_hint(expr) else {
+            return false;
+        };
+        Self::is_callable_type_hint(&hint) || self.type_hint_is_delegate_like(&hint)
+    }
+
+    /// The shared emits a receiver's own type declares for `obj[i]` and
+    /// `obj[i] = v`, when that type declares a WRITABLE indexer property.
+    ///
+    /// A property-shaped `Item` owns its storage: `StringBuilder` keeps its
+    /// characters in a host builder, so both directions have to route through
+    /// the accessors the platform declared rather than the generic collection
+    /// path. A method-shaped `Item` (`List`'s bounds-checked getter) has no
+    /// write direction and is deliberately not matched — a read and a write
+    /// that disagree about the storage shape is exactly the bug this replaces.
+    /// Host-backed accessors are not matched either: those are property CALLS,
+    /// not emits, and the index sites emit.
+    ///
+    /// The scope does the isolating. `jvm` registers a `StringBuilder` too, but
+    /// only the dotnet one declares this indexer, so a Kotlin `sb[i]` finds
+    /// nothing and takes the generic path — which is what kept this pair behind
+    /// a language check before there was a question to ask.
+    pub(super) fn declared_indexer_emits(&self, object: &Expression) -> Option<(String, String)> {
+        use vybe_runtime::component_model::InstancePropertyTarget as Target;
+        let hint = self
+            .infer_expr_type_hint(object)
+            .as_deref()
+            .map(Self::normalize_type_hint)?;
+        let scopes = &self.profile.namespaces.type_scopes;
+        let (Target::Common { emit: get }, Target::Common { emit: set }) = (
+            vybe_runtime::namespaces::lookup_type_property_target(scopes, &hint, "Item")?,
+            vybe_runtime::namespaces::lookup_type_property_setter_target(scopes, &hint, "Item")?,
+        ) else {
+            return None;
+        };
+        Some((get, set))
+    }
+
+    /// A declared type that names NOTHING the compiler can point at — not a
+    /// class this program declares, not a type any platform in scope registers,
+    /// not a built-in scalar spelling. `Foo f; f.Invoke(x)` with `Foo` unknown
+    /// is a delegate: a delegate type is the one kind that is declared and then
+    /// never appears as a real type anywhere.
+    ///
+    /// This replaces a `use_dotnet` conjunct that appeared TWICE, verbatim, with
+    /// the scalar list inline both times. The tree test is new and strictly
+    /// sharpens it — a REGISTERED type (`StringBuilder`, `Button`) used to
+    /// satisfy the old "not a defined class" rule and be mistaken for a
+    /// delegate.
+    pub(super) fn type_hint_is_delegate_like(&self, type_hint: &str) -> bool {
+        let normalized = Self::normalize_type_hint(type_hint);
+        !self.defined_classes.contains(&self.canon(&normalized))
+            && !vybe_runtime::namespaces::is_registered_type(
+                &self.profile.namespaces.type_scopes,
+                &normalized,
+            )
+            && !matches!(
+                normalized.to_ascii_lowercase().as_str(),
+                "object"
+                    | "system.object"
+                    | "string"
+                    | "system.string"
+                    | "integer"
+                    | "int"
+                    | "int32"
+                    | "system.int32"
+                    | "boolean"
+                    | "bool"
+                    | "system.boolean"
+            )
+    }
+
     pub(super) fn is_callable_type_hint(type_hint: &str) -> bool {
         let normalized = Self::normalize_type_hint(type_hint);
         if normalized.ends_with("()") {
@@ -627,7 +710,7 @@ impl Compiler {
                     }
                 };
                 self.emit_global_read(&ctor_global);
-                self.emit_u8(Op::CALL_REF, 0);
+                self.emit_u8_u8(Op::CALL_REF, 0, 1);
                 return Ok(());
             } else {
                 match effective_type_hint.map(|s| s.to_lowercase()).as_deref() {

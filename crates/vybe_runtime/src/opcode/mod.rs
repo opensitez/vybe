@@ -303,11 +303,15 @@ pub enum OperandFormat {
     /// WASM memory64 memarg: alignment LEB + u64 offset LEB, with the same
     /// optional memory-index extension as MemArg.
     MemArg64,
-    /// WASM SIMD memory op (`v128.load` / `v128.store` / splat/zero loads):
-    /// an OPTIONAL marker-tagged memarg. Present iff the first LEB's 0x80
-    /// bit is set (0x100 = memory64 offset, 0x40 = memidx extension follows);
-    /// a compiler-emitted op with no memarg contributes ZERO operand bytes
-    /// (the peek is unambiguous: instruction group-hi bytes are always 0x00).
+    /// OPTIONAL marker-tagged memarg — the shared shape for every memory
+    /// access whose memarg may be elided internally: SIMD (`v128.load` /
+    /// `v128.store` / splat/zero loads) AND the core loads/stores
+    /// (0x28-0x3E). Present iff the first LEB's 0x80 bit is set (0x100 =
+    /// memory64 offset, 0x40 = memidx extension follows — the spec
+    /// multi-memory bit); a compiler-emitted op with no memarg contributes
+    /// ZERO operand bytes (the peek is unambiguous: instruction group-hi
+    /// bytes are always 0x00). The spec binary always writes a memarg; the
+    /// writer materializes natural align + offset 0 when absent.
     SimdMemArg,
     /// WASM SIMD lane memory op (`v128.load8_lane` / `v128.store32_lane` / …):
     /// the same optional marker-tagged memarg as `SimdMemArg`, followed by a

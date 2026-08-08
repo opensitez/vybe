@@ -864,7 +864,6 @@ impl Compiler {
                 instance_member_names,
                 instance_pointer_method_names: Vec::new(),
                 instance_field_types: HashMap::new(),
-                instance_field_value_types: HashMap::new(),
                 static_fields: Vec::new(),
                 static_field_types: HashMap::new(),
                 static_method_names,
@@ -903,8 +902,17 @@ impl Compiler {
                     } else {
                         fields.push(field_name.clone());
                         if let Some(type_hint) = type_hint.as_ref() {
-                            instance_field_types
-                                .insert(field_name, Self::normalize_type_hint(type_hint));
+                            // A struct surface is predeclared from raw
+                            // `ClassMember`s BEFORE the declaration pass
+                            // resolves field types, so there is no value type
+                            // to carry yet; `compile_normal_class` overwrites
+                            // this entry with the resolved answer.
+                            instance_field_types.insert(
+                                field_name,
+                                FieldType {
+                                    hint: Self::normalize_type_hint(type_hint),
+                                    value_type: None },
+                            );
                         }
                     }
                 }
@@ -949,11 +957,6 @@ impl Compiler {
                 instance_member_names,
                 instance_pointer_method_names,
                 instance_field_types,
-                // A struct surface is predeclared from raw `ClassMember`s
-                // BEFORE the declaration pass resolves field types, so there is
-                // nothing to carry yet; `compile_normal_class` overwrites this
-                // entry with the resolved answer.
-                instance_field_value_types: HashMap::new(),
                 static_fields,
                 static_field_types,
                 static_method_names,
@@ -1053,7 +1056,6 @@ impl Compiler {
                 instance_member_names: Vec::new(),
                 instance_pointer_method_names: Vec::new(),
                 instance_field_types: HashMap::new(),
-                instance_field_value_types: HashMap::new(),
                 static_fields: module_static_fields,
                 static_field_types: module_static_field_types,
                 static_method_names: module_static_methods,

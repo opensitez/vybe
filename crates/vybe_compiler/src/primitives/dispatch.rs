@@ -503,6 +503,7 @@ pub fn emit_common(
         "strings.join_iterable" => strings::emit_join_iterable(chunks, current, line),
         "strings.length" => strings::emit_length(&mut chunks[current], line),
         "strings.char_code" => strings::emit_char_code(&mut chunks[current], line),
+        "strings.from_char_code" => strings::emit_from_char_code(&mut chunks[current], line),
         "strings.to_upper" => strings::emit_to_upper(&mut chunks[current], line),
         "strings.to_lower" => strings::emit_to_lower(&mut chunks[current], line),
         "strings.trim" => strings::emit_trim(&mut chunks[current], line),
@@ -724,6 +725,7 @@ pub fn emit_common(
             let idx = chunks[current].add_import("wasm:js-string", "charCodeAt");
             chunks[current].emit_call(idx, 2, line);
         }
+        "str_from_code_point" => strings::emit_from_code_point(&mut chunks[current], line),
         "str_char_at" => {
             let idx = chunks[current].add_import("ecma:string", "charAt");
             chunks[current].emit_call(idx, 2, line);

@@ -31,6 +31,7 @@ pub mod delegates;
 pub mod dict;
 pub mod dispatch;
 pub mod dynamic_symbols;
+pub mod enum_lowering;
 pub mod errors;
 pub mod functions;
 pub mod generators;
@@ -174,6 +175,30 @@ struct LoopCtx {
 // ════════════════════════════════════════════════════════════════════════════
 // Pending class bookkeeping
 // ════════════════════════════════════════════════════════════════════════════
+/// What a class declared about one of its fields: the type SPELLING, plus the
+/// answers already resolved from it. One record of one fact — a second map
+/// keyed the same way is two places to disagree, and the disagreement is
+/// silent.
+#[derive(Clone)]
+struct FieldType {
+    /// The declared type hint, as `Compiler::normalize_type_hint` left it.
+    hint: String,
+    /// Canonical class name when `hint` names a type that stores BY VALUE,
+    /// else `None`. Read by the record deep-copy to recurse into nested
+    /// records.
+    ///
+    /// Carried from `NormalField::value_type`, resolved once in the
+    /// declaration pass against `normalized_classes`. Never derived from
+    /// `hint` at a read site: that spelling match is exactly what resolution
+    /// exists to remove, and a miss is a SILENT shallow copy.
+    ///
+    /// This merge is only lossless because `resolve_field_value_types`
+    /// (`link.rs`) requires a hint before it resolves anything
+    /// (`field.type_hint.as_deref()?`), so `value_type: Some` never occurs
+    /// with `type_hint: None`. If that ever stops holding, entries land in
+    /// neither map and nested records alias again.
+    value_type: Option<String> }
+
 struct PendingClass {
     parent: Option<String>,
     /// ALL declared direct bases (raw names), for C3 linearization under
@@ -186,18 +211,10 @@ struct PendingClass {
     is_value_type: bool,
     instance_member_names: Vec<String>,
     instance_pointer_method_names: Vec<String>,
-    /// Type hints for instance fields, keyed by canonical field name.
+    /// Declared types of instance fields, keyed by canonical field name.
     /// Used when implicit-self resolution turns a bare field name into
     /// `this.<field>` so member access keeps the original receiver type.
-    instance_field_types: HashMap<String, String>,
-    /// For each instance field that DECLARES a value type, the canonical name
-    /// of that type — keyed identically to `instance_field_types`.
-    ///
-    /// Carried from `NormalField::value_type`, resolved once in the declaration
-    /// pass. This is a copy of an answer, never a place the answer is computed:
-    /// deriving it here from `instance_field_types` would be the spelling match
-    /// that resolution exists to remove.
-    instance_field_value_types: HashMap<String, String>,
+    instance_field_types: HashMap<String, FieldType>,
     /// Static field names (declared `static T name`). Looked up from
     /// inside instance methods so a bare `Name` resolves to
     /// `<ClassName>.Name` (struct_get on the class global) rather than
@@ -2729,7 +2746,7 @@ impl Compiler {
                         .any(|g| g.eq_ignore_ascii_case(ep)));
             if has_ep {
                 self.emit_var_get(ep);
-                self.emit_u8(Op::CALL_REF, 0);
+                self.emit_u8_u8(Op::CALL_REF, 0, 1);
                 self.emit(Op::DROP);
             } else {
                 // C#-style entry: `static void Main()` lives as a static
@@ -2746,7 +2763,7 @@ impl Compiler {
                     self.emit_var_get(&class_name);
                     let key = self.str_const(&ep_canon);
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
-                    self.emit_u8(Op::CALL_REF, 0);
+                    self.emit_u8_u8(Op::CALL_REF, 0, 1);
                     self.emit(Op::DROP);
                 }
             }
