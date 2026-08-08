@@ -16,6 +16,12 @@ coerces_value_to_type_hint = true
 # A bare reference to a parameterless function invokes it: `X := Foo;` calls
 # `Foo`. Was a `profile.name == "pascal"` check in shared `expressions.rs`.
 bare_name_invokes_parameterless_function = true
+# Pascal spells concatenation `+`, which is `BinOp::Add` and arithmetic. The
+# walker emits `BinOp::Concat` for ONE thing — stringifying a receiver for
+# `X.ToString` — and this flag is what makes that node resolve a `to_string`
+# binding per operand instead of coercing numerically. Nothing else in Pascal
+# produces a `Concat` node, so this changes nothing that already worked.
+concat_stringifies_operands = true
 # `a xor b` is bitwise when both operands are integers and LOGICAL otherwise —
 # one token, two meanings, resolved by operand type. Replaces a
 # `profile.name == "pascal"` check in the shared binary-operator path
@@ -451,6 +457,18 @@ string = ["char"]
 # things per language: on the ECMA profiles it is a KEY test
 # (`ecma:object.hasOwn`, ECMA-262 §13.10.1), and only a language that means
 # VALUE membership opts in.
+# Pascal's string conversion, read by the concat operator and by string
+# interpolation — the same one binding, two consumers.
+#
+# Declaring it is what lets `'' + obj` reach a CLASS's own conversion: the
+# emitter behind this key probes the `ToString` protocol slot and only falls
+# back to the platform coercion when nothing binds it. Without the binding the
+# shared default coerced a class instance numerically and trapped as
+# `wasm:js-number.toF64 — not a number`, which is what `WriteLn(dt.ToString)`
+# failed with while `dt.ToString()` worked.
+[builtin_slots.string]
+to_string = "common:pascal.to_string_slot"
+
 [builtin_slots.set]
 contains = "host:ecma:set:has"
 

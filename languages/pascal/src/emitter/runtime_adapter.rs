@@ -1,13 +1,26 @@
 //! Pascal runtime-surface helpers routed via `common:pascal.*`.
 
-use vybe_compiler::primitives::collections;
+use vybe_compiler::primitives::{collections, expressions, instructions::host, ops};
 use vybe_runtime::Chunk;
 use vybe_runtime::Op;
 
 pub fn emit_helper(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
+    // `IntToStr` / `FloatToStr` / `X.ToString()` — a PLAIN conversion. This key
+    // must stay the plain host call: it is the hot path under every `__vs`, and
+    // the slot-probing variant below allocates a scratch local, which shifts
+    // the slot indices a nested Pascal function captures by index.
     if name == "pascal.tostring" {
         let to_str = chunks[0].add_import("ecma:string", "String");
         chunks[current].emit_call(to_str, argc, line);
+        return true;
+    }
+
+    // `[builtin_slots.string] to_string` — the binding the concat operator and
+    // string interpolation resolve per operand. Separate key from
+    // `pascal.tostring` precisely so the probe reaches only the operands of a
+    // stringification, never every integer conversion in the program.
+    if name == "pascal.to_string_slot" {
+        emit_to_string(chunks, current, line);
         return true;
     }
 
@@ -491,6 +504,54 @@ fn ensure_global_map(chunks: &mut [Chunk], current: usize, name: &str, line: u32
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, slot, line);
     slot
+}
+
+/// Pascal's string conversion — the `[builtin_slots.string] to_string` binding.
+///
+/// There are two bindings and this reads BOTH. The profile binding names WHICH
+/// conversion Pascal uses; for a class instance the conversion is not a fixed
+/// host call but the object's own — so this probes the `ToString` PROTOCOL SLOT
+/// (`expressions::emit_rich_to_string`), which is what a Pascal class fills by
+/// declaring `function ToString: string` and what a class from ANY language
+/// fills with its own spelling (`to_s`, `__str__`, `toString`).
+///
+/// Reaching it by ROLE is the point: nothing here matches the name `ToString`,
+/// so a Pascal `WriteLn(obj)` renders a Ruby or Dart object correctly too.
+/// Per flexclassplan §2f-bis an unbound slot falls back to the platform
+/// rendering, which is the `else` arm.
+///
+/// The `typeof`/`isArray` guard is required, not defensive:
+/// `emit_rich_to_string` opens with `STRUCT_GET`, which traps on a primitive.
+fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
+    let value = chunks[current].alloc_scratch(1);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
+
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(&mut chunks[current], "ecma:value", "typeof", 1, line);
+    chunks[current].emit_string_const("object", line);
+    ops::emit_dyn_eq(&mut chunks[current], line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+
+    // An array is an object too. Pascal has no array `ToString`, so leave it on
+    // the platform coercion rather than probing a slot it can never bind.
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(&mut chunks[current], "ecma:array", "isArray", 1, line);
+    ops::emit_dyn_to_bool(&mut chunks[current], line);
+    chunks[current].emit_if_value(line);
+    emit_ecma_string(chunks, current, value, line);
+    chunks[current].emit_else(line);
+    expressions::emit_rich_to_string(&mut chunks[current], value, line);
+    chunks[current].emit_end(line);
+
+    chunks[current].emit_else(line);
+    emit_ecma_string(chunks, current, value, line);
+    chunks[current].emit_end(line);
+}
+
+fn emit_ecma_string(chunks: &mut [Chunk], current: usize, value: u16, line: u32) {
+    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
+    host::emit(&mut chunks[current], "ecma:string", "String", 1, line);
 }
 
 fn emit_ord(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -1127,3 +1188,4 @@ pub fn emit_exception_new(
         line,
     );
 }
+

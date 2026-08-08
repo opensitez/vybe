@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use vybe_ast::class_normalize::{NormalMembers, build_normal_method, from_method_stmt, types::*};
 use vybe_ast::{
-    ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers, Param, PassBy,
+    ClassMember, ClassModifiers, ExprKind, Expression, Literal, Modifiers,
     PropertySetter, Span, Statement, StmtKind };
 
 const PASCAL_NO_BASE_CTOR_MARKER: &str = "__pascal_no_base_ctor__";
@@ -69,6 +69,33 @@ fn property_field_name(body: &[Statement], field_names: &HashSet<String>) -> Opt
                 }
                 _ => None },
             _ => None },
+        // `property P: T write FV` — the walker writes a STATEMENT assign for a
+        // FIELD target and an expression call for a `Set…` method
+        // (`property_write_accessor`), so only the method shape was recognised
+        // above. Without this arm the rewrite bailed and the setter body kept a
+        // bare `FV` that never became `Self.FV`: assigning through the property
+        // then reached the field's VALUE and tried to call it —
+        // `f64 is not callable`, because pascal declares
+        // `bare_name_invokes_parameterless_function`.
+        StmtKind::Assign { targets, value, .. }
+            if matches!(value.kind, ExprKind::Ident(ref name) if name.eq_ignore_ascii_case("value")) =>
+        {
+            let [target] = targets.as_slice() else {
+                return None;
+            };
+            match &target.kind {
+                ExprKind::Member { object, field, .. }
+                    if matches!(object.kind, ExprKind::This) =>
+                {
+                    field_names
+                        .contains(&field.to_ascii_lowercase())
+                        .then(|| field.clone())
+                }
+                ExprKind::Ident(field) => field_names
+                    .contains(&field.to_ascii_lowercase())
+                    .then(|| field.clone()),
+                _ => None }
+        }
         _ => None }
 }
 
@@ -107,69 +134,6 @@ fn self_member_expr(name: &str) -> Expression {
         object: Box::new(Expression::new(ExprKind::This)),
         field: name.to_string(),
         null_safe: false })
-}
-
-/// The message field every exception object carries. `errors.rs` writes it
-/// under this name for a directly-raised `Exception.Create(msg)`, and Pascal
-/// reads it back case-insensitively as `E.Message`.
-const EXCEPTION_MESSAGE_FIELD: &str = "Message";
-
-/// `Exception`'s instance members and their Pascal types, in the source
-/// spelling — Pascal is case-insensitive, so the case here is documentation.
-const EXCEPTION_INHERITED_MEMBERS: &[(&str, &str)] =
-    &[(EXCEPTION_MESSAGE_FIELD, "String"), ("HelpContext", "Integer")];
-
-/// True when the declared base is one of the `SysUtils` exception spellings
-/// pascal registers as TREE TYPES (see `exceptions.rs`).
-///
-/// Those have no compiled class behind them — their `Create` is a
-/// `common:pascal.exc_*` emit reached through the namespace tree — so a
-/// derived class has no parent constructor to inherit or to call. Delphi says
-/// `EMy = class(Exception)` still constructs with `EMy.Create(msg)` and
-/// answers `E.Message`; stating that here is what makes the declaration mean
-/// what the source says.
-///
-/// Only the DIRECT base is tested, and that is sufficient: a user class
-/// deriving from a user exception class gets its `Create` from this same pass,
-/// so by the time the grandchild is normalized its parent IS a compiled class
-/// and the ordinary base-call path applies.
-fn parent_is_builtin_exception(parents: &[String]) -> bool {
-    parents.first().is_some_and(|parent| {
-        let parent = parent.trim();
-        crate::exceptions::EXCEPTION_TYPES
-            .iter()
-            .any(|(spelling, _)| spelling.eq_ignore_ascii_case(parent))
-    })
-}
-
-/// `Self.<field> := <value>` — what an `inherited Create*` call means once the
-/// base has no constructor to run.
-fn assign_self_field(field: &str, value: Expression) -> Statement {
-    Statement::new(StmtKind::Assign {
-        targets: vec![self_member_expr(field)],
-        value,
-        by_ref: false })
-}
-
-/// The body `Exception`'s constructor WOULD have run, inlined.
-///
-/// `Create(msg)` and `CreateHelp(msg, helpCtx)` are the same constructor with
-/// one more argument — Delphi's `Exception` declares both and its whole body is
-/// storing them, in the order `EXCEPTION_INHERITED_MEMBERS` lists. So the base
-/// call is mapped POSITIONALLY onto those members rather than by name: taking
-/// only the first argument is what left `CreateHelp`'s help context on the
-/// floor and printed `ContextualHelpError-0` where fpc prints `-1001`.
-///
-/// Extra arguments beyond the known members cannot occur — the corpus has only
-/// the one- and two-argument spellings — and would be as silently dropped here
-/// as they are at the emitter, so nothing is invented for a shape that does not
-/// exist.
-fn inlined_base_ctor_body(base_args: &[Expression]) -> Vec<Statement> {
-    base_args
-        .iter()
-        .zip(EXCEPTION_INHERITED_MEMBERS)
-        .map(|(value, (field, _))| assign_self_field(field, value.clone()))
-        .collect()
 }
 
 fn rewrite_implicit_self_members_in_methods(
@@ -871,26 +835,6 @@ pub fn normalize_class(
                 if suppress_base_call {
                     body.remove(0);
                 }
-                // `inherited Create(msg)` / `inherited CreateHelp(msg, ctx)`
-                // where the base is a tree-registered exception spelling. There
-                // is no parent constructor to run — VB reaches one because its
-                // `Exception` IS a compiled class, so `parent_ctor_is_bound`
-                // holds and `MyBase.New` calls it — so run what that
-                // constructor's body would have been and drop the call, rather
-                // than leave the arguments to be discarded silently at the
-                // emitter.
-                if parent_is_builtin_exception(parents) {
-                    if let Some(args) = base_args.as_ref() {
-                        body.splice(0..0, inlined_base_ctor_body(args));
-                    }
-                    out.push_constructor(NormalConstructor {
-                        span: span.clone(),
-                        params: params.clone(),
-                        body,
-                        base_call: BaseCall::None,
-                        named_name: None });
-                    continue;
-                }
                 out.push_constructor(NormalConstructor {
                     span: span.clone(),
                     params: params.clone(),
@@ -998,32 +942,6 @@ pub fn normalize_class(
     }
 
     extend_gcl_member_names(&mut implicit_self_member_names, parents);
-    // `Exception`'s own instance members, DECLARED on the first user class
-    // that derives from it. They are inherited from a TREE type, so nothing
-    // registers them as fields and a bare `Message` inside a method resolved
-    // to an undefined global — `e.Message` read from outside was correct and
-    // `Result := 'x' + Message` inside was `NaN`, which is the tell.
-    //
-    // Declaring them beats listing them in `implicit_self_member_names`
-    // because that is what reaches DESCENDANTS: the shared resolver already
-    // walks the parent chain for declared fields, so `EB = class(EA)` needs
-    // no second mechanism and no cross-class table this pass cannot see.
-    if parent_is_builtin_exception(parents) {
-        for (field_name, type_hint) in EXCEPTION_INHERITED_MEMBERS {
-            out.push_field(
-                false,
-                NormalField {
-                    span: span.clone(),
-                    name: field_name.to_string(),
-                    type_hint: Some(type_hint.to_string()),
-                    init: None,
-                    array_bounds: None,
-                    access: Access::Public,
-                    readonly: false,
-                    value_type: None },
-            );
-        }
-    }
     // The static-member rewrite is GONE — `classes.rs` owns it.
     // `bindings.rs::is_class_static_field` is documented as "used by
     // `emit_var_get` / `emit_var_set` to rewrite bare references to
@@ -1091,36 +1009,6 @@ pub fn normalize_class(
         out.instance_methods.push(auto_init);
         out.auto_init_methods
             .push(GCL_FORM_CREATE_AUTOINIT.to_string());
-    }
-
-    // `EMy = class(Exception);` declares no constructor and still constructs
-    // with `EMy.Create(msg)` — Delphi inherits `Create` from the base. The
-    // base here is a tree type with no compiled constructor to inherit, so
-    // the inherited one is stated: one parameter, stored as the message.
-    //
-    // `CreateFmt(fmt, [args])` needs no second constructor — the walker
-    // already folds it to `Create(Format(fmt, args…))` before this pass runs
-    // (`pascal_constructor_args`), so both spellings arrive here as the same
-    // one-argument call.
-    if parent_is_builtin_exception(parents) && out.constructors.is_empty() {
-        out.push_constructor(NormalConstructor {
-            span: span.clone(),
-            params: vec![Param {
-                name: "AMessage".to_string(),
-                type_hint: None,
-                default: None,
-                pass_by: PassBy::Value,
-                is_rest: false,
-                is_kwargs: false,
-                is_optional: false,
-                is_nullable: false }],
-            body: vec![assign_self_field(
-                EXCEPTION_MESSAGE_FIELD,
-                Expression::ident("AMessage"),
-            )],
-            base_call: BaseCall::None,
-            named_name: None });
-        out.resync_constructor_view();
     }
 
     // Pascal's implicit root: every class descends from TObject, so `is
@@ -1366,6 +1254,76 @@ mod tests {
             setter: None,
             is_auto: false,
             modifiers }
+    }
+
+    /// `property V: Integer read FV write FV` exactly as the walker builds it:
+    /// the getter returns the bare field and the setter is a STATEMENT assign
+    /// of `value` to the bare field.
+    fn make_field_alias_property(pname: &str, field: &str) -> ClassMember {
+        ClassMember::Property {
+            name: pname.into(),
+            type_hint: Some("Integer".into()),
+            getter: Some(vec![Statement::new(StmtKind::Return(Some(
+                Expression::ident(field),
+            )))]),
+            setter: Some(vybe_ast::PropertySetter {
+                param: vybe_ast::Param {
+                    name: "value".into(),
+                    type_hint: None,
+                    default: None,
+                    pass_by: vybe_ast::PassBy::Value,
+                    is_rest: false,
+                    is_kwargs: false,
+                    is_optional: false,
+                    is_nullable: false },
+                body: vec![Statement::new(StmtKind::Assign {
+                    targets: vec![Expression::ident(field)],
+                    value: Expression::ident("value"),
+                    by_ref: false })] }),
+            is_auto: false,
+            modifiers: Modifiers::default() }
+    }
+
+    /// `property V: Integer read FV write FV` — the WRITE side names a field,
+    /// which the walker emits as a statement assign rather than the expression
+    /// assign a `write SetV` method call produces. `property_field_name` has to
+    /// recognise that shape or the setter body keeps a bare `FV`, which Pascal
+    /// resolves as a parameterless CALL because it declares
+    /// `bare_name_invokes_parameterless_function` — the `f64 is not callable`
+    /// that `read FV write FV` failed with while `read FV write SetV` worked.
+    #[test]
+    fn field_write_property_setter_targets_self_field() {
+        let nc = normalize_class(
+            dummy_span(),
+            "TA",
+            &[],
+            &[],
+            &[
+                make_field_with_visibility("FV", Visibility::Private),
+                make_field_alias_property("V", "FV"),
+            ],
+            &ClassModifiers::default(),
+        );
+        let prop = nc
+            .properties
+            .iter()
+            .find(|p| p.source_name.eq_ignore_ascii_case("V"))
+            .expect("property V survives normalization");
+        let setter = prop.setter.as_ref().expect("write FV produces a setter");
+        let [stmt] = setter.body.as_slice() else {
+            panic!("setter body is one assign, got {:?}", setter.body);
+        };
+        let StmtKind::Assign { targets, .. } = &stmt.kind else {
+            panic!("setter body assigns, got {:?}", stmt.kind);
+        };
+        let [target] = targets.as_slice() else {
+            panic!("one assign target");
+        };
+        let ExprKind::Member { object, field, .. } = &target.kind else {
+            panic!("target is a member of Self, got {:?}", target.kind);
+        };
+        assert!(matches!(object.kind, ExprKind::This), "receiver is Self");
+        assert!(field.eq_ignore_ascii_case("FV"));
     }
 
     #[test]

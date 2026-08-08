@@ -151,11 +151,45 @@ pub fn parse(source: &str) -> Result<Module, String> {
                 _ => None })
             .collect();
         let mut prelude = Vec::new();
-        // The exception family is DECLARED, not synthesized — see
-        // `exceptions.rs`. It used to be pushed here as eleven Pascal classes,
-        // which made a Pascal exception an ordinary Pascal object carrying
-        // none of the shared stamps, so PHP or Java could not catch it and
-        // `EDivByZero` never canonicalised to `ZeroDivisionError`.
+        // The exception family, as ordinary classes — the shape PHP and VB
+        // both use, so pascal reaches the shared class machinery the same way
+        // they do. The shared stamps are not lost by declaring them: each
+        // class states its own `__exception_type`, so `EDivByZero` still
+        // canonicalises to `ZeroDivisionError` for a cross-language catch.
+        if prelude_needs.exceptions {
+            // Gate on the post-walk AST, NOT the source text. `Assert` lowers to
+            // a synthesized `raise EAssertionFailed.Create(msg, 0)` that the
+            // source never spells, so a source-text gate left that class
+            // UNDEFINED and construction fell through to the namespace tree —
+            // which takes one argument, so `HelpContext` landed in `Message`
+            // and `E.Message` read `0`. PHP's `php_prelude_needs` matches
+            // against `format!("{:?}", stmts)` for exactly this reason.
+            let ast_text = format!("{:?}", body);
+            for stmt in synthesize_exception_classes() {
+                let StmtKind::ClassDecl { name, .. } = &stmt.kind else {
+                    continue;
+                };
+                if existing_classes.contains(&name.to_lowercase()) {
+                    continue;
+                }
+                // Only the spellings this program can actually name. `Exception`
+                // is unconditional — it is the root every other one extends and
+                // the type a bare `on E: Exception` matches — but the rest are
+                // gated exactly like the collection group above.
+                //
+                // This is not only compile cost. `ClassName` lowers to a ternary
+                // LADDER with one arm per declared class (`pascal_class_name_expr`),
+                // because `__type` is canonicalised to lowercase and the display
+                // spelling has to be recovered. Injecting all fourteen made that
+                // ladder fourteen arms deeper in EVERY program, and a `ClassName`
+                // read inside a handler that also re-raises emitted unrunnable
+                // bytecode.
+                let unconditional = name.eq_ignore_ascii_case("Exception");
+                if unconditional || ast_text.contains(name.as_str()) {
+                    prelude.push(stmt);
+                }
+            }
+        }
         if prelude_needs.tobject && !existing_classes.contains("tobject") {
             prelude.push(synthesize_tobject_class());
         }
@@ -455,7 +489,6 @@ pub fn parse(source: &str) -> Result<Module, String> {
     for stmt in body.iter_mut() {
         erase_variant_record_param_type_hints_stmt(stmt, &variant_record_names);
     }
-    let struct_fields = collect_struct_fields(&body);
     // `lower_struct_copy_assignments(&mut body, &struct_fields)` used to run
     // here — a Pascal-only pass rewriting `b := a` into a field-by-field copy.
     // The shared lowering owns it now, two ways: the STATIC type when the
@@ -2947,6 +2980,73 @@ fn rewrite_pascal_nested_result_call_expr(
     }
 }
 
+/// Every class member's DECLARED type, keyed `class.member` lowercased —
+/// a method's return type, a field's type, a property's type.
+///
+/// Overload selection is by static argument type, so `__vs(TNum.Even(8))`,
+/// `__vs(f.On)` and `__vs(TStaticClean.Active)` all need to know the member is
+/// `Boolean`. Without it the argument is untyped, the integer overload wins and
+/// a boolean renders as `1`. The free-function map this joins is keyed by bare
+/// name; a dotted key cannot collide with one.
+///
+/// This is a TYPE lookup, not a role lookup — it never maps a spelling to a
+/// protocol slot, which is the mistake flexclassplan §1e records.
+fn collect_pascal_class_member_types(
+    body: &[Statement],
+) -> std::collections::HashMap<String, Option<String>> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        let (StmtKind::ClassDecl { name, members, .. }
+        | StmtKind::StructDecl { name, members, .. }) = &stmt.kind
+        else {
+            continue;
+        };
+        let class_key = name.to_lowercase();
+        for member in members {
+            let (member_name, declared) = match member {
+                ClassMember::Method(method) => {
+                    let StmtKind::FunctionDecl {
+                        name: method_name,
+                        return_type,
+                        ..
+                    } = &method.kind
+                    else {
+                        continue;
+                    };
+                    (method_name.clone(), return_type.clone())
+                }
+                ClassMember::Field {
+                    name, type_hint, ..
+                } => (name.clone(), type_hint.clone()),
+                ClassMember::Property {
+                    name, type_hint, ..
+                } => (name.clone(), type_hint.clone()),
+                _ => continue };
+            if declared.is_none() {
+                continue;
+            }
+            out.insert(format!("{class_key}.{}", member_name.to_lowercase()), declared);
+        }
+    }
+    out
+}
+
+/// A declared member's type, given the receiver's class name.
+fn pascal_declared_member_type(
+    member_types: &std::collections::HashMap<String, Option<String>>,
+    class_name: &str,
+    field: &str,
+) -> Option<String> {
+    member_types
+        .get(&format!(
+            "{}.{}",
+            class_name.trim().to_lowercase(),
+            field.to_lowercase()
+        ))
+        .and_then(|ty| ty.clone())
+        .map(|ty| bare_type_name(&ty).to_lowercase())
+}
+
 fn normalize_pascal_free_function_overloads(body: &mut Vec<Statement>) {
     let mut grouped: std::collections::BTreeMap<String, Vec<PascalOverloadCandidate>> =
         std::collections::BTreeMap::new();
@@ -2975,13 +3075,29 @@ fn normalize_pascal_free_function_overloads(body: &mut Vec<Statement>) {
                 order });
     }
 
+    // A function that is NOT overloaded still has a declared return type, and
+    // an argument to an overloaded call is typed by it: `__vs(HasFive(s))`
+    // picks the integer arm and renders `True` as `1` unless `HasFive`'s
+    // `Boolean` is on record. Captured BEFORE the retain below discards every
+    // single-candidate group, and only where the group has exactly one member —
+    // an overloaded name has no single answer, and its calls are rewritten to
+    // the per-candidate internal name anyway.
+    let single_returns: Vec<(String, Option<String>)> = grouped
+        .iter()
+        .filter(|(_, candidates)| candidates.len() == 1)
+        .map(|(lowered, candidates)| (lowered.clone(), candidates[0].return_type.clone()))
+        .collect();
+
     grouped.retain(|_, candidates| candidates.len() > 1);
     if grouped.is_empty() {
         return;
     }
 
     let mut rename_by_order = std::collections::HashMap::new();
-    let mut return_types = std::collections::HashMap::new();
+    // Declared return types, two kinds in one map — plain function names have
+    // no dot, `Class.Method` does, so they cannot collide.
+    let mut return_types = collect_pascal_class_member_types(body);
+    return_types.extend(single_returns);
     for (lowered, candidates) in grouped.iter_mut() {
         for (idx, candidate) in candidates.iter_mut().enumerate() {
             candidate.internal_name = format!("__pascal_overload_{}_{}", lowered, idx);
@@ -4249,7 +4365,7 @@ fn pascal_overload_arg_score(
     enum_members: &std::collections::HashMap<String, String>,
     scope: &std::collections::HashMap<String, String>,
 ) -> Option<usize> {
-    if matches!(param.pass_by, PassBy::Ref | PassBy::Out)
+    if matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out)
         && !pascal_overload_is_assignable(&arg.value)
     {
         return None;
@@ -4316,29 +4432,74 @@ fn pascal_overload_expr_type(
             // tree is how a spelling stays the type's own description of
             // itself rather than a name table here.
             ExprKind::Member { object, field, .. } => {
-                let recv =
-                    pascal_overload_expr_type(object, return_types, enum_members, scope)?;
-                vybe_runtime::namespaces::lookup_type_member_return(
-                    &["plib".to_string()],
-                    bare_type_name(&recv),
-                    field,
-                )
-                .map(|ty| bare_type_name(&ty).to_lowercase())
+                pascal_member_expr_type(object, field, return_types, enum_members, scope)
             }
             _ => None },
+        // Pascal invokes a parameterless routine WITHOUT parens, so `f.On` is a
+        // member read that is really a call — the same resolution either way.
+        ExprKind::Member { object, field, .. } => {
+            pascal_member_expr_type(object, field, return_types, enum_members, scope)
+        }
         ExprKind::Cast { type_name, .. } => Some(bare_type_name(type_name).to_lowercase()),
+        // `e.InheritsFrom(TFoo)` and `e is TFoo` — a type TEST, always Boolean.
+        // Without this the type is unknown and selection falls to whichever
+        // candidate happens to fit, which printed `1` for `__vs(True)`: the
+        // integer overload, reached through `IntToStr`.
+        ExprKind::IsType { .. } => Some("boolean".to_string()),
         ExprKind::Unary {
             op: UnaryOp::Not, ..
         } => Some("boolean".to_string()),
         ExprKind::Unary {
             op: UnaryOp::Neg | UnaryOp::Pos,
             expr } => pascal_overload_expr_type(expr, return_types, enum_members, scope),
-        ExprKind::Binary { op, .. } => match op {
+        ExprKind::Binary { op, left, right } => match op {
             BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
                 Some("boolean".to_string())
             }
+            // Set membership is a TEST — always Boolean, whatever the element
+            // and set types are.
+            BinOp::In | BinOp::NotIn => Some("boolean".to_string()),
+            // `and`/`or`/`xor` are Pascal's logical operators on Boolean and its
+            // BITWISE operators on integers, so the result is whatever the
+            // operands are — asserting Boolean here would render `5 and 3` as
+            // `True`. Either side answering is enough; a mixed pair does not
+            // compile.
+            BinOp::And | BinOp::Or | BinOp::Xor => {
+                pascal_overload_expr_type(left, return_types, enum_members, scope).or_else(|| {
+                    pascal_overload_expr_type(right, return_types, enum_members, scope)
+                })
+            }
             _ => None },
         _ => None }
+}
+
+/// The declared type of `<object>.<field>`.
+///
+/// The receiver is either a class NAME (`TStaticClean.Active`, `TNum.Even`) or
+/// a typed VALUE (`f.On` where `f: TFlag`, `D.ContainsKey` where `D` is a
+/// declared collection). A class name resolves through no scope, so it is tried
+/// first; otherwise the receiver's own type is resolved and the member looked
+/// up on it, falling back to the namespace tree for the types that describe
+/// themselves there.
+fn pascal_member_expr_type(
+    object: &Expression,
+    field: &str,
+    return_types: &std::collections::HashMap<String, Option<String>>,
+    enum_members: &std::collections::HashMap<String, String>,
+    scope: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if let ExprKind::Ident(class_name) = &object.kind {
+        if let Some(ty) = pascal_declared_member_type(return_types, class_name, field) {
+            return Some(ty);
+        }
+    }
+    let recv = pascal_overload_expr_type(object, return_types, enum_members, scope)?;
+    let recv = bare_type_name(&recv);
+    if let Some(ty) = pascal_declared_member_type(return_types, recv, field) {
+        return Some(ty);
+    }
+    vybe_runtime::namespaces::lookup_type_member_return(&["plib".to_string()], recv, field)
+        .map(|ty| bare_type_name(&ty).to_lowercase())
 }
 
 fn pascal_overload_is_assignable(expr: &Expression) -> bool {
@@ -5033,9 +5194,9 @@ fn pascal_static_operator_call_with_params(
             .enumerate()
             .map(|(idx, expr)| {
                 let mut arg = Argument::positional(expr);
-                arg.by_ref = params
-                    .get(idx)
-                    .is_some_and(|param| matches!(param.pass_by, PassBy::Ref | PassBy::Out));
+                arg.by_ref = params.get(idx).is_some_and(|param| {
+                    matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out)
+                });
                 arg
             })
             .collect(),
@@ -6568,7 +6729,13 @@ type PascalIndexedPropertyMap = std::collections::HashMap<String, Vec<PascalInde
 struct PascalStaticPropertyInfo {
     name: String,
     getter: Option<String>,
-    setter: Option<String> }
+    setter: Option<String>,
+    /// `write FV` names a FIELD; `write SetV` names a METHOD. Both arrive here
+    /// as a bare spelling, so the shape has to be carried alongside it —
+    /// writing through the property emits a store for a field and a call for a
+    /// method, and getting that backwards compiled `a.V := 12` into `a.FV(12)`,
+    /// which fetched the field's value and tried to CALL it.
+    setter_is_field: bool }
 
 type PascalStaticPropertyMap = std::collections::HashMap<String, Vec<PascalStaticPropertyInfo>>;
 
@@ -6755,6 +6922,9 @@ fn pascal_interface_property_setter(
 
 fn collect_pascal_instance_properties(body: &[Statement]) -> PascalInstancePropertyMap {
     let mut out = std::collections::HashMap::new();
+    // A property redeclared in a derived class can name a field the BASE
+    // declares, so the field question is asked across the chain.
+    let class_members = collect_pascal_class_members_by_name(body);
     let mut parents: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for stmt in body {
@@ -6793,7 +6963,10 @@ fn collect_pascal_instance_properties(body: &[Statement]) -> PascalInstancePrope
                     setter: (!*is_readonly).then(|| {
                         pascal_interface_plain_property_setter(members, type_hint.as_deref())
                             .unwrap_or_else(|| format!("Set{}", name))
-                    }) });
+                    }),
+                    // An interface property is backed by METHODS — an interface
+                    // declares no fields to write through.
+                    setter_is_field: false });
             }
             if !props.is_empty() {
                 out.insert(name.to_lowercase(), props);
@@ -6835,7 +7008,18 @@ fn collect_pascal_instance_properties(body: &[Statement]) -> PascalInstancePrope
                     .and_then(|body| property_body_accessor_name(body)),
                 setter: setter
                     .as_ref()
-                    .and_then(|setter| property_body_setter_name(&setter.body)) });
+                    .and_then(|setter| property_body_setter_name(&setter.body)),
+                setter_is_field: setter
+                    .as_ref()
+                    .and_then(|setter| property_body_setter_name(&setter.body))
+                    .is_some_and(|name| {
+                        property_setter_names_field_in_chain(
+                            &name,
+                            members,
+                            class_parents_of(&stmt.kind),
+                            &class_members,
+                        )
+                    }) });
         }
         if !props.is_empty() {
             out.insert(name.to_lowercase(), props);
@@ -7256,23 +7440,30 @@ fn pascal_instance_property_setter_call(
         return None;
     };
     let class_name = env.get(&object_name.to_lowercase())?;
-    let setter = properties
+    let prop = properties
         .get(class_name)?
         .iter()
-        .find(|prop| prop.name.eq_ignore_ascii_case(field))?
-        .setter
-        .clone()?;
+        .find(|prop| prop.name.eq_ignore_ascii_case(field))?;
+    let setter = prop.setter.clone()?;
+    let accessor = Expression::new(ExprKind::Member {
+        object: Box::new((**object).clone()),
+        field: setter,
+        null_safe: false });
+    // `write FV` writes the field; only `write SetV` is a call.
+    if prop.setter_is_field {
+        return Some(Expression::new(ExprKind::Assign {
+            target: Box::new(accessor),
+            value: Box::new(value) }));
+    }
     Some(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new((**object).clone()),
-            field: setter,
-            null_safe: false })),
+        callee: Box::new(accessor),
         args: vec![Argument::positional(value)],
         optional: false }))
 }
 
 fn collect_pascal_static_properties(body: &[Statement]) -> PascalStaticPropertyMap {
     let mut out = std::collections::HashMap::new();
+    let class_members = collect_pascal_class_members_by_name(body);
     for stmt in body {
         let (StmtKind::ClassDecl { name, members, .. }
         | StmtKind::StructDecl { name, members, .. }) = &stmt.kind
@@ -7301,7 +7492,18 @@ fn collect_pascal_static_properties(body: &[Statement]) -> PascalStaticPropertyM
                     .and_then(|body| property_body_accessor_name(body)),
                 setter: setter
                     .as_ref()
-                    .and_then(|setter| property_body_setter_name(&setter.body)) });
+                    .and_then(|setter| property_body_setter_name(&setter.body)),
+                setter_is_field: setter
+                    .as_ref()
+                    .and_then(|setter| property_body_setter_name(&setter.body))
+                    .is_some_and(|name| {
+                        property_setter_names_field_in_chain(
+                            &name,
+                            members,
+                            class_parents_of(&stmt.kind),
+                            &class_members,
+                        )
+                    }) });
         }
         if !props.is_empty() {
             out.insert(name.to_lowercase(), props);
@@ -7505,17 +7707,23 @@ fn pascal_static_property_setter_call(
     let ExprKind::Ident(class_name) = &object.kind else {
         return None;
     };
-    let setter = properties
+    let prop = properties
         .get(&class_name.to_lowercase())?
         .iter()
-        .find(|prop| prop.name.eq_ignore_ascii_case(field))?
-        .setter
-        .clone()?;
+        .find(|prop| prop.name.eq_ignore_ascii_case(field))?;
+    let setter = prop.setter.clone()?;
+    let accessor = Expression::new(ExprKind::Member {
+        object: Box::new(Expression::ident(class_name)),
+        field: setter,
+        null_safe: false });
+    // A `class property` writing straight to a `class var` is a store too.
+    if prop.setter_is_field {
+        return Some(Expression::new(ExprKind::Assign {
+            target: Box::new(accessor),
+            value: Box::new(value) }));
+    }
     Some(Expression::new(ExprKind::Call {
-        callee: Box::new(Expression::new(ExprKind::Member {
-            object: Box::new(Expression::ident(class_name)),
-            field: setter,
-            null_safe: false })),
+        callee: Box::new(accessor),
         args: vec![Argument::positional(value)],
         optional: false }))
 }
@@ -7551,6 +7759,85 @@ fn property_body_accessor_name(body: &[Statement]) -> Option<String> {
         return None;
     };
     property_call_accessor_name(expr)
+}
+
+/// Whether a property's `write` clause names a FIELD rather than a method.
+///
+/// Decided by what the CLASS DECLARES, not by the spelling: `write StoreValue`
+/// is a method and `write FValue` is a field, and no prefix convention
+/// separates them. `property_write_accessor` guesses from a `Set` prefix when
+/// it builds the setter body, so asking the members is the answer that holds
+/// for a class whose accessors are named some other way.
+fn property_setter_names_field(setter_name: &str, members: &[ClassMember]) -> bool {
+    members.iter().any(|member| match member {
+        ClassMember::Field { name, .. } => name.eq_ignore_ascii_case(setter_name),
+        _ => false })
+}
+
+/// The same question across the whole INHERITANCE chain.
+///
+/// `property Value: Integer read FValue write FValue` redeclared in a derived
+/// class names a field the BASE declares, so asking only the derived class's
+/// own members answers "not a field" and the write compiles to a call —
+/// `f64 is not callable` again, one level up.
+fn property_setter_names_field_in_chain(
+    setter_name: &str,
+    members: &[ClassMember],
+    parents: &[String],
+    class_members: &std::collections::HashMap<String, (Vec<ClassMember>, Vec<String>)>,
+) -> bool {
+    if property_setter_names_field(setter_name, members) {
+        return true;
+    }
+    let mut pending: Vec<String> = parents.to_vec();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(parent) = pending.pop() {
+        let key = parent.to_lowercase();
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let Some((parent_members, grandparents)) = class_members.get(&key) else {
+            continue;
+        };
+        if property_setter_names_field(setter_name, parent_members) {
+            return true;
+        }
+        pending.extend(grandparents.iter().cloned());
+    }
+    false
+}
+
+/// A declaration's base classes. A record has none.
+fn class_parents_of(kind: &StmtKind) -> &[String] {
+    match kind {
+        StmtKind::ClassDecl { parents, .. } => parents,
+        _ => &[] }
+}
+
+/// Every class's members and parents, keyed by lowercased name — Pascal
+/// resolves names case-insensitively.
+fn collect_pascal_class_members_by_name(
+    body: &[Statement],
+) -> std::collections::HashMap<String, (Vec<ClassMember>, Vec<String>)> {
+    let mut out = std::collections::HashMap::new();
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::ClassDecl {
+                name,
+                members,
+                parents,
+                ..
+            } => {
+                out.insert(name.to_lowercase(), (members.clone(), parents.clone()));
+            }
+            // A record has no base — only its own fields can back a property.
+            StmtKind::StructDecl { name, members, .. } => {
+                out.insert(name.to_lowercase(), (members.clone(), Vec::new()));
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn property_body_setter_name(body: &[Statement]) -> Option<String> {
@@ -15413,22 +15700,6 @@ fn pascal_bound_int(value: &str, consts: &std::collections::HashMap<String, i64>
         .or_else(|| consts.get(&value.to_lowercase()).copied())
 }
 
-fn collect_struct_fields(body: &[Statement]) -> std::collections::HashMap<String, Vec<String>> {
-    let mut fields = std::collections::HashMap::new();
-    for stmt in body {
-        if let StmtKind::StructDecl { name, members, .. } = &stmt.kind {
-            let names = members
-                .iter()
-                .filter_map(|member| match member {
-                    ClassMember::Field { name, .. } => Some(name.clone()),
-                    _ => None })
-                .collect::<Vec<_>>();
-            fields.insert(name.to_lowercase(), names);
-        }
-    }
-    fields
-}
-
 fn rewrite_zero_based_string_indexes_stmt(
     stmt: &mut Statement,
     string_vars: &mut std::collections::HashSet<String>,
@@ -22490,19 +22761,6 @@ fn rewrite_shadowed_builtin_casts_expr(
     }
 }
 
-const PASCAL_BUILTIN_EXCEPTION_CLASSES: &[&str] = &[
-    "EAccessViolation",
-    "EArgumentException",
-    "EConvertError",
-    "EDivByZero",
-    "EInvalidArgument",
-    "EInvalidOp",
-    "EOverflow",
-    "EAssertionFailed",
-    "EFOpenError",
-    "ERangeError",
-];
-
 fn pascal_prelude_needs(
     source: &str,
     imports: &[Import],
@@ -23249,6 +23507,74 @@ fn pascal_expr_contains_currency_value(
         _ => false }
 }
 
+/// The `SysUtils` exception family as ORDINARY PASCAL CLASSES.
+///
+/// PHP declares `Exception` as PHP source and VB/C# inject `ClassDecl`s; both
+/// then get inheritance, constructors and base calls from the shared class
+/// machinery with nothing shared changed. Pascal declared its family as
+/// namespace TREE TYPES instead — nothing to inherit a constructor from — which
+/// is the one way pascal classes were not like everyone else's.
+///
+/// `Exception` is the root and carries the state; every other spelling is a
+/// real subclass that re-stamps `__exception_type` with the shared canonical
+/// name it maps onto, so `EDivByZero` still canonicalises to
+/// `ZeroDivisionError` for a cross-language catch. `__type`/`__types`/`name`
+/// are deliberately NOT written here — `primitives/classes.rs` owns those, and
+/// stamping them from a base constructor would overwrite the derived class's
+/// own identity.
+fn synthesize_exception_classes() -> Vec<Statement> {
+    let mut out = vec![synthesize_exception_class()];
+    for (spelling, _canonical) in crate::exceptions::EXCEPTION_TYPES {
+        if spelling.eq_ignore_ascii_case("Exception") {
+            continue;
+        }
+        out.push(synthesize_exception_subclass_class(spelling));
+    }
+    out
+}
+
+/// `E<Spelling> = class(Exception);` — exactly what Delphi declares, and
+/// exactly what the source says.
+///
+/// No constructor: the subclass INHERITS `Exception.Create`, which is the
+/// behaviour under test. Declaring one here to re-stamp the canonical name
+/// cost the message — a forwarded `inherited Create(msg)` misaligned against
+/// the root's `(msg, helpCtx)` — and `ERangeError.Create('OutOfRange')` came
+/// back with `Message` = `0`. The identity a typed `on E: ...` matches comes
+/// from the class chain, which is now real.
+fn synthesize_exception_subclass_class(spelling: &str) -> Statement {
+    Statement::with_span(
+        StmtKind::ClassDecl {
+            name: spelling.to_string(),
+            parents: vec!["Exception".to_string()],
+            interfaces: Vec::new(),
+            members: Vec::new(),
+            modifiers: ClassModifiers::default(),
+            decorators: vec![] },
+        Span::default(),
+    )
+}
+
+/// `Self.<field> := '<value>'`.
+fn pascal_self_string_assign(field: &str, value: &str, span: &Span) -> Statement {
+    Statement::with_span(
+        StmtKind::Assign {
+            targets: vec![Expression::with_span(
+                ExprKind::Member {
+                    object: Box::new(Expression::with_span(ExprKind::This, span.clone())),
+                    field: field.to_string(),
+                    null_safe: false },
+                span.clone(),
+            )],
+            value: Expression::with_span(
+                ExprKind::Lit(Literal::Str(value.to_string())),
+                span.clone(),
+            ),
+            by_ref: false },
+        span.clone(),
+    )
+}
+
 fn synthesize_exception_class() -> Statement {
     // class Exception { Message: String; constructor Create(msg: String); }
     // The Create body assigns `Self.Message := msg` so `e.Message`
@@ -23326,7 +23652,18 @@ fn synthesize_exception_class() -> Statement {
                 ClassMember::Constructor {
                     name: None,
                     params: vec![msg_param, help_ctx_param],
-                    body: vec![assign_msg, assign_help_ctx],
+                    // `__kind` marks the object an EXCEPTION for the shared
+                    // reflection surface; `__exception_type` is the canonical
+                    // name a cross-language catch matches. Both are what
+                    // `primitives/errors.rs` writes for a directly-constructed
+                    // exception — stated here so a class that INHERITS this
+                    // constructor is the same object.
+                    body: vec![
+                        assign_msg,
+                        assign_help_ctx,
+                        pascal_self_string_assign("__kind", "Exception", &span),
+                        pascal_self_string_assign("__exception_type", "Exception", &span),
+                    ],
                     base_args: None,
                     initializer_target: vybe_ast::ConstructorInitializerTarget::Base,
                     visibility: Visibility::Public },
@@ -23334,19 +23671,6 @@ fn synthesize_exception_class() -> Statement {
             modifiers: ClassModifiers::default(),
             decorators: vec![] },
         span,
-    )
-}
-
-fn synthesize_exception_subclass(name: &str, parent: &str) -> Statement {
-    Statement::with_span(
-        StmtKind::ClassDecl {
-            name: name.into(),
-            parents: vec![parent.into()],
-            interfaces: Vec::new(),
-            members: Vec::new(),
-            modifiers: ClassModifiers::default(),
-            decorators: vec![] },
-        Span::default(),
     )
 }
 
@@ -24867,7 +25191,7 @@ fn lower_pascal_array_pointer_math_stmt(
                 {
                     let key = param.name.to_lowercase();
                     scoped_pointer_vars.insert(key.clone());
-                    if matches!(param.pass_by, PassBy::Ref | PassBy::Out) {
+                    if matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out) {
                         scoped_array_pointer_vars.insert(key);
                     }
                 }
@@ -28117,7 +28441,8 @@ fn collect_static_var_param_indices(
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, param)| {
-                    matches!(param.pass_by, PassBy::Ref | PassBy::Out).then_some(idx)
+                    matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out)
+                        .then_some(idx)
                 })
                 .collect();
             if !indexes.is_empty() {
@@ -30210,9 +30535,21 @@ fn rewrite_zero_arg_instance_method_refs_expr(
         }
         ExprKind::Member { object, field, .. } => {
             rewrite_zero_arg_instance_method_refs_expr(object, methods);
+            // `X.ToString` stringifies the receiver — it does NOT hard-code a
+            // call to a method spelled `ToString`. The rendering is the
+            // `[builtin_slots.string] to_string` binding's job, and that
+            // binding probes the ToString SLOT, so a class's own conversion is
+            // reached by ROLE rather than by name.
             if field.eq_ignore_ascii_case("ToString") {
+                // `Concat`, NOT `Add`. Only the Concat arm resolves a
+                // `to_string` binding per operand, and that binding is what
+                // probes the ToString slot. `Add` is Pascal's arithmetic `+`
+                // and coerces numerically, which is why `'' + obj` trapped as
+                // `js-number.toF64 — not a number`. Pascal emits `Concat`
+                // NOWHERE else, so this node is the only thing
+                // `concat_stringifies_operands` affects.
                 expr.kind = ExprKind::Binary {
-                    op: BinOp::Add,
+                    op: BinOp::Concat,
                     left: Box::new(Expression::new(ExprKind::Lit(Literal::Str(String::new())))),
                     right: Box::new((**object).clone()) };
                 return;
@@ -34790,7 +35127,7 @@ fn pascal_delegating_interface_method(
         .iter()
         .map(|param| {
             let mut arg = Argument::positional(Expression::ident(&param.name));
-            arg.by_ref = matches!(param.pass_by, PassBy::Ref | PassBy::Out);
+            arg.by_ref = matches!(param.pass_by, PassBy::Ref | PassBy::Alias | PassBy::Out);
             arg
         })
         .collect();
@@ -35960,7 +36297,14 @@ fn walk_param(pair: Pair<Rule>) -> Result<Vec<Param>, String> {
             Rule::param_mode => {
                 let mode = p.as_str().to_lowercase();
                 pass_by = match mode.as_str() {
-                    "var" => PassBy::Ref,
+                    // `var` is true aliasing, not copy-in/copy-out: the callee
+                    // writes the caller's storage directly, so the mutation is
+                    // visible through another binding DURING the call and it
+                    // survives the callee raising. `PassBy::Ref` gives neither
+                    // — it writes back after return, and a routine that raises
+                    // never returns. Second language onto the shared mechanism
+                    // php proved out (§3, `referenceplan.md`).
+                    "var" => PassBy::Alias,
                     "const" | "constref" => PassBy::Const,
                     "out" => PassBy::Out,
                     _ => PassBy::Value };

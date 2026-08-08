@@ -19,7 +19,7 @@
 //! name unchanged — which is the correct answer for a genuinely Pascal-only
 //! exception.
 
-use vybe_runtime::namespaces::{self, NamespaceNode, Subtree};
+use vybe_runtime::namespaces::{self, CtorSpec, NamespaceNode, Subtree};
 
 /// The `SysUtils` exception family, and the shared exception each one names.
 ///
@@ -40,10 +40,27 @@ pub const EXCEPTION_TYPES: &[(&str, &str)] = &[
     ("EFOpenError", "FileNotFoundError"),
     ("EInOutError", "IOError"),
     // No shared twin — Delphi-specific conditions.
+    ("EOutOfMemory", "EOutOfMemory"),
     ("EAccessViolation", "EAccessViolation"),
     ("EInvalidOp", "EInvalidOp"),
     ("EAssertionFailed", "EAssertionFailed"),
 ];
+
+/// The identity chain a registered exception type publishes: its own spelling
+/// first, then the shared canonical name it maps onto, then the root.
+///
+/// This is the same `__types` chain `emit_stamp_exception_ancestors` writes at
+/// construction — declared here so the type is IDENTIFIABLE before anything is
+/// constructed, which is what a user class naming it as a base needs.
+fn ancestry(spelling: &str, canonical: &str) -> Vec<String> {
+    let mut chain = vec![spelling.to_string()];
+    for name in [canonical, "Exception"] {
+        if !chain.iter().any(|held| held == name) {
+            chain.push(name.to_string());
+        }
+    }
+    chain
+}
 
 /// `common:pascal.exc_<Spelling>` — the dispatch key for one exception type.
 pub fn emit_key(spelling: &str) -> String {
@@ -57,11 +74,22 @@ pub fn emit_key(spelling: &str) -> String {
 /// through the ordinary tree path with no Pascal-specific construction rule.
 pub fn register_namespace_tree() {
     let mut classes = Subtree::new();
-    for (spelling, _canonical) in EXCEPTION_TYPES {
+    for (spelling, canonical) in EXCEPTION_TYPES {
         classes.insert(
             spelling.to_lowercase(),
             NamespaceNode::Type {
-                ctor: None,
+                // IDENTITY-ONLY, exactly the shape `platforms/jvm` registers its
+                // types in: empty `params`/`fields` so the shared resolver's
+                // `describes_construction` test is false and construction still
+                // runs through `ctor_call` — the shared exception model in
+                // `primitives/errors.rs`. What the spec adds is the class
+                // IDENTITY that was missing: the type is now REGISTERED, so a
+                // user class naming it as a base resolves against the registry
+                // like any other declared type instead of finding nothing.
+                ctor: Some(CtorSpec {
+                    ancestry: ancestry(spelling, canonical),
+                    ..Default::default()
+                }),
                 ctor_call: Some(Box::new(NamespaceNode::CommonEmit(emit_key(spelling)))),
                 statics: Subtree::new(),
                 methods: std::collections::BTreeMap::new(),
