@@ -63,10 +63,7 @@ fn byte_at(src: Expression) -> Expression {
 pub fn mbrtoc(dst: Expression, src: Expression, n: Expression) -> Expression {
     let value = byte_at(src.clone());
     let write = pointers::carray_deref_write(dst, value.clone());
-    e(ExprKind::Sequence(vec![
-        write,
-        mbrtoc_consumed(n, value),
-    ]))
+    e(ExprKind::Sequence(vec![write, mbrtoc_consumed(n, value)]))
 }
 
 /// `mbrtoc16(&c16, s, n, ps)` — the C11 SCALAR-destination idiom. The write

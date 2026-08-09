@@ -768,8 +768,9 @@ pub fn build_sprintf(_imports: &mut Chunk) -> Chunk {
     {
         // Unknown conversion char → emit it verbatim, consume nothing.
         let known = c.emit_block(0);
-        for ch in [37i32, 115, 100, 105, 117, 102, 70, 101, 69, 112, 120, 88, 111, 99, 103, 71]
-        {
+        for ch in [
+            37i32, 115, 100, 105, 117, 102, 70, 101, 69, 112, 120, 88, 111, 99, 103, 71,
+        ] {
             lg(&mut c, CONV);
             ci(&mut c, ch);
             c.emit_op(Op::I32_EQ, 0);

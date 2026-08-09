@@ -5,7 +5,8 @@
 
 use vybe_ast::{
     Argument, BinOp, BindingPattern, ExprKind, Expression, Literal, Modifiers, ObjectProperty,
-    Param, PassBy, Statement, StmtKind, UnaryOp, VarDeclKind, VarDeclarator };
+    Param, PassBy, Statement, StmtKind, UnaryOp, VarDeclKind, VarDeclarator,
+};
 
 fn e(kind: ExprKind) -> Expression {
     Expression::new(kind)
@@ -23,7 +24,8 @@ fn member(object: Expression, field: &str) -> Expression {
     e(ExprKind::Member {
         object: Box::new(object),
         field: field.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn call_member(object: Expression, field: &str, args: Vec<Expression>) -> Expression {
@@ -34,14 +36,16 @@ fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
     e(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }
 
 fn ternary(cond: Expression, then: Expression, else_: Expression) -> Expression {
     e(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(then),
-        else_: Box::new(else_) })
+        else_: Box::new(else_),
+    })
 }
 
 fn var_decl(name: &str, init: Expression) -> Statement {
@@ -51,8 +55,10 @@ fn var_decl(name: &str, init: Expression) -> Statement {
             type_hint: None,
             init: Some(init),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Var })
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    })
 }
 
 fn if_stmt(
@@ -64,14 +70,16 @@ fn if_stmt(
         cond,
         then_body,
         elifs: Vec::new(),
-        else_body })
+        else_body,
+    })
 }
 
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
     s(StmtKind::While {
         cond,
         body,
-        else_body: None })
+        else_body: None,
+    })
 }
 
 fn ret(value: Expression) -> Statement {
@@ -95,7 +103,8 @@ fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: false,
-                is_nullable: false })
+                is_nullable: false,
+            })
             .collect(),
         return_type: None,
         body,
@@ -103,14 +112,16 @@ fn function(name: &str, params: Vec<&str>, body: Vec<Statement>) -> Statement {
         handles: Vec::new(),
         is_async: false,
         is_generator: false,
-        is_sub: false })
+        is_sub: false,
+    })
 }
 
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
     e(ExprKind::Call {
         callee: Box::new(callee),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false })
+        optional: false,
+    })
 }
 
 fn lit_int(n: i64) -> Expression {
@@ -128,7 +139,8 @@ fn lit_str(s: &str) -> Expression {
 fn assign_expr(target: Expression, value: Expression) -> Expression {
     e(ExprKind::Assign {
         target: Box::new(target),
-        value: Box::new(value) })
+        value: Box::new(value),
+    })
 }
 
 const C_SPRINTF: &str = "__c_sprintf";
@@ -156,7 +168,8 @@ pub fn sprintf_assign(buf: Expression, fmt: Expression, rest: Vec<Expression>) -
     let rhs = call(ident(C_SPRINTF), sprintf_args);
     e(ExprKind::Assign {
         target: Box::new(buf),
-        value: Box::new(rhs) })
+        value: Box::new(rhs),
+    })
 }
 
 /// C walker-compatible lowering: `printf(fmt, ...)` -> `__c_fputs_h(__c_sprintf(...), 1)`.
@@ -403,18 +416,22 @@ fn pointer_write_target(value: Expression) -> Expression {
     match value.kind {
         ExprKind::Unary {
             op: UnaryOp::AddrOf,
-            expr } => *expr,
-        other => e(other) }
+            expr,
+        } => *expr,
+        other => e(other),
+    }
 }
 
 enum PrintfItem<'a> {
     Literal(&'a str),
     Conversion { text: &'a str, consumes_arg: bool },
-    Count }
+    Count,
+}
 
 struct PrintfNSplitter<'a> {
     text: &'a str,
-    index: usize }
+    index: usize,
+}
 
 impl<'a> PrintfNSplitter<'a> {
     fn new(text: &'a str) -> Self {
@@ -438,13 +455,15 @@ impl<'a> PrintfNSplitter<'a> {
         if self.index >= bytes.len() {
             return Some(PrintfItem::Conversion {
                 text: &self.text[start..self.index],
-                consumes_arg: false });
+                consumes_arg: false,
+            });
         }
         if bytes[self.index] == b'%' {
             self.index += 1;
             return Some(PrintfItem::Conversion {
                 text: &self.text[start..self.index],
-                consumes_arg: false });
+                consumes_arg: false,
+            });
         }
 
         while self.index < bytes.len()
@@ -475,7 +494,8 @@ impl<'a> PrintfNSplitter<'a> {
         if self.index >= bytes.len() {
             return Some(PrintfItem::Conversion {
                 text: &self.text[start..self.index],
-                consumes_arg: false });
+                consumes_arg: false,
+            });
         }
 
         let conv = bytes[self.index];
@@ -485,7 +505,8 @@ impl<'a> PrintfNSplitter<'a> {
         } else {
             Some(PrintfItem::Conversion {
                 text: &self.text[start..self.index],
-                consumes_arg: conv != b'%' })
+                consumes_arg: conv != b'%',
+            })
         }
     }
 
@@ -508,7 +529,8 @@ pub fn puts_to_c_fputs(text: Expression) -> Expression {
             e(ExprKind::Binary {
                 op: vybe_ast::BinOp::Add,
                 left: Box::new(text),
-                right: Box::new(lit_str("\n")) }),
+                right: Box::new(lit_str("\n")),
+            }),
             lit_int(1),
         ],
     )
@@ -571,7 +593,8 @@ pub fn sscanf_literal(
                 };
                 Some(sign * value)
             }
-            _ => token.trim().parse::<i64>().ok() }
+            _ => token.trim().parse::<i64>().ok(),
+        }
     };
 
     while format_index < format_chars.len() && dest_index < dest_targets.len() {
@@ -943,17 +966,22 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
             init: Some(e(ExprKind::Object(vec![
                 ObjectProperty::KeyValue {
                     key: lit_str("buf"),
-                    value: lit_str("") },
+                    value: lit_str(""),
+                },
                 ObjectProperty::KeyValue {
                     key: lit_str("eof"),
-                    value: lit_int(0) },
+                    value: lit_int(0),
+                },
                 ObjectProperty::KeyValue {
                     key: lit_str("allow_blocking"),
-                    value: lit_int(0) },
+                    value: lit_int(0),
+                },
             ]))),
             array_bounds: None,
-            with_events: false }],
-        kind: VarDeclKind::Var }));
+            with_events: false,
+        }],
+        kind: VarDeclKind::Var,
+    }));
 
     // __libc_stdin_set_blocking(flag): opt-in to real blocking stdin reads.
     out.push(function(
@@ -995,7 +1023,8 @@ pub fn stdin_runtime_helpers() -> Vec<Statement> {
                     BinOp::Eq,
                     e(ExprKind::Unary {
                         op: UnaryOp::Typeof,
-                        expr: Box::new(ident("__l")) }),
+                        expr: Box::new(ident("__l")),
+                    }),
                     lit_str("string"),
                 ),
                 vec![ret(ident("__l"))],
@@ -1153,7 +1182,8 @@ pub fn char_to_str_runtime_helper() -> Statement {
     let index_a_i = e(ExprKind::Index {
         object: Box::new(ident("a")),
         index: Box::new(ident("i")),
-        null_safe: false });
+        null_safe: false,
+    });
     function(
         "__libc_char_to_str",
         vec!["v"],
@@ -1165,7 +1195,8 @@ pub fn char_to_str_runtime_helper() -> Statement {
                     BinOp::Eq,
                     e(ExprKind::Unary {
                         op: UnaryOp::Typeof,
-                        expr: Box::new(ident("v")) }),
+                        expr: Box::new(ident("v")),
+                    }),
                     lit_str("string"),
                 ),
                 vec![
@@ -1218,7 +1249,8 @@ pub fn char_to_str_runtime_helper() -> Statement {
                                 BinOp::Eq,
                                 e(ExprKind::Unary {
                                     op: UnaryOp::Typeof,
-                                    expr: Box::new(ident("c")) }),
+                                    expr: Box::new(ident("c")),
+                                }),
                                 lit_str("undefined"),
                             ),
                         ),
@@ -1235,14 +1267,12 @@ pub fn char_to_str_runtime_helper() -> Statement {
                                     BinOp::Eq,
                                     e(ExprKind::Unary {
                                         op: UnaryOp::Typeof,
-                                        expr: Box::new(ident("c")) }),
+                                        expr: Box::new(ident("c")),
+                                    }),
                                     lit_str("string"),
                                 ),
                                 ident("c"),
-                                call(
-                                    member(ident("String"), "fromCharCode"),
-                                    vec![ident("c")],
-                                ),
+                                call(member(ident("String"), "fromCharCode"), vec![ident("c")]),
                             ),
                         ),
                     )),
@@ -1336,7 +1366,8 @@ pub fn scanf(fmt: &str, targets: Vec<Expression>, tmp_id: u32) -> Expression {
                 call(ident("parseFloat"), vec![ident(&tok_var)]),
                 lit_float(0.0),
             ),
-            _ => ident(&tok_var) };
+            _ => ident(&tok_var),
+        };
         seq.push(ternary(
             bin(BinOp::Gt, member(ident(&tok_var), "length"), lit_int(0)),
             e(ExprKind::Sequence(vec![

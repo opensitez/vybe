@@ -1,6 +1,6 @@
-use vybe_runtime::opcode::Op;
-use vybe_runtime::Chunk;
 use std::sync::Arc;
+use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 use vybe_runtime::value::Value;
 
 use vybe_ast::{ExprKind, Expression, Literal, ObjectProperty};
@@ -30,7 +30,10 @@ pub fn create_rgb_surface(
     depth: Expression,
     pitch: Expression,
 ) -> Expression {
-    let kv = |k: &str, v: Expression| ObjectProperty::KeyValue { key: str_lit(k), value: v };
+    let kv = |k: &str, v: Expression| ObjectProperty::KeyValue {
+        key: str_lit(k),
+        value: v,
+    };
     let empty = || expr(ExprKind::Array(Vec::new()));
     expr(ExprKind::Object(vec![
         kv("w", w),
@@ -42,10 +45,7 @@ pub fn create_rgb_surface(
             "format",
             expr(ExprKind::Object(vec![
                 kv("palette", empty()),
-                kv(
-                    "BytesPerPixel",
-                    expr(ExprKind::Lit(Literal::Int(1))),
-                ),
+                kv("BytesPerPixel", expr(ExprKind::Lit(Literal::Int(1)))),
             ])),
         ),
     ]))
@@ -64,7 +64,6 @@ fn emit_canvas_call(chunks: &mut [Chunk], current: usize, func: &str, argc: u8, 
     let idx = chunks[current].add_import("web:canvas", func);
     chunks[current].emit_call(idx, argc, line);
 }
-
 
 /// Call a `web:ui-events` host function. SDL's input is an ADAPTER over the
 /// W3C UI Events surface in `platforms/web` — there is no SDL host surface
@@ -109,7 +108,6 @@ fn emit_dom_kind_is(chunks: &mut [Chunk], current: usize, ev: u16, kind: &str, l
     chunks[current].emit_string_const(kind, line);
     chunks[current].emit_op(Op::EQ, line);
 }
-
 
 /// Unwrap a C pointer argument to the object it addresses.
 ///
@@ -189,7 +187,13 @@ fn emit_set_control_property(
     chunks[current].emit_op(Op::DROP, line);
 }
 
-fn emit_load_f64_from_struct(chunks: &mut [Chunk], current: usize, ptr_slot: u16, field: &str, line: u32) {
+fn emit_load_f64_from_struct(
+    chunks: &mut [Chunk],
+    current: usize,
+    ptr_slot: u16,
+    field: &str,
+    line: u32,
+) {
     emit_get_local(chunks, current, ptr_slot, line);
     let field_key = chunks[current].add_constant(Value::String(Arc::from(field)));
     chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, field_key, line);
@@ -236,7 +240,13 @@ fn emit_u8_from_u32_slot(chunks: &mut [Chunk], current: usize, slot: u16, shift:
     chunks[current].emit_op(Op::I32_AND, line);
 }
 
-fn emit_u8_from_u32_slot_f64(chunks: &mut [Chunk], current: usize, slot: u16, shift: u8, line: u32) {
+fn emit_u8_from_u32_slot_f64(
+    chunks: &mut [Chunk],
+    current: usize,
+    slot: u16,
+    shift: u8,
+    line: u32,
+) {
     emit_u8_from_u32_slot(chunks, current, slot, shift, line);
     chunks[current].emit_op(Op::F64_CONVERT_I32_U, line);
 }
@@ -392,7 +402,9 @@ pub fn emit_sdl_get_window_surface(chunks: &mut [Chunk], current: usize, _argc: 
 /// Trailing destination size is optional; the host defaults it to the source
 /// size, so the 5-argument form is a 1:1 blit.
 pub fn emit_sdl_blit_paletted(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    let slots: Vec<u16> = (0..argc).map(|_| chunks[current].alloc_scratch(1)).collect();
+    let slots: Vec<u16> = (0..argc)
+        .map(|_| chunks[current].alloc_scratch(1))
+        .collect();
     // Arguments arrive on the stack in order, so pop them back to front.
     for &slot in slots.iter().rev() {
         emit_set_local(chunks, current, slot, line);
@@ -554,15 +566,7 @@ pub fn emit_sdl_draw_text(chunks: &mut [Chunk], current: usize, _argc: u8, line:
     chunks[current].emit_op(Op::DROP, line);
 
     emit_get_local(chunks, current, context, line);
-    emit_cstring_to_text(
-        chunks,
-        current,
-        text,
-        text_value,
-        idx,
-        ch,
-        line,
-    );
+    emit_cstring_to_text(chunks, current, text, text_value, idx, ch, line);
     emit_get_local(chunks, current, text_value, line);
     emit_get_local(chunks, current, x, line);
     emit_get_local(chunks, current, y, line);
@@ -619,7 +623,12 @@ pub fn emit_sdl_get_ticks(chunks: &mut [Chunk], current: usize, _argc: u8, line:
 }
 
 /// `SDL_GetPerformanceCounter()` → the raw nanosecond counter.
-pub fn emit_sdl_get_performance_counter(chunks: &mut [Chunk], current: usize, _argc: u8, line: u32) {
+pub fn emit_sdl_get_performance_counter(
+    chunks: &mut [Chunk],
+    current: usize,
+    _argc: u8,
+    line: u32,
+) {
     let now_idx = chunks[current].add_import("wasi:clocks/monotonic-clock", "now");
     chunks[current].emit_call(now_idx, 0, line);
 }

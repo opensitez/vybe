@@ -14,6 +14,7 @@ macro_rules! c_cases {
 c_cases! {
     function_pointer_variable_can_call_target => { declarations: "int add_one(int x) { return x + 1; }", body: "int (*fp)(int) = add_one;\nprintf(\"%d\\n\", fp(4));\nreturn 0;", expect: ["5"] },
     function_pointer_can_be_assigned_by_address => { declarations: "int add_one(int x) { return x + 1; }", body: "int (*fp)(int) = &add_one;\nprintf(\"%d\\n\", fp(4));\nreturn 0;", expect: ["5"] },
+    function_pointer_can_take_address_of_later_function => { declarations: "int later(int x);\nint later(int x) { return x + 2; }", body: "int (*fp)(int) = &later;\nprintf(\"%d\\n\", fp(4));\nreturn 0;", expect: ["6"] },
     function_pointer_can_be_passed_as_argument => { declarations: "int add_one(int x) { return x + 1; }\nint apply(int (*fp)(int), int value) { return fp(value); }", body: "printf(\"%d\\n\", apply(add_one, 7));\nreturn 0;", expect: ["8"] },
     function_pointer_can_select_between_two_functions => { declarations: "int add_one(int x) { return x + 1; }\nint double_it(int x) { return x * 2; }", body: "int (*fp)(int) = double_it;\nprintf(\"%d\\n\", fp(7));\nreturn 0;", expect: ["14"] },
     function_pointer_can_be_stored_in_array => { declarations: "int add_one(int x) { return x + 1; }\nint double_it(int x) { return x * 2; }", body: "int (*ops[2])(int) = {add_one, double_it};\nprintf(\"%d %d\\n\", ops[0](3), ops[1](3));\nreturn 0;", expect: ["4 6"] },
@@ -37,4 +38,19 @@ c_cases! {
     function_pointer_can_live_in_array_of_length_one => { declarations: "int negate(int x) { return -x; }", body: "int (*ops[1])(int) = {negate};\nprintf(\"%d\\n\", ops[0](5));\nreturn 0;", expect: ["-5"] },
     function_pointer_returning_pointer_can_be_called => { declarations: "int *identity(int *p) { return p; }", body: "int x = 7; int *(*fp)(int *) = identity;\nprintf(\"%d\\n\", *fp(&x));\nreturn 0;", expect: ["7"] },
     function_pointer_can_call_recursive_target => { declarations: "int fact(int n) { return n <= 1 ? 1 : n * fact(n - 1); }", body: "int (*fp)(int) = fact;\nprintf(\"%d\\n\", fp(5));\nreturn 0;", expect: ["120"] }
+}
+
+#[test]
+fn address_of_function_before_definition_uses_funcref_not_storage_addressof() {
+    let out = run_prints(
+        "#include <stdio.h>\n\
+         int later(int x);\n\
+         int main() {\n\
+             int (*fp)(int) = &later;\n\
+             printf(\"%d\\n\", fp(4));\n\
+             return 0;\n\
+         }\n\
+         int later(int x) { return x + 2; }\n",
+    );
+    assert_eq!(out, vec!["6"]);
 }

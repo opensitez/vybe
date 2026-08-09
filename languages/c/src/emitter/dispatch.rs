@@ -82,6 +82,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, _argc: u8, 
             chunks[current].emit_call(idx, 1, line);
         }
         "c.qsort" => collections::emit_sort(chunks, current, line),
-        _ => return false }
+        _ => return false,
+    }
     true
 }

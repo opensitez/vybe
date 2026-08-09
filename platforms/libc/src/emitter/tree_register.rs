@@ -36,7 +36,10 @@ pub fn register_namespace_tree() {
             ("SDL_DestroyWindow", "libc.sdl.SDL_DestroyWindow"),
             ("SDL_GetWindowSurface", "libc.sdl.SDL_GetWindowSurface"),
             ("SDL_FillRect", "libc.sdl.SDL_FillRect"),
-            ("SDL_UpdateWindowSurface", "libc.sdl.SDL_UpdateWindowSurface"),
+            (
+                "SDL_UpdateWindowSurface",
+                "libc.sdl.SDL_UpdateWindowSurface",
+            ),
             ("SDL_Delay", "libc.sdl.SDL_Delay"),
             ("SDL_MapRGB", "libc.sdl.SDL_MapRGB"),
             ("SDL_MapRGBA", "libc.sdl.SDL_MapRGBA"),
@@ -45,9 +48,15 @@ pub fn register_namespace_tree() {
             ("SDL_ShowWindow", "libc.sdl.SDL_ShowWindow"),
             ("SDL_HideWindow", "libc.sdl.SDL_HideWindow"),
             ("SDL_BlitPaletted", "libc.sdl.SDL_BlitPaletted"),
-            ("SDL_ShowSimpleMessageBox", "libc.sdl.SDL_ShowSimpleMessageBox"),
+            (
+                "SDL_ShowSimpleMessageBox",
+                "libc.sdl.SDL_ShowSimpleMessageBox",
+            ),
         ] {
-            sdl.insert(name.to_string(), NamespaceNode::CommonEmit(emit.to_string()));
+            sdl.insert(
+                name.to_string(),
+                NamespaceNode::CommonEmit(emit.to_string()),
+            );
         }
 
         let mut root = Subtree::new();

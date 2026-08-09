@@ -2,7 +2,8 @@
 
 use vybe_ast::{
     ArrayElement, BinOp, BreakTarget, ChanOp, ExprKind, Expression, Literal, ObjectProperty,
-    PlaceExpr, Statement, StmtKind, UnaryOp };
+    PlaceExpr, Statement, StmtKind, UnaryOp,
+};
 
 // ── AF_UNIX is a CHANNEL, not a socket ──────────────────────────────────────
 //
@@ -24,13 +25,15 @@ use vybe_ast::{
 fn chan_new() -> Expression {
     expr(ExprKind::Chan(ChanOp::New {
         capacity: Some(Box::new(int_lit(1024))),
-        zero: Box::new(str_lit("")) }))
+        zero: Box::new(str_lit("")),
+    }))
 }
 
 fn chan_send(channel: Expression, value: Expression) -> Expression {
     expr(ExprKind::Chan(ChanOp::Send {
         channel: Box::new(channel),
-        value: Box::new(value) }))
+        value: Box::new(value),
+    }))
 }
 
 fn chan_recv(channel: Expression) -> Expression {
@@ -58,7 +61,8 @@ fn is_unix_fd(fd_expr: Expression) -> Expression {
 
 use super::build::{
     assign_expr, call_expr, call_member, expr, function_stmt, ident, index_expr, int_lit, member,
-    null_lit, stmt, str_lit, var_decl_stmt };
+    null_lit, stmt, str_lit, var_decl_stmt,
+};
 use vybe_compiler::primitives::pointers;
 
 pub type HeaderStruct = (&'static str, &'static [(&'static str, &'static str)]);
@@ -95,7 +99,10 @@ fn socket_helpers() -> Vec<Statement> {
                     nullish(member(ident("addr"), "s_addr"), int_lit(0)),
                 ),
             ),
-            var_decl_stmt("port", nullish(member(ident("addr"), "sin_port"), int_lit(0))),
+            var_decl_stmt(
+                "port",
+                nullish(member(ident("addr"), "sin_port"), int_lit(0)),
+            ),
             // INADDR_ANY binds loopback here: the tests bind ANY or
             // LOOPBACK and then connect to loopback.
             stmt(StmtKind::Expr(ternary(
@@ -361,12 +368,14 @@ fn socket_helpers() -> Vec<Statement> {
                                 key: None,
                                 value: ident("c2s"),
                                 spread: false,
-                                by_ref: false },
+                                by_ref: false,
+                            },
                             ArrayElement {
                                 key: None,
                                 value: ident("s2c"),
                                 spread: false,
-                                by_ref: false },
+                                by_ref: false,
+                            },
                         ])),
                     ))),
                     stmt(StmtKind::Return(Some(int_lit(0)))),
@@ -525,7 +534,10 @@ fn socket_helpers() -> Vec<Statement> {
             // saying "answer EAGAIN, do not wait".
             var_decl_stmt(
                 "nb",
-                nullish(index_expr(ident("__c_fd_nonblock"), ident("fd")), int_lit(0)),
+                nullish(
+                    index_expr(ident("__c_fd_nonblock"), ident("fd")),
+                    int_lit(0),
+                ),
             ),
             stmt(StmtKind::While {
                 cond: bin(
@@ -534,13 +546,23 @@ fn socket_helpers() -> Vec<Statement> {
                     bin(
                         BinOp::And,
                         bin(BinOp::Eq, ident("r"), null_lit()),
-                        bin(BinOp::Lt, ident("waited"), int_lit(1000)),
+                        // Iterations, not milliseconds: each one BLOCKS on the
+                        // socket's pollable (host ceiling ~1s) instead of
+                        // sleeping 5ms, so 8 rounds is the same wall-clock
+                        // budget the 1000×5ms loop had — and it returns the
+                        // instant a connection arrives.
+                        bin(BinOp::Lt, ident("waited"), int_lit(8)),
                     ),
                 ),
                 body: vec![
+                    // The listening socket's own pollable — ready means a
+                    // connection is queued, so the wait ends on the connect.
                     stmt(StmtKind::Expr(call_expr(
-                        ident("__c_sleep_ms"),
-                        vec![int_lit(5)],
+                        ident("__c_pollable_block"),
+                        vec![call_expr(
+                            ident("__c_wasi_tcp_ready"),
+                            vec![index_expr(ident("__c_sock_res"), ident("fd"))],
+                        )],
                     ))),
                     stmt(StmtKind::Expr(assign_expr(
                         ident("waited"),
@@ -554,7 +576,8 @@ fn socket_helpers() -> Vec<Statement> {
                         ),
                     ))),
                 ],
-                else_body: None }),
+                else_body: None,
+            }),
             if_stmt(
                 bin(BinOp::Eq, ident("r"), null_lit()),
                 vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
@@ -679,10 +702,7 @@ fn socket_helpers() -> Vec<Statement> {
                         ternary(
                             bin(BinOp::Eq, ident("dest"), null_lit()),
                             index_expr(ident("__c_sock_out"), ident("fd")),
-                            index_expr(
-                                ident("__c_unix_reg"),
-                                member(ident("dest"), "sun_path"),
-                            ),
+                            index_expr(ident("__c_unix_reg"), member(ident("dest"), "sun_path")),
                         ),
                     ),
                     if_stmt(
@@ -742,13 +762,13 @@ fn socket_helpers() -> Vec<Statement> {
                                 index_expr(ident("__c_sock_tx"), ident("fd")),
                                 expr(ExprKind::Array(vec![ArrayElement {
                                     key: None,
-                                    value: expr(ExprKind::Object(vec![
-                                        ObjectProperty::KeyValue {
-                                            key: str_lit("data"),
-                                            value: ident("text") },
-                                    ])),
+                                    value: expr(ExprKind::Object(vec![ObjectProperty::KeyValue {
+                                        key: str_lit("data"),
+                                        value: ident("text"),
+                                    }])),
                                     spread: false,
-                                    by_ref: false }])),
+                                    by_ref: false,
+                                }])),
                             ],
                         )))],
                         Some(vec![stmt(StmtKind::Expr(call_expr(
@@ -760,7 +780,8 @@ fn socket_helpers() -> Vec<Statement> {
                                     value: expr(ExprKind::Object(vec![
                                         ObjectProperty::KeyValue {
                                             key: str_lit("data"),
-                                            value: ident("text") },
+                                            value: ident("text"),
+                                        },
                                         // "host:port" is one of the shapes the
                                         // host parses.
                                         ObjectProperty::KeyValue {
@@ -768,10 +789,12 @@ fn socket_helpers() -> Vec<Statement> {
                                             value: call_expr(
                                                 ident("__c_sock_addr_text"),
                                                 vec![ident("dest")],
-                                            ) },
+                                            ),
+                                        },
                                     ])),
                                     spread: false,
-                                    by_ref: false }])),
+                                    by_ref: false,
+                                }])),
                             ],
                         )))]),
                     ),
@@ -830,7 +853,10 @@ fn socket_helpers() -> Vec<Statement> {
                     if_stmt(
                         bin(
                             BinOp::NotEq,
-                            nullish(index_expr(ident("__c_fd_nonblock"), ident("fd")), int_lit(0)),
+                            nullish(
+                                index_expr(ident("__c_fd_nonblock"), ident("fd")),
+                                int_lit(0),
+                            ),
                             int_lit(0),
                         ),
                         vec![
@@ -902,7 +928,10 @@ fn socket_helpers() -> Vec<Statement> {
                     ),
                     call_expr(
                         ident("__c_wasi_stream_read"),
-                        vec![index_expr(ident("__c_sock_rx"), ident("fd")), ident("count")],
+                        vec![
+                            index_expr(ident("__c_sock_rx"), ident("fd")),
+                            ident("count"),
+                        ],
                     ),
                 ),
             ),
@@ -914,7 +943,10 @@ fn socket_helpers() -> Vec<Statement> {
             var_decl_stmt("waited", int_lit(0)),
             var_decl_stmt(
                 "nb",
-                nullish(index_expr(ident("__c_fd_nonblock"), ident("fd")), int_lit(0)),
+                nullish(
+                    index_expr(ident("__c_fd_nonblock"), ident("fd")),
+                    int_lit(0),
+                ),
             ),
             stmt(StmtKind::While {
                 cond: bin(
@@ -931,13 +963,33 @@ fn socket_helpers() -> Vec<Statement> {
                                 int_lit(0),
                             ),
                         ),
-                        bin(BinOp::Lt, ident("waited"), int_lit(400)),
+                        // Same change of unit as `__c_accept_h`: 4 blocking
+                        // rounds, not 400 sleeps.
+                        bin(BinOp::Lt, ident("waited"), int_lit(4)),
                     ),
                 ),
                 body: vec![
+                    // Block on the stream's OWN pollable rather than on a
+                    // duration: the wait ends when bytes arrive, not on the
+                    // next tick. `pollable.block` has its own ceiling, so the
+                    // surrounding loop is the deadline, not the wait.
                     stmt(StmtKind::Expr(call_expr(
-                        ident("__c_sleep_ms"),
-                        vec![int_lit(5)],
+                        ident("__c_pollable_block"),
+                        vec![ternary(
+                            bin(
+                                BinOp::Eq,
+                                index_expr(ident("__c_sock_kind"), ident("fd")),
+                                int_lit(2),
+                            ),
+                            call_expr(
+                                ident("__c_wasi_dgram_ready"),
+                                vec![index_expr(ident("__c_sock_rx"), ident("fd"))],
+                            ),
+                            call_expr(
+                                ident("__c_wasi_stream_ready"),
+                                vec![index_expr(ident("__c_sock_rx"), ident("fd"))],
+                            ),
+                        )],
                     ))),
                     stmt(StmtKind::Expr(assign_expr(
                         ident("waited"),
@@ -957,12 +1009,16 @@ fn socket_helpers() -> Vec<Statement> {
                             ),
                             call_expr(
                                 ident("__c_wasi_stream_read"),
-                                vec![index_expr(ident("__c_sock_rx"), ident("fd")), ident("count")],
+                                vec![
+                                    index_expr(ident("__c_sock_rx"), ident("fd")),
+                                    ident("count"),
+                                ],
                             ),
                         ),
                     ))),
                 ],
-                else_body: None }),
+                else_body: None,
+            }),
             // A closed/failed stream is a real 0-byte answer…
             if_stmt(
                 bin(BinOp::Eq, ident("data"), null_lit()),
@@ -1018,7 +1074,8 @@ fn socket_helpers() -> Vec<Statement> {
                         BinOp::Eq,
                         expr(ExprKind::Unary {
                             op: UnaryOp::Typeof,
-                            expr: Box::new(ident("data")) }),
+                            expr: Box::new(ident("data")),
+                        }),
                         str_lit("string"),
                     ),
                     ident("data"),
@@ -1060,10 +1117,7 @@ fn socket_helpers() -> Vec<Statement> {
                     ))),
                     stmt(StmtKind::Expr(assign_expr(
                         member(ident("addr"), "sun_path"),
-                        nullish(
-                            index_expr(ident("__c_sock_path"), ident("fd")),
-                            str_lit(""),
-                        ),
+                        nullish(index_expr(ident("__c_sock_path"), ident("fd")), str_lit("")),
                     ))),
                     stmt(StmtKind::Return(Some(int_lit(0)))),
                 ],
@@ -1139,8 +1193,17 @@ fn socket_helpers() -> Vec<Statement> {
     );
 
     vec![
-        addr_text, socket_new, udp_stream_h, bind_h, listen_h, connect_h, accept_h, send_h,
-        recv_h, sockname_h, peername_h,
+        addr_text,
+        socket_new,
+        udp_stream_h,
+        bind_h,
+        listen_h,
+        connect_h,
+        accept_h,
+        send_h,
+        recv_h,
+        sockname_h,
+        peername_h,
     ]
 }
 
@@ -1182,7 +1245,8 @@ fn exec_helper() -> Statement {
                     BinOp::Eq,
                     expr(ExprKind::Unary {
                         op: UnaryOp::Typeof,
-                        expr: Box::new(ident("arg_list")) }),
+                        expr: Box::new(ident("arg_list")),
+                    }),
                     str_lit("string"),
                 ),
                 vec![stmt(StmtKind::Expr(assign_expr(
@@ -1191,7 +1255,8 @@ fn exec_helper() -> Statement {
                         key: None,
                         value: ident("arg_list"),
                         spread: false,
-                        by_ref: false }])),
+                        by_ref: false,
+                    }])),
                 )))],
                 None,
             ),
@@ -1210,7 +1275,8 @@ fn exec_helper() -> Statement {
                                 BinOp::Eq,
                                 expr(ExprKind::Unary {
                                     op: UnaryOp::Typeof,
-                                    expr: Box::new(ident("item")) }),
+                                    expr: Box::new(ident("item")),
+                                }),
                                 str_lit("undefined"),
                             ),
                         ),
@@ -1226,10 +1292,14 @@ fn exec_helper() -> Statement {
                         bin(BinOp::Add, ident("i"), int_lit(1)),
                     ))),
                 ],
-                else_body: None }),
+                else_body: None,
+            }),
             // argv[0] is the conventional NAME, not the program: the real
             // arguments are argv[1..].
-            var_decl_stmt("real_args", call_member(ident("args"), "slice", vec![int_lit(1)])),
+            var_decl_stmt(
+                "real_args",
+                call_member(ident("args"), "slice", vec![int_lit(1)]),
+            ),
             var_decl_stmt("opts", expr(ExprKind::Object(vec![]))),
             // An explicit env list (execve/execle/execvpe) REPLACES the
             // environment — including the empty list, which means empty.
@@ -1262,7 +1332,8 @@ fn exec_helper() -> Statement {
                                         BinOp::Eq,
                                         expr(ExprKind::Unary {
                                             op: UnaryOp::Typeof,
-                                            expr: Box::new(ident("entry")) }),
+                                            expr: Box::new(ident("entry")),
+                                        }),
                                         str_lit("undefined"),
                                     ),
                                 ),
@@ -1301,7 +1372,8 @@ fn exec_helper() -> Statement {
                                 bin(BinOp::Add, ident("j"), int_lit(1)),
                             ))),
                         ],
-                        else_body: None }),
+                        else_body: None,
+                    }),
                     stmt(StmtKind::Expr(assign_expr(
                         member(ident("opts"), "env"),
                         ident("eo"),
@@ -1334,7 +1406,11 @@ fn exec_helper() -> Statement {
             ),
             // Spawn failure — the one case where exec RETURNS (ENOENT).
             if_stmt(
-                bin(BinOp::NotEq, nullish(member(ident("r"), "error"), null_lit()), null_lit()),
+                bin(
+                    BinOp::NotEq,
+                    nullish(member(ident("r"), "error"), null_lit()),
+                    null_lit(),
+                ),
                 vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                 None,
             ),
@@ -1346,10 +1422,7 @@ fn exec_helper() -> Statement {
                     member(ident("action"), "openPath"),
                 ),
                 vec![stmt(StmtKind::Expr(assign_expr(
-                    index_expr(
-                        ident("__c_file_store"),
-                        member(ident("action"), "openPath"),
-                    ),
+                    index_expr(ident("__c_file_store"), member(ident("action"), "openPath")),
                     member(ident("r"), "stdout"),
                 )))],
                 Some(vec![if_stmt(
@@ -1419,7 +1492,8 @@ fn str_to_codes_helper() -> Statement {
                         bin(BinOp::Add, ident("i"), int_lit(1)),
                     ))),
                 ],
-                else_body: None }),
+                else_body: None,
+            }),
             stmt(StmtKind::Return(Some(ident("out")))),
         ],
     )
@@ -1454,7 +1528,8 @@ fn poll_helper() -> Statement {
                         Some(vec![if_stmt(
                             expr(ExprKind::Unary {
                                 op: UnaryOp::Not,
-                                expr: Box::new(index_expr(ident("__c_fd_open"), ident("fd"))) }),
+                                expr: Box::new(index_expr(ident("__c_fd_open"), ident("fd"))),
+                            }),
                             vec![
                                 stmt(StmtKind::Expr(assign_expr(
                                     member(ident("p"), "revents"),
@@ -1537,7 +1612,8 @@ fn poll_helper() -> Statement {
                         bin(BinOp::Add, ident("i"), int_lit(1)),
                     ))),
                 ],
-                else_body: None }),
+                else_body: None,
+            }),
             stmt(StmtKind::Return(Some(ident("ready")))),
         ],
     )
@@ -1563,7 +1639,8 @@ fn select_helper() -> Statement {
                         vec![if_stmt(
                             expr(ExprKind::Unary {
                                 op: UnaryOp::Not,
-                                expr: Box::new(index_expr(ident("__c_fd_open"), ident("i"))) }),
+                                expr: Box::new(index_expr(ident("__c_fd_open"), ident("i"))),
+                            }),
                             vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                             Some(vec![if_stmt(
                                 or(
@@ -1587,7 +1664,8 @@ fn select_helper() -> Statement {
                         vec![if_stmt(
                             expr(ExprKind::Unary {
                                 op: UnaryOp::Not,
-                                expr: Box::new(index_expr(ident("__c_fd_open"), ident("i"))) }),
+                                expr: Box::new(index_expr(ident("__c_fd_open"), ident("i"))),
+                            }),
                             vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                             Some(vec![stmt(StmtKind::Expr(assign_expr(
                                 ident("ready"),
@@ -1601,7 +1679,8 @@ fn select_helper() -> Statement {
                         bin(BinOp::Add, ident("i"), int_lit(1)),
                     ))),
                 ],
-                else_body: None }),
+                else_body: None,
+            }),
             stmt(StmtKind::Return(Some(ident("ready")))),
         ],
     )
@@ -1616,14 +1695,16 @@ fn if_stmt(
         cond,
         then_body,
         elifs: vec![],
-        else_body })
+        else_body,
+    })
 }
 
 fn bin(op: BinOp, left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }
 
 /// The next free file descriptor. Held on an object so that a spawned
@@ -1809,15 +1890,26 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
                 "SDL_Rect",
                 &[("x", "int"), ("y", "int"), ("w", "int"), ("h", "int")],
             ),
-            ("SDL_Keysym", &[("sym", "int"), ("scancode", "int"), ("mod", "int")]),
+            (
+                "SDL_Keysym",
+                &[("sym", "int"), ("scancode", "int"), ("mod", "int")],
+            ),
             (
                 "SDL_KeyboardEvent",
                 &[("keysym", "SDL_Keysym"), ("state", "int"), ("type", "int")],
             ),
-            ("SDL_MouseMotionEvent", &[("x", "int"), ("y", "int"), ("state", "int")]),
+            (
+                "SDL_MouseMotionEvent",
+                &[("x", "int"), ("y", "int"), ("state", "int")],
+            ),
             (
                 "SDL_MouseButtonEvent",
-                &[("button", "int"), ("x", "int"), ("y", "int"), ("state", "int")],
+                &[
+                    ("button", "int"),
+                    ("x", "int"),
+                    ("y", "int"),
+                    ("state", "int"),
+                ],
             ),
             ("SDL_MouseWheelEvent", &[("x", "int"), ("y", "int")]),
             (
@@ -1831,7 +1923,8 @@ pub fn header_structs(header: &str) -> Vec<HeaderStruct> {
                 ],
             ),
         ],
-        _ => Vec::new() }
+        _ => Vec::new(),
+    }
 }
 
 fn inet_structs() -> Vec<HeaderStruct> {
@@ -2048,7 +2141,8 @@ pub fn header_constants(header: &str) -> Option<&'static [(&'static str, i64)]> 
             ("LOG_USER", 8),
             ("LOG_DAEMON", 24),
         ]),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn arg_target(value: Expression) -> Expression {
@@ -2057,38 +2151,47 @@ fn arg_target(value: Expression) -> Expression {
         ExprKind::RefLoad(expr) => arg_target(*expr),
         ExprKind::Unary {
             op: UnaryOp::AddrOf,
-            expr } => *expr,
+            expr,
+        } => *expr,
         ExprKind::RefOf(place) => match *place {
             PlaceExpr::Ident(name) => ident(&name),
             PlaceExpr::Member {
                 object,
                 field,
-                null_safe } => expr(ExprKind::Member {
+                null_safe,
+            } => expr(ExprKind::Member {
                 object,
                 field,
-                null_safe }),
+                null_safe,
+            }),
             PlaceExpr::Index {
                 object,
                 index,
-                null_safe } => expr(ExprKind::Index {
+                null_safe,
+            } => expr(ExprKind::Index {
                 object,
                 index,
-                null_safe }),
-            PlaceExpr::Deref(inner) => *inner },
-        _ => value }
+                null_safe,
+            }),
+            PlaceExpr::Deref(inner) => *inner,
+        },
+        _ => value,
+    }
 }
 
 fn nullish(left: Expression, right: Expression) -> Expression {
     expr(ExprKind::NullCoalesce {
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }
 
 fn ternary(cond: Expression, then: Expression, else_: Expression) -> Expression {
     expr(ExprKind::Ternary {
         cond: Box::new(cond),
         then: Box::new(then),
-        else_: Box::new(else_) })
+        else_: Box::new(else_),
+    })
 }
 
 fn obj(fields: Vec<(&str, Expression)>) -> Expression {
@@ -2097,7 +2200,8 @@ fn obj(fields: Vec<(&str, Expression)>) -> Expression {
             .into_iter()
             .map(|(key, value)| ObjectProperty::KeyValue {
                 key: str_lit(key),
-                value })
+                value,
+            })
             .collect(),
     ))
 }
@@ -2125,21 +2229,24 @@ fn eq(left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op: BinOp::Eq,
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }
 
 fn and(left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op: BinOp::And,
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }
 
 fn or(left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op: BinOp::Or,
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }
 
 pub fn open(path: Expression, flags: Expression) -> Expression {
@@ -2147,16 +2254,14 @@ pub fn open(path: Expression, flags: Expression) -> Expression {
         expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
-            right: Box::new(int_lit(3)) }),
+            right: Box::new(int_lit(3)),
+        }),
         int_lit(0),
     );
     let fd = ident("__c_new_fd");
     expr(ExprKind::Sequence(vec![
         assign_expr(fd.clone(), next_fd()),
-        assign_expr(
-            next_fd(),
-            bin(BinOp::Add, next_fd(), int_lit(1)),
-        ),
+        assign_expr(next_fd(), bin(BinOp::Add, next_fd(), int_lit(1))),
         assign_expr(ident("__c_last_path"), path.clone()),
         assign_expr(index_expr(ident("__c_path_exists"), path), int_lit(1)),
         assign_expr(
@@ -2221,7 +2326,8 @@ pub fn close(fd: Expression) -> Expression {
 pub fn fcntl(fd: Expression, cmd: Expression, arg: Option<Expression>) -> Expression {
     let cmd_value = match &cmd.kind {
         ExprKind::Lit(Literal::Int(n)) => Some(*n),
-        _ => None };
+        _ => None,
+    };
     if cmd_value == Some(4) {
         expr(ExprKind::Sequence(vec![
             assign_expr(index_expr(ident("__c_fd_nonblock"), fd.clone()), int_lit(1)),
@@ -2302,15 +2408,9 @@ pub fn pipe(fds: Expression, cloexec: bool) -> Expression {
     let clo = if cloexec { int_lit(1) } else { int_lit(0) };
     expr(ExprKind::Sequence(vec![
         assign_expr(read_fd.clone(), next_fd()),
-        assign_expr(
-            next_fd(),
-            bin(BinOp::Add, next_fd(), int_lit(1)),
-        ),
+        assign_expr(next_fd(), bin(BinOp::Add, next_fd(), int_lit(1))),
         assign_expr(write_fd.clone(), next_fd()),
-        assign_expr(
-            next_fd(),
-            bin(BinOp::Add, next_fd(), int_lit(1)),
-        ),
+        assign_expr(next_fd(), bin(BinOp::Add, next_fd(), int_lit(1))),
         array_slot_set(fds.clone(), int_lit(0), read_fd.clone()),
         array_slot_set(fds, int_lit(1), write_fd.clone()),
         assign_expr(
@@ -2356,7 +2456,8 @@ pub fn dup_at(fd: Expression, new_fd: Expression, cloexec: bool) -> Expression {
             expr: Box::new(or(
                 index_expr(ident("__c_fd_open"), fd.clone()),
                 bin(BinOp::Lt, fd.clone(), int_lit(3)),
-            )) }),
+            )),
+        }),
         int_lit(-1),
         expr(ExprKind::Sequence(vec![
             assign_expr(target_fd.clone(), new_fd),
@@ -2436,7 +2537,8 @@ pub fn read(fd: Expression, buf: Expression, count: Expression) -> Expression {
                 index_expr(ident("__c_pipe_writer_closed"), fd.clone()),
                 expr(ExprKind::Unary {
                     op: UnaryOp::Not,
-                    expr: Box::new(index_expr(ident("__c_fd_content_by_fd"), fd.clone())) }),
+                    expr: Box::new(index_expr(ident("__c_fd_content_by_fd"), fd.clone())),
+                }),
             ),
             int_lit(0),
             ternary(
@@ -2502,7 +2604,8 @@ pub fn write(fd: Expression, data: Expression, count: Expression) -> Expression 
             expr: Box::new(index_expr(
                 ident("__c_fd_open"),
                 index_expr(ident("__c_pipe_peer"), fd.clone()),
-            )) }),
+            )),
+        }),
     );
     ternary(
         or(
@@ -2520,7 +2623,8 @@ pub fn write(fd: Expression, data: Expression, count: Expression) -> Expression 
                     expr: Box::new(or(
                         index_expr(ident("__c_fd_open"), fd.clone()),
                         bin(BinOp::Lt, fd, int_lit(3)),
-                    )) }),
+                    )),
+                }),
             ),
             peer_closed,
         ),
@@ -2544,28 +2648,35 @@ pub fn shm_open(path: Expression, flags: Expression) -> Expression {
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
-            right: Box::new(int_lit(64)) })),
-        right: Box::new(int_lit(0)) });
+            right: Box::new(int_lit(64)),
+        })),
+        right: Box::new(int_lit(0)),
+    });
     let has_excl = expr(ExprKind::Binary {
         op: BinOp::NotEq,
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
-            right: Box::new(int_lit(128)) })),
-        right: Box::new(int_lit(0)) });
+            right: Box::new(int_lit(128)),
+        })),
+        right: Box::new(int_lit(0)),
+    });
     let invalid_flags = eq(flags.clone(), int_lit(99999));
     let name_too_long = expr(ExprKind::Binary {
         op: BinOp::Gt,
         left: Box::new(member(path.clone(), "length")),
-        right: Box::new(int_lit(255)) });
+        right: Box::new(int_lit(255)),
+    });
     let exclusive_existing = and(exists.clone(), has_excl);
     let missing_without_creat = and(
         expr(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(exists.clone()) }),
+            expr: Box::new(exists.clone()),
+        }),
         expr(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(has_creat) }),
+            expr: Box::new(has_creat),
+        }),
     );
     let open_ok = expr(ExprKind::Sequence(vec![
         assign_expr(index_expr(ident("__c_shm_exists"), path), int_lit(1)),
@@ -2578,7 +2689,8 @@ pub fn shm_open(path: Expression, flags: Expression) -> Expression {
             expr(ExprKind::Binary {
                 op: BinOp::Add,
                 left: Box::new(ident("__c_last_shm_fd")),
-                right: Box::new(int_lit(1)) }),
+                right: Box::new(int_lit(1)),
+            }),
         ),
         assign_expr(ident("__c_fd_closed"), int_lit(0)),
         assign_expr(ident("__c_fd_eof"), int_lit(0)),
@@ -2588,7 +2700,8 @@ pub fn shm_open(path: Expression, flags: Expression) -> Expression {
                 expr(ExprKind::Binary {
                     op: BinOp::BitAnd,
                     left: Box::new(flags.clone()),
-                    right: Box::new(int_lit(3)) }),
+                    right: Box::new(int_lit(3)),
+                }),
                 int_lit(0),
             ),
         ),
@@ -2598,7 +2711,8 @@ pub fn shm_open(path: Expression, flags: Expression) -> Expression {
                 expr(ExprKind::Binary {
                     op: BinOp::BitAnd,
                     left: Box::new(flags),
-                    right: Box::new(int_lit(3)) }),
+                    right: Box::new(int_lit(3)),
+                }),
                 int_lit(0),
             ),
         ),
@@ -2642,29 +2756,37 @@ pub fn mmap(
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(prot.clone()),
-            right: Box::new(int_lit(2)) })),
-        right: Box::new(int_lit(0)) });
+            right: Box::new(int_lit(2)),
+        })),
+        right: Box::new(int_lit(0)),
+    });
     let is_shared = expr(ExprKind::Binary {
         op: BinOp::NotEq,
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
-            right: Box::new(int_lit(1)) })),
-        right: Box::new(int_lit(0)) });
+            right: Box::new(int_lit(1)),
+        })),
+        right: Box::new(int_lit(0)),
+    });
     let is_anon = expr(ExprKind::Binary {
         op: BinOp::NotEq,
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
-            right: Box::new(int_lit(32)) })),
-        right: Box::new(int_lit(0)) });
+            right: Box::new(int_lit(32)),
+        })),
+        right: Box::new(int_lit(0)),
+    });
     let is_fixed = expr(ExprKind::Binary {
         op: BinOp::NotEq,
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(flags.clone()),
-            right: Box::new(int_lit(16)) })),
-        right: Box::new(int_lit(0)) });
+            right: Box::new(int_lit(16)),
+        })),
+        right: Box::new(int_lit(0)),
+    });
     let invalid = or(
         eq(len, int_lit(0)),
         or(
@@ -2672,7 +2794,8 @@ pub fn mmap(
                 eq(fd, int_lit(-1)),
                 expr(ExprKind::Unary {
                     op: UnaryOp::Not,
-                    expr: Box::new(is_anon) }),
+                    expr: Box::new(is_anon),
+                }),
             ),
             and(
                 and(nullish(ident("__c_fd_readonly"), int_lit(0)), is_shared),
@@ -2686,7 +2809,8 @@ pub fn mmap(
             expr(ExprKind::Binary {
                 op: BinOp::NotEq,
                 left: Box::new(addr.clone()),
-                right: Box::new(expr(ExprKind::Lit(Literal::Null))) }),
+                right: Box::new(expr(ExprKind::Lit(Literal::Null))),
+            }),
         ),
         addr,
         pointers::make_carray_ptr(ident("__c_mmap_buffer"), int_lit(0)),
@@ -2850,21 +2974,21 @@ pub fn socketpair(fds: Expression) -> Expression {
     let b = ident("__c_sp_b");
     expr(ExprKind::Sequence(vec![
         assign_expr(a.clone(), next_fd()),
-        assign_expr(
-            next_fd(),
-            bin(BinOp::Add, next_fd(), int_lit(1)),
-        ),
+        assign_expr(next_fd(), bin(BinOp::Add, next_fd(), int_lit(1))),
         assign_expr(b.clone(), next_fd()),
-        assign_expr(
-            next_fd(),
-            bin(BinOp::Add, next_fd(), int_lit(1)),
-        ),
+        assign_expr(next_fd(), bin(BinOp::Add, next_fd(), int_lit(1))),
         array_slot_set(fds.clone(), int_lit(0), a.clone()),
         array_slot_set(fds, int_lit(1), b.clone()),
         assign_expr(index_expr(ident("__c_fd_open"), a.clone()), int_lit(1)),
         assign_expr(index_expr(ident("__c_fd_open"), b.clone()), int_lit(1)),
-        assign_expr(index_expr(ident("__c_pipe_is_writer"), a.clone()), int_lit(1)),
-        assign_expr(index_expr(ident("__c_pipe_is_writer"), b.clone()), int_lit(1)),
+        assign_expr(
+            index_expr(ident("__c_pipe_is_writer"), a.clone()),
+            int_lit(1),
+        ),
+        assign_expr(
+            index_expr(ident("__c_pipe_is_writer"), b.clone()),
+            int_lit(1),
+        ),
         assign_expr(index_expr(ident("__c_pipe_peer"), a.clone()), b.clone()),
         assign_expr(index_expr(ident("__c_pipe_peer"), b), a),
         assign_expr(ident("__c_fd_closed"), int_lit(0)),
@@ -2890,7 +3014,12 @@ pub fn sendmsg(fd: Expression, msg: Expression) -> Expression {
     );
     call_expr(
         ident("__c_send_h"),
-        vec![fd, member(iov.clone(), "iov_base"), member(iov, "iov_len"), dest],
+        vec![
+            fd,
+            member(iov.clone(), "iov_base"),
+            member(iov, "iov_len"),
+            dest,
+        ],
     )
 }
 
@@ -2966,10 +3095,12 @@ pub fn mq_open(path: Expression, flags: Expression, attr: Option<Expression>) ->
     let missing = and(
         expr(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(create) }),
+            expr: Box::new(create),
+        }),
         expr(ExprKind::Unary {
             op: UnaryOp::Not,
-            expr: Box::new(exists.clone()) }),
+            expr: Box::new(exists.clone()),
+        }),
     );
     let exclusive = and(excl, exists.clone());
     expr(ExprKind::Sequence(vec![
@@ -3093,7 +3224,8 @@ pub fn mq_receive(
                 expr: Box::new(nullish(
                     index_expr(ident("__c_mq_has_msg"), q.clone()),
                     int_lit(0),
-                )) }),
+                )),
+            }),
             bin(
                 BinOp::Lt,
                 buflen,
@@ -3227,7 +3359,8 @@ pub fn getservbyname(name: Expression, proto: Option<Expression>, invalid: bool)
                 }
             }) {
                 Some("udp") => "udp",
-                _ => "tcp" },
+                _ => "tcp",
+            },
         )
     }
 }
@@ -3241,7 +3374,8 @@ pub fn getservbyport(port: Expression, proto: Option<Expression>) -> Expression 
         }
     }) {
         Some("udp") => "udp",
-        _ => "tcp" };
+        _ => "tcp",
+    };
     let name = if matches!(&port.kind, ExprKind::Lit(Literal::Int(53))) {
         "domain"
     } else {
@@ -3377,11 +3511,13 @@ pub fn raise(sig: Expression) -> Expression {
     let bit = expr(ExprKind::Binary {
         op: BinOp::Shl,
         left: Box::new(int_lit(1)),
-        right: Box::new(sig.clone()) });
+        right: Box::new(sig.clone()),
+    });
     let pending = expr(ExprKind::Binary {
         op: BinOp::BitOr,
         left: Box::new(nullish(ident("__c_pending_signals"), int_lit(0))),
-        right: Box::new(bit) });
+        right: Box::new(bit),
+    });
     expr(ExprKind::Sequence(vec![
         assign_expr(ident("__c_pending_signals"), pending),
         super::build::call_expr(ident("__c_raise_h"), vec![sig]),
@@ -3415,7 +3551,11 @@ pub fn fork() -> Expression {
     expr(ExprKind::Sequence(vec![
         assign_expr(
             ident("__c_pending_children"),
-            bin(BinOp::Add, nullish(ident("__c_pending_children"), int_lit(0)), int_lit(1)),
+            bin(
+                BinOp::Add,
+                nullish(ident("__c_pending_children"), int_lit(0)),
+                int_lit(1),
+            ),
         ),
         assign_expr(ident("__c_in_forked_child"), int_lit(1)),
         assign_expr(ident("__c_child_status"), int_lit(0)),
@@ -3446,7 +3586,8 @@ pub fn wait(status: Option<Expression>) -> Expression {
         expr(ExprKind::Binary {
             op: BinOp::Gt,
             left: Box::new(pending),
-            right: Box::new(int_lit(0)) }),
+            right: Box::new(int_lit(0)),
+        }),
         expr(ExprKind::Sequence(child_seq)),
         int_lit(-1),
     )
@@ -3509,11 +3650,13 @@ pub fn sigset_add(set: Expression, sig: Expression) -> Expression {
     let bit = expr(ExprKind::Binary {
         op: BinOp::Shl,
         left: Box::new(int_lit(1)),
-        right: Box::new(sig) });
+        right: Box::new(sig),
+    });
     let value = expr(ExprKind::Binary {
         op: BinOp::BitOr,
         left: Box::new(target.clone()),
-        right: Box::new(bit) });
+        right: Box::new(bit),
+    });
     expr(ExprKind::Sequence(vec![
         assign_expr(target, value),
         int_lit(0),
@@ -3527,11 +3670,14 @@ pub fn sigset_del(set: Expression, sig: Expression) -> Expression {
         expr: Box::new(expr(ExprKind::Binary {
             op: BinOp::Shl,
             left: Box::new(int_lit(1)),
-            right: Box::new(sig) })) });
+            right: Box::new(sig),
+        })),
+    });
     let value = expr(ExprKind::Binary {
         op: BinOp::BitAnd,
         left: Box::new(target.clone()),
-        right: Box::new(bit) });
+        right: Box::new(bit),
+    });
     expr(ExprKind::Sequence(vec![
         assign_expr(target, value),
         int_lit(0),
@@ -3542,16 +3688,19 @@ pub fn sigismember(set: Expression, sig: Expression) -> Expression {
     let bit = expr(ExprKind::Binary {
         op: BinOp::Shl,
         left: Box::new(int_lit(1)),
-        right: Box::new(sig) });
+        right: Box::new(sig),
+    });
     let masked = expr(ExprKind::Binary {
         op: BinOp::BitAnd,
         left: Box::new(arg_target(set)),
-        right: Box::new(bit) });
+        right: Box::new(bit),
+    });
     ternary(
         expr(ExprKind::Binary {
             op: BinOp::NotEq,
             left: Box::new(masked),
-            right: Box::new(int_lit(0)) }),
+            right: Box::new(int_lit(0)),
+        }),
         int_lit(1),
         int_lit(0),
     )
@@ -3589,8 +3738,10 @@ pub fn sigaction(sig: Expression, act: Expression, old: Expression) -> Expressio
         left: Box::new(expr(ExprKind::Binary {
             op: BinOp::BitAnd,
             left: Box::new(member(act_target.clone(), "sa_flags")),
-            right: Box::new(int_lit(4)) })),
-        right: Box::new(int_lit(0)) });
+            right: Box::new(int_lit(4)),
+        })),
+        right: Box::new(int_lit(0)),
+    });
     let handler = ternary(
         siginfo_enabled,
         member(act_target.clone(), "sa_sigaction"),

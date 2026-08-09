@@ -4,7 +4,8 @@ use vybe_ast::{BinOp, ExprKind, Expression, Literal, PlaceExpr, Statement, StmtK
 
 use super::build::{
     assign_expr, expr, function_stmt, ident, if_stmt, index_expr, int_lit, member, null_lit, stmt,
-    var_decl_stmt };
+    var_decl_stmt,
+};
 
 pub fn header_constants(header: &str) -> Option<&'static [(&'static str, i64)]> {
     match header {
@@ -48,7 +49,8 @@ pub fn header_constants(header: &str) -> Option<&'static [(&'static str, i64)]> 
             ("mtx_timed", 2),
             ("ONCE_FLAG_INIT", 0),
         ]),
-        _ => None }
+        _ => None,
+    }
 }
 
 pub fn ok() -> Expression {
@@ -86,7 +88,10 @@ pub fn pthread_create(thread: Expression, start: Expression, arg: Expression) ->
         ),
         // Published BEFORE the spawn — the child reads both out of the
         // shared tables the moment it starts.
-        assign_expr(index_expr(ident("__c_thread_starts"), target.clone()), start),
+        assign_expr(
+            index_expr(ident("__c_thread_starts"), target.clone()),
+            start,
+        ),
         assign_expr(index_expr(ident("__c_thread_args"), target.clone()), arg),
         assign_expr(
             index_expr(ident("__c_thread_results"), target.clone()),
@@ -100,7 +105,8 @@ pub fn pthread_create(thread: Expression, start: Expression, arg: Expression) ->
                     vybe_ast::Argument::positional(target),
                     vybe_ast::Argument::positional(ident("__c_thread_entry")),
                 ],
-                optional: false }),
+                optional: false,
+            }),
         ),
         int_lit(0),
     ]))
@@ -118,7 +124,8 @@ pub fn pthread_join(thread: Expression, retval: Expression) -> Expression {
     let joined = expr(ExprKind::Call {
         callee: Box::new(ident("__c_thread_join_h")),
         args: vec![vybe_ast::Argument::positional(thread)],
-        optional: false });
+        optional: false,
+    });
     if matches!(retval.kind, ExprKind::Lit(Literal::Null)) {
         return expr(ExprKind::Sequence(vec![joined, int_lit(0)]));
     }
@@ -139,7 +146,8 @@ pub fn equal(left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Ternary {
         cond: Box::new(eq(left, right)),
         then: Box::new(int_lit(1)),
-        else_: Box::new(int_lit(0)) })
+        else_: Box::new(int_lit(0)),
+    })
 }
 
 pub fn call_once(flag: Expression, init: Expression) -> Expression {
@@ -151,9 +159,11 @@ pub fn call_once(flag: Expression, init: Expression) -> Expression {
             expr(ExprKind::Call {
                 callee: Box::new(init),
                 args: vec![],
-                optional: false }),
+                optional: false,
+            }),
             int_lit(0),
-        ]))) })
+        ]))),
+    })
 }
 
 pub fn cleanup_push(cleanup: Expression, arg: Expression) -> Expression {
@@ -171,10 +181,12 @@ pub fn cleanup_pop(execute: Expression) -> Expression {
             expr(ExprKind::Call {
                 callee: Box::new(ident("__c_cleanup_fn")),
                 args: vec![vybe_ast::Argument::positional(ident("__c_cleanup_arg"))],
-                optional: false }),
+                optional: false,
+            }),
             int_lit(0),
         ]))),
-        else_: Box::new(int_lit(0)) })
+        else_: Box::new(int_lit(0)),
+    })
 }
 
 pub fn mutex_init(mutex: Expression, attr: Option<Expression>) -> Expression {
@@ -185,7 +197,9 @@ pub fn mutex_init(mutex: Expression, attr: Option<Expression>) -> Expression {
         else_: Box::new(expr(ExprKind::Ternary {
             cond: Box::new(eq(attr_value, int_lit(2))),
             then: Box::new(int_lit(20)),
-            else_: Box::new(int_lit(0)) })) });
+            else_: Box::new(int_lit(0)),
+        })),
+    });
     init_target(mutex, value)
 }
 
@@ -204,12 +218,16 @@ pub fn mutex_lock(mutex: Expression) -> Expression {
                         cond: Box::new(expr(ExprKind::Binary {
                             op: BinOp::GtEq,
                             left: Box::new(target.clone()),
-                            right: Box::new(int_lit(20)) })),
+                            right: Box::new(int_lit(20)),
+                        })),
                         then: Box::new(add(target, int_lit(1))),
-                        else_: Box::new(int_lit(1)) })) }),
+                        else_: Box::new(int_lit(1)),
+                    })),
+                }),
             ),
             int_lit(0),
-        ]))) })
+        ]))),
+    })
 }
 
 pub fn mutex_trylock(mutex: Expression) -> Expression {
@@ -226,10 +244,12 @@ pub fn mutex_trylock(mutex: Expression) -> Expression {
                 expr(ExprKind::Ternary {
                     cond: Box::new(eq(target.clone(), int_lit(10))),
                     then: Box::new(int_lit(11)),
-                    else_: Box::new(int_lit(1)) }),
+                    else_: Box::new(int_lit(1)),
+                }),
             ),
             int_lit(0),
-        ]))) })
+        ]))),
+    })
 }
 
 pub fn mutex_timedlock(mutex: Expression) -> Expression {
@@ -251,12 +271,16 @@ pub fn mutex_unlock(mutex: Expression) -> Expression {
                         cond: Box::new(expr(ExprKind::Binary {
                             op: BinOp::Gt,
                             left: Box::new(target.clone()),
-                            right: Box::new(int_lit(20)) })),
+                            right: Box::new(int_lit(20)),
+                        })),
                         then: Box::new(add(target, int_lit(-1))),
-                        else_: Box::new(int_lit(0)) })) }),
+                        else_: Box::new(int_lit(0)),
+                    })),
+                }),
             ),
             int_lit(0),
-        ]))) })
+        ]))),
+    })
 }
 
 pub fn attr_set(attr: Expression, value: Expression) -> Expression {
@@ -266,7 +290,8 @@ pub fn attr_set(attr: Expression, value: Expression) -> Expression {
 pub fn attr_get(attr: Expression, out: Expression, default_value: Expression) -> Expression {
     let value = expr(ExprKind::NullCoalesce {
         left: Box::new(arg_target(attr)),
-        right: Box::new(default_value) });
+        right: Box::new(default_value),
+    });
     expr(ExprKind::Sequence(vec![
         assign_expr(arg_target(out), value),
         int_lit(0),
@@ -293,7 +318,8 @@ pub fn rwlock_tryrdlock(lock: Expression) -> Expression {
         else_: Box::new(expr(ExprKind::Sequence(vec![
             assign_expr(target.clone(), add(target, int_lit(1))),
             int_lit(0),
-        ]))) })
+        ]))),
+    })
 }
 
 pub fn rwlock_trywrlock(lock: Expression) -> Expression {
@@ -304,7 +330,8 @@ pub fn rwlock_trywrlock(lock: Expression) -> Expression {
             assign_expr(target, int_lit(-1)),
             int_lit(0),
         ]))),
-        else_: Box::new(int_lit(16)) })
+        else_: Box::new(int_lit(16)),
+    })
 }
 
 pub fn rwlock_unlock(lock: Expression) -> Expression {
@@ -328,14 +355,18 @@ pub fn barrier_init(barrier: Expression, count: Expression) -> Expression {
                 ident("__c_next_barrier_handle"),
                 add(ident("__c_next_barrier_handle"), int_lit(1)),
             ),
-            assign_expr(index_expr(ident("__c_barrier_limit"), target.clone()), count),
+            assign_expr(
+                index_expr(ident("__c_barrier_limit"), target.clone()),
+                count,
+            ),
             assign_expr(
                 index_expr(ident("__c_barrier_arrived"), target.clone()),
                 int_lit(0),
             ),
             assign_expr(index_expr(ident("__c_barrier_gen"), target), int_lit(0)),
             int_lit(0),
-        ]))) })
+        ]))),
+    })
 }
 
 /// `pthread_barrier_wait` — arrive, then block until the generation turns
@@ -345,7 +376,8 @@ pub fn barrier_wait(barrier: Expression) -> Expression {
     expr(ExprKind::Call {
         callee: Box::new(ident("__c_barrier_wait_h")),
         args: vec![vybe_ast::Argument::positional(arg_target(barrier))],
-        optional: false })
+        optional: false,
+    })
 }
 
 pub fn timespec_get(ts: Expression, base: Expression) -> Expression {
@@ -376,7 +408,8 @@ pub fn sem_open(name: Expression, flags: Expression, value: Option<Expression>) 
     let initial = value.unwrap_or_else(|| int_lit(1));
     let handle = expr(ExprKind::NullCoalesce {
         left: Box::new(index_expr(ident("__c_sem_handles"), name.clone())),
-        right: Box::new(ident("__c_next_sem_handle")) });
+        right: Box::new(ident("__c_next_sem_handle")),
+    });
     let ok = expr(ExprKind::Sequence(vec![
         assign_expr(
             index_expr(ident("__c_sem_exists"), name.clone()),
@@ -390,7 +423,8 @@ pub fn sem_open(name: Expression, flags: Expression, value: Option<Expression>) 
             index_expr(ident("__c_sem_values"), handle.clone()),
             expr(ExprKind::NullCoalesce {
                 left: Box::new(index_expr(ident("__c_sem_values"), handle.clone())),
-                right: Box::new(initial) }),
+                right: Box::new(initial),
+            }),
         ),
         assign_expr(
             ident("__c_next_sem_handle"),
@@ -404,7 +438,8 @@ pub fn sem_open(name: Expression, flags: Expression, value: Option<Expression>) 
             or(missing_without_creat, exclusive_existing),
         )),
         then: Box::new(int_lit(-1)),
-        else_: Box::new(ok) })
+        else_: Box::new(ok),
+    })
 }
 
 pub fn sem_unlink(name: Expression) -> Expression {
@@ -415,14 +450,16 @@ pub fn sem_unlink(name: Expression) -> Expression {
             assign_expr(index_expr(ident("__c_sem_exists"), name), int_lit(0)),
             int_lit(0),
         ]))),
-        else_: Box::new(int_lit(-1)) })
+        else_: Box::new(int_lit(-1)),
+    })
 }
 
 pub fn sem_init(sem: Expression, value: Expression) -> Expression {
     expr(ExprKind::Ternary {
         cond: Box::new(lt(value.clone(), int_lit(0))),
         then: Box::new(int_lit(-1)),
-        else_: Box::new(init_target(sem, value)) })
+        else_: Box::new(init_target(sem, value)),
+    })
 }
 
 pub fn sem_post(sem: Expression) -> Expression {
@@ -442,7 +479,8 @@ pub fn sem_wait(sem: Expression, timed: bool, invalid_time: bool) -> Expression 
         expr(ExprKind::Binary {
             op: BinOp::LtEq,
             left: Box::new(value.clone()),
-            right: Box::new(int_lit(0)) })
+            right: Box::new(int_lit(0)),
+        })
     };
     expr(ExprKind::Ternary {
         cond: Box::new(fail_cond),
@@ -450,7 +488,8 @@ pub fn sem_wait(sem: Expression, timed: bool, invalid_time: bool) -> Expression 
         else_: Box::new(expr(ExprKind::Sequence(vec![
             assign_expr(target, add(value, int_lit(-1))),
             int_lit(0),
-        ]))) })
+        ]))),
+    })
 }
 
 pub fn sem_getvalue(sem: Expression, out: Expression) -> Expression {
@@ -501,7 +540,8 @@ pub fn set_specific(key: Expression, value: Expression) -> Expression {
 pub fn get_specific(key: Expression) -> Expression {
     expr(ExprKind::NullCoalesce {
         left: Box::new(index_expr(ident("__c_tls_values"), key)),
-        right: Box::new(null_lit()) })
+        right: Box::new(null_lit()),
+    })
 }
 
 fn sem_target(sem: Expression) -> Expression {
@@ -533,7 +573,8 @@ fn thread_entry_fn() -> Statement {
             ident("__c_thread_args"),
             ident("h"),
         ))],
-        optional: false });
+        optional: false,
+    });
     function_stmt(
         "__c_thread_entry",
         vec!["h"],
@@ -565,7 +606,10 @@ fn thread_join_fn() -> Statement {
         vec!["h"],
         vec![
             if_stmt(
-                eq(index_expr(ident("__c_thread_results"), ident("h")), int_lit(-1)),
+                eq(
+                    index_expr(ident("__c_thread_results"), ident("h")),
+                    int_lit(-1),
+                ),
                 vec![stmt(StmtKind::Return(Some(int_lit(-1))))],
                 None,
             ),
@@ -575,7 +619,8 @@ fn thread_join_fn() -> Statement {
                 vec![stmt(StmtKind::Expr(expr(ExprKind::Call {
                     callee: Box::new(ident("__c_task_wait")),
                     args: vec![vybe_ast::Argument::positional(ident("task"))],
-                    optional: false })))],
+                    optional: false,
+                })))],
                 None,
             ),
             stmt(StmtKind::Return(Some(index_expr(
@@ -607,7 +652,8 @@ fn barrier_wait_fn() -> Statement {
                 add(
                     expr(ExprKind::NullCoalesce {
                         left: Box::new(index_expr(ident("__c_barrier_arrived"), ident("h"))),
-                        right: Box::new(int_lit(0)) }),
+                        right: Box::new(int_lit(0)),
+                    }),
                     int_lit(1),
                 ),
             ),
@@ -632,12 +678,16 @@ fn barrier_wait_fn() -> Statement {
             ),
             var_decl_stmt("spins", int_lit(0)),
             stmt(StmtKind::While {
-                cond: eq(index_expr(ident("__c_barrier_gen"), ident("h")), ident("gen")),
+                cond: eq(
+                    index_expr(ident("__c_barrier_gen"), ident("h")),
+                    ident("gen"),
+                ),
                 body: vec![
                     stmt(StmtKind::Expr(expr(ExprKind::Call {
                         callee: Box::new(ident("__c_sleep_ms")),
                         args: vec![vybe_ast::Argument::positional(int_lit(1))],
-                        optional: false }))),
+                        optional: false,
+                    }))),
                     stmt(StmtKind::Expr(assign_expr(
                         ident("spins"),
                         add(ident("spins"), int_lit(1)),
@@ -650,7 +700,8 @@ fn barrier_wait_fn() -> Statement {
                         None,
                     ),
                 ],
-                else_body: None }),
+                else_body: None,
+            }),
             stmt(StmtKind::Return(Some(int_lit(0)))),
         ],
     )
@@ -673,10 +724,12 @@ fn tls_destructor_pass() -> Expression {
             expr(ExprKind::Call {
                 callee: Box::new(destructor),
                 args: vec![vybe_ast::Argument::positional(value)],
-                optional: false }),
+                optional: false,
+            }),
             int_lit(0),
         ]))),
-        else_: Box::new(int_lit(0)) })
+        else_: Box::new(int_lit(0)),
+    })
 }
 
 fn empty_object() -> Expression {
@@ -689,7 +742,8 @@ fn sem_value(sem: Expression) -> Expression {
     }
     expr(ExprKind::NullCoalesce {
         left: Box::new(sem_target(sem)),
-        right: Box::new(int_lit(0)) })
+        right: Box::new(int_lit(0)),
+    })
 }
 
 fn is_direct_sem_arg(value: &Expression) -> bool {
@@ -700,13 +754,15 @@ fn is_direct_sem_arg(value: &Expression) -> bool {
         } => true,
         ExprKind::RefOf(_) => true,
         ExprKind::Cast { expr, .. } => is_direct_sem_arg(expr),
-        _ => false }
+        _ => false,
+    }
 }
 
 fn attr_target(attr: Expression) -> Expression {
     expr(ExprKind::NullCoalesce {
         left: Box::new(arg_target(attr)),
-        right: Box::new(int_lit(0)) })
+        right: Box::new(int_lit(0)),
+    })
 }
 
 fn arg_target(value: Expression) -> Expression {
@@ -715,25 +771,32 @@ fn arg_target(value: Expression) -> Expression {
         ExprKind::RefLoad(expr) => arg_target(*expr),
         ExprKind::Unary {
             op: UnaryOp::AddrOf,
-            expr } => *expr,
+            expr,
+        } => *expr,
         ExprKind::RefOf(place) => match *place {
             PlaceExpr::Ident(name) => ident(&name),
             PlaceExpr::Member {
                 object,
                 field,
-                null_safe } => expr(ExprKind::Member {
+                null_safe,
+            } => expr(ExprKind::Member {
                 object,
                 field,
-                null_safe }),
+                null_safe,
+            }),
             PlaceExpr::Index {
                 object,
                 index,
-                null_safe } => expr(ExprKind::Index {
+                null_safe,
+            } => expr(ExprKind::Index {
                 object,
                 index,
-                null_safe }),
-            PlaceExpr::Deref(inner) => *inner },
-        _ => value }
+                null_safe,
+            }),
+            PlaceExpr::Deref(inner) => *inner,
+        },
+        _ => value,
+    }
 }
 
 fn eq(left: Expression, right: Expression) -> Expression {
@@ -763,7 +826,8 @@ fn or(left: Expression, right: Expression) -> Expression {
 fn not(value: Expression) -> Expression {
     expr(ExprKind::Unary {
         op: UnaryOp::Not,
-        expr: Box::new(value) })
+        expr: Box::new(value),
+    })
 }
 
 fn bit_set(value: Expression, mask: i64) -> Expression {
@@ -778,5 +842,6 @@ fn binary(op: BinOp, left: Expression, right: Expression) -> Expression {
     expr(ExprKind::Binary {
         op,
         left: Box::new(left),
-        right: Box::new(right) })
+        right: Box::new(right),
+    })
 }

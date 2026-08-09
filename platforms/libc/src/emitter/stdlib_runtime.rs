@@ -17,21 +17,24 @@ fn bin(op: BinOp, l: Expression, r: Expression) -> Expression {
     expr(ExprKind::Binary {
         op,
         left: Box::new(l),
-        right: Box::new(r) })
+        right: Box::new(r),
+    })
 }
 
 fn call(callee: Expression, args: Vec<Expression>) -> Expression {
     expr(ExprKind::Call {
         callee: Box::new(callee),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false })
+        optional: false,
+    })
 }
 
 fn while_stmt(cond: Expression, body: Vec<Statement>) -> Statement {
     stmt(StmtKind::While {
         cond,
         body,
-        else_body: None })
+        else_body: None,
+    })
 }
 
 pub fn runtime_helpers() -> Vec<Statement> {
@@ -184,7 +187,8 @@ fn c_qsort_auto() -> Statement {
     let should_swap = expr(ExprKind::Ternary {
         cond: Box::new(bin(BinOp::Lt, ident("order"), int_lit(0))),
         then: Box::new(bin(BinOp::Lt, left_key.clone(), right_key.clone())),
-        else_: Box::new(bin(BinOp::Gt, left_key, right_key)) });
+        else_: Box::new(bin(BinOp::Gt, left_key, right_key)),
+    });
     let swap = vec![
         stmt(StmtKind::Expr(assign_expr(ident("tmp"), left.clone()))),
         stmt(StmtKind::Expr(assign_expr(left, right.clone()))),

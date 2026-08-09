@@ -108,6 +108,15 @@ uses_common_resolver = true
 "__c_wasi_dgram_send"      = { emit = "host:wasi:sockets/udp:[method]outgoing-datagram-stream.send",   min_args = 2, max_args = 2 }
 "__c_wasi_dgram_recv"      = { emit = "host:wasi:sockets/udp:[method]incoming-datagram-stream.receive", min_args = 1, max_args = 2 }
 "__c_wasi_stream_read" = { emit = "host:wasi:io/streams:read",            min_args = 2, max_args = 2 }
+# Readiness, not a stopwatch. A blocking `recv`/`accept` waits on the
+# POLLABLE FOR THE THING — the datagram stream, the input stream, the
+# listening socket — so it wakes when the data lands instead of after the
+# next tick of a sleep. Already registered host-side; these are rows, not
+# new host functions.
+"__c_wasi_dgram_ready"  = { emit = "host:wasi:sockets/udp:[method]incoming-datagram-stream.subscribe", min_args = 1, max_args = 1 }
+"__c_wasi_stream_ready" = { emit = "host:wasi:io/streams:[method]input-stream.subscribe", min_args = 1, max_args = 1 }
+"__c_wasi_tcp_ready"    = { emit = "host:wasi:sockets/tcp:[method]tcp-socket.subscribe", min_args = 1, max_args = 1 }
+"__c_pollable_block"    = { emit = "host:wasi:io/poll:[method]pollable.block", min_args = 1, max_args = 1 }
 "__c_wasi_stream_write" = { emit = "host:wasi:io/streams:blocking-write-and-flush", min_args = 2, max_args = 2 }
 "__c_fs_rename" = { emit = "host:node:fs:renameSync", min_args = 2, max_args = 2 }
 # Code-point boundary ops for wide (wchar_t/char32_t) buffers: whole code
