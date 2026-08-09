@@ -32,7 +32,8 @@
 
 use vybe_ast::{
     Argument, ArrayElement, BinOp, ClassMember, ConstructorInitializerTarget, ExprKind, Expression,
-    Modifiers, Param, PassBy, Statement, StmtKind, Visibility };
+    Modifiers, Param, PassBy, Statement, StmtKind, Visibility,
+};
 
 /// The name the static initializer is published under. Matches what a Java
 /// `static { … }` block lowers to, so an enum that declares one shares the
@@ -63,7 +64,8 @@ pub const CLASS_FIELD: &str = "__java_class_name";
 /// One enum constant as written in source: `PENNY(1)` is `("PENNY", [1])`.
 pub struct EnumConstant {
     pub name: String,
-    pub ctor_args: Vec<Argument> }
+    pub ctor_args: Vec<Argument>,
+}
 
 /// How the source language spells a constant's name and ordinal.
 ///
@@ -77,7 +79,8 @@ pub enum Accessors {
     /// `x.name()` / `x.ordinal()` — Java.
     Methods,
     /// `x.name` / `x.ordinal` — Kotlin.
-    Properties }
+    Properties,
+}
 
 fn param(name: &str) -> Param {
     Param {
@@ -88,21 +91,24 @@ fn param(name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false }
+        is_nullable: false,
+    }
 }
 
 fn this_field(field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::This)),
         field: field.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn assign(target: Expression, value: Expression) -> Statement {
     Statement::new(StmtKind::Assign {
         targets: vec![target],
         value,
-        by_ref: false })
+        by_ref: false,
+    })
 }
 
 fn method(name: &str, params: Vec<Param>, body: Vec<Statement>, is_static: bool) -> ClassMember {
@@ -117,7 +123,8 @@ fn method(name: &str, params: Vec<Param>, body: Vec<Statement>, is_static: bool)
         handles: vec![],
         is_async: false,
         is_generator: false,
-        is_sub: false })))
+        is_sub: false,
+    })))
 }
 
 fn declared_methods(members: &[ClassMember]) -> Vec<String> {
@@ -126,8 +133,10 @@ fn declared_methods(members: &[ClassMember]) -> Vec<String> {
         .filter_map(|m| match m {
             ClassMember::Method(stmt) => match &stmt.kind {
                 StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
-                _ => None },
-            _ => None })
+                _ => None,
+            },
+            _ => None,
+        })
         .collect()
 }
 
@@ -136,7 +145,8 @@ fn constant_read(class_name: &str, member: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident(class_name)),
         field: member.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 /// Install the `java.lang.Enum` surface onto a lowered enum class body.
@@ -166,7 +176,8 @@ fn names_array(constants: &[EnumConstant]) -> Expression {
                 key: None,
                 value: Expression::string(&c.name),
                 spread: false,
-                by_ref: false })
+                by_ref: false,
+            })
             .collect(),
     ))
 }
@@ -183,7 +194,8 @@ fn declare_call(class_name: &str, constants: &[EnumConstant]) -> Statement {
         path = Expression::new(ExprKind::Member {
             object: Box::new(path),
             field: segment.to_string(),
-            null_safe: false });
+            null_safe: false,
+        });
     }
     Statement::new(StmtKind::Expr(Expression::new(ExprKind::Call {
         callee: Box::new(path),
@@ -191,7 +203,8 @@ fn declare_call(class_name: &str, constants: &[EnumConstant]) -> Statement {
             Argument::positional(Expression::string(class_name)),
             Argument::positional(names_array(constants)),
         ],
-        optional: false })))
+        optional: false,
+    })))
 }
 
 /// Thread `__name`/`__ordinal` through the constructor and stamp them first.
@@ -211,10 +224,7 @@ fn install_constructor(
     // static-init block — one reorder and the field is silently `undefined`.
     let mut stamps = vec![
         assign(this_field(NAME_FIELD), Expression::ident(NAME_FIELD)),
-        assign(
-            this_field(ORDINAL_FIELD),
-            Expression::ident(ORDINAL_FIELD),
-        ),
+        assign(this_field(ORDINAL_FIELD), Expression::ident(ORDINAL_FIELD)),
         assign(this_field(NAMES_FIELD), names_array(constants)),
         assign(this_field(CLASS_FIELD), Expression::string(class_name)),
     ];
@@ -238,7 +248,8 @@ fn install_constructor(
             body: stamps,
             base_args: None,
             initializer_target: ConstructorInitializerTarget::Base,
-            visibility: Visibility::Private });
+            visibility: Visibility::Private,
+        });
     }
 }
 
@@ -263,7 +274,8 @@ fn install_instance_methods(
     // only where the source calls them as such.
     let accessor_methods: &[(&str, &str)] = match accessors {
         Accessors::Methods => &[("name", NAME_FIELD), ("ordinal", ORDINAL_FIELD)],
-        Accessors::Properties => &[] };
+        Accessors::Properties => &[],
+    };
     for (name, field) in accessor_methods
         .iter()
         .copied()
@@ -296,7 +308,8 @@ fn install_statics(
                     key: None,
                     value: constant_read(class_name, &c.name),
                     spread: false,
-                    by_ref: false })
+                    by_ref: false,
+                })
                 .collect(),
         ));
         members.push(method(
@@ -317,12 +330,14 @@ fn install_statics(
                 cond: Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
                     left: Box::new(Expression::ident("__s")),
-                    right: Box::new(Expression::string(&c.name)) }),
+                    right: Box::new(Expression::string(&c.name)),
+                }),
                 then_body: vec![Statement::new(StmtKind::Return(Some(constant_read(
                     class_name, &c.name,
                 ))))],
                 elifs: vec![],
-                else_body: None })
+                else_body: None,
+            })
         })
         .collect();
     // JLS §8.9.3: an unmatched name is an IllegalArgumentException, not null.
@@ -334,8 +349,11 @@ fn install_statics(
                 left: Box::new(Expression::string(&format!(
                     "No enum constant {class_name}."
                 ))),
-                right: Box::new(Expression::ident("__s")) }))] })),
-        cause: None }));
+                right: Box::new(Expression::ident("__s")),
+            }))],
+        })),
+        cause: None,
+    }));
     members.push(method(VALUE_OF, vec![param("__s")], body, true));
     // Published under the SOURCE spelling as well, delegating to the storage
     // name. A frontend whose call sites are not intercepted (Kotlin) then
@@ -349,9 +367,11 @@ fn install_statics(
                 callee: Box::new(Expression::new(ExprKind::Member {
                     object: Box::new(Expression::ident(class_name)),
                     field: VALUE_OF.to_string(),
-                    null_safe: false })),
+                    null_safe: false,
+                })),
                 args: vec![Argument::positional(Expression::ident("__s"))],
-                optional: false },
+                optional: false,
+            },
         ))))],
         true,
     ));
@@ -364,11 +384,7 @@ fn install_statics(
 /// are PREPENDED to any static-init block the body already declared, because
 /// JLS §8.9.2 creates the constants before the body's own static initializers
 /// run (`static { COUNT = values().length; }` must see them).
-fn install_constants(
-    class_name: &str,
-    constants: &[EnumConstant],
-    members: &mut Vec<ClassMember>,
-) {
+fn install_constants(class_name: &str, constants: &[EnumConstant], members: &mut Vec<ClassMember>) {
     let mut init: Vec<Statement> = Vec::with_capacity(constants.len() + 1);
     // `Class.getEnumConstants()` for this class, published before the
     // constants exist so `EnumSet.allOf(Color.class)` — which is handed only
@@ -389,13 +405,15 @@ fn install_constants(
             init: None,
             modifiers,
             with_events: false,
-            array_bounds: None });
+            array_bounds: None,
+        });
 
         init.push(assign(
             constant_read(class_name, &constant.name),
             Expression::new(ExprKind::New {
                 class: Box::new(Expression::ident(class_name)),
-                args }),
+                args,
+            }),
         ));
     }
     if init.is_empty() {
@@ -435,9 +453,11 @@ pub fn inject_static_init_calls(body: &mut Vec<Statement>) {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(&class_name)),
                 field: STATIC_INIT.to_string(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![],
-            optional: false })))
+            optional: false,
+        })))
     }));
 }
 

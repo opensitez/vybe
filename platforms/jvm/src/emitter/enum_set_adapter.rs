@@ -27,7 +27,8 @@
 use super::enum_adapter;
 use vybe_compiler::primitives::{
     collections,
-    instructions::{core_wasm, host} };
+    instructions::{core_wasm, host},
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -73,7 +74,13 @@ fn emit_names(chunks: &mut [Chunk], current: usize, set_slot: u16, line: u32) {
 /// list, which only worked while the Java walker was constant-folding
 /// `Color.RED` to its ordinal at the call site.
 fn emit_name_for_value(chunks: &mut [Chunk], current: usize, value_slot: u16, line: u32) {
-    emit_member(chunks, current, value_slot, crate::lang_enum::NAME_FIELD, line);
+    emit_member(
+        chunks,
+        current,
+        value_slot,
+        crate::lang_enum::NAME_FIELD,
+        line,
+    );
 }
 
 fn emit_contains_name(
@@ -233,7 +240,13 @@ pub fn emit_range(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], names, line);
     // The bounds are CONSTANTS; their ordinals are the array indices. Each
     // read completes before its own slot is overwritten.
-    emit_member(chunks, current, start, crate::lang_enum::ORDINAL_FIELD, line);
+    emit_member(
+        chunks,
+        current,
+        start,
+        crate::lang_enum::ORDINAL_FIELD,
+        line,
+    );
     set(&mut chunks[current], start, line);
     emit_member(chunks, current, end, crate::lang_enum::ORDINAL_FIELD, line);
     set(&mut chunks[current], end, line);

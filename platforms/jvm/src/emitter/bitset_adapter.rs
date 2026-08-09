@@ -2,7 +2,8 @@
 
 use vybe_compiler::primitives::{
     collections,
-    instructions::{core_wasm, host} };
+    instructions::{core_wasm, host},
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 

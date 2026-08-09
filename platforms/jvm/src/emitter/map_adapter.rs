@@ -3,7 +3,8 @@
 use vybe_compiler::primitives::{
     collections, errors,
     instructions::{core_wasm, host},
-    ops, sorted_collection };
+    ops, sorted_collection,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 

@@ -5,15 +5,13 @@
 //! both resolve `java.math.BigInteger` through the tree). Everything here
 //! composes `ecma:bigint` host fns; nothing is language-specific.
 
-
+use vybe_compiler::primitives::instructions::host;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::host;
 
 pub fn emit_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
     host::emit(&mut chunks[current], "ecma:bigint", "toString", 1, line);
 }
-
 
 /// `new java.math.BigInteger(s)` / `(s, radix)`.
 ///

@@ -4,7 +4,8 @@ use vybe_ast::datetime::{DateTimePolicy, MonthIndexing, WeekdayBase};
 use vybe_compiler::primitives::{
     collections, datetime,
     instructions::{core_wasm, host},
-    ops };
+    ops,
+};
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
@@ -1023,13 +1024,7 @@ pub fn emit_period_between(chunks: &mut [Chunk], current: usize, line: u32) {
     set(&mut chunks[current], end, line);
     set(&mut chunks[current], start, line);
 
-    fn component(
-        chunks: &mut [Chunk],
-        current: usize,
-        slot: u16,
-        getter: &'static str,
-        line: u32,
-    ) {
+    fn component(chunks: &mut [Chunk], current: usize, slot: u16, getter: &'static str, line: u32) {
         emit_epoch_milli_from_slot(chunks, current, slot, line);
         host::emit(&mut chunks[current], "ecma:date", "new", 1, line);
         host::emit(&mut chunks[current], "ecma:date", getter, 1, line);
@@ -1689,7 +1684,12 @@ pub fn emit_day_of_week_name(chunks: &mut [Chunk], current: usize, line: u32) {
     let n = chunks[current].alloc_scratch(1);
     set(&mut chunks[current], n, line);
     let names = [
-        "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY",
+        "MONDAY",
+        "TUESDAY",
+        "WEDNESDAY",
+        "THURSDAY",
+        "FRIDAY",
+        "SATURDAY",
     ];
     for (i, name) in names.iter().enumerate() {
         get(&mut chunks[current], n, line);

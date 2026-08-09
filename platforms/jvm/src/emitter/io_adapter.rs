@@ -829,9 +829,8 @@ pub fn emit_chars_to_string(chunks: &mut [Chunk], current: usize, line: u32) {
         let i = chunks[current].alloc_scratch(1);
         chunks[current].emit_string_const("", line);
         set(&mut chunks[current], out, line);
-        let state = vybe_compiler::primitives::loops::emit_for_in_start(
-            chunks, current, arr, i, line,
-        );
+        let state =
+            vybe_compiler::primitives::loops::emit_for_in_start(chunks, current, arr, i, line);
         let fcc = chunks[current].add_import("ecma:string", "fromCharCode");
         chunks[current].emit_call(fcc, 1, line);
         let piece = chunks[current].alloc_scratch(1);

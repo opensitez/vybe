@@ -67,19 +67,21 @@ fn ensure_type_node(root: &mut Subtree, path: &str) {
         cursor = match entry {
             NamespaceNode::Namespace(children) => children,
             NamespaceNode::Type { statics, .. } => statics,
-            _ => return };
+            _ => return,
+        };
     }
     // A type with no statics (`DayOfWeek` — instance surface only) has no
     // node yet: CREATE it, or the merge helpers silently no-op and every
     // instance member registered for it is dropped.
-    let existing = cursor.entry(leaf.to_string()).or_insert_with(|| {
-        NamespaceNode::Type {
+    let existing = cursor
+        .entry(leaf.to_string())
+        .or_insert_with(|| NamespaceNode::Type {
             ctor: None,
             ctor_call: None,
             statics: Subtree::new(),
             methods: Subtree::new(),
-            member_returns: Default::default() }
-    });
+            member_returns: Default::default(),
+        });
     if let NamespaceNode::Namespace(children) = existing {
         let statics = std::mem::take(children);
         *existing = NamespaceNode::Type {
@@ -87,7 +89,8 @@ fn ensure_type_node(root: &mut Subtree, path: &str) {
             ctor_call: None,
             statics,
             methods: Subtree::new(),
-            member_returns: Default::default() };
+            member_returns: Default::default(),
+        };
     }
 }
 
@@ -102,7 +105,8 @@ fn merge_type_methods(root: &mut Subtree, path: &str, new_methods: Subtree) {
         cursor = match entry {
             NamespaceNode::Namespace(children) => children,
             NamespaceNode::Type { statics, .. } => statics,
-            _ => return };
+            _ => return,
+        };
     }
     let Some(NamespaceNode::Type { methods, .. }) = cursor.get_mut(leaf) else {
         return;
@@ -123,7 +127,8 @@ fn merge_type_member_returns(root: &mut Subtree, path: &str, returns: &[(&str, &
         cursor = match entry {
             NamespaceNode::Namespace(children) => children,
             NamespaceNode::Type { statics, .. } => statics,
-            _ => return };
+            _ => return,
+        };
     }
     let Some(NamespaceNode::Type { member_returns, .. }) = cursor.get_mut(leaf) else {
         return;
@@ -163,7 +168,8 @@ fn insert_host_static(root: &mut Subtree, type_path: &str, member: &str, module:
 enum JavaConst {
     Bool(bool),
     Float(f64),
-    Str(&'static str) }
+    Str(&'static str),
+}
 
 fn insert_java_namespace_constants(root: &mut Subtree) {
     const SPECS: &[(&str, JavaConst)] = &[
@@ -285,7 +291,8 @@ fn insert_java_namespace_constants(root: &mut Subtree) {
         let node = match *value {
             JavaConst::Bool(v) => NamespaceNode::Const(Value::Bool(v)),
             JavaConst::Float(v) => NamespaceNode::Const(Value::F64(v)),
-            JavaConst::Str(v) => NamespaceNode::Const(Value::String(v.into())) };
+            JavaConst::Str(v) => NamespaceNode::Const(Value::String(v.into())),
+        };
         let key = name.to_lowercase();
         let path = key.strip_prefix("java.").unwrap_or(key.as_str());
         insert_path(root, path, node);
@@ -338,7 +345,8 @@ fn java_type_ctor_target(qualified: &str) -> Option<NamespaceNode> {
         | "java.io.DataInputStream" => "jvm.java.io_passthrough_new",
         "java.io.SequenceInputStream" => "jvm.java.io_sequence_input_stream_new",
         "java.io.DataOutputStream" => "jvm.java.io_passthrough_new",
-        _ => return None };
+        _ => return None,
+    };
     Some(common_emit(emit))
 }
 
@@ -359,7 +367,8 @@ fn insert_java_lang_system(root: &mut Subtree) {
             ctor_call: None,
             statics,
             methods: Subtree::new(),
-            member_returns: Default::default() },
+            member_returns: Default::default(),
+        },
     );
 }
 
@@ -573,7 +582,13 @@ fn insert_java_lang_core_statics(root: &mut Subtree) {
 /// Java surface already gave.
 fn insert_java_math_biginteger_methods(root: &mut Subtree) {
     const SPECS: &[(&str, &str, &str, u8, u8)] = &[
-        ("math.biginteger", "tostring", "jvm.java.bigint_to_string", 0, 0),
+        (
+            "math.biginteger",
+            "tostring",
+            "jvm.java.bigint_to_string",
+            0,
+            0,
+        ),
         ("math.biginteger", "add", "jvm.java.bigint_add", 1, 1),
         ("math.biginteger", "subtract", "jvm.java.bigint_sub", 1, 1),
         ("math.biginteger", "multiply", "jvm.java.bigint_mul", 1, 1),
@@ -591,12 +606,30 @@ fn insert_java_math_biginteger_methods(root: &mut Subtree) {
         ("math.biginteger", "abs", "jvm.java.bigint_abs", 0, 0),
         ("math.biginteger", "shiftleft", "jvm.java.bigint_shl", 1, 1),
         ("math.biginteger", "shiftright", "jvm.java.bigint_shr", 1, 1),
-        ("math.biginteger", "compareto", "jvm.java.bigint_compare_to", 1, 1),
+        (
+            "math.biginteger",
+            "compareto",
+            "jvm.java.bigint_compare_to",
+            1,
+            1,
+        ),
         ("math.biginteger", "signum", "jvm.java.bigint_signum", 0, 0),
         ("math.biginteger", "min", "jvm.java.bigint_min", 1, 1),
         ("math.biginteger", "max", "jvm.java.bigint_max", 1, 1),
-        ("math.biginteger", "testbit", "jvm.java.bigint_test_bit", 1, 1),
-        ("math.biginteger", "bitlength", "jvm.java.bigint_bit_length", 0, 0),
+        (
+            "math.biginteger",
+            "testbit",
+            "jvm.java.bigint_test_bit",
+            1,
+            1,
+        ),
+        (
+            "math.biginteger",
+            "bitlength",
+            "jvm.java.bigint_bit_length",
+            0,
+            0,
+        ),
         (
             "math.biginteger",
             "isprobableprime",
@@ -623,210 +656,180 @@ fn insert_java_math_biginteger_methods(root: &mut Subtree) {
     merge_type_methods(root, "math.biginteger", methods);
 }
 
+/// The `java.util` collection surface.
+///
+/// Declarations are keyed by SIMPLE TYPE NAME, and the INTERFACES own the
+/// shared members: `size`/`contains`/`clear` are declared once on `Collection`,
+/// not once per concrete class. Each type then collects its own declarations
+/// plus everything declared on its supertypes, folding the `ancestry` array
+/// that [`JAVA_TYPES`] already carries.
+///
+/// This is the registration-time expansion every other adapter does — the tree
+/// stays a flat lookup and inheritance is resolved HERE, by the adapter that
+/// knows its own type graph. Before this, each concrete type re-declared its
+/// whole inherited surface by hand, and the holes were exactly what you would
+/// expect from hand-copying: `TreeSet` had no `size`/`contains`/`clear`/
+/// `isEmpty`/`remove`/`iterator`, `Stack` had none of the `Vector` surface it
+/// extends, `ArrayList` had no `contains`/`isEmpty`/`remove`, `TreeMap` had no
+/// `isEmpty`/`clear`/`entrySet`, and `LinkedHashSet`/`LinkedHashMap` were
+/// verbatim copies of their parents.
+///
+/// `ancestry` is the right input BECAUSE it lists interfaces alongside
+/// supertypes: Java's member inheritance runs through `List`/`Collection`/`Map`,
+/// so a single `parent` link could not express it.
+///
+/// Nearest declaration wins, so a subtype overrides — `TreeSet.add` binds
+/// `sorted_add` rather than `Collection.add`, `PriorityQueue.peek` binds
+/// `priority_peek` rather than `Queue.peek`, and `Stack.pop` binds
+/// `collections.pop` rather than anything up its chain.
+///
+/// Only emits that some type already declared are promoted here; nothing new is
+/// invented. The shared emits were already written to be representation-generic
+/// — `emit_size`/`emit_contains`/`emit_clear`/`emit_remove` each branch on
+/// `emit_is_ecma_set` at runtime — so a set-backed and a list-backed receiver
+/// both answer correctly from one declaration.
 fn insert_java_util_collection_methods(root: &mut Subtree) {
     const SPECS: &[(&str, &str, &str, u8, u8)] = &[
-        ("util.arraylist", "add", "jvm.java.add", 1, 2),
-        ("util.arraylist", "get", "jvm.java.get", 1, 1),
-        ("util.arraylist", "set", "jvm.java.list_set", 1, 2),
-        ("util.arraylist", "size", "jvm.java.size", 0, 0),
-        ("util.arraylist", "clear", "jvm.java.list_clear", 0, 0),
-        ("util.arraylist", "sort", "jvm.java.collections_sort", 0, 1),
-        ("util.linkedlist", "add", "jvm.java.add", 1, 2),
-        ("util.linkedlist", "offer", "collections.push", 1, 1),
-        ("util.linkedlist", "offerlast", "collections.push", 1, 1),
-        ("util.linkedlist", "addlast", "collections.push", 1, 1),
-        ("util.linkedlist", "addfirst", "jvm.java.add_first", 1, 1),
+        // ── Iterable ───────────────────────────────────────────────────────
+        ("Iterable", "iterator", "jvm.java.list_iterator", 0, 0),
+        // ── Collection ─────────────────────────────────────────────────────
+        ("Collection", "add", "jvm.java.add", 1, 1),
+        ("Collection", "size", "jvm.java.size", 0, 0),
+        ("Collection", "isempty", "jvm.java.is_empty", 0, 0),
+        ("Collection", "contains", "jvm.java.contains", 1, 1),
+        ("Collection", "clear", "jvm.java.list_clear", 0, 0),
+        ("Collection", "remove", "jvm.java.list_remove", 1, 1),
+        // ── List ───────────────────────────────────────────────────────────
+        // `add(index, e)` is the List-only overload, so List widens the arity.
+        ("List", "add", "jvm.java.add", 1, 2),
+        ("List", "get", "jvm.java.get", 1, 1),
+        ("List", "set", "jvm.java.list_set", 1, 2),
+        ("List", "sort", "jvm.java.collections_sort", 0, 1),
+        ("List", "listiterator", "jvm.java.list_iterator", 0, 1),
+        // ── SortedSet / NavigableSet ───────────────────────────────────────
+        ("SortedSet", "add", "jvm.java.sorted_add", 1, 1),
+        ("SortedSet", "first", "jvm.java.sorted_first", 0, 0),
+        ("SortedSet", "last", "jvm.java.sorted_last", 0, 0),
+        ("NavigableSet", "ceiling", "jvm.java.sorted_ceiling", 1, 1),
+        ("NavigableSet", "floor", "jvm.java.sorted_floor", 1, 1),
+        ("NavigableSet", "higher", "jvm.java.sorted_higher", 1, 1),
+        ("NavigableSet", "lower", "jvm.java.sorted_lower", 1, 1),
         (
-            "util.linkedlist",
-            "removefirst",
-            "jvm.java.remove_first",
-            0,
-            0,
-        ),
-        ("util.linkedlist", "removelast", "collections.pop", 0, 0),
-        ("util.linkedlist", "poll", "jvm.java.queue_poll", 0, 0),
-        ("util.linkedlist", "peek", "jvm.java.peek_first", 0, 0),
-        ("util.linkedlist", "get", "jvm.java.get", 1, 1),
-        ("util.linkedlist", "size", "jvm.java.size", 0, 0),
-        ("util.vector", "add", "jvm.java.add", 1, 2),
-        ("util.vector", "addelement", "jvm.java.add", 1, 1),
-        ("util.vector", "get", "jvm.java.get", 1, 1),
-        ("util.vector", "elementat", "jvm.java.get", 1, 1),
-        ("util.vector", "iterator", "jvm.java.list_iterator", 0, 0),
-        (
-            "util.vector",
-            "listiterator",
-            "jvm.java.list_iterator",
-            0,
-            1,
-        ),
-        ("util.vector", "set", "jvm.java.list_set", 1, 2),
-        ("util.vector", "size", "jvm.java.size", 0, 0),
-        ("util.iterator", "next", "jvm.java.iterator_next", 0, 0),
-        (
-            "util.iterator",
-            "hasnext",
-            "jvm.java.iterator_has_next",
-            0,
-            0,
-        ),
-        ("util.listiterator", "next", "jvm.java.iterator_next", 0, 0),
-        (
-            "util.listiterator",
-            "hasnext",
-            "jvm.java.iterator_has_next",
-            0,
-            0,
-        ),
-        (
-            "util.listiterator",
-            "previous",
-            "jvm.java.iterator_previous",
-            0,
-            0,
-        ),
-        (
-            "util.listiterator",
-            "hasprevious",
-            "jvm.java.iterator_has_previous",
-            0,
-            0,
-        ),
-        (
-            "util.listiterator",
-            "nextindex",
-            "jvm.java.iterator_next_index",
-            0,
-            0,
-        ),
-        (
-            "util.listiterator",
-            "previousindex",
-            "jvm.java.iterator_previous_index",
-            0,
-            0,
-        ),
-        ("util.stack", "push", "jvm.java.add", 1, 1),
-        ("util.stack", "pop", "collections.pop", 0, 0),
-        ("util.stack", "peek", "jvm.java.peek_last", 0, 0),
-        ("util.stack", "empty", "jvm.java.is_empty", 0, 0),
-        ("util.stack", "size", "jvm.java.size", 0, 0),
-        ("util.hashset", "add", "jvm.java.add", 1, 1),
-        ("util.hashset", "size", "jvm.java.size", 0, 0),
-        ("util.hashset", "remove", "jvm.java.list_remove", 1, 1),
-        ("util.linkedhashset", "add", "jvm.java.add", 1, 1),
-        ("util.linkedhashset", "size", "jvm.java.size", 0, 0),
-        ("util.treeset", "add", "jvm.java.sorted_add", 1, 1),
-        ("util.treeset", "first", "jvm.java.sorted_first", 0, 0),
-        ("util.treeset", "last", "jvm.java.sorted_last", 0, 0),
-        ("util.treeset", "higher", "jvm.java.sorted_higher", 1, 1),
-        ("util.treeset", "lower", "jvm.java.sorted_lower", 1, 1),
-        (
-            "util.treeset",
+            "NavigableSet",
             "descendingset",
             "jvm.java.sorted_descending_set",
             0,
             0,
         ),
-        ("util.arraydeque", "addlast", "collections.push", 1, 1),
-        ("util.arraydeque", "offer", "collections.push", 1, 1),
-        ("util.arraydeque", "offerlast", "collections.push", 1, 1),
-        ("util.arraydeque", "addfirst", "jvm.java.add_first", 1, 1),
-        ("util.arraydeque", "offerfirst", "jvm.java.add_first", 1, 1),
+        // ── Queue ──────────────────────────────────────────────────────────
+        ("Queue", "offer", "collections.push", 1, 1),
+        ("Queue", "poll", "jvm.java.queue_poll", 0, 0),
+        ("Queue", "peek", "jvm.java.peek_first", 0, 0),
+        // ── Deque ──────────────────────────────────────────────────────────
+        ("Deque", "addfirst", "jvm.java.add_first", 1, 1),
+        ("Deque", "addlast", "collections.push", 1, 1),
+        ("Deque", "offerfirst", "jvm.java.add_first", 1, 1),
+        ("Deque", "offerlast", "collections.push", 1, 1),
+        ("Deque", "removefirst", "jvm.java.remove_first", 0, 0),
+        ("Deque", "removelast", "collections.pop", 0, 0),
+        ("Deque", "peekfirst", "jvm.java.peek_first", 0, 0),
+        ("Deque", "peeklast", "jvm.java.peek_last", 0, 0),
+        ("Deque", "push", "jvm.java.add_first", 1, 1),
+        ("Deque", "pop", "jvm.java.poll_first", 0, 0),
+        // ── Map (NOT a Collection — no `iterator`, its own `size`) ─────────
+        ("Map", "put", "jvm.java.map_put", 2, 2),
+        ("Map", "get", "jvm.java.map_get", 1, 1),
+        ("Map", "size", "jvm.java.map_size", 0, 0),
+        ("Map", "isempty", "jvm.java.map_is_empty", 0, 0),
+        ("Map", "clear", "jvm.java.map_clear", 0, 0),
+        ("Map", "keyset", "jvm.java.map_key_set", 0, 0),
+        ("Map", "values", "jvm.java.map_values", 0, 0),
+        ("Map", "entryset", "jvm.java.entry_set", 0, 0),
+        // ── SortedMap / NavigableMap ───────────────────────────────────────
+        ("SortedMap", "keyset", "jvm.java.sorted_map_key_set", 0, 0),
+        ("SortedMap", "values", "jvm.java.sorted_map_values", 0, 0),
+        ("SortedMap", "firstkey", "jvm.java.sorted_map_first_key", 0, 0),
+        ("SortedMap", "lastkey", "jvm.java.sorted_map_last_key", 0, 0),
         (
-            "util.arraydeque",
-            "removefirst",
-            "jvm.java.remove_first",
-            0,
-            0,
-        ),
-        ("util.arraydeque", "removelast", "collections.pop", 0, 0),
-        ("util.arraydeque", "peek", "jvm.java.peek_first", 0, 0),
-        ("util.arraydeque", "peekfirst", "jvm.java.peek_first", 0, 0),
-        ("util.arraydeque", "peeklast", "jvm.java.peek_last", 0, 0),
-        ("util.arraydeque", "poll", "jvm.java.queue_poll", 0, 0),
-        ("util.arraydeque", "push", "jvm.java.add_first", 1, 1),
-        ("util.arraydeque", "pop", "jvm.java.poll_first", 0, 0),
-        ("util.arraydeque", "size", "jvm.java.size", 0, 0),
-        ("util.priorityqueue", "add", "jvm.java.priority_add", 1, 1),
-        ("util.priorityqueue", "offer", "jvm.java.priority_add", 1, 1),
-        ("util.priorityqueue", "peek", "jvm.java.priority_peek", 0, 0),
-        ("util.priorityqueue", "poll", "jvm.java.queue_poll", 0, 0),
-        ("util.priorityqueue", "size", "jvm.java.size", 0, 0),
-        ("util.hashmap", "put", "jvm.java.map_put", 2, 2),
-        ("util.hashmap", "get", "jvm.java.map_get", 1, 1),
-        ("util.hashmap", "size", "jvm.java.map_size", 0, 0),
-        ("util.hashmap", "isempty", "jvm.java.map_is_empty", 0, 0),
-        ("util.hashmap", "clear", "jvm.java.map_clear", 0, 0),
-        ("util.hashmap", "keyset", "jvm.java.map_key_set", 0, 0),
-        ("util.hashmap", "values", "jvm.java.map_values", 0, 0),
-        ("util.hashmap", "entryset", "jvm.java.entry_set", 0, 0),
-        ("util.linkedhashmap", "put", "jvm.java.map_put", 2, 2),
-        ("util.linkedhashmap", "get", "jvm.java.map_get", 1, 1),
-        ("util.linkedhashmap", "size", "jvm.java.map_size", 0, 0),
-        (
-            "util.linkedhashmap",
-            "isempty",
-            "jvm.java.map_is_empty",
-            0,
-            0,
-        ),
-        ("util.linkedhashmap", "clear", "jvm.java.map_clear", 0, 0),
-        ("util.linkedhashmap", "keyset", "jvm.java.map_key_set", 0, 0),
-        ("util.linkedhashmap", "values", "jvm.java.map_values", 0, 0),
-        ("util.linkedhashmap", "entryset", "jvm.java.entry_set", 0, 0),
-        ("util.treemap", "put", "jvm.java.map_put", 2, 2),
-        ("util.treemap", "get", "jvm.java.map_get", 1, 1),
-        ("util.treemap", "size", "jvm.java.map_size", 0, 0),
-        (
-            "util.treemap",
-            "keyset",
-            "jvm.java.sorted_map_key_set",
-            0,
-            0,
-        ),
-        ("util.treemap", "values", "jvm.java.sorted_map_values", 0, 0),
-        (
-            "util.treemap",
-            "firstkey",
-            "jvm.java.sorted_map_first_key",
-            0,
-            0,
-        ),
-        (
-            "util.treemap",
-            "lastkey",
-            "jvm.java.sorted_map_last_key",
-            0,
-            0,
-        ),
-        (
-            "util.treemap",
+            "NavigableMap",
             "higherkey",
             "jvm.java.sorted_map_higher_key",
             1,
             1,
         ),
         (
-            "util.treemap",
+            "NavigableMap",
             "lowerkey",
             "jvm.java.sorted_map_lower_key",
             1,
             1,
         ),
+        // ── Iterator ───────────────────────────────────────────────────────
+        ("Iterator", "next", "jvm.java.iterator_next", 0, 0),
+        ("Iterator", "hasnext", "jvm.java.iterator_has_next", 0, 0),
+        ("Iterator", "remove", "jvm.java.iterator_remove", 0, 0),
+        ("ListIterator", "previous", "jvm.java.iterator_previous", 0, 0),
+        (
+            "ListIterator",
+            "hasprevious",
+            "jvm.java.iterator_has_previous",
+            0,
+            0,
+        ),
+        (
+            "ListIterator",
+            "nextindex",
+            "jvm.java.iterator_next_index",
+            0,
+            0,
+        ),
+        (
+            "ListIterator",
+            "previousindex",
+            "jvm.java.iterator_previous_index",
+            0,
+            0,
+        ),
+        // ── Concrete classes: ONLY what they override or add ───────────────
+        ("Vector", "addelement", "jvm.java.add", 1, 1),
+        ("Vector", "elementat", "jvm.java.get", 1, 1),
+        // `Stack` is a `Vector`, so it inherits the whole list surface; these
+        // four are its own, and `pop`/`peek` work the far end from `Deque`.
+        ("Stack", "push", "jvm.java.add", 1, 1),
+        ("Stack", "pop", "collections.pop", 0, 0),
+        ("Stack", "peek", "jvm.java.peek_last", 0, 0),
+        ("Stack", "empty", "jvm.java.is_empty", 0, 0),
+        ("PriorityQueue", "add", "jvm.java.priority_add", 1, 1),
+        ("PriorityQueue", "offer", "jvm.java.priority_add", 1, 1),
+        ("PriorityQueue", "peek", "jvm.java.priority_peek", 0, 0),
     ];
 
-    let mut by_type: BTreeMap<&str, Subtree> = BTreeMap::new();
-    for (type_path, member, emit, min_args, max_args) in SPECS {
-        by_type.entry(*type_path).or_default().insert(
-            (*member).to_string(),
-            common_method(emit, *min_args, *max_args),
-        );
-    }
-
-    for (type_path, methods) in by_type {
-        ensure_type_node(root, type_path);
-        merge_type_methods(root, type_path, methods);
+    // Fold each type's ancestry, nearest first. `JAVA_TYPES` already carries
+    // the chain — it is what stamps `__types` for `instanceof` — so the same
+    // declaration drives identity and member resolution, and the two cannot
+    // drift apart.
+    //
+    // `or_insert_with` is what makes nearest-declaration-win: the type's own
+    // rows land before its interfaces', and a nearer interface before a
+    // further one.
+    for ty in JAVA_TYPES.iter().filter(|t| t.package == "util") {
+        let mut methods = Subtree::new();
+        for ancestor in ty.ancestry {
+            for (owner, member, emit, min_args, max_args) in SPECS {
+                if !owner.eq_ignore_ascii_case(ancestor) {
+                    continue;
+                }
+                methods
+                    .entry((*member).to_string())
+                    .or_insert_with(|| common_method(emit, *min_args, *max_args));
+            }
+        }
+        if methods.is_empty() {
+            continue;
+        }
+        let type_path = format!("{}.{}", ty.package, ty.name.to_lowercase());
+        ensure_type_node(root, &type_path);
+        merge_type_methods(root, &type_path, methods);
     }
 
     merge_type_member_returns(
@@ -1344,7 +1347,11 @@ fn insert_java_util_collection_statics(root: &mut Subtree) {
         ("util.collections", "synchronizedlist", "jvm.java.identity"),
         ("util.collections", "singleton", "jvm.java.singleton_list"),
         ("util.collections", "singletonmap", "jvm.java.map_of"),
-        ("util.collections", "singletonlist", "jvm.java.singleton_list"),
+        (
+            "util.collections",
+            "singletonlist",
+            "jvm.java.singleton_list",
+        ),
         ("util.collections", "emptylist", "jvm.java.empty_list"),
         ("util.collections", "emptyset", "jvm.java.empty_set"),
         ("util.collections", "emptymap", "jvm.java.map_of"),
@@ -1953,7 +1960,10 @@ fn insert_java_time_instance_members(root: &mut Subtree) {
 
     let mut zone_id = Subtree::new();
     zone_id.insert("id".to_string(), prop("jvm.java.identity"));
-    zone_id.insert("getid".to_string(), common_method("jvm.java.identity", 0, 0));
+    zone_id.insert(
+        "getid".to_string(),
+        common_method("jvm.java.identity", 0, 0),
+    );
     ensure_type_node(root, "time.zoneid");
     merge_type_methods(root, "time.zoneid", zone_id);
 
@@ -2209,11 +2219,13 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
                     .collect(),
                 control_fn: None,
                 field_gui: Vec::new(),
-                value_equality: false }),
+                value_equality: false,
+            }),
             ctor_call: Some(Box::new(common_emit("jvm.java.net.url_new"))),
             statics: Subtree::new(),
             methods: url_methods,
-            member_returns: url_returns },
+            member_returns: url_returns,
+        },
     );
 
     let mut encoder_statics = Subtree::new();
@@ -2226,7 +2238,8 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
             ctor_call: None,
             statics: encoder_statics,
             methods: Subtree::new(),
-            member_returns: Default::default() },
+            member_returns: Default::default(),
+        },
     );
 
     let mut decoder_statics = Subtree::new();
@@ -2239,7 +2252,8 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
             ctor_call: None,
             statics: decoder_statics,
             methods: Subtree::new(),
-            member_returns: Default::default() },
+            member_returns: Default::default(),
+        },
     );
 
     let mut uri_statics = Subtree::new();
@@ -2317,11 +2331,13 @@ fn insert_java_net_url_uri(root: &mut Subtree) {
                     .collect(),
                 control_fn: None,
                 field_gui: Vec::new(),
-                value_equality: false }),
+                value_equality: false,
+            }),
             ctor_call: Some(Box::new(common_emit("jvm.java.net.uri_new"))),
             statics: uri_statics,
             methods: uri_methods,
-            member_returns: uri_returns },
+            member_returns: uri_returns,
+        },
     );
 }
 
@@ -2347,7 +2363,8 @@ pub struct JavaType {
     ///
     /// This is the ONLY Java-specific part of the identity story, and it is a
     /// name, not an emit: the test itself is the shared one.
-    pub intrinsic: Option<&'static str> }
+    pub intrinsic: Option<&'static str>,
+}
 
 const fn t(
     name: &'static str,
@@ -2359,7 +2376,8 @@ const fn t(
         name,
         package,
         ancestry,
-        intrinsic }
+        intrinsic,
+    }
 }
 
 /// The Java types whose IDENTITY the runtime must answer for.
@@ -3001,7 +3019,8 @@ pub fn array_element_intrinsic(type_name: &str) -> Option<&'static str> {
         "int" | "long" | "short" | "byte" | "double" | "float" => "number",
         "char" | "String" => "string",
         "boolean" => "boolean",
-        _ => return None })
+        _ => return None,
+    })
 }
 
 /// Every distinct runtime intrinsic that could answer `isInstance` for
@@ -3061,11 +3080,13 @@ pub fn register_namespace_tree() {
                         ancestry: ty.ancestry.iter().map(|s| (*s).to_string()).collect(),
                         control_fn: None,
                         field_gui: Vec::new(),
-                        value_equality: false }),
+                        value_equality: false,
+                    }),
                     ctor_call: Some(Box::new(ctor_call)),
                     statics: Subtree::new(),
                     methods: Subtree::new(),
-                    member_returns: Default::default() },
+                    member_returns: Default::default(),
+                },
             );
         }
 

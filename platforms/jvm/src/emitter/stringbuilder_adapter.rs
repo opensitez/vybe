@@ -155,7 +155,14 @@ fn host(chunks: &mut [Chunk], current: usize, module: &str, func: &str, argc: u8
 }
 
 /// `buffer[0..i]` — slice helper. Stack: pushes the slice from locals.
-fn buffer_slice(chunks: &mut [Chunk], current: usize, sb: u16, from: u16, to: Option<u16>, line: u32) {
+fn buffer_slice(
+    chunks: &mut [Chunk],
+    current: usize,
+    sb: u16,
+    from: u16,
+    to: Option<u16>,
+    line: u32,
+) {
     buffer_get(chunks, current, sb, line);
     get(&mut chunks[current], from, line);
     if let Some(to) = to {

@@ -15,10 +15,11 @@ use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
     use crate::emitter::arrays_adapter as arrays;
+    use crate::emitter::biginteger_adapter as bigint;
     use crate::emitter::bitset_adapter as bitset;
     use crate::emitter::collection_adapter as collection;
-    use crate::emitter::instant_adapter as instant;
     use crate::emitter::enum_set_adapter as enum_set;
+    use crate::emitter::instant_adapter as instant;
     use crate::emitter::io_adapter as io;
     use crate::emitter::map_adapter as map;
     use crate::emitter::math_adapter as math;
@@ -27,7 +28,6 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
     use crate::emitter::stream_adapter as stream;
     use crate::emitter::string_adapter;
     use crate::emitter::stringbuilder_adapter as sb;
-    use crate::emitter::biginteger_adapter as bigint;
     use crate::emitter::stringtokenizer_adapter as st;
     use crate::emitter::system_adapter as system;
     use crate::emitter::url_adapter as url;
@@ -97,7 +97,9 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `String.valueOf` / `println(Object)` / `"" + x` all render through
         // one adapter, so a class's ToString slot is reached identically from
         // every one of them.
-        "jvm.java.to_string" => crate::emitter::object_adapter::emit_to_string(chunks, current, line),
+        "jvm.java.to_string" => {
+            crate::emitter::object_adapter::emit_to_string(chunks, current, line)
+        }
 
         // ── construction ──
         "jvm.java.net.url_new" => url::emit_url_new(chunks, current, argc, line),
@@ -284,9 +286,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         }
         "jvm.java.instant_to_local_date" => instant::emit_local_date_string(chunks, current, line),
         "jvm.java.time_to_string" => instant::emit_time_to_string(chunks, current, line),
-        "jvm.java.datetime_to_string" => {
-            instant::emit_local_datetime_string(chunks, current, line)
-        }
+        "jvm.java.datetime_to_string" => instant::emit_local_datetime_string(chunks, current, line),
         "jvm.java.timeofday_to_string" => instant::emit_time_of_day_string(chunks, current, line),
         "jvm.java.year_month_parse" => instant::emit_year_month_parse(chunks, current, line),
         "jvm.java.month_day_parse" => instant::emit_month_day_parse(chunks, current, line),
@@ -837,6 +837,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.list_iterator" => collection::emit_list_iterator(chunks, current, argc, line),
         "jvm.java.iterator_next" => collection::emit_iterator_next(chunks, current, line),
         "jvm.java.iterator_has_next" => collection::emit_iterator_has_next(chunks, current, line),
+        "jvm.java.iterator_remove" => collection::emit_iterator_remove(chunks, current, line),
         "jvm.java.iterator_previous" => collection::emit_iterator_previous(chunks, current, line),
         "jvm.java.iterator_has_previous" => {
             collection::emit_iterator_has_previous(chunks, current, line)
@@ -851,6 +852,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "jvm.java.get" => collection::emit_get(chunks, current, line),
         "jvm.java.list_set" => collection::emit_set(chunks, current, line),
         "jvm.java.size" => collection::emit_size(chunks, current, line),
+        "jvm.java.contains" => collection::emit_contains(chunks, current, line),
         "jvm.java.is_empty" => collection::emit_is_empty(chunks, current, line),
         "jvm.java.list_clear" => collection::emit_clear(chunks, current, line),
         "jvm.java.list_remove" => collection::emit_remove(chunks, current, argc, line),
