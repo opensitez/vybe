@@ -78,7 +78,10 @@ data = [1, -2, 3, -4, 5]
 signs = ["pos" if x > 0 else "neg" for x in data]
 print(signs)
 "#;
-    assert_eq!(run_python(script), vec!["['pos', 'neg', 'pos', 'neg', 'pos']"]);
+    assert_eq!(
+        run_python(script),
+        vec!["['pos', 'neg', 'pos', 'neg', 'pos']"]
+    );
 }
 
 #[test]
@@ -100,5 +103,8 @@ print(not 0)
 print(not "hello")
 print(not "")
 "#;
-    assert_eq!(run_python(script), vec!["False", "True", "True", "False", "True"]);
+    assert_eq!(
+        run_python(script),
+        vec!["False", "True", "True", "False", "True"]
+    );
 }

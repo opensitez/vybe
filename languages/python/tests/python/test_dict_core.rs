@@ -332,16 +332,10 @@ fn dict_with_list_value_inequality() {
 // type-hint lookup, which is how comparable bugs have survived elsewhere.
 #[test]
 fn dict_inequality_via_variables() {
-    assert_eq!(
-        run_print("d1 = {'a': 1}\nd2 = {'a': 2}\nd1 == d2"),
-        "False"
-    );
+    assert_eq!(run_print("d1 = {'a': 1}\nd2 = {'a': 2}\nd1 == d2"), "False");
 }
 
 #[test]
 fn dict_non_equality_operator_via_variables() {
-    assert_eq!(
-        run_print("d1 = {'a': 1}\nd2 = {'a': 2}\nd1 != d2"),
-        "True"
-    );
+    assert_eq!(run_print("d1 = {'a': 1}\nd2 = {'a': 2}\nd1 != d2"), "True");
 }

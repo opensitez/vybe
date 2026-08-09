@@ -9,7 +9,10 @@ print(f"{name:>10}")
 print(f"{name:<10}|")
 print(f"{name:^10}|")
 "#;
-    assert_eq!(run_python(script), vec!["        hi", "hi        |", "    hi    |"]);
+    assert_eq!(
+        run_python(script),
+        vec!["        hi", "hi        |", "    hi    |"]
+    );
 }
 
 #[test]
@@ -55,7 +58,10 @@ print(f"{n:o}")
 print(f"{n:b}")
 print(f"{n:#x}")
 "#;
-    assert_eq!(run_python(script), vec!["ff", "FF", "377", "11111111", "0xff"]);
+    assert_eq!(
+        run_python(script),
+        vec!["ff", "FF", "377", "11111111", "0xff"]
+    );
 }
 
 #[test]

@@ -53,7 +53,10 @@ print("newline:\nhere")
 print("backslash:\\")
 print("quote:\"")
 "#;
-    assert_eq!(run_python(script), vec!["tab:\there", "newline:", "here", "backslash:\\", "quote:\""]);
+    assert_eq!(
+        run_python(script),
+        vec!["tab:\there", "newline:", "here", "backslash:\\", "quote:\""]
+    );
 }
 
 #[test]

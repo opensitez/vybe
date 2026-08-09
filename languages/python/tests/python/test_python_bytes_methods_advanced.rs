@@ -17,5 +17,8 @@ b = b'one,two,three'
 print(b.split(b','))
 print(b.replace(b',', b';', 1))
 "#;
-    assert_eq!(run_python(src), vec!["[b'one', b'two', b'three']", "b'one;two,three'"]);
+    assert_eq!(
+        run_python(src),
+        vec!["[b'one', b'two', b'three']", "b'one;two,three'"]
+    );
 }

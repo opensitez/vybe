@@ -6,7 +6,10 @@ fn test_python_itertools_permutations() {
 import itertools
 print(list(itertools.permutations([1, 2, 3], 2)))
 "#;
-    assert_eq!(run_python(src), vec!["[(1, 2), (1, 3), (2, 1), (2, 3), (3, 1), (3, 2)]"]);
+    assert_eq!(
+        run_python(src),
+        vec!["[(1, 2), (1, 3), (2, 1), (2, 3), (3, 1), (3, 2)]"]
+    );
 }
 
 #[test]
@@ -15,5 +18,8 @@ fn test_python_itertools_combinations() {
 import itertools
 print(list(itertools.combinations([1, 2, 3, 4], 2)))
 "#;
-    assert_eq!(run_python(src), vec!["[(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)]"]);
+    assert_eq!(
+        run_python(src),
+        vec!["[(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)]"]
+    );
 }

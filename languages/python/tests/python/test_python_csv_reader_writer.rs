@@ -10,7 +10,10 @@ src = StringIO('a,b\n1,2\n3,4\n')
 rows = list(csv.reader(src))
 print(rows)
 "#;
-    assert_eq!(run_python(src), vec!["[['a', 'b'], ['1', '2'], ['3', '4']]"]);
+    assert_eq!(
+        run_python(src),
+        vec!["[['a', 'b'], ['1', '2'], ['3', '4']]"]
+    );
 }
 
 #[test]

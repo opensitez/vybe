@@ -7,7 +7,10 @@ fn test_nested_list_comprehension_matrix() {
 matrix = [[i * j for j in range(1, 4)] for i in range(1, 4)]
 print(matrix)
 "#;
-    assert_eq!(run_python(script), vec!["[[1, 2, 3], [2, 4, 6], [3, 6, 9]]"]);
+    assert_eq!(
+        run_python(script),
+        vec!["[[1, 2, 3], [2, 4, 6], [3, 6, 9]]"]
+    );
 }
 
 #[test]
@@ -65,7 +68,10 @@ fn test_nested_conditional_comprehension() {
 result = ["even" if x % 2 == 0 else "odd" for x in range(6)]
 print(result)
 "#;
-    assert_eq!(run_python(script), vec!["['even', 'odd', 'even', 'odd', 'even', 'odd']"]);
+    assert_eq!(
+        run_python(script),
+        vec!["['even', 'odd', 'even', 'odd', 'even', 'odd']"]
+    );
 }
 
 #[test]

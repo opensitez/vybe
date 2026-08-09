@@ -48,7 +48,14 @@ print(lst[:5])
 print(lst[5:])
 print(lst[:])
 "#;
-    assert_eq!(run_python(script), vec!["[0, 1, 2, 3, 4]", "[5, 6, 7, 8, 9]", "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]"]);
+    assert_eq!(
+        run_python(script),
+        vec![
+            "[0, 1, 2, 3, 4]",
+            "[5, 6, 7, 8, 9]",
+            "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]"
+        ]
+    );
 }
 
 #[test]

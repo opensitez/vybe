@@ -81,7 +81,10 @@ d2 = {"c": 3, "d": 4}
 merged = {**d1, **d2}
 print(sorted(merged.items()))
 "#;
-    assert_eq!(run_python(script), vec!["[('a', 1), ('b', 2), ('c', 3), ('d', 4)]"]);
+    assert_eq!(
+        run_python(script),
+        vec!["[('a', 1), ('b', 2), ('c', 3), ('d', 4)]"]
+    );
 }
 
 #[test]

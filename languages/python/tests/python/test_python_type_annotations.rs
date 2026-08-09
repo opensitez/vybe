@@ -22,7 +22,13 @@ def greet(name: str, times: int = 1) -> str:
 print(greet.__annotations__)
 print(greet("hi", 2))
 "#;
-    assert_eq!(run_python(script), vec!["{'name': <class 'str'>, 'times': <class 'int'>, 'return': <class 'str'>}", "hi hi "]);
+    assert_eq!(
+        run_python(script),
+        vec![
+            "{'name': <class 'str'>, 'times': <class 'int'>, 'return': <class 'str'>}",
+            "hi hi "
+        ]
+    );
 }
 
 #[test]

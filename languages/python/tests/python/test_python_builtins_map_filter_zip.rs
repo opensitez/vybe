@@ -100,5 +100,8 @@ b = ['x', 'y']
 c = [True, False]
 print(list(zip(a, b, c)))
 "#;
-    assert_eq!(run_python(script), vec!["[(1, 'x', True), (2, 'y', False)]"]);
+    assert_eq!(
+        run_python(script),
+        vec!["[(1, 'x', True), (2, 'y', False)]"]
+    );
 }

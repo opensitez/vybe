@@ -5,7 +5,8 @@ use super::helpers::run_python;
 
 #[test]
 fn test_enum_auto_sequential_values() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum, auto
 
 class Color(Enum):
@@ -16,13 +17,15 @@ class Color(Enum):
 print(Color.RED.value)
 print(Color.GREEN.value)
 print(Color.BLUE.value)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "2", "3"]);
 }
 
 #[test]
 fn test_enum_str_enum_string_subclass() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum, auto
 import sys
 
@@ -36,13 +39,15 @@ if sys.version_info >= (3, 11):
     print(Status.ACTIVE == "active")
 else:
     print("True\nTrue")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_enum_flag_bitwise_combinations() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Flag, auto
 
 class Permission(Flag):
@@ -54,13 +59,15 @@ read_write = Permission.READ | Permission.WRITE
 print(Permission.READ in read_write)
 print(Permission.WRITE in read_write)
 print(Permission.EXECUTE in read_write)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True", "False"]);
 }
 
 #[test]
 fn test_enum_int_flag_integer_ops() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import IntFlag, auto
 
 class Bits(IntFlag):
@@ -71,13 +78,15 @@ class Bits(IntFlag):
 b = Bits.B0 | Bits.B2
 print(int(b))
 print(b & Bits.B0)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5", "Bits.B0"]);
 }
 
 #[test]
 fn test_enum_unique_decorator_enforces_no_aliases() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum, unique
 
 try:
@@ -87,13 +96,15 @@ try:
         B = 1  # Alias
 except ValueError:
     print("ValueError")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ValueError"]);
 }
 
 #[test]
 fn test_enum_member_lookup_by_value_and_name() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 
 class HttpMethod(Enum):
@@ -102,13 +113,15 @@ class HttpMethod(Enum):
 
 print(HttpMethod["GET"] == HttpMethod.GET)
 print(HttpMethod("POST") == HttpMethod.POST)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_enum_iteration_yields_members() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 
 class Season(Enum):
@@ -119,13 +132,15 @@ class Season(Enum):
 
 names = [s.name for s in Season]
 print(names)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['SPRING', 'SUMMER', 'AUTUMN', 'WINTER']"]);
 }
 
 #[test]
 fn test_enum_nonmember_decorator() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 import sys
 
@@ -139,13 +154,15 @@ if sys.version_info >= (3, 11):
     print(Config.helper())
 else:
     print("localhost\nhelper_func")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["localhost", "helper_func"]);
 }
 
 #[test]
 fn test_enum_member_decorator() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 import sys
 
@@ -157,13 +174,15 @@ if sys.version_info >= (3, 11):
     print(FnEnum.ADD.value(2, 3))
 else:
     print("5")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_enum_int_enum_comparisons() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import IntEnum
 
 class Priority(IntEnum):
@@ -173,13 +192,15 @@ class Priority(IntEnum):
 
 print(Priority.LOW < Priority.HIGH)
 print(Priority.MEDIUM == 2)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_enum_flag_boundary_inversion() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Flag, auto
 
 class Features(Flag):
@@ -189,13 +210,15 @@ class Features(Flag):
 all_f = Features.F1 | Features.F2
 inv = ~Features.F1 & all_f
 print(inv == Features.F2)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_enum_custom_auto_generate_method() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum, auto
 
 class LowerAutoEnum(Enum):
@@ -207,13 +230,15 @@ class LowerAutoEnum(Enum):
 
 print(LowerAutoEnum.FIRST.value)
 print(LowerAutoEnum.SECOND.value)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["first", "second"]);
 }
 
 #[test]
 fn test_enum_missing_method_fallback() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 
 class CaseInsensitiveEnum(Enum):
@@ -229,13 +254,15 @@ class CaseInsensitiveEnum(Enum):
         return None
 
 print(CaseInsensitiveEnum("foo") == CaseInsensitiveEnum.FOO)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_enum_repr_and_str() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 
 class State(Enum):
@@ -244,13 +271,15 @@ class State(Enum):
 
 print(str(State.ON))
 print(repr(State.OFF))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["State.ON", "<State.OFF: False>"]);
 }
 
 #[test]
 fn test_enum_pickle_roundtrip() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import pickle
 from enum import Enum
 
@@ -261,13 +290,15 @@ class TaskState(Enum):
 data = pickle.dumps(TaskState.RUNNING)
 restored = pickle.loads(data)
 print(restored is TaskState.RUNNING)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_enum_dict_key_usability() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 
 class Direction(Enum):
@@ -276,13 +307,15 @@ class Direction(Enum):
 
 d = {Direction.NORTH: (0, 1), Direction.SOUTH: (0, -1)}
 print(d[Direction.NORTH])
-"#);
+"#,
+    );
     assert_eq!(out, vec!["(0, 1)"]);
 }
 
 #[test]
 fn test_enum_count_members() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 
 class Day(Enum):
@@ -291,13 +324,15 @@ class Day(Enum):
     WED = 3
 
 print(len(Day))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_enum_flag_all_none_checks() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Flag, auto
 
 class Access(Flag):
@@ -306,13 +341,15 @@ class Access(Flag):
 
 empty = Access(0)
 print(bool(empty))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False"]);
 }
 
 #[test]
 fn test_enum_verify_decorator_strict() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum, verify, UNIQUE, sys
 
 if sys.version_info >= (3, 11):
@@ -324,13 +361,15 @@ if sys.version_info >= (3, 11):
     print(Valid.X.value)
 else:
     print("1")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_enum_invalid_value_lookup_raises_value_error() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 from enum import Enum
 
 class Code(Enum):
@@ -340,6 +379,7 @@ try:
     Code(404)
 except ValueError:
     print("ValueError")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ValueError"]);
 }

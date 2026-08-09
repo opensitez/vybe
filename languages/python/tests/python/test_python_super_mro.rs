@@ -60,7 +60,10 @@ d = D()
 print(d.who())
 print([cls.__name__ for cls in D.__mro__])
 "#;
-    assert_eq!(run_python(script), vec!["D->B->C->A", "['D', 'B', 'C', 'A', 'object']"]);
+    assert_eq!(
+        run_python(script),
+        vec!["D->B->C->A", "['D', 'B', 'C', 'A', 'object']"]
+    );
 }
 
 #[test]

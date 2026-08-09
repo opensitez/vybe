@@ -19,5 +19,8 @@ import itertools
 pairs = list(itertools.pairwise('abcd'))
 print(pairs)
 "#;
-    assert_eq!(run_python(src), vec!["[('a', 'b'), ('b', 'c'), ('c', 'd')]"]);
+    assert_eq!(
+        run_python(src),
+        vec!["[('a', 'b'), ('b', 'c'), ('c', 'd')]"]
+    );
 }

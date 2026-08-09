@@ -14,7 +14,10 @@ except RuntimeError as ex:
     print(type(ex.__cause__).__name__)
     print(str(ex.__cause__))
 "#;
-    assert_eq!(run_python(script), vec!["wrapped", "ValueError", "original"]);
+    assert_eq!(
+        run_python(script),
+        vec!["wrapped", "ValueError", "original"]
+    );
 }
 
 #[test]
@@ -78,7 +81,10 @@ except PermissionError as e:
     print(str(e))
     print(type(e.__cause__).__name__)
 "#;
-    assert_eq!(run_python(script), vec!["cannot process", "ZeroDivisionError"]);
+    assert_eq!(
+        run_python(script),
+        vec!["cannot process", "ZeroDivisionError"]
+    );
 }
 
 #[test]

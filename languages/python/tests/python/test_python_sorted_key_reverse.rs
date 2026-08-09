@@ -23,7 +23,10 @@ fn test_sorted_key_function() {
 words = ["banana", "Apple", "cherry", "date"]
 print(sorted(words, key=str.lower))
 "#;
-    assert_eq!(run_python(script), vec!["['Apple', 'banana', 'cherry', 'date']"]);
+    assert_eq!(
+        run_python(script),
+        vec!["['Apple', 'banana', 'cherry', 'date']"]
+    );
 }
 
 #[test]
@@ -33,7 +36,10 @@ words = ["cat", "elephant", "bee", "ant", "dog"]
 result = sorted(words, key=lambda w: (len(w), w))
 print(result)
 "#;
-    assert_eq!(run_python(script), vec!["['ant', 'bee', 'cat', 'dog', 'elephant']"]);
+    assert_eq!(
+        run_python(script),
+        vec!["['ant', 'bee', 'cat', 'dog', 'elephant']"]
+    );
 }
 
 #[test]
@@ -42,7 +48,10 @@ fn test_sorted_tuple_key() {
 data = [(1, 'z'), (2, 'a'), (1, 'a'), (2, 'z')]
 print(sorted(data))
 "#;
-    assert_eq!(run_python(script), vec!["[(1, 'a'), (1, 'z'), (2, 'a'), (2, 'z')]"]);
+    assert_eq!(
+        run_python(script),
+        vec!["[(1, 'a'), (1, 'z'), (2, 'a'), (2, 'z')]"]
+    );
 }
 
 #[test]

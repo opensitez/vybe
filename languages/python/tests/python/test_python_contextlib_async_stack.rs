@@ -4,7 +4,8 @@ use super::helpers::run_python;
 
 #[test]
 fn test_contextlib_async_exit_stack_callbacks() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, contextlib
 
 async def fn():
@@ -16,13 +17,15 @@ async def fn():
     print(cleaned_up)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['async_cb', 'sync_cb']"]);
 }
 
 #[test]
 fn test_contextlib_aclosing_async_generator() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, contextlib
 
 closed = [False]
@@ -41,13 +44,15 @@ async def fn():
     print(closed[0])
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["1", "True"]);
 }
 
 #[test]
 fn test_contextlib_asynccontextmanager_decorator() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, contextlib
 
 events = []
@@ -66,13 +71,15 @@ async def fn():
     print(events)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['enter', 'resource_data', 'exit']"]);
 }
 
 #[test]
 fn test_contextlib_chdir_temporary_directory_change() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib, os, tempfile, sys
 
 if sys.version_info >= (3, 11):
@@ -83,24 +90,28 @@ if sys.version_info >= (3, 11):
     print(os.getcwd() == orig)
 else:
     print("True\nTrue")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_contextlib_nullcontext_dummy_manager() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 with contextlib.nullcontext(enter_result="default_val") as val:
     print(val)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["default_val"]);
 }
 
 #[test]
 fn test_contextlib_exit_stack_multiple_context_managers() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib, io
 
 buf1 = io.StringIO()
@@ -112,13 +123,15 @@ with contextlib.ExitStack() as stack:
     print("to stdout")
 
 print(buf1.getvalue().strip())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["to stdout"]);
 }
 
 #[test]
 fn test_contextlib_contextmanager_generator_flow() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 state = []
@@ -135,13 +148,15 @@ with managed_state() as s:
     s.append("work")
 
 print(state)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['open', 'work', 'close']"]);
 }
 
 #[test]
 fn test_contextlib_suppress_caught_exceptions() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 with contextlib.suppress(FileNotFoundError, KeyError):
@@ -149,13 +164,15 @@ with contextlib.suppress(FileNotFoundError, KeyError):
     x = d["missing_key"]
 
 print("execution continues")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["execution continues"]);
 }
 
 #[test]
 fn test_contextlib_redirect_stdout_to_buffer() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib, io
 
 buf = io.StringIO()
@@ -164,13 +181,15 @@ with contextlib.redirect_stdout(buf):
     print("Line 2")
 
 print(buf.getvalue().strip().split("\n"))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['Line 1', 'Line 2']"]);
 }
 
 #[test]
 fn test_contextlib_redirect_stderr_to_buffer() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib, io, sys
 
 buf = io.StringIO()
@@ -178,13 +197,15 @@ with contextlib.redirect_stderr(buf):
     sys.stderr.write("error message\n")
 
 print(buf.getvalue().strip())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["error message"]);
 }
 
 #[test]
 fn test_contextlib_closing_calls_close_on_exit() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 class CustomResource:
@@ -196,13 +217,15 @@ with contextlib.closing(res):
     print(res.is_closed)
 
 print(res.is_closed)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True"]);
 }
 
 #[test]
 fn test_contextlib_exit_stack_pop_all() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 history = []
@@ -215,13 +238,15 @@ print(history)  # cb1 NOT called yet because popped
 with new_stack:
     pass
 print(history)  # now called
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[]", "['cb1']"]);
 }
 
 #[test]
 fn test_contextlib_contextmanager_exception_propagation() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 @contextlib.contextmanager
@@ -233,13 +258,15 @@ def handle():
 
 with handle():
     raise ValueError("test_err")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["caught in manager: test_err"]);
 }
 
 #[test]
 fn test_contextlib_abstract_context_manager() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 class DummyCM(contextlib.AbstractContextManager):
@@ -248,13 +275,15 @@ class DummyCM(contextlib.AbstractContextManager):
 
 with DummyCM() as val:
     print(val)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ok"]);
 }
 
 #[test]
 fn test_contextlib_abstract_async_context_manager() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, contextlib
 
 class DummyAsyncCM(contextlib.AbstractAsyncContextManager):
@@ -266,13 +295,15 @@ async def fn():
         print(val)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["async_ok"]);
 }
 
 #[test]
 fn test_contextlib_exit_stack_push_custom_exit() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 events = []
@@ -286,13 +317,15 @@ with contextlib.ExitStack() as stack:
     raise RuntimeError("boom")
 
 print(events)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['custom_exit']"]);
 }
 
 #[test]
 fn test_contextlib_suppress_does_not_suppress_unmatched() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 try:
@@ -300,13 +333,15 @@ try:
         raise TypeError("wrong type")
 except TypeError:
     print("TypeError")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TypeError"]);
 }
 
 #[test]
 fn test_contextlib_nullcontext_async_use() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, contextlib
 
 async def fn():
@@ -314,13 +349,15 @@ async def fn():
         print(val)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["async_val"]);
 }
 
 #[test]
 fn test_contextlib_contextmanager_return_value() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import contextlib
 
 @contextlib.contextmanager
@@ -329,13 +366,15 @@ def double(n):
 
 with double(21) as res:
     print(res)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_contextlib_async_exit_stack_enter_async_context() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, contextlib
 
 @contextlib.asynccontextmanager
@@ -349,6 +388,7 @@ async def fn():
         print(r1, r2)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["active_res1 active_res2"]);
 }

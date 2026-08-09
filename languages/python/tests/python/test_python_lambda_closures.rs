@@ -16,7 +16,10 @@ fn test_lambda_in_sorted() {
 words = ["banana", "apple", "cherry", "date"]
 print(sorted(words, key=lambda w: len(w)))
 "#;
-    assert_eq!(run_python(script), vec!["['date', 'apple', 'banana', 'cherry']"]);
+    assert_eq!(
+        run_python(script),
+        vec!["['date', 'apple', 'banana', 'cherry']"]
+    );
 }
 
 #[test]

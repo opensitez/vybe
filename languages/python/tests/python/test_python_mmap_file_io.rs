@@ -4,7 +4,8 @@ use super::helpers::run_python;
 
 #[test]
 fn test_mmap_read_full_content() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"hello world")
@@ -14,13 +15,15 @@ with open(f.name, "r+b") as fh:
     print(mm[:11])
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'hello world'"]);
 }
 
 #[test]
 fn test_mmap_write_modifies_content() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"hello world")
@@ -33,13 +36,15 @@ with open(f.name, "r+b") as fh:
 with open(f.name, "rb") as fh:
     print(fh.read())
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'HELLO world'"]);
 }
 
 #[test]
 fn test_mmap_find_substring() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"abcdefghij")
@@ -50,13 +55,15 @@ with open(f.name, "r+b") as fh:
     print(pos)
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_mmap_find_not_found_returns_minus_one() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"abcde")
@@ -66,13 +73,15 @@ with open(f.name, "r+b") as fh:
     print(mm.find(b"xyz"))
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["-1"]);
 }
 
 #[test]
 fn test_mmap_rfind_searches_from_end() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"abcabc")
@@ -82,13 +91,15 @@ with open(f.name, "r+b") as fh:
     print(mm.rfind(b"abc"))  # last occurrence at index 3
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["3"]);
 }
 
 #[test]
 fn test_mmap_seek_and_read() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"0123456789")
@@ -99,13 +110,15 @@ with open(f.name, "r+b") as fh:
     print(mm.read(3))
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'567'"]);
 }
 
 #[test]
 fn test_mmap_seek_from_end() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"hello!!")
@@ -116,13 +129,15 @@ with open(f.name, "r+b") as fh:
     print(mm.read())
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'!!'"]);
 }
 
 #[test]
 fn test_mmap_tell_after_seek() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"0123456789")
@@ -133,13 +148,15 @@ with open(f.name, "r+b") as fh:
     print(mm.tell())
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["7"]);
 }
 
 #[test]
 fn test_mmap_size_attribute() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"x" * 100)
@@ -149,13 +166,15 @@ with open(f.name, "r+b") as fh:
     print(mm.size())
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["100"]);
 }
 
 #[test]
 fn test_mmap_length() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"abcde")
@@ -165,13 +184,15 @@ with open(f.name, "r+b") as fh:
     print(len(mm))
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_mmap_readline() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"first line\nsecond line\n")
@@ -182,13 +203,15 @@ with open(f.name, "r+b") as fh:
     print(line)
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'first line\\n'"]);
 }
 
 #[test]
 fn test_mmap_write_returns_bytes_written() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"     ")
@@ -200,13 +223,15 @@ with open(f.name, "r+b") as fh:
     print(n)
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["5"]);
 }
 
 #[test]
 fn test_mmap_slice_assignment() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"AAAAAA")
@@ -217,13 +242,15 @@ with open(f.name, "r+b") as fh:
     print(mm[:])
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'AABBAA'"]);
 }
 
 #[test]
 fn test_mmap_getitem_single_byte() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"ABCDE")
@@ -234,13 +261,15 @@ with open(f.name, "r+b") as fh:
     print(mm[4])
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["65", "69"]);
 }
 
 #[test]
 fn test_mmap_access_read_only() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"readonly data")
@@ -256,13 +285,15 @@ with open(f.name, "rb") as fh:
         print("TypeError")
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'readonly'", "TypeError"]);
 }
 
 #[test]
 fn test_mmap_copy_access() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"original")
@@ -276,13 +307,15 @@ with open(f.name, "rb") as fh:
 with open(f.name, "rb") as fh:
     print(fh.read())     # file should be unchanged
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'XXXXinal'", "b'original'"]);
 }
 
 #[test]
 fn test_mmap_anon_mmap_unix() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, sys
 if sys.platform != "win32":
     mm = mmap.mmap(-1, 256)  # anonymous mmap
@@ -292,13 +325,15 @@ if sys.platform != "win32":
     mm.close()
 else:
     print(b"test data!")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'test data!'"]);
 }
 
 #[test]
 fn test_mmap_move_bytes() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"ABCDE12345")
@@ -309,13 +344,15 @@ with open(f.name, "r+b") as fh:
     print(mm[:10])
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["b'12345 12345'"]);
 }
 
 #[test]
 fn test_mmap_flush_no_error() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import mmap, tempfile, os
 f = tempfile.NamedTemporaryFile(delete=False)
 f.write(b"data here")
@@ -327,6 +364,7 @@ with open(f.name, "r+b") as fh:
     print("ok")
     mm.close()
 os.unlink(f.name)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ok"]);
 }

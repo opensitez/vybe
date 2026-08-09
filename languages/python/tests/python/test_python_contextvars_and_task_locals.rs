@@ -114,7 +114,10 @@ res = ctx.run(child_func)
 print('child:', res)
 print('parent:', var.get())
 "##;
-    assert_eq!(run_python(script), vec!["child: child_val", "parent: parent_val"]);
+    assert_eq!(
+        run_python(script),
+        vec!["child: child_val", "parent: parent_val"]
+    );
 }
 
 #[test]

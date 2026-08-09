@@ -195,8 +195,5 @@ try:
 except ValueError:
     print("ValueError")
 "#;
-    assert_eq!(
-        run_python(src),
-        vec!["1 4 -1 4", "-1 5 1", "ValueError"]
-    );
+    assert_eq!(run_python(src), vec!["1 4 -1 4", "-1 5 1", "ValueError"]);
 }

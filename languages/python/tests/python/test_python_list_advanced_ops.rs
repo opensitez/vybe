@@ -8,7 +8,10 @@ data = [(1, 'b'), (2, 'a'), (1, 'a'), (2, 'b')]
 data.sort(key=lambda x: x[0])
 print(data)
 "#;
-    assert_eq!(run_python(script), vec!["[(1, 'b'), (1, 'a'), (2, 'a'), (2, 'b')]"]);
+    assert_eq!(
+        run_python(script),
+        vec!["[(1, 'b'), (1, 'a'), (2, 'a'), (2, 'b')]"]
+    );
 }
 
 #[test]
@@ -81,7 +84,10 @@ b = [[]] * 3
 b[0].append(1)
 print(b)  # all share same list reference
 "#;
-    assert_eq!(run_python(script), vec!["[0, 0, 0, 0, 0]", "[[1], [1], [1]]"]);
+    assert_eq!(
+        run_python(script),
+        vec!["[0, 0, 0, 0, 0]", "[[1], [1], [1]]"]
+    );
 }
 
 #[test]

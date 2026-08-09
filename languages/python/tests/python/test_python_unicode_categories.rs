@@ -8,7 +8,10 @@ import unicodedata
 print(unicodedata.name('\u00e9'))
 print(unicodedata.name('A'))
 "#;
-    assert_eq!(run_python(script), vec!["LATIN SMALL LETTER E WITH ACUTE", "LATIN CAPITAL LETTER A"]);
+    assert_eq!(
+        run_python(script),
+        vec!["LATIN SMALL LETTER E WITH ACUTE", "LATIN CAPITAL LETTER A"]
+    );
 }
 
 #[test]
@@ -58,7 +61,10 @@ print("café".isalpha())
 print("²".isnumeric())
 print("abc123".isalpha())
 "#;
-    assert_eq!(run_python(script), vec!["True", "True", "True", "True", "False"]);
+    assert_eq!(
+        run_python(script),
+        vec!["True", "True", "True", "True", "False"]
+    );
 }
 
 #[test]

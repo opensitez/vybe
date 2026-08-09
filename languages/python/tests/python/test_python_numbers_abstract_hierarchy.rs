@@ -11,7 +11,10 @@ print(hasattr(numbers, 'Real'))
 print(hasattr(numbers, 'Rational'))
 print(hasattr(numbers, 'Integral'))
 "#;
-    assert_eq!(run_python(script), vec!["True", "True", "True", "True", "True"]);
+    assert_eq!(
+        run_python(script),
+        vec!["True", "True", "True", "True", "True"]
+    );
 }
 
 #[test]
@@ -26,7 +29,10 @@ print(isinstance(x, numbers.Real))
 print(isinstance(x, numbers.Rational))
 print(isinstance(x, numbers.Integral))
 "#;
-    assert_eq!(run_python(script), vec!["True", "True", "True", "True", "True"]);
+    assert_eq!(
+        run_python(script),
+        vec!["True", "True", "True", "True", "True"]
+    );
 }
 
 #[test]
@@ -41,7 +47,10 @@ print(isinstance(x, numbers.Real))
 print(isinstance(x, numbers.Rational))
 print(isinstance(x, numbers.Integral))
 "#;
-    assert_eq!(run_python(script), vec!["True", "True", "True", "False", "False"]);
+    assert_eq!(
+        run_python(script),
+        vec!["True", "True", "True", "False", "False"]
+    );
 }
 
 #[test]
@@ -56,7 +65,10 @@ print(isinstance(x, numbers.Real))
 print(isinstance(x, numbers.Rational))
 print(isinstance(x, numbers.Integral))
 "#;
-    assert_eq!(run_python(script), vec!["True", "True", "False", "False", "False"]);
+    assert_eq!(
+        run_python(script),
+        vec!["True", "True", "False", "False", "False"]
+    );
 }
 
 #[test]
@@ -72,7 +84,10 @@ print(isinstance(x, numbers.Real))
 print(isinstance(x, numbers.Rational))
 print(isinstance(x, numbers.Integral))
 "#;
-    assert_eq!(run_python(script), vec!["True", "True", "True", "True", "False"]);
+    assert_eq!(
+        run_python(script),
+        vec!["True", "True", "True", "True", "False"]
+    );
 }
 
 #[test]
@@ -237,7 +252,10 @@ print(isinstance({'a': 1}, numbers.Number))
 print(isinstance((1, 2), numbers.Number))
 print(isinstance(None, numbers.Number))
 "#;
-    assert_eq!(run_python(script), vec!["False", "False", "False", "False", "False"]);
+    assert_eq!(
+        run_python(script),
+        vec!["False", "False", "False", "False", "False"]
+    );
 }
 
 #[test]
@@ -324,7 +342,10 @@ names = dir(numbers)
 for expected in ['Number', 'Complex', 'Real', 'Rational', 'Integral']:
     print(expected in names)
 "#;
-    assert_eq!(run_python(script), vec!["True", "True", "True", "True", "True"]);
+    assert_eq!(
+        run_python(script),
+        vec!["True", "True", "True", "True", "True"]
+    );
 }
 
 #[test]
@@ -354,7 +375,10 @@ print(isinstance(~a, numbers.Integral))
 print(isinstance(a << 2, numbers.Integral))
 print(isinstance(b >> 1, numbers.Integral))
 "#;
-    assert_eq!(run_python(script), vec!["True", "True", "True", "True", "True", "True"]);
+    assert_eq!(
+        run_python(script),
+        vec!["True", "True", "True", "True", "True", "True"]
+    );
 }
 
 #[test]

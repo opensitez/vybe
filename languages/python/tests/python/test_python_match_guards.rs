@@ -20,7 +20,10 @@ print(classify(0))
 print(classify(4))
 print(classify(7))
 "#;
-    assert_eq!(run_python(script), vec!["negative", "zero", "positive even", "positive odd"]);
+    assert_eq!(
+        run_python(script),
+        vec!["negative", "zero", "positive even", "positive odd"]
+    );
 }
 
 #[test]
@@ -42,7 +45,15 @@ print(describe([1]))
 print(describe([1, 2]))
 print(describe([1, 2, 3, 4]))
 "#;
-    assert_eq!(run_python(script), vec!["empty", "one: 1", "two: 1, 2", "many: first=1, rest=[2, 3, 4]"]);
+    assert_eq!(
+        run_python(script),
+        vec![
+            "empty",
+            "one: 1",
+            "two: 1, 2",
+            "many: first=1, rest=[2, 3, 4]"
+        ]
+    );
 }
 
 #[test]
@@ -61,7 +72,10 @@ print(process({"action": "move", "x": 3, "y": 7}))
 print(process({"action": "quit"}))
 print(process({"action": "fire"}))
 "#;
-    assert_eq!(run_python(script), vec!["move to (3, 7)", "quit", "unknown"]);
+    assert_eq!(
+        run_python(script),
+        vec!["move to (3, 7)", "quit", "unknown"]
+    );
 }
 
 #[test]
@@ -103,7 +117,10 @@ print(describe_point(Point(0, 5)))
 print(describe_point(Point(3, 0)))
 print(describe_point(Point(2, 4)))
 "#;
-    assert_eq!(run_python(script), vec!["origin", "y-axis at 5", "x-axis at 3", "(2, 4)"]);
+    assert_eq!(
+        run_python(script),
+        vec!["origin", "y-axis at 5", "x-axis at 3", "(2, 4)"]
+    );
 }
 
 #[test]
@@ -119,5 +136,8 @@ for cmd in commands:
         case other:
             print(f"got: {other}")
 "#;
-    assert_eq!(run_python(script), vec!["starting", "stopping", "got: unknown"]);
+    assert_eq!(
+        run_python(script),
+        vec!["starting", "stopping", "got: unknown"]
+    );
 }

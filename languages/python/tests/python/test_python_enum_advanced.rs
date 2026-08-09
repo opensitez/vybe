@@ -135,5 +135,8 @@ class Direction(Enum):
 print(Direction.NORTH.opposite())
 print(Direction.EAST.opposite())
 "#;
-    assert_eq!(run_python(script), vec!["Direction.SOUTH", "Direction.WEST"]);
+    assert_eq!(
+        run_python(script),
+        vec!["Direction.SOUTH", "Direction.WEST"]
+    );
 }

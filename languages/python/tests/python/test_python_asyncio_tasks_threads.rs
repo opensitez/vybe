@@ -4,7 +4,8 @@ use super::helpers::run_python;
 
 #[test]
 fn test_asyncio_to_thread_executes_blocking_func() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, time
 
 def blocking_io(msg):
@@ -16,13 +17,15 @@ async def fn():
     print(res)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["processed: data"]);
 }
 
 #[test]
 fn test_asyncio_task_group_concurrent_execution() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, sys
 
 async def fn():
@@ -40,13 +43,15 @@ async def fn():
         print("[20, 40]")
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[20, 40]"]);
 }
 
 #[test]
 fn test_asyncio_timeout_context_manager() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, sys
 
 async def fn():
@@ -60,13 +65,15 @@ async def fn():
         print("TimeoutError")
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TimeoutError"]);
 }
 
 #[test]
 fn test_asyncio_wait_for_timeout() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def fn():
@@ -76,13 +83,15 @@ async def fn():
         print("TimeoutError")
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["TimeoutError"]);
 }
 
 #[test]
 fn test_asyncio_gather_concurrent_results() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def f1(): return 1
@@ -94,13 +103,15 @@ async def fn():
     print(list(res))
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[1, 2, 3]"]);
 }
 
 #[test]
 fn test_asyncio_gather_return_exceptions() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def ok(): return "success"
@@ -112,13 +123,15 @@ async def fn():
     print(type(res[1]).__name__)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["success", "ValueError"]);
 }
 
 #[test]
 fn test_asyncio_queue_put_get() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def fn():
@@ -130,13 +143,15 @@ async def fn():
     print(v1, v2)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["item1 item2"]);
 }
 
 #[test]
 fn test_asyncio_event_set_wait() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def fn():
@@ -152,13 +167,15 @@ async def fn():
     print(evt.is_set())
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["False", "True"]);
 }
 
 #[test]
 fn test_asyncio_as_completed_yields_futures() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def slow():
@@ -177,13 +194,15 @@ async def fn():
     print(results)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['fast', 'slow']"]);
 }
 
 #[test]
 fn test_asyncio_lock_mutual_exclusion() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def fn():
@@ -200,13 +219,15 @@ async def fn():
     print(counter[0])
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["2"]);
 }
 
 #[test]
 fn test_asyncio_semaphore_acquire_release() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def fn():
@@ -218,13 +239,15 @@ async def fn():
     print(sem.locked())
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_asyncio_create_task_name() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, sys
 
 async def dummy(): pass
@@ -235,13 +258,15 @@ async def fn():
     await t
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["custom_task_name"]);
 }
 
 #[test]
 fn test_asyncio_task_cancel() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def endless():
@@ -257,13 +282,15 @@ async def fn():
         print("CancelledError")
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["CancelledError"]);
 }
 
 #[test]
 fn test_asyncio_current_task() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def fn():
@@ -272,13 +299,15 @@ async def fn():
     print(isinstance(t, asyncio.Task))
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_asyncio_all_tasks() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def fn():
@@ -290,13 +319,15 @@ async def fn():
     except asyncio.CancelledError: pass
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_asyncio_shield_protects_task_from_cancellation() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def important():
@@ -315,13 +346,15 @@ async def fn():
     print(val)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["saved"]);
 }
 
 #[test]
 fn test_asyncio_iscoroutinefunction() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def my_coro(): pass
@@ -329,13 +362,15 @@ def normal_fn(): pass
 
 print(asyncio.iscoroutinefunction(my_coro))
 print(asyncio.iscoroutinefunction(normal_fn))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "False"]);
 }
 
 #[test]
 fn test_asyncio_run_coroutine_threadsafe() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio, threading
 
 async def add(a, b):
@@ -356,13 +391,15 @@ async def fn():
     print(res)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn test_asyncio_future_callbacks() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 async def fn():
@@ -374,13 +411,15 @@ async def fn():
     print(res)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['callback_val']"]);
 }
 
 #[test]
 fn test_asyncio_sleep_zero_yields_control() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import asyncio
 
 order = []
@@ -400,6 +439,7 @@ async def fn():
     print(order)
 
 asyncio.run(fn())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["[1, 2, 3]"]);
 }

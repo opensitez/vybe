@@ -82,7 +82,10 @@ class Box:
 print(Box[int])
 print(Box[str])
 "#;
-    assert_eq!(run_python(script), vec!["Box[<class 'int'>]", "Box[<class 'str'>]"]);
+    assert_eq!(
+        run_python(script),
+        vec!["Box[<class 'int'>]", "Box[<class 'str'>]"]
+    );
 }
 
 #[test]

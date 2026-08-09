@@ -4,7 +4,8 @@ use super::helpers::run_python;
 
 #[test]
 fn test_socketserver_tcp_server_echo_roundtrip() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 class EchoTCPHandler(socketserver.StreamRequestHandler):
@@ -26,13 +27,15 @@ client.close()
 server.server_close()
 t.join()
 print(response.decode())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ping_ack"]);
 }
 
 #[test]
 fn test_socketserver_udp_server_echo_roundtrip() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 class EchoUDPHandler(socketserver.DatagramRequestHandler):
@@ -53,13 +56,15 @@ client.close()
 server.server_close()
 t.join()
 print(response.decode())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["hello_udp_udp_ack"]);
 }
 
 #[test]
 fn test_socketserver_threading_tcp_server() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 class ThreadedTCPHandler(socketserver.BaseRequestHandler):
@@ -85,13 +90,15 @@ client.close()
 server.server_close()
 t.join()
 print(resp.startswith("thread_"))
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_socketserver_base_request_handler_attributes() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 captured = []
@@ -115,13 +122,15 @@ server.server_close()
 t.join()
 print(captured[0] in ("127.0.0.1", "localhost"))
 print(captured[1])
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_socketserver_allow_reuse_address() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 
 class CustomServer(socketserver.TCPServer):
@@ -130,38 +139,44 @@ class CustomServer(socketserver.TCPServer):
 server = CustomServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
 print(server.allow_reuse_address)
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_socketserver_server_address_binding() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 server = socketserver.TCPServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
 host, port = server.server_address
 print(host)
 print(port > 0)
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["127.0.0.1", "True"]);
 }
 
 #[test]
 fn test_socketserver_timeout_attribute() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 server = socketserver.TCPServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
 server.timeout = 0.05
 print(server.timeout)
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["0.05"]);
 }
 
 #[test]
 fn test_socketserver_handle_timeout_callback() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 
 class TimeoutServer(socketserver.TCPServer):
@@ -174,13 +189,15 @@ server = TimeoutServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
 server.handle_request()
 print(server.timed_out)
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_socketserver_stream_request_handler_wfile_flush() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 class FlushHandler(socketserver.StreamRequestHandler):
@@ -200,13 +217,15 @@ c.close()
 server.server_close()
 t.join()
 print(data.decode())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["flushed_data"]);
 }
 
 #[test]
 fn test_socketserver_datagram_request_handler_socket_ref() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 class RefHandler(socketserver.DatagramRequestHandler):
@@ -226,13 +245,15 @@ c.close()
 server.server_close()
 t.join()
 print(resp.decode())
-"#);
+"#,
+    );
     assert_eq!(out, vec!["ok"]);
 }
 
 #[test]
 fn test_socketserver_setup_and_finish_hooks() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 hooks = []
@@ -256,13 +277,15 @@ c.close()
 server.server_close()
 t.join()
 print(hooks)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["['setup', 'handle', 'finish']"]);
 }
 
 #[test]
 fn test_socketserver_request_queue_size() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 
 class CustomServer(socketserver.TCPServer):
@@ -271,24 +294,28 @@ class CustomServer(socketserver.TCPServer):
 server = CustomServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
 print(server.request_queue_size)
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["10"]);
 }
 
 #[test]
 fn test_socketserver_fileno_method() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 server = socketserver.TCPServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
 print(isinstance(server.fileno(), int))
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_socketserver_verify_request() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 class FilterServer(socketserver.TCPServer):
@@ -306,13 +333,15 @@ c.close()
 server.server_close()
 t.join()
 print("verified")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["verified"]);
 }
 
 #[test]
 fn test_socketserver_shutdown_request() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 class ShutdownHandler(socketserver.BaseRequestHandler):
@@ -330,13 +359,15 @@ c.close()
 server.server_close()
 t.join()
 print("shutdown_request_passed")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["shutdown_request_passed"]);
 }
 
 #[test]
 fn test_socketserver_threading_mixin_daemon_threads() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 
 class DaemonTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -345,13 +376,15 @@ class DaemonTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 server = DaemonTCPServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
 print(server.daemon_threads)
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }
 
 #[test]
 fn test_socketserver_close_request() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket
 
 server = socketserver.TCPServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
@@ -360,26 +393,30 @@ c = socket.create_connection((ip, port))
 server.close_request(c)
 server.server_close()
 print("closed")
-"#);
+"#,
+    );
     assert_eq!(out, vec!["closed"]);
 }
 
 #[test]
 fn test_socketserver_udp_server_bind() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 server = socketserver.UDPServer(("127.0.0.1", 0), socketserver.DatagramRequestHandler)
 ip, port = server.server_address
 print(ip == "127.0.0.1")
 print(port > 0)
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True", "True"]);
 }
 
 #[test]
 fn test_socketserver_max_packet_size_udp() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver
 class UDP(socketserver.UDPServer):
     max_packet_size = 4096
@@ -387,13 +424,15 @@ class UDP(socketserver.UDPServer):
 server = UDP(("127.0.0.1", 0), socketserver.DatagramRequestHandler)
 print(server.max_packet_size)
 server.server_close()
-"#);
+"#,
+    );
     assert_eq!(out, vec!["4096"]);
 }
 
 #[test]
 fn test_socketserver_handle_error_override() {
-    let out = run_python(r#"
+    let out = run_python(
+        r#"
 import socketserver, socket, threading
 
 class ErrorHandlerServer(socketserver.TCPServer):
@@ -416,6 +455,7 @@ c.close()
 server.server_close()
 t.join()
 print(server.error_caught)
-"#);
+"#,
+    );
     assert_eq!(out, vec!["True"]);
 }

@@ -71,7 +71,11 @@ crate::runtime_case!(str_center, "print('ab'.center(6, '-'))\n", "--ab--");
 // `left = marg/2 + (marg & width & 1)` differs from "round the left half up".
 // Margin 5, width 8: the extra character goes RIGHT. Every other center test
 // here has an even margin, where both rules agree.
-crate::runtime_case!(str_center_odd_margin_even_width, "print('abc'.center(8, '-'))\n", "--abc---");
+crate::runtime_case!(
+    str_center_odd_margin_even_width,
+    "print('abc'.center(8, '-'))\n",
+    "--abc---"
+);
 crate::runtime_case!(str_ljust, "print('ab'.ljust(5, '.'))\n", "ab...");
 crate::runtime_case!(str_rjust, "print('ab'.rjust(5, '.'))\n", "...ab");
 crate::runtime_case!(str_zfill, "print('42'.zfill(5))\n", "00042");

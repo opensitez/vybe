@@ -57,7 +57,10 @@ p2 = p1._replace(y=99)
 print(p1)
 print(p2)
 "#;
-    assert_eq!(run_python(script), vec!["Point(x=1, y=2)", "Point(x=1, y=99)"]);
+    assert_eq!(
+        run_python(script),
+        vec!["Point(x=1, y=2)", "Point(x=1, y=99)"]
+    );
 }
 
 #[test]
@@ -70,7 +73,10 @@ print(c.host, c.port, c.debug)
 c2 = Config('example.com')
 print(c2.host, c2.port)
 "#;
-    assert_eq!(run_python(script), vec!["localhost 8080 False", "example.com 8080"]);
+    assert_eq!(
+        run_python(script),
+        vec!["localhost 8080 False", "example.com 8080"]
+    );
 }
 
 #[test]
