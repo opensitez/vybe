@@ -43,7 +43,8 @@
 //! conformant; inventing an answer is not.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
@@ -76,7 +77,8 @@ pub enum HashAlgorithm {
     Shake256,
     Blake2b512,
     Blake2s256,
-    Ripemd160 }
+    Ripemd160,
+}
 
 impl HashAlgorithm {
     /// Digest of `data`.
@@ -116,7 +118,8 @@ impl HashAlgorithm {
             Self::Shake256 => xof!(sha3::Shake256, 32),
             Self::Blake2b512 => fixed!(blake2::Blake2b512),
             Self::Blake2s256 => fixed!(blake2::Blake2s256),
-            Self::Ripemd160 => fixed!(ripemd::Ripemd160) }
+            Self::Ripemd160 => fixed!(ripemd::Ripemd160),
+        }
     }
 
     /// Digest length in bytes (the default output length for the XOFs).
@@ -132,7 +135,8 @@ impl HashAlgorithm {
             | Self::Blake2s256 => 32,
             Self::Sha384 | Self::Sha3_384 => 48,
             Self::Sha512 | Self::Sha3_512 | Self::Blake2b512 => 64,
-            Self::Shake128 => 16 }
+            Self::Shake128 => 16,
+        }
     }
 
     /// HMAC block size `B`. `None` for the XOFs, which have no fixed input
@@ -156,7 +160,8 @@ impl HashAlgorithm {
             Self::Sha3_256 => 136,
             Self::Sha3_384 => 104,
             Self::Sha3_512 => 72,
-            Self::Shake128 | Self::Shake256 => return None })
+            Self::Shake128 | Self::Shake256 => return None,
+        })
     }
 
     /// HMAC (RFC 2104). `None` when the algorithm has no HMAC block size.
@@ -230,24 +235,38 @@ const KIND_SYMMETRIC_TAG: &str = "symmetric-tag";
 struct SymmetricState {
     algorithm: String,
     key: Option<Vec<u8>>,
-    absorbed: Vec<u8> }
+    absorbed: Vec<u8>,
+}
 
 #[derive(Default)]
 struct Registry {
-    next_id: u64,
     array_outputs: HashMap<u64, Vec<u8>>,
     keys: HashMap<u64, (String, Vec<u8>)>,
     states: HashMap<u64, SymmetricState>,
-    tags: HashMap<u64, Vec<u8>> }
-
-fn registry() -> &'static Mutex<Registry> {
-    static REG: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REG.get_or_init(|| Mutex::new(Registry::default()))
+    tags: HashMap<u64, Vec<u8>>,
 }
 
-fn fresh_id(reg: &mut Registry) -> u64 {
-    reg.next_id += 1;
-    reg.next_id
+/// Handle ids, OUTSIDE the registry so clearing tenant data cannot rewind them
+/// — a reissued handle would let a stale reference address another tenant's
+/// key.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Every key, symmetric state, tag and output buffer this program created.
+///
+/// The sharpest resource in the set — `keys` holds raw key material and `tags`
+/// holds authentication tags — and the reason it is VM-owned
+/// ([`vybe_runtime::resources`]) rather than a process-global static: the VM
+/// drops it on `reset_to` whether or not anyone remembered to ask. While it was
+/// a static, the next tenant of a reused VM could address the previous
+/// tenant's key by handle.
+fn registry() -> &'static Mutex<Registry> {
+    vybe_runtime::resources::get::<Registry>()
+}
+
+/// Takes no registry: the counter is not in it, and a `fresh_id()`
+/// would read as though it were.
+fn fresh_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Build a resource handle Object (`__wasi_kind` + `__wasi_id`).
@@ -274,7 +293,8 @@ fn handle_id(v: &Value, kind: &str) -> Option<u64> {
     match obj.properties.get("__wasi_id") {
         Some(Value::F64(id)) => Some(*id as u64),
         Some(Value::I32(id)) => Some(*id as u64),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// A `crypto_errno` return, in the `__wasi_error` carrier. Names are the
@@ -305,7 +325,8 @@ fn bytes_of(v: &Value) -> Vec<u8> {
                     .map(|e| match e {
                         Value::I32(n) => *n as u8,
                         Value::F64(f) => *f as u8,
-                        _ => 0 })
+                        _ => 0,
+                    })
                     .collect(),
                 ObjectKind::TypedArray(ta) => {
                     let buf = ta.buffer.lock().unwrap();
@@ -313,9 +334,11 @@ fn bytes_of(v: &Value) -> Vec<u8> {
                     let end = (start + ta.length).min(buf.len());
                     buf[start..end].to_vec()
                 }
-                _ => Vec::new() }
+                _ => Vec::new(),
+            }
         }
-        _ => Vec::new() }
+        _ => Vec::new(),
+    }
 }
 
 fn bytes_to_value(bytes: &[u8]) -> Value {
@@ -326,14 +349,16 @@ fn bytes_to_value(bytes: &[u8]) -> Value {
 fn str_of(v: Option<&Value>) -> String {
     match v {
         Some(Value::String(s)) => s.to_string(),
-        _ => String::new() }
+        _ => String::new(),
+    }
 }
 
 fn usize_of(v: Option<&Value>) -> Option<usize> {
     match v {
         Some(Value::F64(n)) => Some(*n as usize),
         Some(Value::I32(n)) => Some(*n as usize),
-        _ => None }
+        _ => None,
+    }
 }
 
 // ── Proposal algorithm names ─────────────────────────────────────────────
@@ -345,7 +370,8 @@ fn hash_named(algorithm: &str) -> Option<HashAlgorithm> {
         "SHA-256" => HashAlgorithm::Sha256,
         "SHA-512" => HashAlgorithm::Sha512,
         "SHA-512/256" => HashAlgorithm::Sha512_256,
-        _ => return None })
+        _ => return None,
+    })
 }
 
 /// The hash underlying a `HMAC/<hash>` algorithm name.
@@ -386,7 +412,8 @@ fn register_common(vm: &mut VM) {
             };
             match registry().lock().unwrap().array_outputs.get(&id) {
                 Some(bytes) => Value::F64(bytes.len() as f64),
-                None => err("closed") }
+                None => err("closed"),
+            }
         }),
     );
 
@@ -405,7 +432,9 @@ fn register_common(vm: &mut VM) {
             let Some(bytes) = reg.array_outputs.get_mut(&id) else {
                 return err("closed");
             };
-            let take = usize_of(args.get(1)).unwrap_or(bytes.len()).min(bytes.len());
+            let take = usize_of(args.get(1))
+                .unwrap_or(bytes.len())
+                .min(bytes.len());
             let out: Vec<u8> = bytes.drain(..take).collect();
             bytes_to_value(&out)
         }),
@@ -466,7 +495,7 @@ fn register_symmetric(vm: &mut VM) {
                 return err("rng-error");
             };
             let mut reg = registry().lock().unwrap();
-            let id = fresh_id(&mut reg);
+            let id = fresh_id();
             reg.keys.insert(id, (algorithm, raw));
             handle(KIND_SYMMETRIC_KEY, id)
         }),
@@ -483,7 +512,7 @@ fn register_symmetric(vm: &mut VM) {
             }
             let raw = args.get(1).map(bytes_of).unwrap_or_default();
             let mut reg = registry().lock().unwrap();
-            let id = fresh_id(&mut reg);
+            let id = fresh_id();
             reg.keys.insert(id, (algorithm, raw));
             handle(KIND_SYMMETRIC_KEY, id)
         }),
@@ -501,7 +530,7 @@ fn register_symmetric(vm: &mut VM) {
             let Some((_, raw)) = reg.keys.get(&key_id).cloned() else {
                 return err("closed");
             };
-            let id = fresh_id(&mut reg);
+            let id = fresh_id();
             reg.array_outputs.insert(id, raw);
             handle(KIND_ARRAY_OUTPUT, id)
         }),
@@ -536,19 +565,22 @@ fn register_symmetric(vm: &mut VM) {
                         return err("invalid-key");
                     }
                     Some((_, raw)) => Some(raw.clone()),
-                    None => return err("closed") },
-                None => None };
+                    None => return err("closed"),
+                },
+                None => None,
+            };
             // MACs cannot run keyless.
             if mac_named(&algorithm).is_some() && key.is_none() {
                 return err("key-required");
             }
-            let id = fresh_id(&mut reg);
+            let id = fresh_id();
             reg.states.insert(
                 id,
                 SymmetricState {
                     algorithm,
                     key,
-                    absorbed: Vec::new() },
+                    absorbed: Vec::new(),
+                },
             );
             handle(KIND_SYMMETRIC_STATE, id)
         }),
@@ -559,7 +591,10 @@ fn register_symmetric(vm: &mut VM) {
         SYMMETRIC,
         "symmetric-state-absorb",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = args.first().and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE)) else {
+            let Some(id) = args
+                .first()
+                .and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE))
+            else {
                 return err("invalid-handle");
             };
             let data = args.get(1).map(bytes_of).unwrap_or_default();
@@ -569,7 +604,8 @@ fn register_symmetric(vm: &mut VM) {
                     state.absorbed.extend_from_slice(&data);
                     Value::Null
                 }
-                None => err("closed") }
+                None => err("closed"),
+            }
         }),
     );
 
@@ -582,7 +618,10 @@ fn register_symmetric(vm: &mut VM) {
         SYMMETRIC,
         "symmetric-state-squeeze",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = args.first().and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE)) else {
+            let Some(id) = args
+                .first()
+                .and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE))
+            else {
                 return err("invalid-handle");
             };
             let reg = registry().lock().unwrap();
@@ -609,7 +648,10 @@ fn register_symmetric(vm: &mut VM) {
         SYMMETRIC,
         "symmetric-state-squeeze-tag",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = args.first().and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE)) else {
+            let Some(id) = args
+                .first()
+                .and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE))
+            else {
                 return err("invalid-handle");
             };
             let mut reg = registry().lock().unwrap();
@@ -622,7 +664,7 @@ fn register_symmetric(vm: &mut VM) {
             let Some(tag) = finalize(&state) else {
                 return err("unsupported-algorithm");
             };
-            let tag_id = fresh_id(&mut reg);
+            let tag_id = fresh_id();
             reg.tags.insert(tag_id, tag);
             handle(KIND_SYMMETRIC_TAG, tag_id)
         }),
@@ -633,7 +675,10 @@ fn register_symmetric(vm: &mut VM) {
         SYMMETRIC,
         "symmetric-state-max-tag-len",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = args.first().and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE)) else {
+            let Some(id) = args
+                .first()
+                .and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE))
+            else {
                 return err("invalid-handle");
             };
             let reg = registry().lock().unwrap();
@@ -642,7 +687,8 @@ fn register_symmetric(vm: &mut VM) {
             };
             match mac_named(&state.algorithm) {
                 Some(hash) => Value::F64(hash.digest_len() as f64),
-                None => err("invalid-operation") }
+                None => err("invalid-operation"),
+            }
         }),
     );
 
@@ -651,14 +697,17 @@ fn register_symmetric(vm: &mut VM) {
         SYMMETRIC,
         "symmetric-state-clone",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = args.first().and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE)) else {
+            let Some(id) = args
+                .first()
+                .and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE))
+            else {
                 return err("invalid-handle");
             };
             let mut reg = registry().lock().unwrap();
             let Some(state) = reg.states.get(&id).cloned() else {
                 return err("closed");
             };
-            let new_id = fresh_id(&mut reg);
+            let new_id = fresh_id();
             reg.states.insert(new_id, state);
             handle(KIND_SYMMETRIC_STATE, new_id)
         }),
@@ -668,7 +717,10 @@ fn register_symmetric(vm: &mut VM) {
         SYMMETRIC,
         "symmetric-state-close",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(id) = args.first().and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE)) else {
+            let Some(id) = args
+                .first()
+                .and_then(|v| handle_id(v, KIND_SYMMETRIC_STATE))
+            else {
                 return err("invalid-handle");
             };
             registry().lock().unwrap().states.remove(&id);
@@ -686,7 +738,8 @@ fn register_symmetric(vm: &mut VM) {
             };
             match registry().lock().unwrap().tags.get(&id) {
                 Some(tag) => Value::F64(tag.len() as f64),
-                None => err("closed") }
+                None => err("closed"),
+            }
         }),
     );
 

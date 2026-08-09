@@ -4,9 +4,9 @@
 //! (`wasi:http@0.3.0-rc-2025-09-16`). Resource funcs use the Component Model
 //! `[method]<resource>.<name>` / `[static]<resource>.<name>` naming.
 
+use vybe_compiler::primitives::platforms::register_platforms;
 use vybe_runtime::VM;
 use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 fn registered() -> VM {
     let mut vm = VM::new();
@@ -29,61 +29,73 @@ fn assert_all(module: &str, names: &[&str]) {
 
 #[test]
 fn wasi_http_0_3_fields_surface_is_registered() {
-    assert_all("wasi:http/types", &[
-        "[constructor]fields",
-        "[static]fields.from-list",
-        "[method]fields.get",
-        "[method]fields.has",
-        "[method]fields.set",
-        "[method]fields.delete",
-        "[method]fields.get-and-delete",
-        "[method]fields.append",
-        "[method]fields.copy-all",
-        "[method]fields.clone",
-    ]);
+    assert_all(
+        "wasi:http/types",
+        &[
+            "[constructor]fields",
+            "[static]fields.from-list",
+            "[method]fields.get",
+            "[method]fields.has",
+            "[method]fields.set",
+            "[method]fields.delete",
+            "[method]fields.get-and-delete",
+            "[method]fields.append",
+            "[method]fields.copy-all",
+            "[method]fields.clone",
+        ],
+    );
 }
 
 #[test]
 fn wasi_http_0_3_request_surface_is_registered() {
-    assert_all("wasi:http/types", &[
-        "[static]request.new",
-        "[static]request.consume-body",
-        "[method]request.get-method",
-        "[method]request.set-method",
-        "[method]request.get-path-with-query",
-        "[method]request.set-path-with-query",
-        "[method]request.get-scheme",
-        "[method]request.set-scheme",
-        "[method]request.get-authority",
-        "[method]request.set-authority",
-        "[method]request.get-options",
-        "[method]request.get-headers",
-    ]);
+    assert_all(
+        "wasi:http/types",
+        &[
+            "[static]request.new",
+            "[static]request.consume-body",
+            "[method]request.get-method",
+            "[method]request.set-method",
+            "[method]request.get-path-with-query",
+            "[method]request.set-path-with-query",
+            "[method]request.get-scheme",
+            "[method]request.set-scheme",
+            "[method]request.get-authority",
+            "[method]request.set-authority",
+            "[method]request.get-options",
+            "[method]request.get-headers",
+        ],
+    );
 }
 
 #[test]
 fn wasi_http_0_3_response_surface_is_registered() {
-    assert_all("wasi:http/types", &[
-        "[static]response.new",
-        "[static]response.consume-body",
-        "[method]response.get-status-code",
-        "[method]response.set-status-code",
-        "[method]response.get-headers",
-    ]);
+    assert_all(
+        "wasi:http/types",
+        &[
+            "[static]response.new",
+            "[static]response.consume-body",
+            "[method]response.get-status-code",
+            "[method]response.set-status-code",
+            "[method]response.get-headers",
+        ],
+    );
 }
 
 #[test]
 fn wasi_http_0_3_request_options_surface_is_registered() {
-    assert_all("wasi:http/types", &[
-        "[constructor]request-options",
-        "[method]request-options.get-connect-timeout",
-        "[method]request-options.set-connect-timeout",
-        "[method]request-options.get-first-byte-timeout",
-        "[method]request-options.set-first-byte-timeout",
-        "[method]request-options.get-between-bytes-timeout",
-        "[method]request-options.set-between-bytes-timeout",
-        "[method]request-options.clone",
-    ]);
+    assert_all(
+        "wasi:http/types",
+        &[
+            "[constructor]request-options",
+            "[method]request-options.get-connect-timeout",
+            "[method]request-options.set-connect-timeout",
+            "[method]request-options.get-first-byte-timeout",
+            "[method]request-options.set-first-byte-timeout",
+            "[method]request-options.get-between-bytes-timeout",
+            "[method]request-options.set-between-bytes-timeout",
+            "[method]request-options.clone",
+        ],
+    );
 }
 
 #[test]

@@ -124,7 +124,8 @@ fn insecure_bytes_value(n: usize) -> Value {
 fn secure_bytes_value(n: usize) -> Value {
     match secure_bytes(n) {
         Some(bytes) => bytes_to_list(&bytes),
-        None => bytes_to_list(&[]) }
+        None => bytes_to_list(&[]),
+    }
 }
 
 pub fn register(vm: &mut VM) {

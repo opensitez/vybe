@@ -3,10 +3,10 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -232,7 +232,8 @@ fn iana_id_is_a_zone_name_or_nothing() {
     match invoke("wasi:clocks/timezone", "iana-id", vec![]) {
         Value::Null => {}
         Value::String(id) => assert!(!id.is_empty(), "an empty id must be reported as none"),
-        other => panic!("iana-id must be option<string>, got {other:?}") }
+        other => panic!("iana-id must be option<string>, got {other:?}"),
+    }
 }
 
 /// `system-clock` is the current name for what used to be `wall-clock`; both

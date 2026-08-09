@@ -165,7 +165,9 @@ pub fn register(vm: &mut VM) {
             rec.properties.insert(
                 "name".into(),
                 Value::String(Arc::from(
-                    configured_zone_id().unwrap_or_else(|| "UTC".to_string()).as_str(),
+                    configured_zone_id()
+                        .unwrap_or_else(|| "UTC".to_string())
+                        .as_str(),
                 )),
             );
             rec.properties.insert(
@@ -182,9 +184,12 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "wasi:clocks/timezone",
         "iana-id",
-        Box::new(|_ctx: &mut HostContext, _args: &[Value]| match configured_zone_id() {
-            Some(id) => Value::String(Arc::from(id.as_str())),
-            None => Value::Null }),
+        Box::new(
+            |_ctx: &mut HostContext, _args: &[Value]| match configured_zone_id() {
+                Some(id) => Value::String(Arc::from(id.as_str())),
+                None => Value::Null,
+            },
+        ),
     );
 
     // `utc-offset: func(when: instant) -> option<s64>`.
@@ -201,7 +206,8 @@ pub fn register(vm: &mut VM) {
             let seconds = instant_seconds(args.first());
             match local_offset_seconds(seconds) {
                 Some(offset) => Value::F64(offset as f64 * 1_000_000_000.0),
-                None => Value::Null }
+                None => Value::Null,
+            }
         }),
     );
 
@@ -223,9 +229,14 @@ pub fn register(vm: &mut VM) {
                 Some(offset) => {
                     let sign = if offset < 0 { '-' } else { '+' };
                     let magnitude = offset.abs();
-                    format!("{sign}{:02}:{:02}", magnitude / 3600, (magnitude % 3600) / 60)
+                    format!(
+                        "{sign}{:02}:{:02}",
+                        magnitude / 3600,
+                        (magnitude % 3600) / 60
+                    )
                 }
-                None => "no timezone available".to_string() };
+                None => "no timezone available".to_string(),
+            };
             Value::String(Arc::from(text.as_str()))
         }),
     );
@@ -335,37 +346,37 @@ fn tzif_type_at(seconds: i64) -> Option<(i64, bool)> {
 /// depend on which test ran first.
 pub fn tzif_type_at_bytes(bytes: &[u8], seconds: i64) -> Option<(i64, bool)> {
     {
-    if bytes.len() < 44 || &bytes[..4] != b"TZif" {
-        return None;
-    }
-    let version = bytes[4];
-
-    let first = parse_tzif_block(bytes, 0, 4)?;
-    let block = if version >= b'2' {
-        parse_tzif_block(bytes, first.end, 8).unwrap_or(first)
-    } else {
-        first
-    };
-
-    // Before the first transition, RFC 8536 §3.2 says use the first type that
-    // is not daylight saving, falling back to the first type of all.
-    let mut chosen = block
-        .types
-        .iter()
-        .find(|(_, is_dst)| !*is_dst)
-        .or_else(|| block.types.first())
-        .copied()?;
-    for (index, transition) in block.transitions.iter().enumerate() {
-        if *transition > seconds {
-            break;
+        if bytes.len() < 44 || &bytes[..4] != b"TZif" {
+            return None;
         }
-        if let Some(kind) = block.transition_types.get(index) {
-            if let Some(entry) = block.types.get(*kind as usize) {
-                chosen = *entry;
+        let version = bytes[4];
+
+        let first = parse_tzif_block(bytes, 0, 4)?;
+        let block = if version >= b'2' {
+            parse_tzif_block(bytes, first.end, 8).unwrap_or(first)
+        } else {
+            first
+        };
+
+        // Before the first transition, RFC 8536 §3.2 says use the first type that
+        // is not daylight saving, falling back to the first type of all.
+        let mut chosen = block
+            .types
+            .iter()
+            .find(|(_, is_dst)| !*is_dst)
+            .or_else(|| block.types.first())
+            .copied()?;
+        for (index, transition) in block.transitions.iter().enumerate() {
+            if *transition > seconds {
+                break;
+            }
+            if let Some(kind) = block.transition_types.get(index) {
+                if let Some(entry) = block.types.get(*kind as usize) {
+                    chosen = *entry;
+                }
             }
         }
-    }
-    Some(chosen)
+        Some(chosen)
     }
 }
 
@@ -373,7 +384,8 @@ struct TzifBlock {
     transitions: Vec<i64>,
     transition_types: Vec<u8>,
     types: Vec<(i64, bool)>,
-    end: usize }
+    end: usize,
+}
 
 /// Parse one TZif header + data block starting at `start`, where each
 /// transition time occupies `time_size` bytes (4 for v1, 8 for v2+).
@@ -384,12 +396,7 @@ fn parse_tzif_block(bytes: &[u8], start: usize, time_size: usize) -> Option<Tzif
     }
     let count = |index: usize| -> usize {
         let at = 20 + index * 4;
-        u32::from_be_bytes([
-            header[at],
-            header[at + 1],
-            header[at + 2],
-            header[at + 3],
-        ]) as usize
+        u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]]) as usize
     };
     let (isutcnt, isstdcnt, leapcnt, timecnt, typecnt, charcnt) =
         (count(0), count(1), count(2), count(3), count(4), count(5));
@@ -400,7 +407,8 @@ fn parse_tzif_block(bytes: &[u8], start: usize, time_size: usize) -> Option<Tzif
         let raw = bytes.get(at..at + time_size)?;
         transitions.push(match time_size {
             8 => i64::from_be_bytes(raw.try_into().ok()?),
-            _ => i32::from_be_bytes(raw.try_into().ok()?) as i64 });
+            _ => i32::from_be_bytes(raw.try_into().ok()?) as i64,
+        });
         at += time_size;
     }
 
@@ -422,5 +430,6 @@ fn parse_tzif_block(bytes: &[u8], start: usize, time_size: usize) -> Option<Tzif
         transitions,
         transition_types,
         types,
-        end: at })
+        end: at,
+    })
 }

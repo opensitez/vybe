@@ -62,16 +62,17 @@ fn is_error(value: &Value) -> bool {
     match value {
         Value::Object(object) => {
             let object = object.lock().unwrap();
-            object.properties.contains_key("__wasi_error")
-                || object.properties.contains_key("code")
+            object.properties.contains_key("__wasi_error") || object.properties.contains_key("code")
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn str_of(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => Some(s.to_string()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn sample_request() -> u32 {
@@ -137,16 +138,14 @@ fn incoming_request_headers_resource_is_readable() {
     let handle = wasi_http::incoming_request_value(&vm, id).expect("resource value");
 
     let headers = call(|| vec![handle.clone()], "[method]incoming-request.headers");
-    assert!(!is_error(&headers), "headers returned an error: {headers:?}");
+    assert!(
+        !is_error(&headers),
+        "headers returned an error: {headers:?}"
+    );
 
     // The returned resource must work with the ordinary fields accessors.
     let got = call(
-        || {
-            vec![
-                headers.clone(),
-                Value::String(Arc::from("content-type")),
-            ]
-        },
+        || vec![headers.clone(), Value::String(Arc::from("content-type"))],
         "[method]fields.get",
     );
     assert!(!is_error(&got), "fields.get on request headers: {got:?}");
@@ -224,17 +223,17 @@ fn outgoing_body_finish_succeeds_once_then_errors() {
     let response = call(|| vec![Value::F64(200.0)], "[constructor]outgoing-response");
     assert!(!is_error(&response), "constructor failed: {response:?}");
 
-    let body = call(
-        || vec![response.clone()],
-        "[method]outgoing-response.body",
-    );
+    let body = call(|| vec![response.clone()], "[method]outgoing-response.body");
     assert!(!is_error(&body), "outgoing-response.body failed: {body:?}");
 
     let first = call(|| vec![body.clone()], "[static]outgoing-body.finish");
     assert!(!is_error(&first), "first finish failed: {first:?}");
 
     let second = call(|| vec![body.clone()], "[static]outgoing-body.finish");
-    assert!(is_error(&second), "second finish must error, got {second:?}");
+    assert!(
+        is_error(&second),
+        "second finish must error, got {second:?}"
+    );
 }
 
 #[test]
@@ -246,9 +245,7 @@ fn no_stub_registrations_remain_in_the_http_surface() {
         !source.contains("Incoming request stubs"),
         "the incoming-request stub block is back"
     );
-    let stub_bodies = source
-        .matches("_args: &[Value]| Value::Null)")
-        .count();
+    let stub_bodies = source.matches("_args: &[Value]| Value::Null)").count();
     assert_eq!(
         stub_bodies, 0,
         "wasi:http has {stub_bodies} stub registrations returning Null"

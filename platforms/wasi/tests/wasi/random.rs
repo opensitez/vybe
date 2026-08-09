@@ -1,7 +1,7 @@
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<wasi-random-test>");

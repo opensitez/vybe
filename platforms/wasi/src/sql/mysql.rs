@@ -6,7 +6,8 @@ use vybe_runtime::value::Object;
 pub(super) struct MySqlDriver {
     conn: Mutex<mysql::Conn>,
     #[allow(dead_code)]
-    url: String }
+    url: String,
+}
 
 impl MySqlDriver {
     pub(super) fn open(url: &str) -> Result<Self, String> {
@@ -20,7 +21,8 @@ impl MySqlDriver {
         let conn = mysql::Conn::new(opts).map_err(|e| e.to_string())?;
         Ok(Self {
             conn: Mutex::new(conn),
-            url })
+            url,
+        })
     }
 }
 
@@ -60,7 +62,8 @@ fn row_to_obj(row: &mysql::Row) -> Value {
                     format!("{}{:02}:{:02}:{:02}", sign, days * 24 + h as u32, mi, s).as_str(),
                 ))
             }
-            _ => Value::Null };
+            _ => Value::Null,
+        };
         obj.properties.insert(name.clone(), val.clone());
         obj.properties.insert(i.to_string(), val);
     }

@@ -51,9 +51,9 @@ pub fn register(vm: &mut VM) {
         "exit-with-code",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let code = match args.first() {
-                Some(Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) | Value::Bool(_)) => {
-                    args[0].as_i32()
-                }
+                Some(
+                    Value::I32(_) | Value::I64(_) | Value::F32(_) | Value::F64(_) | Value::Bool(_),
+                ) => args[0].as_i32(),
                 // Python's `sys.exit("message")` prints the object to stderr and
                 // exits 1; a bare `sys.exit()` / `sys.exit(None)` exits 0.
                 Some(Value::Null | Value::Undefined) | None => 0,
@@ -159,7 +159,12 @@ pub fn register(vm: &mut VM) {
     // (`proposals/cli/wit/terminal.wit`). The resources carry no methods yet;
     // their presence IS the answer to "is this stream a terminal".
     for (module, name, kind, fd) in [
-        ("wasi:cli/terminal-stdin", "get-terminal-stdin", "terminal-input", 0),
+        (
+            "wasi:cli/terminal-stdin",
+            "get-terminal-stdin",
+            "terminal-input",
+            0,
+        ),
         (
             "wasi:cli/terminal-stdout",
             "get-terminal-stdout",

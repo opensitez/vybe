@@ -14,6 +14,15 @@ impl vybe_runtime::Plugin for Plugin {
         "wasi"
     }
 
+    /// Every resource table this platform owns on the running program's
+    /// behalf. Runs regardless of which capabilities the CURRENT policy grants:
+    /// the state belongs to whichever program created it, under whatever
+    /// policy was in force then, and a narrower policy now is no reason to
+    /// leave it behind.
+    fn reset(&self) {
+        crate::reset_host_globals();
+    }
+
     fn init(&self, fw: &mut vybe_runtime::Framework<'_>) {
         use vybe_runtime::capabilities::Capability;
 

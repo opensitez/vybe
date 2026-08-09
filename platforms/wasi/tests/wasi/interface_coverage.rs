@@ -25,7 +25,10 @@ use vybe_runtime::capabilities::Capabilities;
 
 /// `proposals/random/wit/{random,insecure,insecure-seed}.wit`
 const RANDOM: &[(&str, &[&str])] = &[
-    ("wasi:random/random", &["get-random-bytes", "get-random-u64"]),
+    (
+        "wasi:random/random",
+        &["get-random-bytes", "get-random-u64"],
+    ),
     (
         "wasi:random/insecure",
         &["get-insecure-random-bytes", "get-insecure-random-u64"],

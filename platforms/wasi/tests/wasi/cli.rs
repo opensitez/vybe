@@ -1,7 +1,7 @@
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(module: &str, name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<wasi-cli-test>");
@@ -146,7 +146,10 @@ fn get_environment_takes_no_key_and_always_returns_the_whole_list() {
 #[test]
 fn installed_environment_is_reported_and_shadows_the_process() {
     let key = "VYBE_TEST_INSTANCE_ENV";
-    assert!(std::env::var(key).is_err(), "test key must not be inherited");
+    assert!(
+        std::env::var(key).is_err(),
+        "test key must not be inherited"
+    );
 
     let before = invoke("wasi:cli/environment", "get-environment", vec![]);
     assert!(!env_contains(&before, key, "installed"));
@@ -391,7 +394,11 @@ fn proposal_cli_stderr_write_via_stream_import_resolves() {
 #[test]
 fn terminal_getters_answer_a_handle_or_nothing() {
     for (module, name, kind) in [
-        ("wasi:cli/terminal-stdin", "get-terminal-stdin", "terminal-input"),
+        (
+            "wasi:cli/terminal-stdin",
+            "get-terminal-stdin",
+            "terminal-input",
+        ),
         (
             "wasi:cli/terminal-stdout",
             "get-terminal-stdout",

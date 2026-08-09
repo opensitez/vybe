@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use vybe_runtime::{Chunk, Op, VM, Value};
-use vybe_runtime::capabilities::Capabilities;
 use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
+use vybe_runtime::{Chunk, Op, VM, Value};
 
 fn call_import(module: &str, name: &str, args: Vec<Value>) -> Value {
     let mut chunk = Chunk::new("<wasi-crypto-vectors-test>");

@@ -45,7 +45,8 @@ fn u64_arg(args: &[Value], idx: usize) -> u64 {
         Some(Value::F64(n)) => *n as u64,
         Some(Value::I32(n)) => *n as u64,
         Some(Value::I64(n)) => *n as u64,
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 fn stream_fd(v: &Value) -> Option<i32> {
@@ -73,7 +74,8 @@ fn read_file_stream(id: u32, max: usize) -> Value {
                     let elems: Vec<Value> = buf.into_iter().map(|b| Value::I32(b as i32)).collect();
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(elems)))
                 }
-                Err(e) => fs::err(fs::map_io_error(&e)) }
+                Err(e) => fs::err(fs::map_io_error(&e)),
+            }
         }
         fs::InputStreamKind::Buffer { data, position } => {
             let remaining = data.len().saturating_sub(*position);
@@ -109,9 +111,11 @@ fn write_file_stream(id: u32, bytes: &[u8], flush: bool) -> Value {
                 .and_then(|mut f| f.write_all(bytes))
             {
                 Ok(_) => Value::F64(bytes.len() as f64),
-                Err(e) => fs::err(fs::map_io_error(&e)) }
+                Err(e) => fs::err(fs::map_io_error(&e)),
+            }
         }
-        None => fs::err("bad-descriptor") }
+        None => fs::err("bad-descriptor"),
+    }
 }
 
 fn flush_file_stream(id: u32) -> Value {
@@ -122,7 +126,8 @@ fn flush_file_stream(id: u32) -> Value {
             Value::Null
         }
         Some(fs::OutputStreamKind::Append(_)) => Value::Null,
-        None => fs::err("bad-descriptor") }
+        None => fs::err("bad-descriptor"),
+    }
 }
 
 fn make_ready_pollable() -> Value {
@@ -137,7 +142,8 @@ fn read_bytes_from_stream(stream: &Value, len: usize, blocking: bool) -> Vec<u8>
     if let Some(id) = fs::resource_id(stream, fs::KIND_INPUT_STREAM) {
         return match read_file_stream(id, len) {
             Value::Object(arr) => skt::bytes_from_value(&Value::Object(arr)),
-            _ => vec![] };
+            _ => vec![],
+        };
     }
     if let Some(obj) = as_obj(stream) {
         if skt::stream_socket_id(&obj).is_some() {
@@ -155,7 +161,8 @@ fn read_bytes_from_stream(stream: &Value, len: usize, blocking: bool) -> Vec<u8>
                     buf.truncate(n);
                     buf
                 }
-                Err(_) => vec![] };
+                Err(_) => vec![],
+            };
         }
     }
     vec![]
@@ -175,12 +182,14 @@ fn write_bytes_to_stream(stream: &Value, bytes: &[u8], flush: bool) -> bool {
         let result = match fd {
             1 => std::io::stdout().write_all(bytes),
             2 => std::io::stderr().write_all(bytes),
-            _ => return false };
+            _ => return false,
+        };
         if flush {
             let _ = match fd {
                 1 => std::io::stdout().flush(),
                 2 => std::io::stderr().flush(),
-                _ => Ok(()) };
+                _ => Ok(()),
+            };
         }
         return result.is_ok();
     }
@@ -277,13 +286,15 @@ fn register_input_stream(vm: &mut VM) {
             if let Some(id) = fs::resource_id(&stream, fs::KIND_INPUT_STREAM) {
                 return match read_file_stream(id, len) {
                     Value::Object(arr) => Value::I64(skt::array_len(&arr) as i64),
-                    other => other };
+                    other => other,
+                };
             }
             if let Some(obj) = as_obj(&stream) {
                 if skt::stream_socket_id(&obj).is_some() {
                     return match skt::read_stream_bytes(&obj, len, false) {
                         Value::Object(arr) => Value::I64(skt::array_len(&arr) as i64),
-                        other => other };
+                        other => other,
+                    };
                 }
             }
             Value::I64(0)
@@ -300,13 +311,15 @@ fn register_input_stream(vm: &mut VM) {
             if let Some(id) = fs::resource_id(&stream, fs::KIND_INPUT_STREAM) {
                 return match read_file_stream(id, len) {
                     Value::Object(arr) => Value::I64(skt::array_len(&arr) as i64),
-                    other => other };
+                    other => other,
+                };
             }
             if let Some(obj) = as_obj(&stream) {
                 if skt::stream_socket_id(&obj).is_some() {
                     return match skt::read_stream_bytes(&obj, len, true) {
                         Value::Object(arr) => Value::I64(skt::array_len(&arr) as i64),
-                        other => other };
+                        other => other,
+                    };
                 }
             }
             Value::I64(0)
@@ -390,10 +403,12 @@ fn register_output_stream(vm: &mut VM) {
                 let r = match fd {
                     1 => std::io::stdout().write_all(&bytes),
                     2 => std::io::stderr().write_all(&bytes),
-                    _ => return fs::err("bad-descriptor") };
+                    _ => return fs::err("bad-descriptor"),
+                };
                 return match r {
                     Ok(_) => Value::Null,
-                    Err(e) => fs::err(fs::map_io_error(&e)) };
+                    Err(e) => fs::err(fs::map_io_error(&e)),
+                };
             }
             fs::err("bad-descriptor")
         }),
@@ -422,10 +437,12 @@ fn register_output_stream(vm: &mut VM) {
                     2 => std::io::stderr()
                         .write_all(&bytes)
                         .and_then(|_| std::io::stderr().flush()),
-                    _ => return fs::err("bad-descriptor") };
+                    _ => return fs::err("bad-descriptor"),
+                };
                 return match r {
                     Ok(_) => Value::Null,
-                    Err(e) => fs::err(fs::map_io_error(&e)) };
+                    Err(e) => fs::err(fs::map_io_error(&e)),
+                };
             }
             fs::err("bad-descriptor")
         }),
@@ -455,7 +472,8 @@ fn register_output_stream(vm: &mut VM) {
                         let _ = std::io::stderr().flush();
                         Value::Null
                     }
-                    _ => fs::err("bad-descriptor") };
+                    _ => fs::err("bad-descriptor"),
+                };
             }
             fs::err("bad-descriptor")
         }),
@@ -485,7 +503,8 @@ fn register_output_stream(vm: &mut VM) {
                         let _ = std::io::stderr().flush();
                         Value::Null
                     }
-                    _ => fs::err("bad-descriptor") };
+                    _ => fs::err("bad-descriptor"),
+                };
             }
             fs::err("bad-descriptor")
         }),
@@ -530,10 +549,12 @@ fn register_output_stream(vm: &mut VM) {
                 let r = match fd {
                     1 => std::io::stdout().write_all(&zeros),
                     2 => std::io::stderr().write_all(&zeros),
-                    _ => return fs::err("bad-descriptor") };
+                    _ => return fs::err("bad-descriptor"),
+                };
                 return match r {
                     Ok(_) => Value::Null,
-                    Err(e) => fs::err(fs::map_io_error(&e)) };
+                    Err(e) => fs::err(fs::map_io_error(&e)),
+                };
             }
             fs::err("bad-descriptor")
         }),
@@ -563,10 +584,12 @@ fn register_output_stream(vm: &mut VM) {
                     2 => std::io::stderr()
                         .write_all(&zeros)
                         .and_then(|_| std::io::stderr().flush()),
-                    _ => return fs::err("bad-descriptor") };
+                    _ => return fs::err("bad-descriptor"),
+                };
                 return match r {
                     Ok(_) => Value::Null,
-                    Err(e) => fs::err(fs::map_io_error(&e)) };
+                    Err(e) => fs::err(fs::map_io_error(&e)),
+                };
             }
             fs::err("bad-descriptor")
         }),

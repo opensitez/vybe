@@ -14,16 +14,16 @@ pub mod crypto;
 pub mod filesystem;
 pub mod http;
 pub mod io;
-pub mod sql;
 pub mod plugin;
+pub mod sql;
 pub use plugin::Plugin;
 
-pub mod sockets;
 pub mod clock;
 pub mod console;
 pub mod env;
-pub mod random;
 pub mod fs;
+pub mod random;
+pub mod sockets;
 
 use vybe_runtime::VM;
 
@@ -37,11 +37,21 @@ pub fn register(vm: &mut VM) {
     io::register(vm);
 }
 
-/// VM hot-reset: clear host-global state that lives OUTSIDE the VM heap — open
-/// SQL connections and OS sockets — so a reused VM starts each run clean. Call
-/// from the reset path alongside `VM::reset_to`. GUI state is reset separately
-/// via `GuiState::reset` since the runner owns that `Arc`. See
-/// `vmhotresetplan.md`.
+/// VM hot-reset: the state this platform still clears BY HAND, because clearing
+/// it is an action and not just a drop — live SQL connections and OS sockets
+/// hold kernel handles that want closing, and `sockets` shares its table with
+/// spawned threads, so it cannot live in the thread-local resource store.
+///
+/// Everything else this platform holds for a running program — descriptors and
+/// directory cursors, in-flight HTTP resources, key material — is VM-owned
+/// storage ([`vybe_runtime::resources`]) and is dropped by `VM::reset_to`
+/// itself. Those three used to be missing here: this function covered two of
+/// five tables, so a reused VM handed the next program the previous one's
+/// descriptors, response bodies and crypto keys. Storage the VM owns cannot be
+/// left out of a list, because there is no list.
+///
+/// Called by the wasi plugin's `reset`, which `VM::reset_to` runs — no embedder
+/// needs to call it.
 pub fn reset_host_globals() {
     sql::reset();
     sockets::reset();

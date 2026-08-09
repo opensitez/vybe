@@ -14,7 +14,8 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use vybe_runtime::typedef::TypeDef;
 use vybe_runtime::value::Object;
@@ -44,11 +45,13 @@ struct HttpTypeIds {
     outgoing_response: usize,
     outgoing_body: usize,
     incoming_request: usize,
-    response_outparam: usize }
+    response_outparam: usize,
+}
 
 #[derive(Debug, Clone)]
 struct HeadersResource {
-    entries: Vec<(String, Vec<u8>)> }
+    entries: Vec<(String, Vec<u8>)>,
+}
 
 #[derive(Debug, Clone)]
 struct OutgoingRequestResource {
@@ -59,25 +62,29 @@ struct OutgoingRequestResource {
     method: String,
     path_with_query: Option<String>,
     scheme: Option<String>,
-    authority: Option<String> }
+    authority: Option<String>,
+}
 
 #[derive(Debug, Clone, Default)]
 struct RequestOptionsResource {
     connect_timeout_ns: Option<u64>,
     first_byte_timeout_ns: Option<u64>,
-    between_bytes_timeout_ns: Option<u64> }
+    between_bytes_timeout_ns: Option<u64>,
+}
 
 #[derive(Debug, Clone)]
 struct IncomingBodyResource {
     body: Vec<u8>,
     #[allow(dead_code)]
-    position: usize }
+    position: usize,
+}
 
 #[derive(Debug, Clone)]
 struct OutgoingResponseResource {
     status: u16,
     headers_id: u32,
-    body_id: Option<u32> }
+    body_id: Option<u32>,
+}
 
 #[derive(Debug, Clone)]
 struct OutgoingBodyResource {
@@ -85,7 +92,8 @@ struct OutgoingBodyResource {
     /// §outgoing-body.finish must be called exactly once.
     finished: bool,
     /// Optional trailers supplied to `finish`.
-    trailers: Vec<(String, Vec<u8>)> }
+    trailers: Vec<(String, Vec<u8>)>,
+}
 
 /// A server-side request. Built by the host from whatever transport it is
 /// serving (hyper, in `vybex --serve`), then handed to guest code as the
@@ -100,7 +108,8 @@ struct IncomingRequestResource {
     body: Vec<u8>,
     /// §incoming-request.consume: "Will only return success at most once, and
     /// subsequent calls will return error."
-    consumed: bool }
+    consumed: bool,
+}
 
 /// The write end of a server response. `response-outparam.set` stores the
 /// guest's `result<outgoing-response, error-code>` here; the host reads it back
@@ -110,20 +119,24 @@ struct ResponseOutparamResource {
     response_id: Option<u32>,
     error: Option<String>,
     informational: Vec<(u16, u32)>,
-    set: bool }
+    set: bool,
+}
 
 #[derive(Debug, Clone)]
 struct IncomingResponseResource {
     status: u16,
     headers_id: u32,
-    body: String }
+    body: String,
+}
 
 #[derive(Debug, Clone)]
 struct FutureIncomingResponseResource {
     response_id: Option<u32>,
     error: Option<String>,
-    consumed: bool }
+    consumed: bool,
+}
 
+#[derive(Default)]
 struct Registry {
     headers: HashMap<u32, HeadersResource>,
     outgoing_requests: HashMap<u32, OutgoingRequestResource>,
@@ -135,34 +148,27 @@ struct Registry {
     outgoing_bodies: HashMap<u32, OutgoingBodyResource>,
     incoming_requests: HashMap<u32, IncomingRequestResource>,
     response_outparams: HashMap<u32, ResponseOutparamResource>,
-    next_id: u32 }
-
-impl Registry {
-    fn new() -> Self {
-        Self {
-            headers: HashMap::new(),
-            outgoing_requests: HashMap::new(),
-            request_options: HashMap::new(),
-            incoming_responses: HashMap::new(),
-            future_incoming_responses: HashMap::new(),
-            incoming_bodies: HashMap::new(),
-            outgoing_responses: HashMap::new(),
-            outgoing_bodies: HashMap::new(),
-            incoming_requests: HashMap::new(),
-            response_outparams: HashMap::new(),
-            next_id: 1 }
-    }
-
-    fn alloc_id(&mut self) -> u32 {
-        let id = self.next_id;
-        self.next_id += 1;
-        id
-    }
 }
 
+/// Resource ids, OUTSIDE the registry so clearing tenant data cannot rewind
+/// them and reissue a handle another tenant still holds.
+static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+
+/// A free function, not a `Registry` method: the counter is not in the
+/// registry, and a `alloc_id()` would read as though it were.
+fn alloc_id() -> u32 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Every HTTP resource this program has open — headers, in-flight requests,
+/// responses and bodies.
+///
+/// All of it is per-program, and VM-owned ([`vybe_runtime::resources`]) so the
+/// VM drops it on `reset_to` without this module taking part. As a static it
+/// let the next program in a reused VM read another tenant's response bodies
+/// and headers through a handle it never created.
 fn registry() -> &'static Mutex<Registry> {
-    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(Registry::new()))
+    vybe_runtime::resources::get::<Registry>()
 }
 
 fn make_resource(kind: &str, id: u32, type_id: usize) -> Value {
@@ -206,7 +212,8 @@ fn string_arg(args: &[Value], idx: usize) -> Option<String> {
     match args.get(idx) {
         Some(Value::String(text)) => Some(text.to_string()),
         Some(Value::Null) | None => None,
-        Some(value) => Some(format!("{}", value)) }
+        Some(value) => Some(format!("{}", value)),
+    }
 }
 
 fn header_value_bytes(value: &str) -> Value {
@@ -243,7 +250,8 @@ fn header_entries_array(entries: &[(String, Vec<u8>)]) -> Value {
 struct HttpResponseData {
     status: u16,
     headers: Vec<(String, Vec<u8>)>,
-    body: String }
+    body: String,
+}
 
 fn map_transport_error(message: &str) -> &'static str {
     let lowercase = message.to_lowercase();
@@ -269,14 +277,16 @@ fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<HttpRespo
 
     let (host_port, path) = match url.find('/') {
         Some(index) => (&url[..index], &url[index..]),
-        None => (url, "/") };
+        None => (url, "/"),
+    };
 
     let (host, port) = match host_port.find(':') {
         Some(index) => (
             &host_port[..index],
             host_port[index + 1..].parse::<u16>().unwrap_or(80),
         ),
-        None => (host_port, 80u16) };
+        None => (host_port, 80u16),
+    };
 
     let mut stream = std::net::TcpStream::connect((host, port))
         .map_err(|error| format!("Connection failed: {}", error))?;
@@ -308,7 +318,8 @@ fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<HttpRespo
             &raw_response[..index],
             raw_response[index + 4..].to_string(),
         ),
-        None => (raw_response.as_str(), String::new()) };
+        None => (raw_response.as_str(), String::new()),
+    };
 
     let mut lines = head.lines();
     let status = lines
@@ -325,7 +336,8 @@ fn http_request(method: &str, url: &str, body: Option<&str>) -> Result<HttpRespo
     Ok(HttpResponseData {
         status,
         headers,
-        body })
+        body,
+    })
 }
 
 fn register_resource_types(vm: &mut VM) -> HttpTypeIds {
@@ -353,7 +365,8 @@ fn register_resource_types(vm: &mut VM) -> HttpTypeIds {
         outgoing_response: resource(vm, "outgoing-response", "HttpOutgoingResponse"),
         outgoing_body: resource(vm, "outgoing-body", "HttpOutgoingBody"),
         incoming_request: resource(vm, "incoming-request", "HttpIncomingRequest"),
-        response_outparam: resource(vm, "response-outparam", "HttpResponseOutparam") }
+        response_outparam: resource(vm, "response-outparam", "HttpResponseOutparam"),
+    }
 }
 
 fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
@@ -362,11 +375,12 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         "[constructor]fields",
         Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
             let mut registry = registry().lock().unwrap();
-            let id = registry.alloc_id();
+            let id = alloc_id();
             registry.headers.insert(
                 id,
                 HeadersResource {
-                    entries: Vec::new() },
+                    entries: Vec::new(),
+                },
             );
             make_resource(KIND_HEADERS, id, type_ids.headers)
         }),
@@ -449,7 +463,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 return err("invalid-argument");
             };
             let mut registry = registry().lock().unwrap();
-            let id = registry.alloc_id();
+            let id = alloc_id();
             registry.outgoing_requests.insert(
                 id,
                 OutgoingRequestResource {
@@ -458,7 +472,8 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                     method: "GET".into(),
                     path_with_query: None,
                     scheme: None,
-                    authority: None },
+                    authority: None,
+                },
             );
             make_resource(KIND_OUTGOING_REQUEST, id, type_ids.outgoing_request)
         }),
@@ -554,13 +569,14 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         "[constructor]request-options",
         Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
             let mut registry = registry().lock().unwrap();
-            let id = registry.alloc_id();
+            let id = alloc_id();
             registry.request_options.insert(
                 id,
                 RequestOptionsResource {
                     connect_timeout_ns: None,
                     first_byte_timeout_ns: None,
-                    between_bytes_timeout_ns: None },
+                    between_bytes_timeout_ns: None,
+                },
             );
             make_resource(KIND_REQUEST_OPTIONS, id, type_ids.request_options)
         }),
@@ -728,7 +744,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 .get(&src_id)
                 .map(|h| h.entries.clone())
                 .unwrap_or_default();
-            let new_id = registry.alloc_id();
+            let new_id = alloc_id();
             registry.headers.insert(new_id, HeadersResource { entries });
             make_resource(KIND_HEADERS, new_id, type_ids.headers)
         }),
@@ -763,7 +779,7 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 }
             }
             let mut registry = registry().lock().unwrap();
-            let id = registry.alloc_id();
+            let id = alloc_id();
             registry.headers.insert(id, HeadersResource { entries });
             make_resource(KIND_HEADERS, id, type_ids.headers)
         }),
@@ -848,10 +864,15 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 return err("invalid-argument");
             };
             let mut registry = registry().lock().unwrap();
-            let body_id = registry.alloc_id();
-            registry
-                .outgoing_bodies
-                .insert(body_id, OutgoingBodyResource { bytes: Vec::new(), finished: false, trailers: Vec::new() });
+            let body_id = alloc_id();
+            registry.outgoing_bodies.insert(
+                body_id,
+                OutgoingBodyResource {
+                    bytes: Vec::new(),
+                    finished: false,
+                    trailers: Vec::new(),
+                },
+            );
             make_resource(KIND_OUTGOING_BODY, body_id, type_ids.outgoing_body)
         }),
     );
@@ -972,12 +993,13 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 return err("invalid-argument");
             };
             let body_bytes = response.body.as_bytes().to_vec();
-            let body_id = registry.alloc_id();
+            let body_id = alloc_id();
             registry.incoming_bodies.insert(
                 body_id,
                 IncomingBodyResource {
                     body: body_bytes,
-                    position: 0 },
+                    position: 0,
+                },
             );
             make_resource(KIND_INCOMING_BODY, body_id, type_ids.incoming_body)
         }),
@@ -1017,8 +1039,10 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         "wasi:http/types",
         "[static]incoming-body.finish",
         Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-            let mut registry = registry().lock().unwrap();
-            let id = registry.alloc_id();
+            // No registry lock: this handle is minted, not stored — the
+            // trailers future has no host-side resource behind it (see
+            // `future-trailers.get`, which always answers "no trailers").
+            let id = alloc_id();
             make_resource(KIND_FUTURE_TRAILERS, id, type_ids.future_trailers)
         }),
     );
@@ -1053,13 +1077,14 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let headers_id = resource_id(&args[0], KIND_HEADERS).unwrap_or(0);
             let mut registry = registry().lock().unwrap();
-            let id = registry.alloc_id();
+            let id = alloc_id();
             registry.outgoing_responses.insert(
                 id,
                 OutgoingResponseResource {
                     status: 200,
                     headers_id,
-                    body_id: None },
+                    body_id: None,
+                },
             );
             make_resource(KIND_OUTGOING_RESPONSE, id, type_ids.outgoing_response)
         }),
@@ -1128,10 +1153,15 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
                 return err("invalid-argument");
             };
             let mut registry = registry().lock().unwrap();
-            let body_id = registry.alloc_id();
-            registry
-                .outgoing_bodies
-                .insert(body_id, OutgoingBodyResource { bytes: Vec::new(), finished: false, trailers: Vec::new() });
+            let body_id = alloc_id();
+            registry.outgoing_bodies.insert(
+                body_id,
+                OutgoingBodyResource {
+                    bytes: Vec::new(),
+                    finished: false,
+                    trailers: Vec::new(),
+                },
+            );
             if let Some(resp) = registry.outgoing_responses.get_mut(&id) {
                 resp.body_id = Some(body_id);
             }
@@ -1173,7 +1203,9 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         // Finishing twice is an error, matching the write-at-most-once rule on
         // the same resource.
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(body_id) = args.first().and_then(|a| resource_id(a, KIND_OUTGOING_BODY))
+            let Some(body_id) = args
+                .first()
+                .and_then(|a| resource_id(a, KIND_OUTGOING_BODY))
             else {
                 return err("invalid-argument");
             };
@@ -1237,7 +1269,8 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match with_incoming_request(args, |r| r.method.clone()) {
                 Some(m) => Value::String(Arc::from(m.as_str())),
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
 
@@ -1250,7 +1283,8 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             match with_incoming_request(args, |r| r.path_with_query.clone()) {
                 Some(Some(p)) => Value::String(Arc::from(p.as_str())),
                 Some(None) => Value::Null,
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
 
@@ -1261,7 +1295,8 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             match with_incoming_request(args, |r| r.scheme.clone()) {
                 Some(Some(v)) => Value::String(Arc::from(v.as_str())),
                 Some(None) => Value::Null,
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
 
@@ -1272,7 +1307,8 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             match with_incoming_request(args, |r| r.authority.clone()) {
                 Some(Some(v)) => Value::String(Arc::from(v.as_str())),
                 Some(None) => Value::Null,
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
 
@@ -1282,7 +1318,8 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             match with_incoming_request(args, |r| r.headers_id) {
                 Some(headers_id) => make_resource(KIND_HEADERS, headers_id, type_ids.headers),
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
 
@@ -1291,7 +1328,9 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         "wasi:http/types",
         "[method]incoming-request.consume",
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
-            let Some(request_id) = args.first().and_then(|a| resource_id(a, KIND_INCOMING_REQUEST))
+            let Some(request_id) = args
+                .first()
+                .and_then(|a| resource_id(a, KIND_INCOMING_REQUEST))
             else {
                 return err("invalid-argument");
             };
@@ -1306,11 +1345,10 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             if let Some(request) = registry.incoming_requests.get_mut(&request_id) {
                 request.consumed = true;
             }
-            let body_id = registry.alloc_id();
-            registry.incoming_bodies.insert(
-                body_id,
-                IncomingBodyResource { body, position: 0 },
-            );
+            let body_id = alloc_id();
+            registry
+                .incoming_bodies
+                .insert(body_id, IncomingBodyResource { body, position: 0 });
             make_resource(KIND_INCOMING_BODY, body_id, type_ids.incoming_body)
         }),
     );
@@ -1324,7 +1362,9 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         "wasi:http/types",
         "[static]response-outparam.set",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(param_id) = args.first().and_then(|a| resource_id(a, KIND_RESPONSE_OUTPARAM))
+            let Some(param_id) = args
+                .first()
+                .and_then(|a| resource_id(a, KIND_RESPONSE_OUTPARAM))
             else {
                 return err("invalid-argument");
             };
@@ -1337,11 +1377,14 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
             }
             // arg1 is `result<outgoing-response, error-code>`: a response
             // resource on success, anything else read as the error code.
-            let response_id = args.get(1).and_then(|a| resource_id(a, KIND_OUTGOING_RESPONSE));
+            let response_id = args
+                .get(1)
+                .and_then(|a| resource_id(a, KIND_OUTGOING_RESPONSE));
             let error = match (&response_id, args.get(1)) {
                 (None, Some(Value::String(code))) => Some(code.to_string()),
                 (None, _) => Some("internal-error".to_string()),
-                _ => None };
+                _ => None,
+            };
             if let Some(param) = registry.response_outparams.get_mut(&param_id) {
                 param.response_id = response_id;
                 param.error = error;
@@ -1356,14 +1399,17 @@ fn register_types(vm: &mut VM, type_ids: HttpTypeIds) {
         "wasi:http/types",
         "[method]response-outparam.send-informational",
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let Some(param_id) = args.first().and_then(|a| resource_id(a, KIND_RESPONSE_OUTPARAM))
+            let Some(param_id) = args
+                .first()
+                .and_then(|a| resource_id(a, KIND_RESPONSE_OUTPARAM))
             else {
                 return err("invalid-argument");
             };
             let status = match args.get(1) {
                 Some(Value::F64(n)) => *n as u16,
                 Some(Value::I32(n)) => *n as u16,
-                _ => return err("invalid-argument") };
+                _ => return err("invalid-argument"),
+            };
             // Only 1xx codes are informational (RFC 9110 §15.2).
             if !(100..200).contains(&status) {
                 return err("invalid-argument");
@@ -1398,11 +1444,11 @@ pub fn push_incoming_request(
     body: Vec<u8>,
 ) -> u32 {
     let mut registry = registry().lock().unwrap();
-    let headers_id = registry.alloc_id();
+    let headers_id = alloc_id();
     registry
         .headers
         .insert(headers_id, HeadersResource { entries: headers });
-    let id = registry.alloc_id();
+    let id = alloc_id();
     registry.incoming_requests.insert(
         id,
         IncomingRequestResource {
@@ -1412,7 +1458,8 @@ pub fn push_incoming_request(
             authority,
             headers_id,
             body,
-            consumed: false },
+            consumed: false,
+        },
     );
     id
 }
@@ -1420,7 +1467,7 @@ pub fn push_incoming_request(
 /// Create a `response-outparam` for a request and return its id.
 pub fn push_response_outparam() -> u32 {
     let mut registry = registry().lock().unwrap();
-    let id = registry.alloc_id();
+    let id = alloc_id();
     registry
         .response_outparams
         .insert(id, ResponseOutparamResource::default());
@@ -1457,16 +1504,12 @@ pub fn take_response_outparam(id: u32) -> Option<Result<ResponseParts, String>> 
 
 /// Build the guest-facing resource values for a served request.
 pub fn incoming_request_value(vm: &VM, request_id: u32) -> Option<Value> {
-    let type_id = vm
-        .type_registry
-        .get_id("HttpIncomingRequest")?;
+    let type_id = vm.type_registry.get_id("HttpIncomingRequest")?;
     Some(make_resource(KIND_INCOMING_REQUEST, request_id, type_id))
 }
 
 pub fn response_outparam_value(vm: &VM, param_id: u32) -> Option<Value> {
-    let type_id = vm
-        .type_registry
-        .get_id("HttpResponseOutparam")?;
+    let type_id = vm.type_registry.get_id("HttpResponseOutparam")?;
     Some(make_resource(KIND_RESPONSE_OUTPARAM, param_id, type_id))
 }
 
@@ -1513,23 +1556,25 @@ fn register_outgoing_handler(vm: &mut VM, type_ids: HttpTypeIds) {
 
             let future_id = {
                 let mut registry = registry().lock().unwrap();
-                let future_id = registry.alloc_id();
+                let future_id = alloc_id();
                 match http_request(&request.method, &url, None) {
                     Ok(response) => {
-                        let headers_id = registry.alloc_id();
+                        let headers_id = alloc_id();
                         registry.headers.insert(
                             headers_id,
                             HeadersResource {
-                                entries: response.headers },
+                                entries: response.headers,
+                            },
                         );
 
-                        let response_id = registry.alloc_id();
+                        let response_id = alloc_id();
                         registry.incoming_responses.insert(
                             response_id,
                             IncomingResponseResource {
                                 status: response.status,
                                 headers_id,
-                                body: response.body },
+                                body: response.body,
+                            },
                         );
 
                         registry.future_incoming_responses.insert(
@@ -1537,7 +1582,8 @@ fn register_outgoing_handler(vm: &mut VM, type_ids: HttpTypeIds) {
                             FutureIncomingResponseResource {
                                 response_id: Some(response_id),
                                 error: None,
-                                consumed: false },
+                                consumed: false,
+                            },
                         );
                     }
                     Err(message) => {
@@ -1546,7 +1592,8 @@ fn register_outgoing_handler(vm: &mut VM, type_ids: HttpTypeIds) {
                             FutureIncomingResponseResource {
                                 response_id: None,
                                 error: Some(map_transport_error(&message).into()),
-                                consumed: false },
+                                consumed: false,
+                            },
                         );
                     }
                 }
@@ -1596,7 +1643,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match with_request(args, |r| r.method.clone()) {
                 Some(method) => Value::String(Arc::from(method.as_str())),
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
     for (name, pick) in [
@@ -1615,7 +1663,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
                 match with_request(args, pick) {
                     Some(Some(value)) => Value::String(Arc::from(value.as_str())),
                     Some(None) => Value::Null,
-                    None => err("invalid-argument") }
+                    None => err("invalid-argument"),
+                }
             }),
         );
     }
@@ -1625,7 +1674,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             match with_request(args, |r| r.headers_id) {
                 Some(headers_id) => make_resource(KIND_HEADERS, headers_id, type_ids.headers),
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
     // `get-options` — request-options are not retained per request (the 0.3
@@ -1642,7 +1692,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
                     make_resource(KIND_REQUEST_OPTIONS, options_id, type_ids.request_options)
                 }
                 Some(None) => Value::Null,
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
 
@@ -1658,7 +1709,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
             let registry = registry().lock().unwrap();
             match registry.headers.get(&headers_id) {
                 Some(headers) => header_entries_array(&headers.entries),
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
     // `get-and-delete(name) -> list<field-value>` — read every value for the
@@ -1717,7 +1769,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
                     Some(options) => pick(options)
                         .map(|ns| Value::F64(ns as f64))
                         .unwrap_or(Value::Null),
-                    None => err("invalid-argument") }
+                    None => err("invalid-argument"),
+                }
             }),
         );
     }
@@ -1732,7 +1785,7 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
             let Some(source) = registry.request_options.get(&id).cloned() else {
                 return err("invalid-argument");
             };
-            let new_id = registry.alloc_id();
+            let new_id = alloc_id();
             registry.request_options.insert(new_id, source);
             drop(registry);
             make_resource(KIND_REQUEST_OPTIONS, new_id, type_ids.request_options)
@@ -1759,7 +1812,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
                     request.method = method.trim().to_ascii_uppercase();
                     Value::Null
                 }
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
     // `option<string>` setters — a null argument clears the field.
@@ -1786,7 +1840,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
                         apply(request, value);
                         Value::Null
                     }
-                    None => err("invalid-argument") }
+                    None => err("invalid-argument"),
+                }
             }),
         );
     }
@@ -1800,13 +1855,15 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
                 let registry = registry().lock().unwrap();
                 return match registry.incoming_responses.get(&id) {
                     Some(response) => Value::I32(response.status as i32),
-                    None => err("invalid-argument") };
+                    None => err("invalid-argument"),
+                };
             }
             if let Some(id) = resource_id(&args[0], KIND_OUTGOING_RESPONSE) {
                 let registry = registry().lock().unwrap();
                 return match registry.outgoing_responses.get(&id) {
                     Some(response) => Value::I32(response.status as i32),
-                    None => err("invalid-argument") };
+                    None => err("invalid-argument"),
+                };
             }
             err("invalid-argument")
         }),
@@ -1828,7 +1885,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
                     response.status = status as u16;
                     Value::Null
                 }
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
     vm.register_host_fn(
@@ -1854,7 +1912,8 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
             };
             match headers_id {
                 Some(headers_id) => make_resource(KIND_HEADERS, headers_id, type_ids.headers),
-                None => err("invalid-argument") }
+                None => err("invalid-argument"),
+            }
         }),
     );
 }
@@ -1878,7 +1937,10 @@ fn register_wasi3_accessors(vm: &mut VM, type_ids: HttpTypeIds) {
 /// Async is executed synchronously host-side: the result is the resolved
 /// `incoming-response` resource, or an `error-code` on transport failure.
 fn register_wasi3_handler(vm: &mut VM, type_ids: HttpTypeIds) {
-    for (module, name) in [("wasi:http/client", "send"), ("wasi:http/handler", "handle")] {
+    for (module, name) in [
+        ("wasi:http/client", "send"),
+        ("wasi:http/handler", "handle"),
+    ] {
         vm.register_host_fn(
             module,
             name,
@@ -1915,19 +1977,21 @@ fn register_wasi3_handler(vm: &mut VM, type_ids: HttpTypeIds) {
                 match http_request(&request.method, &url, None) {
                     Ok(response) => {
                         let mut registry = registry().lock().unwrap();
-                        let headers_id = registry.alloc_id();
+                        let headers_id = alloc_id();
                         registry.headers.insert(
                             headers_id,
                             HeadersResource {
-                                entries: response.headers },
+                                entries: response.headers,
+                            },
                         );
-                        let response_id = registry.alloc_id();
+                        let response_id = alloc_id();
                         registry.incoming_responses.insert(
                             response_id,
                             IncomingResponseResource {
                                 status: response.status,
                                 headers_id,
-                                body: response.body },
+                                body: response.body,
+                            },
                         );
                         drop(registry);
                         make_resource(
@@ -1936,7 +2000,8 @@ fn register_wasi3_handler(vm: &mut VM, type_ids: HttpTypeIds) {
                             type_ids.incoming_response,
                         )
                     }
-                    Err(message) => err(map_transport_error(&message)) }
+                    Err(message) => err(map_transport_error(&message)),
+                }
             }),
         );
     }
@@ -1958,9 +2023,12 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
             let options_id = args
                 .get(3)
                 .and_then(|a| resource_id(a, KIND_REQUEST_OPTIONS))
-                .or_else(|| args.get(1).and_then(|a| resource_id(a, KIND_REQUEST_OPTIONS)));
+                .or_else(|| {
+                    args.get(1)
+                        .and_then(|a| resource_id(a, KIND_REQUEST_OPTIONS))
+                });
             let mut reg = registry().lock().unwrap();
-            let id = reg.alloc_id();
+            let id = alloc_id();
             reg.outgoing_requests.insert(
                 id,
                 OutgoingRequestResource {
@@ -1969,7 +2037,8 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
                     method: "GET".into(),
                     path_with_query: None,
                     scheme: None,
-                    authority: None },
+                    authority: None,
+                },
             );
             make_resource(KIND_OUTGOING_REQUEST, id, type_ids.outgoing_request)
         }),
@@ -2011,13 +2080,14 @@ fn register_wasi3(vm: &mut VM, type_ids: HttpTypeIds) {
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let headers_id = resource_id(&args[0], KIND_HEADERS).unwrap_or(0);
             let mut reg = registry().lock().unwrap();
-            let id = reg.alloc_id();
+            let id = alloc_id();
             reg.outgoing_responses.insert(
                 id,
                 OutgoingResponseResource {
                     status: 200,
                     headers_id,
-                    body_id: None },
+                    body_id: None,
+                },
             );
             make_resource(KIND_OUTGOING_RESPONSE, id, type_ids.outgoing_response)
         }),

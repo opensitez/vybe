@@ -164,7 +164,8 @@ fn bool_prop(obj: &Arc<Mutex<Object>>, key: &str) -> bool {
         Some(Value::I32(value)) => *value != 0,
         Some(Value::String(value)) => !value.is_empty() && value.as_ref() != "false",
         Some(Value::Null) | None => false,
-        Some(_) => true }
+        Some(_) => true,
+    }
 }
 
 fn f64_prop(obj: &Arc<Mutex<Object>>, key: &str) -> f64 {
@@ -436,7 +437,8 @@ fn create_command_from_connection(args: &[Value], type_name: &str) -> Value {
     let conn_id = get_conn_id(args);
     let conn_string = match args.first() {
         Some(Value::Object(obj)) => string_prop(obj, "connectionstring"),
-        _ => String::new() };
+        _ => String::new(),
+    };
     make_command_obj(type_name, conn_id, &conn_string)
 }
 
@@ -457,7 +459,8 @@ fn wasi_id(v: &Value) -> u64 {
                 .map(|v| v.as_f64() as u64)
                 .unwrap_or(0)
         }
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 fn extract_params(args: &[Value], idx: usize) -> Vec<String> {
@@ -540,11 +543,13 @@ pub fn register(vm: &mut VM) {
                         id,
                         ConnEntry {
                             driver,
-                            url: url.clone() },
+                            url: url.clone(),
+                        },
                     );
                     make_conn_obj(id, &url)
                 }
-                Err(e) => make_error_obj(&e) }
+                Err(e) => make_error_obj(&e),
+            }
         }),
     );
 
@@ -581,7 +586,8 @@ pub fn register(vm: &mut VM) {
                     );
                     set_prop(obj, "state", string_value("Open"));
                 }
-                Err(e) => eprintln!("wasi:sql/types connection.open: {}", e) }
+                Err(e) => eprintln!("wasi:sql/types connection.open: {}", e),
+            }
             Value::Null
         }),
     );
@@ -664,7 +670,8 @@ pub fn register(vm: &mut VM) {
             let schema = arg_str(args, 1).to_lowercase();
             let driver = match get_driver(conn_id) {
                 Ok(driver) => driver,
-                Err(_) => return data_table_from_rows("Schema", &[], &[]) };
+                Err(_) => return data_table_from_rows("Schema", &[], &[]),
+            };
             let (table_name, sql, fallback_columns) = match schema.as_str() {
                 "" | "tables" => (
                     "Tables",
@@ -679,7 +686,8 @@ pub fn register(vm: &mut VM) {
                         vec!["column_name".to_string()],
                     )
                 }
-                _ => return data_table_from_rows("Schema", &[], &[]) };
+                _ => return data_table_from_rows("Schema", &[], &[]),
+            };
             match driver.query(&sql, &[]) {
                 Ok(rows) => {
                     let col_names = if rows.is_empty() {
@@ -689,7 +697,8 @@ pub fn register(vm: &mut VM) {
                     };
                     data_table_from_rows(table_name, &rows, &col_names)
                 }
-                Err(_) => data_table_from_rows(table_name, &[], &fallback_columns) }
+                Err(_) => data_table_from_rows(table_name, &[], &fallback_columns),
+            }
         }),
     );
 
@@ -701,7 +710,8 @@ pub fn register(vm: &mut VM) {
             let conn_id = args.get(1).map(wasi_id).unwrap_or(0);
             let conn_string = match args.get(1) {
                 Some(Value::Object(obj)) => string_prop(obj, "connectionstring"),
-                _ => String::new() };
+                _ => String::new(),
+            };
             let command = make_command_obj("SqlCommand", conn_id, &conn_string);
             if let Value::Object(obj) = &command {
                 set_prop(obj, "commandtext", string_value(&command_text));
@@ -718,7 +728,8 @@ pub fn register(vm: &mut VM) {
             let conn_id = args.get(1).map(wasi_id).unwrap_or(0);
             let conn_string = match args.get(1) {
                 Some(Value::Object(obj)) => string_prop(obj, "connectionstring"),
-                _ => String::new() };
+                _ => String::new(),
+            };
             make_data_adapter_obj(&sql, conn_id, &conn_string)
         }),
     );
@@ -1060,7 +1071,8 @@ pub fn register(vm: &mut VM) {
                 let g = s.lock().unwrap();
                 match g.stmts.get(&stmt_id) {
                     Some(e) => (e.query.clone(), e.params.clone()),
-                    None => return rows_array(vec![]) }
+                    None => return rows_array(vec![]),
+                }
             };
             match do_query(conn_id, &sql, &params) {
                 Ok(rows) => rows_array(rows),
@@ -1083,7 +1095,8 @@ pub fn register(vm: &mut VM) {
                 let g = s.lock().unwrap();
                 match g.stmts.get(&stmt_id) {
                     Some(e) => (e.query.clone(), e.params.clone()),
-                    None => return Value::F64(-1.0) }
+                    None => return Value::F64(-1.0),
+                }
             };
             match do_exec(conn_id, &sql, &params) {
                 Ok(n) => Value::F64(n as f64),
@@ -1123,7 +1136,8 @@ fn register_flat_api(vm: &mut VM) {
                         id,
                         ConnEntry {
                             driver,
-                            url: url.clone() },
+                            url: url.clone(),
+                        },
                     );
                     make_conn_obj(id, &url)
                 }
@@ -1167,7 +1181,8 @@ fn register_flat_api(vm: &mut VM) {
                         o.properties
                             .insert("state".into(), Value::String(Arc::from("Open")));
                     }
-                    Err(e) => eprintln!("db.open: {}", e) }
+                    Err(e) => eprintln!("db.open: {}", e),
+                }
             }
             Value::Null
         }),
@@ -1248,7 +1263,8 @@ fn register_flat_api(vm: &mut VM) {
                         .map(|name| row_value_by_name(&row, name))
                         .unwrap_or(Value::Null)
                 }
-                _ => Value::Null }
+                _ => Value::Null,
+            }
         }),
     );
 
@@ -1303,7 +1319,8 @@ fn register_flat_api(vm: &mut VM) {
                         })
                         .collect(),
                 ),
-                Err(_) => rows_array(vec![]) }
+                Err(_) => rows_array(vec![]),
+            }
         }),
     );
 
@@ -1318,7 +1335,8 @@ fn register_flat_api(vm: &mut VM) {
                 let g = s.lock().unwrap();
                 match g.conns.get(&id) {
                     Some(e) => (Arc::clone(&e.driver), e.url.starts_with("sqlite:")),
-                    None => return rows_array(vec![]) }
+                    None => return rows_array(vec![]),
+                }
             };
             let sql = driver.columns_sql(&table);
             let col_idx = if is_sqlite { 1 } else { 0 }; // PRAGMA returns cid,name,type,...
@@ -1338,7 +1356,8 @@ fn register_flat_api(vm: &mut VM) {
                         })
                         .collect(),
                 ),
-                Err(_) => rows_array(vec![]) }
+                Err(_) => rows_array(vec![]),
+            }
         }),
     );
 }

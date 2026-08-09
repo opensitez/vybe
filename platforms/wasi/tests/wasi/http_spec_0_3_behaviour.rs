@@ -57,8 +57,7 @@ fn is_error(value: &Value) -> bool {
     match value {
         Value::Object(object) => {
             let object = object.lock().unwrap();
-            object.properties.contains_key("__wasi_error")
-                || object.properties.contains_key("code")
+            object.properties.contains_key("__wasi_error") || object.properties.contains_key("code")
         }
         _ => false,
     }
@@ -320,10 +319,7 @@ fn server_round_trip_request_in_response_out() {
     // Host reads it back.
     let param_id = wasi_http::push_response_outparam();
     let param = wasi_http::response_outparam_value(&vm, param_id).expect("outparam handle");
-    let set = call(
-        "[static]response-outparam.set",
-        vec![param, response],
-    );
+    let set = call("[static]response-outparam.set", vec![param, response]);
     assert!(!is_error(&set), "response-outparam.set failed: {set:?}");
 
     let taken = wasi_http::take_response_outparam(param_id);
@@ -372,5 +368,8 @@ fn outgoing_response_rejects_an_invalid_status_code() {
         "[method]outgoing-response.set-status-code",
         vec![response, Value::F64(999.0)],
     );
-    assert!(is_error(&bad), "999 is not a valid status code, got {bad:?}");
+    assert!(
+        is_error(&bad),
+        "999 is not a valid status code, got {bad:?}"
+    );
 }

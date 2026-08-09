@@ -1,9 +1,9 @@
 use std::net::TcpListener;
 use std::sync::Arc;
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -601,7 +601,8 @@ fn error_code(value: &Value) -> Option<String> {
     let object = object.lock().unwrap();
     match object.properties.get("__wasi_error") {
         Some(Value::String(code)) => Some(code.to_string()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn assert_ok(value: &Value, what: &str) {
@@ -982,7 +983,12 @@ fn keep_alive_options_round_trip_through_the_os_socket() {
         "keep-alive is off on a fresh socket"
     );
     assert_ok(
-        &set(&mut vm, "set-keep-alive-enabled", &socket, Value::Bool(true)),
+        &set(
+            &mut vm,
+            "set-keep-alive-enabled",
+            &socket,
+            Value::Bool(true),
+        ),
         "set-keep-alive-enabled",
     );
     assert_eq!(
@@ -1402,7 +1408,8 @@ fn udp_socket_options_round_trip() {
             ),
             setter,
         );
-        let reported = call_on(&mut vm, "wasi:sockets/types", getter, vec![socket.clone()]).as_f64();
+        let reported =
+            call_on(&mut vm, "wasi:sockets/types", getter, vec![socket.clone()]).as_f64();
         assert!(
             reported == requested || reported == requested * 2.0,
             "{getter} must report the kernel's size for what was set, got {reported}"
