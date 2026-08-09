@@ -27,7 +27,8 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     // `*>` is the FREE-format comment. The fixed-format `      *` in column 7
@@ -45,14 +46,19 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
                 "{header}*> vybe-test-mode: compile\n{}\n",
                 assemble(&case.source, case.prelude.as_deref(), false)
             ),
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     }
 
     let Some(expected) = case.expected.as_ref() else {
         // Run it, do not merely compile it.
         return Emitted {
-            text: format!("{header}{}\n", assemble(&case.source, case.prelude.as_deref(), false)),
-            pairing: Pairing::Direct };
+            text: format!(
+                "{header}{}\n",
+                assemble(&case.source, case.prelude.as_deref(), false)
+            ),
+            pairing: Pairing::Direct,
+        };
     };
 
     let displays = find_displays(&case.source);
@@ -68,11 +74,16 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
                     "{header}{}\n",
                     assemble_with(&body, case.prelude.as_deref(), true, &table)
                 ),
-                pairing: Pairing::Direct };
+                pairing: Pairing::Direct,
+            };
         }
         return Emitted {
-            text: format!("{header}{}\n", assemble(&case.source, case.prelude.as_deref(), false)),
-            pairing: Pairing::Unpairable(reason) };
+            text: format!(
+                "{header}{}\n",
+                assemble(&case.source, case.prelude.as_deref(), false)
+            ),
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let mut body = case.source.clone();
@@ -106,7 +117,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
             "{header}{}\n",
             assemble(&body, case.prelude.as_deref(), true)
         ),
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// Build the runtime-paired body plus the WORKING-STORAGE table it needs.
@@ -199,12 +211,11 @@ fn reads_stdin(src: &str) -> bool {
         let source = stmt.split_once(" FROM ").map(|(_, rest)| rest.trim());
         match source {
             // `FROM ENVIRONMENT "HOME"` — the source is the first word.
-            Some(rest)
-                if LOOKUPS.contains(&rest.split_whitespace().next().unwrap_or("")) =>
-            {
-                continue
+            Some(rest) if LOOKUPS.contains(&rest.split_whitespace().next().unwrap_or("")) => {
+                continue;
             }
-            _ => return true }
+            _ => return true,
+        }
     }
     false
 }
@@ -233,7 +244,9 @@ fn split_operands(text: &str) -> Vec<String> {
                         out.push(std::mem::take(&mut cur));
                     }
                 }
-                c => cur.push(c) } }
+                c => cur.push(c),
+            },
+        }
     }
     if !cur.is_empty() {
         out.push(cur);
@@ -276,7 +289,10 @@ fn assemble_with(
     // rejects three different ways: "redefinition of program ID", "multiple
     // PROGRAM-ID's without matching END PROGRAM", and "CONFIGURATION SECTION
     // not allowed in nested programs".
-    if body.to_ascii_uppercase().contains("IDENTIFICATION DIVISION") {
+    if body
+        .to_ascii_uppercase()
+        .contains("IDENTIFICATION DIVISION")
+    {
         // A COMPLETE program is not re-wrapped, so the scratch field and the
         // expected table have to be injected into ITS working storage —
         // returning the body untouched left `WS-VYBE-E` undeclared and every
@@ -365,10 +381,32 @@ fn find_displays(src: &str) -> Vec<Display> {
             up.starts_with("END-")
                 || matches!(
                     up.as_str(),
-                    "STOP" | "GOBACK" | "EXIT" | "MOVE" | "PERFORM" | "IF" | "ELSE" | "ADD"
-                        | "SUBTRACT" | "MULTIPLY" | "DIVIDE" | "COMPUTE" | "ACCEPT" | "CALL"
-                        | "GO" | "SET" | "STRING" | "UNSTRING" | "INSPECT" | "EVALUATE"
-                        | "CONTINUE" | "WHEN" | "SEARCH" | "ALTER" | "WRITE" | "READ"
+                    "STOP"
+                        | "GOBACK"
+                        | "EXIT"
+                        | "MOVE"
+                        | "PERFORM"
+                        | "IF"
+                        | "ELSE"
+                        | "ADD"
+                        | "SUBTRACT"
+                        | "MULTIPLY"
+                        | "DIVIDE"
+                        | "COMPUTE"
+                        | "ACCEPT"
+                        | "CALL"
+                        | "GO"
+                        | "SET"
+                        | "STRING"
+                        | "UNSTRING"
+                        | "INSPECT"
+                        | "EVALUATE"
+                        | "CONTINUE"
+                        | "WHEN"
+                        | "SEARCH"
+                        | "ALTER"
+                        | "WRITE"
+                        | "READ"
                 )
         }) {
             operands.truncate(cut);
@@ -392,7 +430,8 @@ fn statement_end(src: &str, from: usize) -> Option<usize> {
                 '"' | '\'' => quote = Some(ch),
                 '.' => return Some(from + i),
                 _ => {}
-            } }
+            },
+        }
     }
     None
 }
@@ -406,9 +445,17 @@ fn unpairable(src: &str, displays: &[Display], expected: &[String]) -> Option<St
     }
     // A DISPLAY inside a conditional clause is not a complete statement, so a
     // check appended after its `.` lands in the middle of the enclosing verb.
-    for clause in ["ON SIZE ERROR", "AT END", "INVALID KEY", "ON EXCEPTION", "ON OVERFLOW"] {
+    for clause in [
+        "ON SIZE ERROR",
+        "AT END",
+        "INVALID KEY",
+        "ON EXCEPTION",
+        "ON OVERFLOW",
+    ] {
         if src.contains(clause) {
-            return Some(format!("DISPLAY inside an `{clause}` clause — cannot append a check"));
+            return Some(format!(
+                "DISPLAY inside an `{clause}` clause — cannot append a check"
+            ));
         }
     }
     if displays.len() != expected.len() {

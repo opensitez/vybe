@@ -21,7 +21,8 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
@@ -33,7 +34,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
                 "{header}// vybe-test-mode: compile\n\n{}\n",
                 assemble(&case.source, case.prelude.as_deref(), "")
             ),
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     };
 
     // Output is COLLECTED, not paired: every print is rewritten to append to
@@ -43,8 +45,12 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let (body, rewritten) = rewrite_prints(&case.source);
     if let Some(reason) = unpairable(&case.source, rewritten) {
         return Emitted {
-            text: format!("{header}\n{}\n", assemble(&case.source, case.prelude.as_deref(), "")),
-            pairing: Pairing::Unpairable(reason) };
+            text: format!(
+                "{header}\n{}\n",
+                assemble(&case.source, case.prelude.as_deref(), "")
+            ),
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let want = java_string(&expected.join("\n"));
@@ -55,7 +61,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
             "{header}\n{}\n",
             assemble(&body, case.prelude.as_deref(), &members)
         ),
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// `System.out.println(x)` → `__p(x)`, `System.out.print(x)` → `__pr(x)`.
@@ -79,7 +86,11 @@ fn rewrite_prints(src: &str) -> (String, usize) {
             let args_start = i + needle.len();
             if let Some(end) = close_paren(bytes, args_start) {
                 let args = src[args_start..end].trim();
-                let target = if needle.ends_with("println(") { "__p" } else { "__pr" };
+                let target = if needle.ends_with("println(") {
+                    "__p"
+                } else {
+                    "__pr"
+                };
                 // `println()` with no argument writes a bare newline; `__p()`
                 // would not compile.
                 let args = if args.is_empty() { "\"\"" } else { args };
@@ -143,7 +154,8 @@ fn splice_into_class(src: &str, members: &str) -> String {
     }
     match src.find('{') {
         Some(at) => format!("{}{{\n{members}\n{}", &src[..at], &src[at + 1..]),
-        None => format!("{src}\n{members}\n") }
+        None => format!("{src}\n{members}\n"),
+    }
 }
 
 /// `class Foo` / `interface Foo` at the start — the source is a full program.
@@ -223,11 +235,13 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b'\'' => return Some(i + 1),
-                    _ => i += 1 }
+                    _ => i += 1,
+                }
             }
             Some(bytes.len())
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn java_string(text: &str) -> String {
@@ -240,7 +254,8 @@ fn java_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out

@@ -15,6 +15,18 @@ impl Compiler {
             .expect("directive stack always has the module frame")
     }
 
+    /// Is the receiver ambient `this` here, rather than an explicit leading
+    /// parameter?
+    ///
+    /// Reads the directive in force, so the program declares it and reflection
+    /// can see it. This replaced `profile.ambient_this_binding`; keeping the
+    /// question behind one accessor is what stops the 19 call sites that ask it
+    /// from each spelling the comparison themselves — the failure mode
+    /// `case_sensitive` had, where 23 of 33 sites forgot.
+    pub(crate) fn ambient_this(&self) -> bool {
+        self.directives().receiver_binding == Some(vybe_ast::ReceiverBinding::Ambient)
+    }
+
     /// Does this body declare anything? A frame is pushed only when it does,
     /// so a body that states no policy costs a linear scan and nothing else.
     /// Shallow on purpose: a nested block runs its own scan.
@@ -78,11 +90,17 @@ impl Compiler {
                         .collect::<Vec<_>>()
                 ),
                 StmtKind::Expr(e) => {
-                    format!("Expr({})", format!("{:?}", e.kind).chars().take(60).collect::<String>())
+                    format!(
+                        "Expr({})",
+                        format!("{:?}", e.kind).chars().take(60).collect::<String>()
+                    )
                 }
                 other => format!("{other:?}").chars().take(40).collect::<String>(),
             };
-            eprintln!("[stmt] line={} class={:?} {}", self.line, self.current_class, what);
+            eprintln!(
+                "[stmt] line={} class={:?} {}",
+                self.line, self.current_class, what
+            );
         }
         // Runtime-prelude boundary marker: a frontend that prepends a prelude
         // (e.g. JS) injects a `__vybe_user_code_start__` string-expression right
@@ -119,7 +137,8 @@ impl Compiler {
                             let type_name = match &args[1].value.kind {
                                 ExprKind::Lit(Literal::Str(type_name)) => Some(type_name.clone()),
                                 ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
-                                _ => None };
+                                _ => None,
+                            };
                             if let Some(type_name) = type_name {
                                 self.source_type_aliases.insert(self.canon(name), type_name);
                             }
@@ -185,7 +204,7 @@ impl Compiler {
                     // Bare identifier that's a known function → call with 0 args
                     ExprKind::Ident(name) if self.defined_functions.contains(name.as_str()) => {
                         let saved_js_this = self.save_js_this("__js_stmt_prev_this");
-                        if self.profile.ambient_this_binding {
+                        if self.ambient_this() {
                             let line = self.line;
                             common::expressions::emit_undefined(self.chunk(), line);
                             self.set_js_this_from_stack();
@@ -290,7 +309,7 @@ impl Compiler {
             }
 
             // ── Assignment ──────────────────────────────────────────────
-            StmtKind::Assign { targets, value , ..} => {
+            StmtKind::Assign { targets, value, .. } => {
                 if self.profile.array_assign_broadcasts_scalar {
                     if let [target] = targets.as_slice() {
                         let is_whole_array_target =
@@ -410,9 +429,7 @@ impl Compiler {
                     // without juggling a Block + VarDecl pair.
                     let in_function = self.scopes.len() > 1;
                     for name in idents.iter().rev() {
-                        if in_function
-                            && self.scope().resolve(name).is_none()
-                        {
+                        if in_function && self.scope().resolve(name).is_none() {
                             self.define_local(name);
                         }
                         self.emit_var_set(name);
@@ -436,10 +453,7 @@ impl Compiler {
                     if let [target] = targets.as_slice() {
                         if let ExprKind::Ident(name) = &target.kind {
                             let type_hint = self.lookup_var_type_hint(name).map(str::to_string);
-                            self.maybe_promote_array_literal_to_set(
-                                type_hint.as_deref(),
-                                value,
-                            );
+                            self.maybe_promote_array_literal_to_set(type_hint.as_deref(), value);
                         }
                     }
                     // A php-gated `$b = &$a` marker used to sit here. It was DEAD:
@@ -491,7 +505,8 @@ impl Compiler {
                                     self.current,
                                     value_slot,
                                     line,
-                                ) }
+                                ),
+                            }
                         } else {
                             crate::primitives::records::emit_value_copy_if_needed(
                                 &mut self.chunks,
@@ -568,7 +583,8 @@ impl Compiler {
                         let binexpr = Expression::new(ExprKind::Binary {
                             op: binop,
                             left: Box::new(target.clone()),
-                            right: Box::new(value.clone()) });
+                            right: Box::new(value.clone()),
+                        });
                         self.compile_expr(&binexpr)?;
                         self.compile_assign_target(target)?;
                         return Ok(());
@@ -592,7 +608,8 @@ impl Compiler {
                 cond,
                 then_body,
                 elifs,
-                else_body } => {
+                else_body,
+            } => {
                 let line = self.line;
                 self.compile_expr(cond)?;
                 self.emit_condition_truthiness_from_stack();
@@ -613,7 +630,8 @@ impl Compiler {
                             cond: elif_cond.clone(),
                             then_body: elif_body.clone(),
                             elifs: elifs.iter().skip(1).cloned().collect(),
-                            else_body: else_body.clone() });
+                            else_body: else_body.clone(),
+                        });
                         self.compile_stmt(&nested)?;
                     } else if let Some(else_stmts) = else_body {
                         self.scope_mut().begin_scope();
@@ -633,7 +651,8 @@ impl Compiler {
             StmtKind::While {
                 cond,
                 body,
-                else_body } => {
+                else_body,
+            } => {
                 let line = self.line;
                 let lp = common::loops::emit_loop_start(&mut self.chunks, self.current, line);
                 // block + loop = 2 label stack entries
@@ -648,7 +667,8 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
-                    finally_depth: self.active_finally_blocks.len() });
+                    finally_depth: self.active_finally_blocks.len(),
+                });
                 self.compile_expr(cond)?;
                 self.emit_condition_truthiness_from_stack();
                 let line = self.line;
@@ -673,7 +693,8 @@ impl Compiler {
                 init,
                 cond,
                 update,
-                body } => {
+                body,
+            } => {
                 self.scope_mut().begin_scope();
                 if let Some(init_stmt) = init {
                     self.compile_stmt(init_stmt)?;
@@ -683,9 +704,11 @@ impl Compiler {
                         StmtKind::VarDecl { declarations, .. } if declarations.len() == 1 => {
                             match &declarations[0].pattern {
                                 BindingPattern::Ident(name) => Some(self.canon(name)),
-                                _ => None }
+                                _ => None,
+                            }
                         }
-                        _ => None })
+                        _ => None,
+                    })
                 } else {
                     None
                 };
@@ -716,7 +739,8 @@ impl Compiler {
                 let lp = common::loops::LoopState {
                     block_patch,
                     loop_patch,
-                    body_block_patch: body_block };
+                    body_block_patch: body_block,
+                };
                 self.loop_states.push(lp);
                 self.loops.push(LoopCtx {
                     label: self.pending_label.take(),
@@ -725,7 +749,8 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
-                    finally_depth: self.active_finally_blocks.len() });
+                    finally_depth: self.active_finally_blocks.len(),
+                });
                 if let Some(loop_capture_name) = loop_capture_name.clone() {
                     self.capture_by_value_vars.push(loop_capture_name);
                 }
@@ -938,7 +963,8 @@ impl Compiler {
                         ExprKind::Ident(name) => {
                             self.lookup_var_type_hint(name).map(str::to_string)
                         }
-                        _ => self.infer_expr_type_hint(iter) };
+                        _ => self.infer_expr_type_hint(iter),
+                    };
 
                     let iterates_dictionary_entries = key.is_none()
                         && *of
@@ -1071,7 +1097,8 @@ impl Compiler {
                         did_break_slot,
                         iterator_close_slot: None,
                         is_continuable: true,
-                        finally_depth: self.active_finally_blocks.len() });
+                        finally_depth: self.active_finally_blocks.len(),
+                    });
                     for s in body {
                         self.compile_stmt(s)?;
                     }
@@ -1132,7 +1159,8 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: true,
-                    finally_depth: self.active_finally_blocks.len() });
+                    finally_depth: self.active_finally_blocks.len(),
+                });
                 for s in body {
                     self.compile_stmt(s)?;
                 }
@@ -1158,7 +1186,8 @@ impl Compiler {
             StmtKind::Switch {
                 expr,
                 cases,
-                default } => {
+                default,
+            } => {
                 // Save switch expression to a local so checks can read it
                 // without leaving it on the stack during body execution.
                 self.compile_expr(expr)?;
@@ -1172,7 +1201,8 @@ impl Compiler {
                 let switch_lp = common::loops::LoopState {
                     block_patch: switch_block,
                     loop_patch: 0,
-                    body_block_patch: None };
+                    body_block_patch: None,
+                };
                 self.loop_states.push(switch_lp);
                 self.loops.push(LoopCtx {
                     label: self.pending_label.take(),
@@ -1181,7 +1211,8 @@ impl Compiler {
                     did_break_slot: None,
                     iterator_close_slot: None,
                     is_continuable: false,
-                    finally_depth: self.active_finally_blocks.len() });
+                    finally_depth: self.active_finally_blocks.len(),
+                });
 
                 // Merge legacy `default` field into the cases list.
                 // New walkers emit default as a case with empty conditions
@@ -1193,7 +1224,8 @@ impl Compiler {
                     if !def.is_empty() && !cases.iter().any(|c| c.conditions.is_empty()) {
                         default_case_storage = SwitchCase {
                             conditions: vec![],
-                            body: def.clone() };
+                            body: def.clone(),
+                        };
                         all_cases.push(&default_case_storage);
                     }
                 }
@@ -1396,7 +1428,8 @@ impl Compiler {
                 body,
                 catches,
                 else_body,
-                finally } => {
+                finally,
+            } => {
                 let line = self.line;
                 let finally_exc_slot = if catches.is_empty() && finally.is_some() {
                     let slot = self.define_local("__try_finally_exc");
@@ -1430,7 +1463,8 @@ impl Compiler {
                     self.finally_joins.push(FinallyJoin {
                         join_label_depth: self.label_depth,
                         completion_slot,
-                        ret_slot });
+                        ret_slot,
+                    });
                 }
                 let catch_jump =
                     common::errors::emit_try_start(&mut self.chunks[self.current], line);
@@ -1862,7 +1896,8 @@ impl Compiler {
                 handles,
                 is_async,
                 is_generator,
-                is_sub } => {
+                is_sub,
+            } => {
                 self.compile_function_decl(
                     name,
                     params,
@@ -1994,7 +2029,12 @@ impl Compiler {
             // by legacy compile_class anyway), same normalize → emit
             // path. Treated as a parent-less class by the walker's
             // normalize_class for the active language.
-            StmtKind::StructDecl { name, members, semantics, .. } => {
+            StmtKind::StructDecl {
+                name,
+                members,
+                semantics,
+                ..
+            } => {
                 let cn = self.canon(name);
                 self.defined_globals.insert(cn.clone());
                 self.defined_classes.insert(cn.clone());
@@ -2113,7 +2153,8 @@ impl Compiler {
                                 | StmtKind::ModuleDecl { name: cname, .. } => {
                                     Some(self.canon(cname))
                                 }
-                                _ => None } {
+                                _ => None,
+                            } {
                                 member_names.push((cn.clone(), cn));
                             }
                             self.compile_stmt(stmt)?;
@@ -2129,7 +2170,8 @@ impl Compiler {
                                 handles: Vec::new(),
                                 is_async: false,
                                 is_generator: false,
-                                is_sub: true });
+                                is_sub: true,
+                            });
                             let saved_class = self.current_class.clone();
                             let saved_implicit_self = self.current_class_implicit_self;
                             let saved_member_static = self.current_member_is_static;
@@ -2178,7 +2220,8 @@ impl Compiler {
                 let local_ns_name = self.canon(name).replace('\\', ".");
                 let ns_name = match self.current_namespace.as_deref() {
                     Some(prefix) if !prefix.is_empty() => format!("{prefix}.{local_ns_name}"),
-                    _ => local_ns_name };
+                    _ => local_ns_name,
+                };
                 if ns_name.is_empty() {
                     let prev_namespace = self.current_namespace.clone();
                     self.current_namespace = None;
@@ -2342,7 +2385,8 @@ impl Compiler {
             StmtKind::Using {
                 var,
                 resource,
-                body } => {
+                body,
+            } => {
                 let resource_type_hint = self
                     .infer_expr_type_hint(resource)
                     .map(|type_hint| self.resolve_source_type_alias(&type_hint));
@@ -2361,7 +2405,8 @@ impl Compiler {
                     .push(FinallyAction::ResourceDispose {
                         slot,
                         method: "Dispose".to_string(),
-                        line });
+                        line,
+                    });
                 for s in body {
                     self.compile_stmt(s)?;
                 }
@@ -2403,7 +2448,8 @@ impl Compiler {
             StmtKind::ReDim {
                 array,
                 bounds,
-                preserve } => {
+                preserve,
+            } => {
                 if let Some(size_expr) = bounds.first() {
                     let line = self.line;
                     if *preserve {
@@ -2645,14 +2691,16 @@ impl Compiler {
             StmtKind::AddHandler {
                 control,
                 event,
-                handler } => {
+                handler,
+            } => {
                 self.compile_add_handler_stmt(control, event, handler)?;
             }
 
             StmtKind::RemoveHandler {
                 control,
                 event,
-                handler } => {
+                handler,
+            } => {
                 self.compile_remove_handler_stmt(control, event, handler)?;
             }
 
@@ -2671,7 +2719,8 @@ impl Compiler {
             StmtKind::OpenFile {
                 path,
                 mode,
-                file_number } => {
+                file_number,
+            } => {
                 let path_slot = self.define_local("__vb_open_path");
                 let file_slot = self.define_local("__vb_open_file_number");
                 let mode_text = match mode {
@@ -2679,7 +2728,8 @@ impl Compiler {
                     FileMode::Output => "Output",
                     FileMode::Append => "Append",
                     FileMode::Binary => "Binary",
-                    FileMode::Random => "Random" };
+                    FileMode::Random => "Random",
+                };
 
                 self.compile_expr(path)?;
                 self.emit_u16(Op::LOCAL_SET, path_slot);
@@ -2763,7 +2813,8 @@ impl Compiler {
             }
             StmtKind::InputFile {
                 file_number,
-                variables } => {
+                variables,
+            } => {
                 let file_slot = self.define_local("__vb_input_file_number");
                 let values_slot = self.define_local("__vb_input_values");
                 let rows_slot = self.define_local("__vb_input_rows");
@@ -2829,7 +2880,8 @@ impl Compiler {
             }
             StmtKind::LineInput {
                 file_number,
-                variable } => {
+                variable,
+            } => {
                 let file_slot = self.define_local("__vb_line_input_file_number");
                 let rows_slot = self.define_local("__vb_line_input_rows");
                 let len_slot = self.define_local("__vb_line_input_len");
@@ -2883,7 +2935,8 @@ impl Compiler {
                 file_number,
                 key_index,
                 key_value,
-                relation } => {
+                relation,
+            } => {
                 let line = self.line;
                 let file_slot = self.define_local("__vb_start_file_number");
                 let rows_slot = self.define_local("__vb_start_rows");
@@ -2968,7 +3021,8 @@ impl Compiler {
                 file_number,
                 variables,
                 key_index,
-                key_value } => {
+                key_value,
+            } => {
                 let line = self.line;
                 let file_slot = self.define_local("__vb_record_file_number");
                 let rows_slot = self.define_local("__vb_record_rows");
@@ -3131,7 +3185,8 @@ impl Compiler {
             StmtKind::RewriteRecordFile {
                 file_number,
                 items,
-                field_formats } => {
+                field_formats,
+            } => {
                 let line = self.line;
                 let file_slot = self.define_local("__vb_rewrite_file_number");
                 let rows_slot = self.define_local("__vb_rewrite_rows");
@@ -3232,7 +3287,8 @@ impl Compiler {
                     let lp = common::loops::LoopState {
                         block_patch: bp,
                         loop_patch: 0,
-                        body_block_patch: None };
+                        body_block_patch: None,
+                    };
                     self.loop_states.push(lp);
                     self.loops.push(LoopCtx {
                         label: self.pending_label.take(),
@@ -3241,7 +3297,8 @@ impl Compiler {
                         did_break_slot: None,
                         iterator_close_slot: None,
                         is_continuable: false,
-                        finally_depth: self.active_finally_blocks.len() });
+                        finally_depth: self.active_finally_blocks.len(),
+                    });
                     Some(bp)
                 } else {
                     None
@@ -3470,7 +3527,8 @@ impl Compiler {
                 let scope = self.scope_mut();
                 match kind {
                     ScopeDeclKind::Closed => scope.close(&canon),
-                    ScopeDeclKind::Global | ScopeDeclKind::Nonlocal => scope.open(&canon) }
+                    ScopeDeclKind::Global | ScopeDeclKind::Nonlocal => scope.open(&canon),
+                }
             }
 
             // ── Match statement (Python) ────────────────────────────────
@@ -3531,7 +3589,8 @@ impl Compiler {
             // writes active data into linear memory before `_start` runs.
             StmtKind::MemoryDecl {
                 min_pages,
-                max_pages } => {
+                max_pages,
+            } => {
                 self.chunks[0].memory_min_pages.push(*min_pages);
                 self.chunks[0].memory_max_pages.push(*max_pages);
             }
@@ -3542,7 +3601,8 @@ impl Compiler {
             StmtKind::DataSegment {
                 memory_index,
                 offset,
-                bytes } => {
+                bytes,
+            } => {
                 let data_index = self.chunks[0].data_segments.len() as u32;
                 self.chunks[0].data_segments.push(bytes.clone());
                 // Active segment (has a constant offset) → recorded for the VM's
@@ -3557,7 +3617,8 @@ impl Compiler {
                         vybe_runtime::chunk::ActiveDataSegment {
                             memory_index: *memory_index,
                             offset: offset_val,
-                            data_index },
+                            data_index,
+                        },
                     );
                 }
             }
@@ -3609,7 +3670,8 @@ impl Compiler {
                             ),
                         ),
                         (None, false) => (common::errors::CATCH_KIND_CATCH_ALL, 0u16),
-                        (None, true) => (common::errors::CATCH_KIND_CATCH_ALL_REF, 0u16) };
+                        (None, true) => (common::errors::CATCH_KIND_CATCH_ALL_REF, 0u16),
+                    };
                     clause_kinds.push(kind);
                     clause_tags.push(tag_idx);
                 }
@@ -3623,7 +3685,8 @@ impl Compiler {
                 let clauses: Vec<common::errors::TryTableClause> = (0..catches.len())
                     .map(|i| common::errors::TryTableClause {
                         kind: clause_kinds[i],
-                        tag: clause_tags[i] })
+                        tag: clause_tags[i],
+                    })
                     .collect();
                 let offset_positions =
                     common::errors::emit_try_table(&mut self.chunks[self.current], &clauses, line);
@@ -3761,7 +3824,8 @@ impl Compiler {
                 init: Some(Expression::string(&member.name)),
                 modifiers: static_modifiers.clone(),
                 with_events: false,
-                array_bounds: None });
+                array_bounds: None,
+            });
         }
 
         self.compile_enum_decl_as_class(name, parent, interfaces, synthetic_members, span)?;
@@ -3776,9 +3840,11 @@ impl Compiler {
             callee: Box::new(Expression::new(ExprKind::Member {
                 object: Box::new(Expression::ident(name)),
                 field: enum_lowering::STATIC_INIT.to_string(),
-                null_safe: false })),
+                null_safe: false,
+            })),
             args: vec![],
-            optional: false });
+            optional: false,
+        });
         self.compile_expr(&init_call)?;
         self.emit(Op::DROP);
         Ok(())
@@ -3926,7 +3992,8 @@ impl Compiler {
             Pattern::Class {
                 cls,
                 patterns,
-                kw_patterns } => {
+                kw_patterns,
+            } => {
                 // Type test. A named class is known here, so it asks the shared
                 // identity primitive — the same one typed `catch` and
                 // `instanceof` ask, so a class pattern cannot disagree with them
@@ -4118,7 +4185,8 @@ impl Compiler {
             Pattern::Class {
                 cls,
                 patterns,
-                kw_patterns } => {
+                kw_patterns,
+            } => {
                 if !patterns.is_empty() {
                     let declared_names = self.class_pattern_positional_names(cls);
                     let margs_slot = self.define_local("__match_args_bind");
@@ -4288,7 +4356,8 @@ impl Compiler {
                         ArrayBindingMetadata {
                             is_fixed,
                             type_hint: array_type_hint,
-                            pascal_bounds },
+                            pascal_bounds,
+                        },
                     );
                 }
                 // Top-level vars → globals.
@@ -4301,8 +4370,10 @@ impl Compiler {
                     *kind == VarDeclKind::Var && self.profile.hoist_var && self.scopes.len() == 1;
 
                 if *kind == VarDeclKind::Static {
-                    let binding =
-                        self.ensure_static_local_binding(name, inferred_type_hint.as_deref().map(str::to_string))?;
+                    let binding = self.ensure_static_local_binding(
+                        name,
+                        inferred_type_hint.as_deref().map(str::to_string),
+                    )?;
                     self.emit_global_read(&binding.init_flag_name);
                     {
                         let line = self.line;
@@ -4375,10 +4446,7 @@ impl Compiler {
                     if !skip_c_coerce {
                         self.bind_value_to_declared_type(effective_type_hint, Some(init_expr))?;
                     }
-                    self.maybe_promote_array_literal_to_set(
-                        decl.type_hint.as_deref(),
-                        init_expr,
-                    );
+                    self.maybe_promote_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
                     // ECMA-262 §10.2.9 SetFunctionName — anonymous
                     // function expressions assigned to a binding take
                     // the binding name as their `name` property.
@@ -4390,13 +4458,15 @@ impl Compiler {
                                 matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name.is_empty())
                             }
                             ExprKind::ClassExpr { name, .. } => name.is_none(),
-                            _ => false };
+                            _ => false,
+                        };
                         if should_infer_name {
                             let line = self.line;
                             inst!(self, core_wasm::dup);
                             self.emit_const(Value::String(Arc::from(name.as_str())));
                             let name_key = self.str_const("name");
-                            self.chunk().emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
+                            self.chunk()
+                                .emit_struct_field_op(Op::STRUCT_SET, 0, name_key, line);
                         }
                     }
                 } else if decl.array_bounds.is_some() || decl.type_hint.is_some() {
@@ -4585,7 +4655,8 @@ impl Compiler {
                     }
                     let target = match &prop.value {
                         Some(p) => p.clone(),
-                        None => BindingPattern::Ident(prop.key.clone()) };
+                        None => BindingPattern::Ident(prop.key.clone()),
+                    };
                     self.compile_destructure_bind(&target)?;
                 }
             }
@@ -4767,8 +4838,8 @@ impl Compiler {
                     }
                 }
                 // Local variable / parameter takes priority over implicit self field
-                let is_local = self.scope().resolve(name).is_some()
-                    || self.has_static_local_binding(name);
+                let is_local =
+                    self.scope().resolve(name).is_some() || self.has_static_local_binding(name);
 
                 // Implicit self field write (only if NOT a local)
                 if !is_local && self.is_class_field(name) {
@@ -4810,7 +4881,8 @@ impl Compiler {
                         ExprKind::Ident(class_name) => {
                             self.js_member_storage_name_for_class(class_name, name)
                         }
-                        _ => self.canon(name) };
+                        _ => self.canon(name),
+                    };
                     if self.profile.supports_private_fields && name.starts_with('#') {
                         let setter_name = format!("__set_{}", field_name);
                         self.emit_u16(Op::LOCAL_GET, class_tmp);
@@ -4872,13 +4944,15 @@ impl Compiler {
                         field,
                         self.current_class,
                         hint,
-                        hint.as_deref().map(Self::normalize_type_hint).and_then(|c| {
-                            common::gui::registered_control_element(
-                                &self.profile.namespaces.type_scopes,
-                                &c,
-                            )
-                            .map(|e| e.tag.to_string())
-                        }),
+                        hint.as_deref()
+                            .map(Self::normalize_type_hint)
+                            .and_then(|c| {
+                                common::gui::registered_control_element(
+                                    &self.profile.namespaces.type_scopes,
+                                    &c,
+                                )
+                                .map(|e| e.tag.to_string())
+                            }),
                         self.current_class_implicit_self,
                         self.current_class,
                     );
@@ -4902,10 +4976,7 @@ impl Compiler {
 
                     let receiver_tmp = self.define_local("__js_super_set_receiver");
                     let self_kw = self.profile.self_keyword.clone();
-                    if let Some(slot) = self
-                        .scope()
-                        .resolve(&self_kw)
-                    {
+                    if let Some(slot) = self.scope().resolve(&self_kw) {
                         self.emit_u16(Op::LOCAL_GET, slot);
                     } else {
                         self.emit_global_read("__js_this");
@@ -4943,8 +5014,8 @@ impl Compiler {
                     if let Some(type_hint) = self.infer_expr_type_hint(object) {
                         let class_name = Self::normalize_type_hint(&type_hint);
                         if self.control_element_for_type(&class_name).is_some()
-                        && !self.is_declared_instance_field(&class_name, field)
-                    {
+                            && !self.is_declared_instance_field(&class_name, field)
+                        {
                             let line = self.line;
                             self.emit_control_property_set(object, &class_name, field, line)?;
                             return Ok(());
@@ -4977,7 +5048,8 @@ impl Compiler {
                                 vybe_runtime::component_model::InstancePropertyTarget::Host {
                                     module,
                                     func,
-                                    key } => {
+                                    key,
+                                } => {
                                     let value_tmp = self.define_local("__dotnet_prop_value");
                                     self.emit_u16(Op::LOCAL_SET, value_tmp);
                                     self.compile_expr(object)?;
@@ -4994,7 +5066,8 @@ impl Compiler {
                                     return Ok(());
                                 }
                                 vybe_runtime::component_model::InstancePropertyTarget::Common {
-                                    emit } => {
+                                    emit,
+                                } => {
                                     let value_tmp = self.define_local("__dotnet_prop_value");
                                     self.emit_u16(Op::LOCAL_SET, value_tmp);
                                     self.compile_expr(object)?;
@@ -5058,16 +5131,11 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    let line = self.line;
                     if self.in_strict {
-                        vybe_runtime::registry::hooks(&self.profile.name)
-                            .proxy_set_bool
-                            .unwrap()(&mut self.chunks, self.current, line);
+                        self.emit_proxy_set_bool()?;
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        vybe_runtime::registry::hooks(&self.profile.name)
-                            .proxy_set
-                            .unwrap()(&mut self.chunks, self.current, line);
+                        self.emit_proxy_set()?;
                         self.emit(Op::DROP); // adapter leaves [value] on stack
                     }
                     return Ok(());
@@ -5248,7 +5316,8 @@ impl Compiler {
             }
             ExprKind::Unary {
                 op: UnaryOp::Deref,
-                expr }
+                expr,
+            }
             | ExprKind::RefLoad(expr) => {
                 let value_slot = self.define_local("__ref_store_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
@@ -5530,16 +5599,11 @@ impl Compiler {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
                     self.emit_u16(Op::LOCAL_GET, tmp);
-                    let line = self.line;
                     if self.in_strict {
-                        vybe_runtime::registry::hooks(&self.profile.name)
-                            .proxy_set_bool
-                            .unwrap()(&mut self.chunks, self.current, line);
+                        self.emit_proxy_set_bool()?;
                         self.emit_strict_set_failure_check()?;
                     } else {
-                        vybe_runtime::registry::hooks(&self.profile.name)
-                            .proxy_set
-                            .unwrap()(&mut self.chunks, self.current, line);
+                        self.emit_proxy_set()?;
                         self.emit(Op::DROP);
                     }
                     return Ok(());
@@ -5566,7 +5630,8 @@ impl Compiler {
                     if let ExprKind::Member {
                         object: recv,
                         field,
-                        null_safe } = &object.kind
+                        null_safe,
+                    } = &object.kind
                     {
                         if !*null_safe {
                             let recv_tmp = self.define_local("__php_index_member_recv");
@@ -5627,7 +5692,8 @@ impl Compiler {
                     if let ExprKind::Member {
                         object: recv,
                         field,
-                        null_safe } = &object.kind
+                        null_safe,
+                    } = &object.kind
                     {
                         if !*null_safe {
                             let recv_tmp = self.define_local("__fortran_index_member_recv");
@@ -5759,7 +5825,10 @@ impl Compiler {
                     self.emit_common(&set_emit, 3, line);
                     self.emit(Op::DROP);
                     return Ok(());
-                } else if self.profile.namespaces.use_dotnet {
+                // The write direction of the same question the READ site in
+                // `expressions.rs` asks when the declared type did not answer,
+                // gated on the same fact and probing the matching accessor.
+                } else if self.program_has_index_accessor {
                     self.compile_expr(object)?;
                     self.emit_autoderef_pointer_cell();
                     let obj_tmp = self.define_local("__index_set_obj");
@@ -5814,7 +5883,8 @@ impl Compiler {
                                     (ExprKind::Ident(a), ExprKind::Ident(b), "__base", "__idx") if a == b
                                 )
                             }
-                            _ => false }
+                            _ => false,
+                        }
                     };
 
                     if is_c_pointer_base_index {
@@ -5968,7 +6038,8 @@ impl Compiler {
                                 ExprKind::Ident(name) => {
                                     self.lookup_var_type_hint(name).map(str::to_string)
                                 }
-                                _ => self.infer_expr_type_hint(object) };
+                                _ => self.infer_expr_type_hint(object),
+                            };
                             if go_map_type
                                 .as_deref()
                                 .is_some_and(|type_hint| type_hint.trim().starts_with("map["))
@@ -6113,7 +6184,8 @@ impl Compiler {
                             }
                             let target = match &prop.value {
                                 Some(p) => p.clone(),
-                                None => BindingPattern::Ident(prop.key.clone()) };
+                                None => BindingPattern::Ident(prop.key.clone()),
+                            };
                             self.compile_destructure_bind(&target)?;
                         }
                     }
@@ -6215,7 +6287,8 @@ fn const_eval_i128(
                 BinOp::Add => Some(l.wrapping_add(r)),
                 BinOp::Sub => Some(l.wrapping_sub(r)),
                 BinOp::Mul => Some(l.wrapping_mul(r)),
-                _ => None }
+                _ => None,
+            }
         }
         // The wast walker lowers a folded `(i32.add …)`/`(i64.mul …)` const
         // expression to `Call(Ident("i32_add"), [a, b])` (not a `Binary`);
@@ -6233,9 +6306,11 @@ fn const_eval_i128(
                 "i32_add" | "i64_add" => Some(l.wrapping_add(r)),
                 "i32_sub" | "i64_sub" => Some(l.wrapping_sub(r)),
                 "i32_mul" | "i64_mul" => Some(l.wrapping_mul(r)),
-                _ => None }
+                _ => None,
+            }
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Extended-const evaluation to a `u64` byte offset (wrapping to 32/64-bit is

@@ -35,11 +35,13 @@ impl ProjectPropsDialog {
     pub fn apply(&self, project: &mut vybe_platform_dotnet::winforms::designer::project::Project) {
         match self.selected_startup {
             0 => {
-                project.startup_object = vybe_platform_dotnet::winforms::designer::project::StartupObject::SubMain;
+                project.startup_object =
+                    vybe_platform_dotnet::winforms::designer::project::StartupObject::SubMain;
                 project.startup_form = None;
             }
             1 => {
-                project.startup_object = vybe_platform_dotnet::winforms::designer::project::StartupObject::None;
+                project.startup_object =
+                    vybe_platform_dotnet::winforms::designer::project::StartupObject::None;
                 project.startup_form = None;
             }
             n => {
@@ -47,7 +49,9 @@ impl ProjectPropsDialog {
                 if let Some(fm) = project.forms.get(idx) {
                     let name = fm.form.name.clone();
                     project.startup_object =
-                        vybe_platform_dotnet::winforms::designer::project::StartupObject::Form(name.clone());
+                        vybe_platform_dotnet::winforms::designer::project::StartupObject::Form(
+                            name.clone(),
+                        );
                     project.startup_form = Some(name);
                 }
             }

@@ -1,6 +1,6 @@
+use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::opcode::heaptype::{HT_FUNC, HT_STRUCT, HeapType};
-use vybe_runtime::Chunk;
 
 use super::host::{EmitRegistry, FunctionRegistry};
 

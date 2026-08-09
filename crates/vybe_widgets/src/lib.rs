@@ -25,9 +25,9 @@ pub mod color_picker;
 pub mod context_menu;
 pub mod controls;
 pub mod datetime;
-pub mod dom;
 pub mod dialogs;
 pub mod dock_panel;
+pub mod dom;
 pub mod dropdown;
 pub mod flow_layout;
 pub mod font_picker;
@@ -132,11 +132,11 @@ pub use split_panel::SplitPanel;
 pub use stack_panel::{Orientation, StackPanel};
 pub use status_bar_panel::StatusBarPanel;
 pub use tab_panel::TabPanel;
-pub use winit::window::CursorIcon;
 /// Re-exported so consumers (vybex's FormApp) can NAME the key/state types
 /// that already appear in `KeyEvent`'s public fields without depending on
 /// winit directly.
 pub use winit;
+pub use winit::window::CursorIcon;
 pub use wrap_panel::WrapPanel;
 
 // ── Re-exports from cosmic-text (so consumers don't need cosmic_text directly) ──

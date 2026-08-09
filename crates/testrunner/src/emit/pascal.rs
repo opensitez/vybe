@@ -14,7 +14,8 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
@@ -23,25 +24,32 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let Some(expected) = case.expected.as_ref() else {
         return Emitted {
             text: format!("{header}{}\n", with_prologue(body, "")),
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     };
 
     if let Some(reason) = unpairable(body) {
         return Emitted {
             text: format!("{header}{}\n", with_prologue(body, "")),
-            pairing: Pairing::Unpairable(reason) };
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let collected = rewrite_writes(body);
     let Some(with_check) = insert_check(&collected, &pas_string(&expected.join("\n"))) else {
         return Emitted {
             text: format!("{header}{}\n", with_prologue(body, "")),
-            pairing: Pairing::Unpairable("no final `end.` to place the check before".into()) };
+            pairing: Pairing::Unpairable("no final `end.` to place the check before".into()),
+        };
     };
 
     Emitted {
-        text: format!("{header}{}\n", with_prologue(&with_check, &harness_decls(harness))),
-        pairing: Pairing::Direct }
+        text: format!(
+            "{header}{}\n",
+            with_prologue(&with_check, &harness_decls(harness))
+        ),
+        pairing: Pairing::Direct,
+    }
 }
 
 /// `{$mode delphi}` + `uses SysUtils` (fpc needs both for `Format`/`IntToStr`;
@@ -105,7 +113,10 @@ fn rewrite_writes(src: &str) -> String {
             .map(|a| format!("__vs({})", a.trim()))
             .collect::<Vec<_>>()
             .join(" + ");
-        out.push_str(&format!("{}({joined})", if is_line { "__p" } else { "__pw" }));
+        out.push_str(&format!(
+            "{}({joined})",
+            if is_line { "__p" } else { "__pw" }
+        ));
         rest = &rest[close + 1..];
     }
 }
@@ -178,7 +189,8 @@ fn split_args(text: &str) -> Vec<String> {
                 cur.push(ch);
             }
             ',' if !in_str && depth == 0 => out.push(std::mem::take(&mut cur)),
-            _ => cur.push(ch) }
+            _ => cur.push(ch),
+        }
     }
     if !cur.trim().is_empty() {
         out.push(cur);
@@ -189,7 +201,11 @@ fn split_args(text: &str) -> Vec<String> {
 /// Place the check immediately before the program's final `end.`.
 fn insert_check(src: &str, want: &str) -> Option<String> {
     let at = src.rfind("end.")?;
-    Some(format!("{}__vybeCheck({want});\n{}", &src[..at], &src[at..]))
+    Some(format!(
+        "{}__vybeCheck({want});\n{}",
+        &src[..at],
+        &src[at..]
+    ))
 }
 
 fn unpairable(src: &str) -> Option<String> {
@@ -244,7 +260,8 @@ fn pas_string(text: &str) -> String {
             '\n' => out.push_str("' + #10 + '"),
             '\r' => out.push_str("' + #13 + '"),
             '\t' => out.push_str("' + #9 + '"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('\'');
     out

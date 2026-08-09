@@ -232,12 +232,20 @@ mod tests {
     #[test]
     fn language_table_overrides_default_then_falls_back() {
         let mut default = BuiltinSlotBindings::new();
-        default.insert(BuiltinType::String, ProtocolSlot::Len, "host:ecma:string:length");
+        default.insert(
+            BuiltinType::String,
+            ProtocolSlot::Len,
+            "host:ecma:string:length",
+        );
         default.insert(BuiltinType::String, ProtocolSlot::Eq, "common:ops.eq_exact");
 
         // PHP is the one language the 2026-07-30 matrix showed diverging.
         let mut php = BuiltinSlotBindings::new();
-        php.insert(BuiltinType::String, ProtocolSlot::Len, "common:strings.len_bytes");
+        php.insert(
+            BuiltinType::String,
+            ProtocolSlot::Len,
+            "common:strings.len_bytes",
+        );
 
         assert_eq!(
             php.get_or(&default, BuiltinType::String, ProtocolSlot::Len),

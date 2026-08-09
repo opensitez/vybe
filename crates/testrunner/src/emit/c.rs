@@ -20,7 +20,8 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     let header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
@@ -41,14 +42,19 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
                 "{header}// vybe-test-mode: compile\n{}\n",
                 assemble(body, case.prelude.as_deref(), false)
             ),
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     };
 
     let prints = find_prints(body);
     if let Some(reason) = unpairable(body, case.prelude.as_deref(), &prints, expected.len()) {
         return Emitted {
-            text: format!("{header}{}\n", assemble(body, case.prelude.as_deref(), true)),
-            pairing: Pairing::Unpairable(reason) };
+            text: format!(
+                "{header}{}\n",
+                assemble(body, case.prelude.as_deref(), true)
+            ),
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     // RUNTIME pairing: a table of expected lines plus a counter, checked
@@ -79,7 +85,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
         .collect::<Vec<_>>()
         .join(", ");
     // Too FEW lines is a failure too, and only the end can see it.
-    let epilogue = "if (__i != __n) { printf(\"FAIL: %d line(s), wanted %d\\n\", __i, __n); assert(0); }\n";
+    let epilogue =
+        "if (__i != __n) { printf(\"FAIL: %d line(s), wanted %d\\n\", __i, __n); assert(0); }\n";
     // The prologue declares `__w`/`__n`/`__i`, and every check reads them, so
     // it has to be in scope at every check.
     //
@@ -106,7 +113,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     let (pro_at, file_scope) = match main_body_at {
         Some(_) if checks_outside_main => (0, true),
         Some(at) => (at, false),
-        None => (0, false) };
+        None => (0, false),
+    };
     let storage = if file_scope { "static " } else { "" };
     let prologue = format!(
         "{storage}const char *__w[] = {{{table}}};\n{storage}int __n = {}, __i = 0;\n",
@@ -120,11 +128,16 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
             &out[pro_at..at],
             &out[at..]
         ),
-        None => format!("{}{prologue}{}\n{epilogue}", &out[..pro_at], &out[pro_at..]) };
+        None => format!("{}{prologue}{}\n{epilogue}", &out[..pro_at], &out[pro_at..]),
+    };
 
     Emitted {
-        text: format!("{header}{}\n", assemble(&body_out, case.prelude.as_deref(), true)),
-        pairing: Pairing::Direct }
+        text: format!(
+            "{header}{}\n",
+            assemble(&body_out, case.prelude.as_deref(), true)
+        ),
+        pairing: Pairing::Direct,
+    }
 }
 
 /// What the corpus's `program_src` built, plus — when `checks` — the headers
@@ -185,11 +198,17 @@ fn find_main(src: &str) -> Option<usize> {
         if bytes[i] == b'/' {
             match bytes.get(i + 1) {
                 Some(b'/') => {
-                    i = src[i..].find('\n').map(|o| i + o + 1).unwrap_or(bytes.len());
+                    i = src[i..]
+                        .find('\n')
+                        .map(|o| i + o + 1)
+                        .unwrap_or(bytes.len());
                     continue;
                 }
                 Some(b'*') => {
-                    i = src[i + 2..].find("*/").map(|o| i + 2 + o + 2).unwrap_or(bytes.len());
+                    i = src[i + 2..]
+                        .find("*/")
+                        .map(|o| i + 2 + o + 2)
+                        .unwrap_or(bytes.len());
                     continue;
                 }
                 _ => {}
@@ -240,7 +259,8 @@ fn fmt_ends_with_newline(args: &str) -> Option<bool> {
                 last = Some(&head[i..end]);
                 i = end;
             }
-            None => i += 1 }
+            None => i += 1,
+        }
     }
     Some(last?.trim_end_matches('"').ends_with("\\n"))
 }
@@ -274,7 +294,8 @@ struct Print {
     args: String,
     /// Whether the format literal ends in a newline — decides whether the
     /// expected line gets one appended.
-    fmt_ends_with_newline: bool }
+    fmt_ends_with_newline: bool,
+}
 
 /// `printf(...)` and `puts(...)` statements. `puts` appends a newline, so it
 /// becomes a `"%s\n"` format.
@@ -311,7 +332,12 @@ fn find_prints(src: &str) -> Vec<Print> {
                         i = end;
                         continue;
                     };
-                    out.push(Print { start: i, end, args, fmt_ends_with_newline: nl });
+                    out.push(Print {
+                        start: i,
+                        end,
+                        args,
+                        fmt_ends_with_newline: nl,
+                    });
                     i = end;
                     continue;
                 }
@@ -399,13 +425,15 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
     let quote = match bytes.get(at)? {
         b'"' => b'"',
         b'\'' => b'\'',
-        _ => return None };
+        _ => return None,
+    };
     let mut i = at + 1;
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => i += 2,
             b if b == quote => return Some(i + 1),
-            _ => i += 1 }
+            _ => i += 1,
+        }
     }
     Some(bytes.len())
 }
@@ -424,7 +452,8 @@ fn c_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out

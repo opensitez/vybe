@@ -54,12 +54,14 @@ pub struct Options {
     /// Verified against `node` and vybe on 2026-08-02, which already agree:
     /// `var a=1; let b=1; const c=1; function f(){}` →
     /// `globalThis.a` is `1`, `b`/`c` are `undefined`, `f` is a function.
-    pub lexical_bindings_are_members: bool }
+    pub lexical_bindings_are_members: bool,
+}
 
 impl Options {
     pub fn from_profile(profile: &LanguageProfile) -> Options {
         Options {
-            lexical_bindings_are_members: !profile.has_ecma_globals }
+            lexical_bindings_are_members: !profile.has_ecma_globals,
+        }
     }
 }
 
@@ -211,7 +213,8 @@ impl Compiler {
                 matches!(&callee.kind, ExprKind::Ident(n)
                     if names_global_namespace_call(&self.profile, n))
             }
-            _ => false }
+            _ => false,
+        }
     }
 }
 
@@ -307,8 +310,7 @@ pub fn declare_free_globals(chunks: &mut [Chunk]) {
                 continue;
             };
             let operand_start = ip + 4;
-            if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 1 < code.len()
-            {
+            if (op == Op::GLOBAL_GET || op == Op::GLOBAL_SET) && operand_start + 1 < code.len() {
                 let idx =
                     u16::from_be_bytes([code[operand_start], code[operand_start + 1]]) as usize;
                 if let Some(vybe_runtime::Value::String(name)) = chunk.constants.get(idx) {

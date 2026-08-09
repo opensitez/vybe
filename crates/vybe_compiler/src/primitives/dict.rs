@@ -507,7 +507,7 @@ pub fn emit_values(chunks: &mut [Chunk], current: usize, line: u32) {
         line,
     );
     chunks[current].emit_op_u16(Op::LOCAL_GET, entries_local, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
 }
 
 /// Get all [key, value] pairs — `Object.entries(obj)` per ECMA-262

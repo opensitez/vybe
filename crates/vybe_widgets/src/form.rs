@@ -18,7 +18,8 @@
 
 use super::layout::{
     CommandValue, FocusManager, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext,
-    WidgetCommand, WidgetEvent, WidgetId };
+    WidgetCommand, WidgetEvent, WidgetId,
+};
 use std::collections::HashMap;
 use tiny_skia::*;
 
@@ -41,7 +42,8 @@ pub struct Form {
     /// Index of a control that fills the form (the Flutter `runApp` root) — it
     /// is re-sized to the form's rect on every `set_rect` so its flow layout
     /// cascades once the window supplies a real size.
-    fill_root: Option<usize> }
+    fill_root: Option<usize>,
+}
 
 impl Form {
     pub fn new(title: &str) -> Self {
@@ -54,7 +56,8 @@ impl Form {
             focus: FocusManager::new(),
             pending_events: Vec::new(),
             pending_children: HashMap::new(),
-            fill_root: None }
+            fill_root: None,
+        }
     }
 
     /// Stage a control into the widget tree (declarative/Flutter path). The
@@ -76,7 +79,12 @@ impl Form {
             // Fill the form so the root's relayout cascades down the subtree.
             // Recorded as `fill_root` so a later `set_rect` (real window size)
             // re-fills and re-lays-out.
-            widget.set_rect(LayoutRect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h));
+            widget.set_rect(LayoutRect::new(
+                self.rect.x,
+                self.rect.y,
+                self.rect.w,
+                self.rect.h,
+            ));
             self.fill_root = Some(self.controls.len());
             self.controls.push(widget);
         } else {
@@ -176,7 +184,8 @@ impl Form {
     pub fn control_mut(&mut self, index: usize) -> Option<&mut (dyn PanelWidget + 'static)> {
         match self.controls.get_mut(index) {
             Some(c) => Some(c.as_mut()),
-            None => None }
+            None => None,
+        }
     }
 
     /// Get the layout rect of a named control (recursively searching containers).
@@ -209,16 +218,13 @@ impl Form {
             {
                 let r = rect;
                 let scale = ctx.scale;
-                let mut overlay = TinySkiaCanvas::with_text(
-                    &mut ctx.pixmap,
-                    ctx.font_system,
-                    ctx.swash_cache,
-                );
+                let mut overlay =
+                    TinySkiaCanvas::with_text(&mut ctx.pixmap, ctx.font_system, ctx.swash_cache);
                 overlay.translate(r.x * scale, r.y * scale);
                 if (scale - 1.0).abs() > f32::EPSILON {
                     overlay.scale(scale, scale);
                 }
-                
+
                 // Replay ops!
                 canvas.replay(&mut overlay);
             }
@@ -272,7 +278,6 @@ impl Form {
 }
 
 impl PanelWidget for Form {
-
     /// The document tree's children — what `find_widget_mut` / `take_widget`
     /// walk, and what makes a node reachable by name however deeply nested.
     fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
@@ -378,7 +383,8 @@ impl PanelWidget for Form {
                 CommandValue::None
             }
             WidgetCommand::GetText => CommandValue::Text(self.title.clone()),
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

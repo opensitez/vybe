@@ -40,7 +40,8 @@ pub enum Value {
     /// (js-primitive-builtins models bigint as an opaque host type; the
     /// js-types JS-API converts wasm i64 ⇄ BigInt via ToBigInt64, the
     /// only place a 64-bit wrap is legal). Arc: clone = refcount bump.
-    BigInt(crate::bigint::BigIntRef) }
+    BigInt(crate::bigint::BigIntRef),
+}
 
 /// Compact tag identifying the `Value` variant — a small integer that
 /// indexes into per-slot counter arrays in the VM's type recorder.
@@ -63,7 +64,8 @@ pub enum ValueTag {
     BigInt = 11,
     F32 = 12,
     /// WASM GC typed null — a `Null` that traps on GC accessors.
-    TypedNull = 13 }
+    TypedNull = 13,
+}
 
 impl ValueTag {
     pub const COUNT: usize = 14;
@@ -85,7 +87,8 @@ impl ValueTag {
             ValueTag::Symbol => "Symbol",
             ValueTag::BigInt => "BigInt",
             ValueTag::F32 => "F32",
-            ValueTag::TypedNull => "TypedNull" }
+            ValueTag::TypedNull => "TypedNull",
+        }
     }
 }
 
@@ -108,7 +111,8 @@ impl Value {
             Value::WeakRef(_) => ValueTag::WeakRef,
             Value::V128(_) => ValueTag::V128,
             Value::Symbol(_) => ValueTag::Symbol,
-            Value::BigInt(_) => ValueTag::BigInt }
+            Value::BigInt(_) => ValueTag::BigInt,
+        }
     }
 }
 
@@ -130,14 +134,16 @@ impl Value {
             }
             Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
             Value::Null => 0.0,
-            _ => f64::NAN }
+            _ => f64::NAN,
+        }
     }
 
     /// Extract as f32 (rounding through single precision).
     pub fn as_f32(&self) -> f32 {
         match self {
             Value::F32(n) => *n,
-            _ => self.as_f64() as f32 }
+            _ => self.as_f64() as f32,
+        }
     }
 
     pub fn as_i32(&self) -> i32 {
@@ -154,7 +160,8 @@ impl Value {
                 }
             }
             Value::String(s) => s.trim().parse::<f64>().map(|f| f as i32).unwrap_or(0),
-            _ => 0 }
+            _ => 0,
+        }
     }
 
     /// ECMA-262 ToInt32 (§7.1.6): truncate to integer, reduce modulo 2^32,
@@ -203,7 +210,8 @@ impl Value {
                     0
                 }
             }
-            _ => 0 }
+            _ => 0,
+        }
     }
 
     pub fn as_bool(&self) -> bool {
@@ -221,7 +229,8 @@ impl Value {
         match self {
             Value::String(s) => s,
             Value::Symbol(s) => s,
-            _ => "" }
+            _ => "",
+        }
     }
 
     /// Value type tag — for the host to inspect.
@@ -249,12 +258,14 @@ impl Value {
                     ObjectKind::ModuleNamespace => "object",
                     ObjectKind::Continuation(_) => "continuation",
                     ObjectKind::Future { .. } => "future",
-                    ObjectKind::Stream { .. } => "stream" }
+                    ObjectKind::Stream { .. } => "stream",
+                }
             }
             Value::V128(_) => "v128",
             Value::WeakRef(_) => "weakref",
             Value::Symbol(_) => "symbol",
-            Value::BigInt(_) => "bigint" }
+            Value::BigInt(_) => "bigint",
+        }
     }
 
     /// Unwrap `Value::BigInt(n)` or coerce narrow integers — used by VM
@@ -265,7 +276,8 @@ impl Value {
             Value::BigInt(n) => n.to_i64_wrapping(),
             Value::I64(n) => *n,
             Value::I32(n) => *n as i64,
-            _ => 0 }
+            _ => 0,
+        }
     }
 
     /// Same-type structural equality. Returns false for different types.
@@ -311,7 +323,8 @@ impl Value {
                             fa.chunk_index == fb.chunk_index
                         }
                         (ObjectKind::HostFunction(ia), ObjectKind::HostFunction(ib)) => ia == ib,
-                        _ => false };
+                        _ => false,
+                    };
                     drop(oa);
                     drop(ob);
 
@@ -340,7 +353,8 @@ impl Value {
             (Value::I64(a), Value::I32(b)) => *a == (*b as i64),
             (Value::I64(a), Value::F64(b)) => (*a as f64) == *b,
             (Value::F64(a), Value::I64(b)) => *a == (*b as f64),
-            _ => false }
+            _ => false,
+        }
     }
 }
 
@@ -428,7 +442,8 @@ impl Value {
             (Value::Symbol(x), Value::Symbol(y)) => Arc::ptr_eq(x, y),
             (Value::WeakRef(x), Value::WeakRef(y)) => Weak::ptr_eq(x, y),
 
-            _ => false }
+            _ => false,
+        }
     }
 }
 
@@ -619,7 +634,8 @@ impl fmt::Display for Value {
                     ObjectKind::Continuation(_) => write!(f, "[continuation]"),
                     ObjectKind::Future { id } => write!(f, "[future {}]", id),
                     ObjectKind::Stream { id } => write!(f, "[stream {}]", id),
-                    ObjectKind::Ordinary => write!(f, "[object]") }
+                    ObjectKind::Ordinary => write!(f, "[object]"),
+                }
             }
             Value::WeakRef(weak) => {
                 if weak.upgrade().is_some() {
@@ -633,7 +649,8 @@ impl fmt::Display for Value {
                 write!(f, "v128[{}]", vals.join(""))
             }
             Value::Symbol(d) => write!(f, "Symbol({})", d),
-            Value::BigInt(n) => write!(f, "{}n", n) }
+            Value::BigInt(n) => write!(f, "{}n", n),
+        }
     }
 }
 
@@ -670,7 +687,8 @@ pub struct Object {
     /// Indexed fields — fixed-layout storage for typed objects (WASM GC struct fields).
     /// Field i is accessed by index when the type's field layout is known.
     /// Dynamic properties spill into `properties` HashMap.
-    pub fields: Vec<Value> }
+    pub fields: Vec<Value>,
+}
 
 /// Backing state for an `ObjectKind::ArrayBuffer`. Carries the bytes
 /// plus the resizability / detachment metadata required by
@@ -690,7 +708,8 @@ pub struct ArrayBufferState {
     /// True for `SharedArrayBuffer`. Affects whether cross-thread
     /// writes are allowed; the MVP implementation doesn't yet enforce
     /// this differently from a non-shared buffer.
-    pub shared: bool }
+    pub shared: bool,
+}
 
 /// Element type of a typed-array view — discriminates the 11
 /// ECMA-262 §23.2 typed-array variants. Determines both the bytes
@@ -719,7 +738,8 @@ pub enum TypedElemKind {
     /// BigInt64Array — elements are i64
     BigI64,
     /// BigUint64Array — stored as i64; unsigned interpretation at language boundary
-    BigU64 }
+    BigU64,
+}
 
 impl TypedElemKind {
     pub fn bytes_per_element(self) -> usize {
@@ -727,7 +747,8 @@ impl TypedElemKind {
             TypedElemKind::I8 | TypedElemKind::U8 | TypedElemKind::U8Clamped => 1,
             TypedElemKind::I16 | TypedElemKind::U16 => 2,
             TypedElemKind::I32 | TypedElemKind::U32 | TypedElemKind::F32 => 4,
-            TypedElemKind::F64 | TypedElemKind::BigI64 | TypedElemKind::BigU64 => 8 }
+            TypedElemKind::F64 | TypedElemKind::BigI64 | TypedElemKind::BigU64 => 8,
+        }
     }
 }
 
@@ -747,7 +768,8 @@ pub struct TypedArrayState {
     /// created the view from.
     pub buffer_obj: Arc<Mutex<Object>>,
     pub byte_offset: usize,
-    pub length: usize }
+    pub length: usize,
+}
 
 #[derive(Debug, Clone)]
 pub enum ObjectKind {
@@ -819,12 +841,15 @@ pub enum ObjectKind {
     /// `id` indexes into the EventLoop's future registry.
     /// Awaited via FUTURE_AWAIT opcode; resolved/rejected by host via HostContext.
     Future {
-        id: u64 },
+        id: u64,
+    },
     /// CM3 / WASI 0.3 stream<T> — async sequence of values.
     /// `id` indexes into the EventLoop's stream registry.
     /// Read via STREAM_READ opcode; pushed/closed by host via HostContext.
     Stream {
-        id: u64 } }
+        id: u64,
+    },
+}
 
 /// Runtime state for an `ObjectKind::Continuation`. Tracks the entry
 /// function, the fiber captured mid-suspend, and the lifecycle state.
@@ -839,13 +864,15 @@ pub struct ContinuationState {
     /// Lifecycle. `ready` = never resumed; `suspended` = paused
     /// mid-execution; `done` = entry returned normally, no further
     /// resumes allowed.
-    pub state: std::sync::Mutex<ContinuationPhase> }
+    pub state: std::sync::Mutex<ContinuationPhase>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContinuationPhase {
     Ready,
     Suspended,
-    Done }
+    Done,
+}
 
 impl Clone for ContinuationState {
     /// Continuations are identity-like — cloning produces an
@@ -857,7 +884,8 @@ impl Clone for ContinuationState {
         ContinuationState {
             entry: self.entry.clone(),
             saved: std::sync::Mutex::new(None),
-            state: std::sync::Mutex::new(ContinuationPhase::Ready) }
+            state: std::sync::Mutex::new(ContinuationPhase::Ready),
+        }
     }
 }
 
@@ -867,7 +895,8 @@ impl Object {
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id: 0,
-            fields: Vec::new() }
+            fields: Vec::new(),
+        }
     }
 
     pub fn new_typed(type_id: usize) -> Self {
@@ -875,7 +904,8 @@ impl Object {
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id,
-            fields: Vec::new() }
+            fields: Vec::new(),
+        }
     }
 
     /// Create a typed object with pre-allocated indexed fields.
@@ -884,7 +914,8 @@ impl Object {
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Ordinary,
             type_id,
-            fields: vec![Value::Null; field_count] }
+            fields: vec![Value::Null; field_count],
+        }
     }
 
     pub fn new_array(elements: Vec<Value>) -> Self {
@@ -893,7 +924,8 @@ impl Object {
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Array(elements),
             type_id: 0,
-            fields: Vec::new() };
+            fields: Vec::new(),
+        };
         obj.properties
             .insert("length".into(), Value::F64(len as f64));
         obj
@@ -935,14 +967,17 @@ pub struct Function {
     pub name: Option<String>,
     pub arity: u8,
     pub chunk_index: usize,
-    pub upvalues: Vec<Arc<Mutex<Upvalue>>> }
+    pub upvalues: Vec<Arc<Mutex<Upvalue>>>,
+}
 
 /// A captured variable (upvalue).
 #[derive(Debug, Clone)]
 pub struct Upvalue {
-    pub location: UpvalueLocation }
+    pub location: UpvalueLocation,
+}
 
 #[derive(Debug, Clone)]
 pub enum UpvalueLocation {
     Open(usize),
-    Closed(Value) }
+    Closed(Value),
+}

@@ -10,9 +10,9 @@
 //! All indices and lengths are in UTF-16 code units, matching JS semantics.
 //! Functions marked `trap()` in the spec call `ctx.throw_value(...)` here.
 
-use std::sync::Arc;
 use crate::value::ObjectKind;
 use crate::{HostContext, VM, Value};
+use std::sync::Arc;
 
 fn trap(ctx: &mut HostContext, msg: &str) {
     ctx.throw_value(Value::String(Arc::from(msg)));
@@ -159,7 +159,8 @@ pub fn register(vm: &mut VM) {
                     }
                 }
                 (Value::Null, Value::Null) => 1,
-                _ => 0 })
+                _ => 0,
+            })
         }),
     );
 

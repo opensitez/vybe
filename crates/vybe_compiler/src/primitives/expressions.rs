@@ -48,7 +48,8 @@ impl Compiler {
                 is_rest: false,
                 is_kwargs: false,
                 is_optional: true,
-                is_nullable: true })
+                is_nullable: true,
+            })
             .collect();
         let sig = super::CallSignature::from_params(&params);
         let ordered = self.reorder_named_args_with_signatures(args, &[sig]);
@@ -82,7 +83,8 @@ impl Compiler {
             let slot = self.define_local("__tree_ctor_arg");
             match ordered.get(i) {
                 Some(arg) => self.compile_expr(&arg.value)?,
-                None => self.emit_null() }
+                None => self.emit_null(),
+            }
             self.emit_u16(Op::LOCAL_SET, slot);
             arg_slots.push(slot);
         }
@@ -108,7 +110,8 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, this_slot);
         match &spec.control_fn {
             Some(cf) => self.emit_const(Value::String(std::sync::Arc::from(cf.as_str()))),
-            None => self.emit_null() }
+            None => self.emit_null(),
+        }
         let cfk = self.str_const("__controlfn");
         self.emit_struct_field_op(Op::STRUCT_SET, 0, cfk);
 
@@ -141,7 +144,8 @@ impl Compiler {
                     Some(FieldGui::Event(name)) => (2, name.as_str()),
                     Some(FieldGui::Caption) => (3, ""),
                     Some(FieldGui::NestOrProp(k)) => (0, k.as_str()),
-                    None => (0, field.as_str()) };
+                    None => (0, field.as_str()),
+                };
                 self.emit_const(Value::I32(kind));
                 self.emit_const(Value::String(std::sync::Arc::from(key)));
                 self.emit_u16(Op::LOCAL_GET, arg_slots[i]);
@@ -811,8 +815,8 @@ impl Compiler {
                     }
                 }
                 // Local variable / parameter takes priority over implicit self field
-                let is_local = self.scope().resolve(name).is_some()
-                    || self.has_static_local_binding(name);
+                let is_local =
+                    self.scope().resolve(name).is_some() || self.has_static_local_binding(name);
 
                 // The owner of `Items` has to be an `ObservableCollection`, and
                 // that is the namespace tree's answer, already scoped by
@@ -916,7 +920,7 @@ impl Compiler {
 
             // ── This / Super ────────────────────────────────────────────
             ExprKind::This => {
-                if self.profile.ambient_this_binding
+                if self.ambient_this()
                     && self.current_class.is_some()
                     && self.current_func_name.as_deref() != Some("<lambda>")
                     && self.current_func_name.as_deref().is_some_and(|name| {
@@ -955,7 +959,7 @@ impl Compiler {
                         let idx = self.closure_env_index(&kw);
                         let l = self.line;
                         crate::primitives::closures::emit_env_get(self.chunk(), env, idx, l);
-                    } else if self.profile.ambient_this_binding {
+                    } else if self.ambient_this() {
                         if let Some(_uv) = self.resolve_upvalue(self.scopes.len() - 1, "__js_this")
                         {
                             let env = self.closure_env_slot();
@@ -965,12 +969,12 @@ impl Compiler {
                         } else {
                             self.emit_global_read("__js_this");
                         }
-                    } else if self.profile.ambient_this_binding {
+                    } else if self.ambient_this() {
                         self.emit_global_read("__js_this");
                     } else {
                         self.emit_null();
                     }
-                } else if self.profile.ambient_this_binding {
+                } else if self.ambient_this() {
                     self.emit_global_read("__js_this");
                 } else {
                     self.emit_null();
@@ -1163,7 +1167,8 @@ impl Compiler {
                             {
                                 self.emit_const(Value::String(Arc::from(name.as_str())));
                             }
-                            _ => self.compile_expr(right)? }
+                            _ => self.compile_expr(right)?,
+                        }
                         self.compile_binop(op);
                         return Ok(());
                     }
@@ -1244,6 +1249,34 @@ impl Compiler {
                     return Ok(());
                 }
 
+                // Flags arithmetic. An enum constant is an OBJECT, so `|`, `&`
+                // and `^` read the `Int` ROLE off each operand first — through
+                // the same helper the `(int)e` cast reads, so the two cannot
+                // drift into disagreeing about what the int of an enum is.
+                //
+                // The RESULT is the underlying integer, deliberately: a
+                // combination names no member (`Perm.A | Perm.B` is not a
+                // constant), so there is no object to hand back. Which means a
+                // combined value is no longer enum-TYPED, and the comma-joined
+                // flags rendering further down this file is unreachable from
+                // one — no test covers `WriteLine(a | b)` → `"A, B"`, and
+                // inventing a member object for it would be a fifth
+                // representation of an enum value.
+                //
+                // Static gate on purpose: ONE operand having a declared enum
+                // type is enough, since the other is then either a constant or
+                // an already-combined integer, and both are handled. Widening
+                // this to a runtime probe would pull every language's `|` in.
+                if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor)
+                    && (self.canonical_enum_type_from_expr(left).is_some()
+                        || self.canonical_enum_type_from_expr(right).is_some())
+                {
+                    self.emit_enum_int_value(left)?;
+                    self.emit_enum_int_value(right)?;
+                    self.compile_binop(op);
+                    return Ok(());
+                }
+
                 // `int / int` truncates. ONE branch for every language that
                 // says so: C now declares `integer_division_on_slash = true`
                 // like C# always did, and each brings its own integer
@@ -1261,8 +1294,8 @@ impl Compiler {
 
                 // `xor` resolves by operand type — bitwise on integers,
                 if self.profile.xor_is_logical_for_non_integers && *op == BinOp::BitXor {
-                    let integer_xor = self.expr_is_integer_like(left)
-                        && self.expr_is_integer_like(right);
+                    let integer_xor =
+                        self.expr_is_integer_like(left) && self.expr_is_integer_like(right);
                     self.compile_expr(left)?;
                     self.compile_expr(right)?;
                     self.compile_binop(&BinOp::BitXor);
@@ -1340,7 +1373,8 @@ impl Compiler {
                             BinOp::LtEq => Some("le"),
                             BinOp::Gt => Some("gt"),
                             BinOp::GtEq => Some("ge"),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(name) = fn_name {
                             let idx = self.import("ecma:bigint", name);
                             self.compile_expr(left)?;
@@ -1361,7 +1395,8 @@ impl Compiler {
                             BinOp::Shl => Some("shl"),
                             BinOp::Shr => Some("shr"),
                             BinOp::Pow => Some("pow"),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(name) = arith_fn {
                             if other_known_non_bigint {
                                 // A language that DECLARES integer spellings
@@ -1381,9 +1416,7 @@ impl Compiler {
                                         vybe_ast::builtin_types::classify_with(
                                             &self.profile.builtin_type_spellings,
                                             h,
-                                        ) == Some(
-                                            vybe_ast::builtin_slots::BuiltinType::Double,
-                                        )
+                                        ) == Some(vybe_ast::builtin_slots::BuiltinType::Double)
                                     });
                                     if other_is_float {
                                         let number = self.import("ecma:number", "Number");
@@ -1448,7 +1481,8 @@ impl Compiler {
                                 BinOp::LtEq => "le",
                                 BinOp::Gt => "gt",
                                 BinOp::GtEq => "ge",
-                                _ => unreachable!() };
+                                _ => unreachable!(),
+                            };
                             let idx = self.import("ecma:bigint", fn_name);
                             self.compile_expr(left)?;
                             self.compile_expr(right)?;
@@ -1486,6 +1520,20 @@ impl Compiler {
 
             // ── Unary ───────────────────────────────────────────────────
             ExprKind::Unary { op, expr: inner } => {
+                // `~Perm.A` — the operand is an enum CONSTANT, so it coerces
+                // through the same `Int` role the binary flags operators and
+                // the `(int)e` cast read, before the complement sees it.
+                // Without this it reaches `emit_rich_unary`, which asks the
+                // object for a `Not` operator it never declared and then
+                // complements the object itself.
+                if matches!(op, UnaryOp::BitNot)
+                    && self.canonical_enum_type_from_expr(inner).is_some()
+                {
+                    self.emit_enum_int_value(inner)?;
+                    let line = self.line;
+                    common::expressions::emit_i32_not(self.chunk(), line);
+                    return Ok(());
+                }
                 match op {
                     UnaryOp::PreInc | UnaryOp::PostInc => {
                         // ++x / x++ : load, add 1, store
@@ -1567,7 +1615,8 @@ impl Compiler {
                             UnaryOp::Neg => {
                                 let l = self.line;
                                 if self.bigint_semantics()
-                                    && self.hint_is_bigint(self.infer_expr_type_hint(inner).as_deref())
+                                    && self
+                                        .hint_is_bigint(self.infer_expr_type_hint(inner).as_deref())
                                 {
                                     let idx = self.import("ecma:bigint", "neg");
                                     self.emit_host_call(idx, 1);
@@ -1589,7 +1638,8 @@ impl Compiler {
                                 // plus throws, while explicit Number(1n) still
                                 // converts.
                                 if self.bigint_semantics()
-                                    && self.hint_is_bigint(self.infer_expr_type_hint(inner).as_deref())
+                                    && self
+                                        .hint_is_bigint(self.infer_expr_type_hint(inner).as_deref())
                                 {
                                     self.emit_const(Value::String(Arc::from(
                                         "Cannot convert a BigInt value to a number",
@@ -1612,8 +1662,7 @@ impl Compiler {
                             }
                             UnaryOp::Not => {
                                 let line = self.line;
-                                if self.expr_is_integer_like(inner)
-                                {
+                                if self.expr_is_integer_like(inner) {
                                     common::expressions::emit_i32_not(self.chunk(), line);
                                 } else {
                                     crate::primitives::ops::emit_dyn_not(self.chunk(), line);
@@ -1647,9 +1696,9 @@ impl Compiler {
                                     .flatten()
                                     .map(str::to_string);
                                 if let Some(target) = bigint_not {
-                                    if self.hint_is_bigint(
-                                        self.infer_expr_type_hint(inner).as_deref(),
-                                    ) {
+                                    if self
+                                        .hint_is_bigint(self.infer_expr_type_hint(inner).as_deref())
+                                    {
                                         // Statically known BigInt.
                                         self.emit_slot_target(&target, 1, l, "bigint not");
                                     } else {
@@ -1687,20 +1736,18 @@ impl Compiler {
                                 self.emit(Op::DROP);
                                 inst!(self, core_wasm::bool_const, true);
                             }
-                            _ => {}              // PreInc etc handled above
+                            _ => {} // PreInc etc handled above
                         }
                     }
                 }
             }
 
             ExprKind::RefOf(place) => match place.as_ref() {
+                // Local THEN global, through the one resolver — the `else` arm
+                // here used to wrap every non-local in a fresh cell, which is a
+                // silent by-value snapshot of a global.
                 PlaceExpr::Ident(name) => {
-                    if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
-                        self.emit_u16(Op::LOCAL_GET, slot);
-                    } else {
-                        self.compile_expr(&Expression::ident(name))?;
-                        self.emit_wrap_top_of_stack_in_pointer_cell();
-                    }
+                    self.compile_ident_reference(name);
                 }
                 PlaceExpr::Deref(expr) => {
                     self.compile_expr(expr)?;
@@ -1736,7 +1783,8 @@ impl Compiler {
             ExprKind::Call {
                 callee,
                 args,
-                optional } => {
+                optional,
+            } => {
                 if *optional {
                     // Optional call: callee?.() — short-circuit to undefined if callee is null/undefined.
                     // Per ECMA-262 §13.5.9: the result is `undefined` (not null) when short-circuiting.
@@ -1796,7 +1844,8 @@ impl Compiler {
             ExprKind::Member {
                 object,
                 field,
-                null_safe } => {
+                null_safe,
+            } => {
                 if self.private_member_access_forbidden(field) {
                     self.emit_private_access_denied(field)?;
                     return Ok(());
@@ -2027,7 +2076,8 @@ impl Compiler {
                             ReflectionBinding::Method {
                                 type_name,
                                 method_name,
-                                generic_args },
+                                generic_args,
+                            },
                             "ReturnType",
                         ) => {
                             let return_type = self
@@ -2038,7 +2088,9 @@ impl Compiler {
                                         if let Some(index) = meta
                                             .generic_params
                                             .iter()
-                                            .position(|param| param.eq_ignore_ascii_case(return_type))
+                                            .position(|param| {
+                                                param.eq_ignore_ascii_case(return_type)
+                                            })
                                             .filter(|index| *index < generic_args.len())
                                         {
                                             generic_args[index].clone()
@@ -2087,13 +2139,16 @@ impl Compiler {
                             ReflectionBinding::Method {
                                 type_name,
                                 method_name,
-                                generic_args },
+                                generic_args,
+                            },
                             "IsGenericMethodDefinition",
                         ) => {
                             let value = self
                                 .reflection_type_metadata(&type_name)
                                 .and_then(|meta| meta.methods.get(&method_name))
-                                .map(|meta| !meta.generic_params.is_empty() && generic_args.is_empty())
+                                .map(|meta| {
+                                    !meta.generic_params.is_empty() && generic_args.is_empty()
+                                })
                                 .unwrap_or(false);
                             inst!(self, core_wasm::bool_const, value);
                             return Ok(());
@@ -2101,7 +2156,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Property {
                                 type_name,
-                                property_name },
+                                property_name,
+                            },
                             "CanRead",
                         ) => {
                             let can_read = self
@@ -2113,7 +2169,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Property {
                                 type_name,
-                                property_name },
+                                property_name,
+                            },
                             "CanWrite",
                         ) => {
                             let can_write = self
@@ -2127,7 +2184,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Field {
                                 type_name,
-                                field_name },
+                                field_name,
+                            },
                             "IsPublic",
                         ) => {
                             let value = self
@@ -2142,7 +2200,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Constructor {
                                 type_name,
-                                param_types },
+                                param_types,
+                            },
                             "IsPublic",
                         ) => {
                             let value = self
@@ -2160,7 +2219,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Constructor {
                                 type_name,
-                                param_types },
+                                param_types,
+                            },
                             "IsPrivate",
                         ) => {
                             let value = self
@@ -2170,7 +2230,9 @@ impl Compiler {
                                         .iter()
                                         .find(|ctor| ctor.param_types == param_types)
                                 })
-                                .map(|meta| matches!(meta.visibility, vybe_ast::Visibility::Private))
+                                .map(|meta| {
+                                    matches!(meta.visibility, vybe_ast::Visibility::Private)
+                                })
                                 .unwrap_or(false);
                             inst!(self, core_wasm::bool_const, value);
                             return Ok(());
@@ -2178,7 +2240,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Constructor {
                                 type_name,
-                                param_types },
+                                param_types,
+                            },
                             "IsStatic",
                         ) => {
                             let value = self
@@ -2196,7 +2259,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Field {
                                 type_name,
-                                field_name },
+                                field_name,
+                            },
                             "IsPrivate",
                         ) => {
                             let value = self
@@ -2211,7 +2275,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Field {
                                 type_name,
-                                field_name },
+                                field_name,
+                            },
                             "IsStatic",
                         ) => {
                             let value = self
@@ -2224,7 +2289,8 @@ impl Compiler {
                         (
                             ReflectionBinding::Field {
                                 type_name,
-                                field_name },
+                                field_name,
+                            },
                             "IsInitOnly",
                         ) => {
                             let value = self
@@ -2270,13 +2336,17 @@ impl Compiler {
                     let obj_is_local = self.scope().resolve_exact(obj_name).is_some()
                         || self.has_static_local_binding(obj_name)
                         || (self.scope().resolve(obj_name).is_some() && !prefers_type_lookup);
-                    if !obj_is_local {
-                        if let Some(value) = self.enum_member_ordinal(obj_name, field) {
-                            self.emit_const(Value::F64(value as f64));
-                            return Ok(());
-                        }
-                    }
-
+                    // `Color.Green` is an ordinary static member read of the
+                    // enum class, which is what `compile_shared_enum_decl`
+                    // installs: the MEMBER OBJECT (`__type`/`name`/`value`/
+                    // `index`). It used to be const-folded to `F64(ordinal)`
+                    // here, which meant the member objects that lowering builds
+                    // were never reachable from a member read — the enum had two
+                    // representations in one program, and `WriteLine(c)` printed
+                    // `1` instead of `Green`. That fold is also the reason
+                    // `languages/java/src/walker.rs` states for refusing
+                    // `StmtKind::EnumDecl`: it "constant-folds `Mode.ON` member
+                    // reads to F64 ordinals, breaking instance identity".
                     if let Some(key) = self.generic_static_member_key(obj_name, field) {
                         self.emit_global_read(&key);
                         return Ok(());
@@ -2388,9 +2458,10 @@ impl Compiler {
                                         ..
                                     },
                                 ),
-                            ) if crate::primitives::instructions::host::CapabilityContext::get()
-                                .functions
-                                .has(&module, &func) =>
+                            ) if crate::primitives::instructions::host::CapabilityContext::get(
+                            )
+                            .functions
+                            .has(&module, &func) =>
                             {
                                 let idx = self.import(&module, &func);
                                 self.emit_host_call(idx, 0);
@@ -2422,7 +2493,8 @@ impl Compiler {
                             }
                             Some(super::resolver::Resolution::ResolvedPrefix {
                                 target,
-                                suffix }) => {
+                                suffix,
+                            }) => {
                                 match target {
                                     crate::primitives::namespaces::ResolutionTarget::CommonEmit(
                                         emit,
@@ -2465,7 +2537,8 @@ impl Compiler {
                                 return Ok(());
                             }
                             Some(super::resolver::Resolution::NamespaceChain {
-                                parts: ns_parts }) => {
+                                parts: ns_parts,
+                            }) => {
                                 if ns_parts.len() >= 2 {
                                     let mut found_window: Option<(usize, usize)> = None;
                                     'outer: for start in 0..ns_parts.len().saturating_sub(1) {
@@ -2479,8 +2552,7 @@ impl Compiler {
                                     }
                                     if let Some((_const_start, const_end)) = found_window {
                                         let key = ns_parts[_const_start..const_end].join(".");
-                                        let cv =
-                                            self.lookup_named_constant(&key).unwrap();
+                                        let cv = self.lookup_named_constant(&key).unwrap();
                                         match cv {
                                             ConstantValue::Bool(b) => {
                                                 self.emit_const(Value::Bool(b))
@@ -2489,7 +2561,8 @@ impl Compiler {
                                                 self.emit_const(Value::F64(f))
                                             }
                                             ConstantValue::Str(s) => self
-                                                .emit_const(Value::String(Arc::from(s.as_str()))) }
+                                                .emit_const(Value::String(Arc::from(s.as_str()))),
+                                        }
                                         for part in &ns_parts[const_end..] {
                                             let idx = self.str_const(part);
                                             self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
@@ -2545,10 +2618,7 @@ impl Compiler {
                 if self.uses_proxy && !*null_safe {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
-                    let line = self.line;
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .proxy_get
-                        .unwrap()(&mut self.chunks, self.current, line);
+                    self.emit_proxy_get()?;
                     return Ok(());
                 }
 
@@ -2936,7 +3006,8 @@ impl Compiler {
                         ExprKind::Lit(Literal::Str(_))
                         | ExprKind::Interpolation(_)
                         | ExprKind::Array(_) => true,
-                        _ => unknown_receiver_default }
+                        _ => unknown_receiver_default,
+                    }
                 } else {
                     false
                 };
@@ -2973,7 +3044,7 @@ impl Compiler {
                 // Gated by the RECEIVER being collection-like, which the tree
                 // now answers — not by which family compiled the file.
                 let is_csharp_len_accessor = (field.eq_ignore_ascii_case("Length")
-                        || field.eq_ignore_ascii_case("Count"))
+                    || field.eq_ignore_ascii_case("Count"))
                     && receiver_is_collection_like
                     && !matches!(
                         &object.kind,
@@ -3006,7 +3077,7 @@ impl Compiler {
                     )
                 {
                     self.compile_expr(object)?;
-                    fn_call!(self, "ecma:set", "size", 1);
+                    common::sets::emit_size(&mut self.chunks, self.current, self.line);
                     return Ok(());
                 }
 
@@ -3090,7 +3161,8 @@ impl Compiler {
                         vybe_runtime::component_model::InstancePropertyTarget::Host {
                             module,
                             func,
-                            key } => {
+                            key,
+                        } => {
                             let idx = self.import(&module, &func);
                             if let Some(key) = key {
                                 self.emit_const(Value::String(Arc::from(key.as_str())));
@@ -3112,23 +3184,24 @@ impl Compiler {
                     }
                 }
 
-                let namespace_tree_zero_arg_method = if !self.profile.namespaces.type_scopes.is_empty()
-                    && !*null_safe
-                    && !is_csharp_len_accessor
-                    && !is_csharp_runtime_count_accessor
-                {
-                    receiver_type_hint.as_deref().and_then(|type_hint| {
-                        let class_name = Self::normalize_type_hint(type_hint);
-                        vybe_runtime::namespaces::lookup_type_instance_target(
-                            &self.profile.namespaces.type_scopes,
-                            &class_name,
-                            field,
-                            0,
-                        )
-                    })
-                } else {
-                    None
-                };
+                let namespace_tree_zero_arg_method =
+                    if !self.profile.namespaces.type_scopes.is_empty()
+                        && !*null_safe
+                        && !is_csharp_len_accessor
+                        && !is_csharp_runtime_count_accessor
+                    {
+                        receiver_type_hint.as_deref().and_then(|type_hint| {
+                            let class_name = Self::normalize_type_hint(type_hint);
+                            vybe_runtime::namespaces::lookup_type_instance_target(
+                                &self.profile.namespaces.type_scopes,
+                                &class_name,
+                                field,
+                                0,
+                            )
+                        })
+                    } else {
+                        None
+                    };
 
                 if let Some(target) = namespace_tree_zero_arg_method {
                     if let vybe_runtime::component_model::InstanceMethodTarget::Common {
@@ -3295,8 +3368,23 @@ impl Compiler {
                     return Ok(());
                 }
 
-                if *null_safe && self.profile.namespaces.use_dotnet && !is_csharp_len_accessor {
-                    let obj_slot = self.define_local("__dotnet_nullsafe_obj");
+                if *null_safe {
+                    // ONE optional-chain read. There used to be two, selected by
+                    // a language flag, and they disagreed on both halves.
+                    //
+                    // The GUARD is the nullish test, not an object test:
+                    // ECMA-262 §13.3.9.1 short-circuits `a?.b` on undefined and
+                    // null and evaluates the member read for everything else,
+                    // which is exactly `REF_IS_NULL` (the VM answers it for
+                    // `Null | TypedNull | Undefined`). Guarding on `is_object`
+                    // instead made `"abc"?.length` answer null — a primitive
+                    // receiver is not nullish, and its member read is ordinary.
+                    //
+                    // The NAME is the resolved storage name, which is what the
+                    // non-null-safe read below already uses. Only one of the two
+                    // arms resolved it, so whether `?.` found a renamed field
+                    // depended on which language compiled the file.
+                    let obj_slot = self.define_local("__member_nullsafe_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
                     self.emit_u16(Op::LOCAL_GET, obj_slot);
                     self.emit(Op::REF_IS_NULL);
@@ -3307,21 +3395,6 @@ impl Compiler {
                     let field_name = self
                         .field_storage_name_for_receiver(object, field)
                         .unwrap_or_else(|| self.canon(field));
-                    let idx = self.str_const(&field_name);
-                    self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
-                    self.chunk().emit_else(line);
-                    self.emit_null();
-                    self.chunk().emit_end(line);
-                } else if *null_safe {
-                    let obj_slot = self.define_local("__member_nullsafe_obj");
-                    self.emit_u16(Op::LOCAL_SET, obj_slot);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    inst!(self, recipes::is_object);
-                    let line = self.line;
-                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                    self.chunk().emit_if_value(line);
-                    self.emit_u16(Op::LOCAL_GET, obj_slot);
-                    let field_name = self.canon(field);
                     let idx = self.str_const(&field_name);
                     self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
                     self.chunk().emit_else(line);
@@ -3366,7 +3439,8 @@ impl Compiler {
             ExprKind::Index {
                 object,
                 index,
-                null_safe } => {
+                null_safe,
+            } => {
                 // `_G[k]` / `$GLOBALS[$k]` / `globals()[k]` — the module's
                 // global namespace indexed by a RUNTIME key. Handled before the
                 // ordinary index paths because the namespace has no object to
@@ -3407,7 +3481,8 @@ impl Compiler {
                 if let ExprKind::Range {
                     start,
                     end,
-                    inclusive } = &index.kind
+                    inclusive,
+                } = &index.kind
                 {
                     let line = self.line;
                     if self.profile.ecma_array_method_dispatch {
@@ -3557,10 +3632,13 @@ impl Compiler {
                             ExprKind::Lit(Literal::Int(n)) => Some(*n),
                             ExprKind::Unary {
                                 op: UnaryOp::Neg,
-                                expr } => match &expr.kind {
+                                expr,
+                            } => match &expr.kind {
                                 ExprKind::Lit(Literal::Int(n)) => Some(-*n),
-                                _ => None },
-                            _ => None });
+                                _ => None,
+                            },
+                            _ => None,
+                        });
 
                         if lower.is_none() && upper.is_none() {
                             if step_const == Some(-1) {
@@ -3711,10 +3789,7 @@ impl Compiler {
                     // Proxy get-trap dispatch on bracket-notation reads.
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
-                    let line = self.line;
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .proxy_get
-                        .unwrap()(&mut self.chunks, self.current, line);
+                    self.emit_proxy_get()?;
                 } else if self.profile.dynamic_member_access && *null_safe {
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__js_index_obj");
@@ -3731,20 +3806,23 @@ impl Compiler {
                         ExprKind::Member {
                             object,
                             field,
-                            null_safe: false } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                            null_safe: false,
+                        } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
                             let fallback_key = match field.as_str() {
                                 "iterator" => Some("iterator"),
                                 "asyncIterator" => Some("asyncIterator"),
                                 "toPrimitive" => Some("toprimitive"),
                                 "hasInstance" => Some("hasinstance"),
-                                _ => None };
+                                _ => None,
+                            };
                             if let Some(fallback_key) = fallback_key {
                                 self.emit_const(Value::String(Arc::from(fallback_key)));
                             } else {
                                 self.compile_expr(index)?;
                             }
                         }
-                        _ => self.compile_expr(index)? }
+                        _ => self.compile_expr(index)?,
+                    }
                     if self.profile.negative_index_wraps {
                         self.emit_negative_index_wrap();
                     }
@@ -3758,7 +3836,8 @@ impl Compiler {
                         .and_then(|type_hint| match type_hint.as_str() {
                             "bigint64array" => Some("ecma:bigint64array"),
                             "biguint64array" => Some("ecma:biguint64array"),
-                            _ => None })
+                            _ => None,
+                        })
                     {
                         let idx = self.import(ns, "get");
                         self.emit_host_call(idx, 2);
@@ -3798,20 +3877,23 @@ impl Compiler {
                         ExprKind::Member {
                             object,
                             field,
-                            null_safe: false } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                            null_safe: false,
+                        } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
                             let fallback_key = match field.as_str() {
                                 "iterator" => Some("iterator"),
                                 "asyncIterator" => Some("asyncIterator"),
                                 "toPrimitive" => Some("toprimitive"),
                                 "hasInstance" => Some("hasinstance"),
-                                _ => None };
+                                _ => None,
+                            };
                             if let Some(fallback_key) = fallback_key {
                                 self.emit_const(Value::String(Arc::from(fallback_key)));
                             } else {
                                 self.emit_u16(Op::LOCAL_GET, key_slot);
                             }
                         }
-                        _ => self.emit_u16(Op::LOCAL_GET, key_slot) }
+                        _ => self.emit_u16(Op::LOCAL_GET, key_slot),
+                    }
                     let reflect_idx = self.import("ecma:reflect", "get");
                     self.emit_host_call(reflect_idx, 2);
                     self.chunk().emit_else(lookup_line);
@@ -3831,7 +3913,17 @@ impl Compiler {
                     let line = self.line;
                     self.emit_common(&get_emit, 2, line);
                     return Ok(());
-                } else if self.profile.namespaces.use_dotnet {
+                // The receiver's declared type did not answer, so the index role
+                // is asked of the VALUE. Reachable only when a class in this
+                // program carries that role as an ACCESSOR — a shape whose
+                // receivers are always user objects, never a dict or a list.
+                //
+                // It cannot be widened to "some class fills `GetItem`": the
+                // fallback below is a fixed `collections::emit_get`, so every
+                // index in the file would lose whatever its own language
+                // declared for `get_item`, and an ordinary `d[k]` would take
+                // this path instead of the one that maintains its storage.
+                } else if self.program_has_index_accessor {
                     self.compile_expr(object)?;
                     let obj_slot = self.define_local("__index_obj");
                     self.emit_u16(Op::LOCAL_SET, obj_slot);
@@ -3906,21 +3998,24 @@ impl Compiler {
                             ExprKind::Member {
                                 object,
                                 field,
-                                null_safe: false } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") =>
+                                null_safe: false,
+                            } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") =>
                             {
                                 let fallback_key = match field.as_str() {
                                     "iterator" => Some("iterator"),
                                     "asyncIterator" => Some("asyncIterator"),
                                     "toPrimitive" => Some("toprimitive"),
                                     "hasInstance" => Some("hasinstance"),
-                                    _ => None };
+                                    _ => None,
+                                };
                                 if let Some(fallback_key) = fallback_key {
                                     self.emit_const(Value::String(Arc::from(fallback_key)));
                                 } else {
                                     self.compile_array_index_operand_for_owner(object, index)?;
                                 }
                             }
-                            _ => self.compile_array_index_operand_for_owner(object, index)? }
+                            _ => self.compile_array_index_operand_for_owner(object, index)?,
+                        }
                         if self.profile.negative_index_wraps {
                             self.emit_negative_index_wrap();
                         }
@@ -3935,7 +4030,8 @@ impl Compiler {
                             .and_then(|type_hint| match type_hint.as_str() {
                                 "bigint64array" => Some("ecma:bigint64array"),
                                 "biguint64array" => Some("ecma:biguint64array"),
-                                _ => None })
+                                _ => None,
+                            })
                         {
                             let idx = self.import(ns, "get");
                             self.emit_host_call(idx, 2);
@@ -3974,21 +4070,24 @@ impl Compiler {
                             ExprKind::Member {
                                 object,
                                 field,
-                                null_safe: false } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") =>
+                                null_safe: false,
+                            } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") =>
                             {
                                 let fallback_key = match field.as_str() {
                                     "iterator" => Some("iterator"),
                                     "asyncIterator" => Some("asyncIterator"),
                                     "toPrimitive" => Some("toprimitive"),
                                     "hasInstance" => Some("hasinstance"),
-                                    _ => None };
+                                    _ => None,
+                                };
                                 if let Some(fallback_key) = fallback_key {
                                     self.emit_const(Value::String(Arc::from(fallback_key)));
                                 } else {
                                     self.emit_u16(Op::LOCAL_GET, key_slot);
                                 }
                             }
-                            _ => self.emit_u16(Op::LOCAL_GET, key_slot) }
+                            _ => self.emit_u16(Op::LOCAL_GET, key_slot),
+                        }
                         let reflect_idx = self.import("ecma:reflect", "get");
                         self.emit_host_call(reflect_idx, 2);
                         self.chunk().emit_else(lookup_line);
@@ -4020,7 +4119,8 @@ impl Compiler {
                                     (ExprKind::Ident(a), ExprKind::Ident(b), "__base", "__idx") if a == b
                                 )
                             }
-                            _ => false }
+                            _ => false,
+                        }
                     };
 
                     if is_c_pointer_base_index {
@@ -4089,7 +4189,8 @@ impl Compiler {
                     let ctor_key = match &class.kind {
                         ExprKind::Ident(name) => Some(self.canon(name)),
                         ExprKind::Member { field, .. } => Some(self.canon(field)),
-                        _ => None };
+                        _ => None,
+                    };
                     if let Some(signatures) = ctor_key
                         .as_ref()
                         .and_then(|key| self.constructor_signatures.get(key))
@@ -4128,8 +4229,11 @@ impl Compiler {
                                     self.line,
                                 );
                             }
-                            let idx = self.import("ecma:set", "fromIterable");
-                            self.emit_host_call(idx, 1);
+                            common::sets::emit_from_iterable(
+                                &mut self.chunks,
+                                self.current,
+                                self.line,
+                            );
                             return Ok(());
                         }
 
@@ -4149,18 +4253,6 @@ impl Compiler {
                             return Ok(());
                         }
 
-                        if name == "Proxy" && args.len() == 2 {
-                            self.uses_proxy = true;
-                            self.compile_expr(&args[0].value)?;
-                            self.compile_expr(&args[1].value)?;
-                            let line = self.line;
-                            vybe_runtime::registry::hooks(&self.profile.name)
-                                .proxy_create
-                                .unwrap()(
-                                &mut self.chunks, self.current, line
-                            );
-                            return Ok(());
-                        }
                     }
                 }
                 let class_parts = self.flatten_member_chain(class);
@@ -4190,7 +4282,8 @@ impl Compiler {
                     {
                         Some(self.resolve_source_type_alias(&class_parts.join(".")))
                     }
-                    _ => None };
+                    _ => None,
+                };
                 // The source spelling to hand a runtime type resolver when the
                 // constructor global turns out to be undefined. Only meaningful
                 // where the language HAS such a resolver — see
@@ -4199,7 +4292,8 @@ impl Compiler {
                     ExprKind::Ident(name) if self.profile.supports_autoload => {
                         Some(Self::strip_global_namespace_prefix(name).to_string())
                     }
-                    _ => None };
+                    _ => None,
+                };
 
                 if let Some(type_name) = dotted_type_name.as_ref() {
                     // User-defined classes take priority over all built-in type mappings.
@@ -4242,7 +4336,8 @@ impl Compiler {
                         };
                         let effective_len = match js_ctor_rest_fixed {
                             Some(fixed) => fixed + 1,
-                            None => args.len() };
+                            None => args.len(),
+                        };
                         let overload_global =
                             crate::primitives::classes::ctor_global_for(&canon_type, effective_len);
                         let ctor_global = if self.defined_globals.contains(&overload_global) {
@@ -4293,6 +4388,11 @@ impl Compiler {
                             "__js_prev_this_new_{}",
                             self.chunks[self.current].local_count
                         ));
+                        // `new` ALWAYS allocates. The constructor allocates only
+                        // when `__js_this` is absent, so leaving the caller's
+                        // receiver live made a construction inside an instance
+                        // method write into that receiver and hand it back.
+                        self.clear_js_this();
                         self.emit_u8_u8(Op::CALL_REF, effective_len as u8, 1);
                         self.restore_js_this(saved_this);
                         self.restore_js_new_target(saved_nt);
@@ -4737,29 +4837,83 @@ impl Compiler {
                         self.emit_buffered_generator_close_ident_if_needed(name);
                     }
                 }
-                self.compile_expr(value)?;
-                inst!(self, core_wasm::dup);
-                self.compile_assign_target_valued(target, Some(value))?;
-                // Reference assignment: mark the target as a pointer-cell
-                // binding AFTER the first store, so subsequent writes go
-                // THROUGH the reference instead of overwriting the name.
-                //
-                // Both spellings of "make a reference" count. `RefOf` and
-                // `Unary{AddrOf}` are the same concept (§2 of `referenceplan.md`)
-                // and matching only one made the binding's aliasing depend on
-                // which node the walker happened to build — a name bound to a
-                // reference silently stayed a plain value.
-                if matches!(
+                // The value IS a reference — both spellings, because `RefOf`
+                // and `Unary{AddrOf}` are the same concept (§2 of
+                // `referenceplan.md`) and matching only one made the outcome
+                // depend on which node the walker happened to build.
+                let value_is_reference = matches!(
                     &value.kind,
                     ExprKind::RefOf(_)
                         | ExprKind::Unary {
                             op: UnaryOp::AddrOf,
                             ..
                         }
-                ) {
+                );
+                // What the language does with it is DECLARED, because the two
+                // answers are opposite and the node cannot tell them apart:
+                // php `$b = &$a` binds `$b` to `$a`'s storage, while c/go/pascal
+                // `p = &v` store a pointer value that `p = &w` later replaces.
+                let binds_reference = value_is_reference
+                    && self.directives().reference_binding == Some(PassBy::Alias);
+                if let (true, ExprKind::Ident(name)) = (binds_reference, &target.kind) {
+                    let name = name.clone();
+                    self.compile_expr(value)?;
+                    inst!(self, core_wasm::dup);
+                    // Deliberately NOT through `compile_assign_target_valued`:
+                    // its `bind_value_to_declared_type` would coerce the
+                    // reference OBJECT to the target's declared width, the same
+                    // trap `emit_param_type_bindings` already skips for alias
+                    // parameters.
+                    self.emit_var_bind_reference(&name);
+                    return Ok(());
+                }
+                self.compile_expr(value)?;
+                inst!(self, core_wasm::dup);
+                self.compile_assign_target_valued(target, Some(value))?;
+                // A language that STORES the reference still needs the target
+                // marked, so later reads deref it — that is what makes c's
+                // `p = &v; *p` and go's `pp := &p` work. Only the BINDING half
+                // above is php's.
+                if value_is_reference {
                     if let ExprKind::Ident(name) = &target.kind {
                         self.mark_pointer_cell_binding(name);
                     }
+                }
+            }
+
+            ExprKind::Proxy { target, handler } => {
+                self.uses_proxy = true;
+                self.compile_expr(target)?;
+                self.compile_expr(handler)?;
+                self.emit_proxy_create()?;
+            }
+
+            ExprKind::CallableRef {
+                target,
+                receiver,
+                binding,
+                adapter,
+            } => {
+                if let Some(CallableAdapter::Expr { params, body }) = adapter {
+                    let lambda = Expression::new(ExprKind::Lambda {
+                        params: params.clone(),
+                        body: LambdaBody::Expr(body.clone()),
+                        is_async: false,
+                        captures: Vec::new(),
+                    });
+                    self.compile_expr(&lambda)?;
+                    return Ok(());
+                }
+                match (binding, receiver.as_ref()) {
+                    (CallableBinding::BoundReceiver, Some(receiver)) => {
+                        if matches!(target.kind, ExprKind::Member { .. }) {
+                            self.compile_expr(target)?;
+                        } else {
+                            self.compile_expr(receiver)?;
+                            self.compile_expr(target)?;
+                        }
+                    }
+                    _ => self.compile_expr(target)?,
                 }
             }
 
@@ -4768,7 +4922,8 @@ impl Compiler {
                 params,
                 body,
                 captures,
-                is_async } => {
+                is_async,
+            } => {
                 // ExprKind::Lambda in JS IS the arrow form (function
                 // expressions arrive as FunctionExpr, shorthand methods
                 // via the object-literal path below).
@@ -4952,7 +5107,8 @@ impl Compiler {
             ExprKind::Zip {
                 iterables,
                 mode,
-                strict } => {
+                strict,
+            } => {
                 let line = self.line;
                 if *strict {
                     return Err("strict zip lowering is not wired yet".into());
@@ -4963,7 +5119,8 @@ impl Compiler {
                 let mode = match mode {
                     crate::ast::ZipMode::First => common::collections::ZipLen::First,
                     crate::ast::ZipMode::Shortest => common::collections::ZipLen::Shortest,
-                    crate::ast::ZipMode::Longest => common::collections::ZipLen::Longest };
+                    crate::ast::ZipMode::Longest => common::collections::ZipLen::Longest,
+                };
                 common::collections::emit_zip(
                     &mut self.chunks,
                     self.current,
@@ -5052,34 +5209,15 @@ impl Compiler {
             // ── Set (Python) ────────────────────────────────────────────
             ExprKind::Set(elements) => {
                 let line = self.line;
-                let n = elements.len();
                 for elem in elements {
                     self.compile_expr(elem)?;
                 }
-                let base = if n == 0 {
-                    0
-                } else {
-                    let mut first = 0u16;
-                    for i in 0..n {
-                        let s = self.define_local("__pack");
-                        if i == 0 {
-                            first = s;
-                        }
-                    }
-                    first
-                };
-                common::collections::emit_pack_n(
+                common::sets::emit_literal(
                     &mut self.chunks,
                     self.current,
-                    n as u16,
-                    base,
+                    elements.len() as u8,
                     line,
                 );
-                // Convert the packed array to a Set per ECMA-262 §24.2.1.1
-                // — `new Set(iterable)`. Same import V8 satisfies natively
-                // for `new Set([1,2,3])`.
-                let idx = self.import("ecma:set", "fromIterable");
-                self.emit_host_call(idx, 1);
             }
 
             // ── Object literal ──────────────────────────────────────────
@@ -5145,7 +5283,8 @@ impl Compiler {
                                             matches!(&stmt.kind, StmtKind::FunctionDecl { name, .. } if name.is_empty() || name.starts_with("__anon_fn_"))
                                         }
                                         ExprKind::ClassExpr { name, .. } => name.is_none(),
-                                        _ => false };
+                                        _ => false,
+                                    };
                                     if should_infer_name {
                                         let inferred_name = if let Some(stripped) =
                                             key_name.strip_prefix("__get_")
@@ -5266,7 +5405,8 @@ impl Compiler {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false }];
+                                        is_nullable: false,
+                                    }];
                                     method_params.extend(params.iter().cloned());
                                     self.compile_lambda_with_flags(
                                         &method_params,
@@ -5319,7 +5459,8 @@ impl Compiler {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false }];
+                                        is_nullable: false,
+                                    }];
                                     accessor_params.extend(params.iter().cloned());
                                     self.compile_lambda_with_flags(
                                         &accessor_params,
@@ -5335,14 +5476,16 @@ impl Compiler {
                             }
                             let accessor_name = match kind {
                                 AccessorKind::Get => format!("get {}", key),
-                                AccessorKind::Set => format!("set {}", key) };
+                                AccessorKind::Set => format!("set {}", key),
+                            };
                             inst!(self, core_wasm::dup);
                             self.emit_const(Value::String(Arc::from(accessor_name.as_str())));
                             let name_key = self.str_const("name");
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
                             let accessor_slot = match kind {
                                 AccessorKind::Get => format!("__get_{}", key),
-                                AccessorKind::Set => format!("__set_{}", key) };
+                                AccessorKind::Set => format!("__set_{}", key),
+                            };
                             let idx = self.str_const(&accessor_slot);
                             self.emit_struct_field_op(Op::STRUCT_SET, 0, idx);
                         }
@@ -5477,7 +5620,8 @@ impl Compiler {
             // ── Type operations ─────────────────────────────────────────
             ExprKind::IsType {
                 expr: inner,
-                type_name } => {
+                type_name,
+            } => {
                 let canon_type = self.canon(type_name);
                 if matches!(
                     canon_type.as_str(),
@@ -5766,15 +5910,47 @@ impl Compiler {
                 // function instead of treating the cast as a no-op.
                 if let ExprKind::Cast { type_name, .. } = &expr.kind {
                     let canon_type = self.canon(type_name);
-                    if self.profile.namespaces.use_dotnet {
-                        if let Some(names) = self.enum_value_names.get(&canon_type) {
-                            if let ExprKind::Lit(Literal::Int(n)) = &inner.kind {
-                                if let Some(member_name) = names.get(n) {
-                                    self.emit_const(Value::String(Arc::from(member_name.as_str())));
-                                    return Ok(());
-                                }
-                            }
+                    // `(Color)3` NAMES the member whose value is 3, so it
+                    // compiles to that member READ — the identical expression
+                    // `Color.Green` compiles to. A cast result is then the same
+                    // object a member access yields: it renders through the
+                    // same `ToString` role, coerces through the same `Int` role,
+                    // and compares equal to `Color.Green` by identity.
+                    //
+                    // It used to fold to the member's NAME STRING, behind
+                    // `use_dotnet` — the last non-GUI read of that gate. Both
+                    // halves were wrong: the string was a fourth representation
+                    // of one enum value, and the gate scoped an answer that is
+                    // not language-specific to the .NET languages alone.
+                    //
+                    // It does NOT reach pascal, despite pascal having the same
+                    // question. Pascal spells the conversion `TLevel(10)` — a
+                    // CALL, not a `Cast` node — so it arrives somewhere else
+                    // entirely, and its `test_integer_to_enum_explicit_cast`
+                    // additionally needs `GetEnumName`/`TypeInfo` RTTI. Named
+                    // here because the gate's removal looks like it should have
+                    // covered that case and does not.
+                    //
+                    // No gate replaces it, because the question the gate stood
+                    // in for is one the TREE already answers: does this
+                    // canonical name resolve to a declared enum, and does that
+                    // enum declare this value. `enum_value_names` is filled
+                    // from the shared `EnumDecl` lowering, so every language on
+                    // that path gets the same answer and a language declaring
+                    // no such enum gets `None` and falls through untouched.
+                    let member = self.enum_value_names.get(&canon_type).and_then(|names| {
+                        match &inner.kind {
+                            ExprKind::Lit(Literal::Int(n)) => names.get(n).cloned(),
+                            _ => None,
                         }
+                    });
+                    if let Some(member_name) = member {
+                        let constant = Expression::new(ExprKind::Member {
+                            object: Box::new(Expression::ident(&canon_type)),
+                            field: member_name,
+                            null_safe: false,
+                        });
+                        return self.compile_expr(&constant);
                     }
 
                     // Narrowing a number to a `char` is the MIRROR coercion, and
@@ -5810,6 +5986,20 @@ impl Compiler {
                         canon_type.as_str(),
                         "int" | "long" | "short" | "byte" | "uint" | "ulong" | "ushort" | "sbyte"
                     ) {
+                        // Coercing an enum constant to an integer reads the
+                        // `Int` ROLE the enum lowering declares, which returns
+                        // the constant's declared VALUE. Resolved from the
+                        // operand's declared type, so nothing else pays a
+                        // runtime probe.
+                        if self
+                            .infer_expr_type_hint(inner)
+                            .map(|hint| self.canon(hint.trim()))
+                            .and_then(|hint| self.resolve_known_enum_type(&hint))
+                            .is_some()
+                        {
+                            self.emit_enum_int_value(inner)?;
+                            return Ok(());
+                        }
                         // A `char` CAST is char-like by its own shape, and the
                         // inference pass does not carry a cast's type through:
                         // `[int][char]'A'` measured 0 against real pwsh's 65,
@@ -6446,8 +6636,8 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, result_slot);
             }
 
-            // ── AddressOf (VB) ──────────────────────────────────────────
-            ExprKind::AddressOf(name) => {
+            // ── Function reference (VB AddressOf, method groups) ─────────
+            ExprKind::FuncRef(name) => {
                 let parts: Vec<&str> = name.split('.').filter(|part| !part.is_empty()).collect();
                 if parts.is_empty() {
                     self.emit_null();
@@ -6526,10 +6716,7 @@ impl Compiler {
                                 let arg_exprs: Vec<&Expression> =
                                     args.iter().map(|arg| &arg.value).collect();
                                 self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
-                                if let Some(slot) = self
-                                    .scope()
-                                    .resolve(&self_kw)
-                                {
+                                if let Some(slot) = self.scope().resolve(&self_kw) {
                                     inst!(self, core_wasm::dup);
                                     self.emit_u16(Op::LOCAL_SET, slot);
                                 }
@@ -6567,10 +6754,7 @@ impl Compiler {
                                 }
                                 self.emit_u8_u8(Op::CALL_REF, args.len() as u8, 1);
                             }
-                            if let Some(slot) = self
-                                .scope()
-                                .resolve(&self_kw)
-                            {
+                            if let Some(slot) = self.scope().resolve(&self_kw) {
                                 inst!(self, core_wasm::dup);
                                 self.emit_u16(Op::LOCAL_SET, slot);
                             }
@@ -6593,12 +6777,9 @@ impl Compiler {
                         self.emit_var_get(&parent_canon);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
 
-                        if self.profile.ambient_this_binding {
+                        if self.ambient_this() {
                             let saved_js_this = self.save_js_this("__js_prev_this_super_expr");
-                            if let Some(self_slot) = self
-                                .scope()
-                                .resolve(&self_kw)
-                            {
+                            if let Some(self_slot) = self.scope().resolve(&self_kw) {
                                 self.emit_u16(Op::LOCAL_GET, self_slot);
                             } else {
                                 self.emit_global_read("__js_this");
@@ -6612,10 +6793,7 @@ impl Compiler {
                             self.emit_u16(Op::LOCAL_SET, result_slot);
                             self.restore_js_this(saved_js_this);
                             self.emit_u16(Op::LOCAL_GET, result_slot);
-                        } else if let Some(self_slot) = self
-                            .scope()
-                            .resolve(&self_kw)
-                        {
+                        } else if let Some(self_slot) = self.scope().resolve(&self_kw) {
                             self.emit_u16(Op::LOCAL_GET, self_slot);
                             for a in args {
                                 self.compile_expr(&a.value)?;
@@ -6636,7 +6814,8 @@ impl Compiler {
             ExprKind::Comprehension {
                 kind,
                 element,
-                generators } => {
+                generators,
+            } => {
                 use crate::ast::ComprehensionKind;
                 let line = self.line;
                 let is_dict = *kind == ComprehensionKind::Dict;
@@ -6719,10 +6898,12 @@ impl Compiler {
                                 .iter()
                                 .map(|p| match &p.kind {
                                     ExprKind::Ident(n) => n.clone(),
-                                    _ => "_".to_string() })
+                                    _ => "_".to_string(),
+                                })
                                 .collect(),
                         ),
-                        _ => None };
+                        _ => None,
+                    };
                     if let Some(names) = tuple_names {
                         let elem_slot = self.define_local("__comp_elem");
                         self.emit_u16(Op::LOCAL_SET, elem_slot);
@@ -6737,7 +6918,8 @@ impl Compiler {
                     } else {
                         let var_name = match &generator.target.kind {
                             ExprKind::Ident(n) => n.clone(),
-                            _ => "__comp_var".to_string() };
+                            _ => "__comp_var".to_string(),
+                        };
                         let var_slot = self.define_local(&var_name);
                         self.emit_u16(Op::LOCAL_SET, var_slot);
                     }
@@ -6811,8 +6993,7 @@ impl Compiler {
 
                 // Set comprehension: convert Array → Set via ecma:set.fromIterable
                 if is_set {
-                    let idx = self.import("ecma:set", "fromIterable");
-                    self.emit_host_call(idx, 1);
+                    common::sets::emit_from_iterable(&mut self.chunks, self.current, line);
                 }
             }
 
@@ -6914,16 +7095,15 @@ impl Compiler {
                     common::errors::emit_throw(self.chunk(), line);
                     return Ok(());
                 }
-                let delete_import: (&str, &str) = if self.uses_proxy {
-                    ("ecma:proxy", "deleteProperty")
-                } else {
-                    ("ecma:object", "delete")
-                };
                 if let ExprKind::Member { object, field, .. } = &inner.kind {
                     self.compile_expr(object)?;
                     self.emit_const(Value::String(Arc::from(field.as_str())));
-                    let idx = self.import(delete_import.0, delete_import.1);
-                    self.emit_host_call(idx, 2);
+                    if self.uses_proxy {
+                        self.emit_proxy_delete_property();
+                    } else {
+                        let idx = self.import("ecma:object", "delete");
+                        self.emit_host_call(idx, 2);
+                    }
                     if self.in_strict {
                         let result_slot = self.define_local("__strict_delete_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -6943,8 +7123,12 @@ impl Compiler {
                 } else if let ExprKind::Index { object, index, .. } = &inner.kind {
                     self.compile_expr(object)?;
                     self.compile_expr(index)?;
-                    let idx = self.import(delete_import.0, delete_import.1);
-                    self.emit_host_call(idx, 2);
+                    if self.uses_proxy {
+                        self.emit_proxy_delete_property();
+                    } else {
+                        let idx = self.import("ecma:object", "delete");
+                        self.emit_host_call(idx, 2);
+                    }
                     if self.in_strict {
                         let result_slot = self.define_local("__strict_delete_result");
                         self.emit_u16(Op::LOCAL_SET, result_slot);
@@ -6989,7 +7173,8 @@ impl Compiler {
                 name,
                 parent,
                 interfaces,
-                members } => {
+                members,
+            } => {
                 let class_name = name
                     .clone()
                     .unwrap_or_else(|| format!("__anonymous_class_{}", self.chunks.len()));
@@ -7011,7 +7196,8 @@ impl Compiler {
                             let c = self.canon(n);
                             self.defined_classes.contains(&c).then_some(c)
                         }
-                        _ => None };
+                        _ => None,
+                    };
                     if let Some(base) = static_base {
                         Some(base)
                     } else {
@@ -7033,7 +7219,7 @@ impl Compiler {
                 // constructs null. Class names are language-agnostic here.
                 self.defined_classes.insert(class_name.clone());
                 let parents: Vec<String> = parent_name.into_iter().collect();
-                let saved_expr_js_this = if self.profile.ambient_this_binding {
+                let saved_expr_js_this = if self.ambient_this() {
                     Some(self.save_js_this(&format!("__js_prev_this_class_expr_{}", class_name)))
                 } else {
                     None
@@ -7093,7 +7279,8 @@ impl Compiler {
             ExprKind::Range {
                 start,
                 end,
-                inclusive } => {
+                inclusive,
+            } => {
                 self.compile_expr(start)?;
                 self.compile_expr(end)?;
                 let line = self.line;
@@ -7147,7 +7334,8 @@ impl Compiler {
                         ExprKind::Ident(class_name) => {
                             self.js_member_storage_name_for_class(class_name, name)
                         }
-                        _ => self.canon(name) };
+                        _ => self.canon(name),
+                    };
                     if self.profile.supports_private_fields && name.starts_with('#') {
                         let getter_name = format!("__get_{}", field_name);
                         self.emit_u16(Op::LOCAL_GET, class_slot);
@@ -7262,7 +7450,8 @@ impl Compiler {
                 BinOp::Add => Some("__vybe_pascal_set_union"),
                 BinOp::Mul => Some("__vybe_pascal_set_intersection"),
                 BinOp::Sub => Some("__vybe_pascal_set_difference"),
-                _ => None };
+                _ => None,
+            };
 
             if let Some(helper) = helper {
                 self.emit_global_read(helper);
@@ -7276,7 +7465,8 @@ impl Compiler {
         let method_name = match op {
             BinOp::Add => "Add",
             BinOp::Eq | BinOp::NotEq => "Equal",
-            _ => return Ok(false) };
+            _ => return Ok(false),
+        };
 
         let Some(type_name) = self.pascal_binary_operator_type(left, right, method_name) else {
             return Ok(false);
@@ -7285,7 +7475,8 @@ impl Compiler {
         let callee = Expression::new(ExprKind::Member {
             object: Box::new(Expression::ident(&type_name)),
             field: method_name.to_string(),
-            null_safe: false });
+            null_safe: false,
+        });
         let args = vec![
             Argument::positional(left.clone()),
             Argument::positional(right.clone()),
@@ -7315,7 +7506,8 @@ impl Compiler {
             BinOp::BitAnd => Some("intersection"),
             BinOp::Sub => Some("difference"),
             BinOp::BitXor => Some("symmetricDifference"),
-            _ => None };
+            _ => None,
+        };
 
         let Some(helper) = helper else {
             return Ok(false);
@@ -7347,8 +7539,12 @@ impl Compiler {
 
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
-        let idx = self.import("ecma:set", helper);
-        self.emit_host_call(idx, 2);
+        match helper {
+            "union" => common::sets::emit_union(&mut self.chunks, self.current, line),
+            "intersection" => common::sets::emit_intersection(&mut self.chunks, self.current, line),
+            "difference" => common::sets::emit_difference(&mut self.chunks, self.current, line),
+            _ => return Ok(false),
+        }
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, lhs_slot);
         self.emit_u16(Op::LOCAL_GET, rhs_slot);
@@ -7389,7 +7585,8 @@ impl Compiler {
                     Expression::new(ExprKind::Member {
                         object: Box::new(Expression::ident(&module_name)),
                         field: target_name.clone(),
-                        null_safe: false })
+                        null_safe: false,
+                    })
                 }
             } else {
                 Expression::ident(&target_name)
@@ -7435,7 +7632,8 @@ impl Compiler {
     pub(super) fn pascal_expr_static_type(&self, expr: &Expression) -> Option<String> {
         match &expr.kind {
             ExprKind::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
-            _ => None }
+            _ => None,
+        }
     }
 
     fn dotnet_expr_static_type(&self, expr: &Expression) -> Option<String> {
@@ -7444,7 +7642,8 @@ impl Compiler {
             ExprKind::New { class, .. } => match &class.kind {
                 ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
                 ExprKind::Member { field, .. } => Some(field.to_string()),
-                _ => None },
+                _ => None,
+            },
             ExprKind::Call { callee, .. } => match &callee.kind {
                 ExprKind::Member { object, field, .. } if field.eq_ignore_ascii_case("Parse") => {
                     match &object.kind {
@@ -7454,10 +7653,13 @@ impl Compiler {
                         ExprKind::Member { field, .. } if field.eq_ignore_ascii_case("Version") => {
                             Some("Version".into())
                         }
-                        _ => None }
+                        _ => None,
+                    }
                 }
-                _ => None },
-            _ => None }
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     fn is_dotnet_type_name(type_name: &str, expected: &str) -> bool {
@@ -7554,7 +7756,8 @@ impl Compiler {
             {
                 Some("dotnet.version_ne")
             }
-            _ => None };
+            _ => None,
+        };
 
         let Some(emit) = emit else {
             return Ok(false);
@@ -7866,7 +8069,7 @@ pub fn emit_rich_arithmetic(
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
@@ -7910,7 +8113,7 @@ pub fn emit_rich_unary(
     chunk.emit_if_value(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, operand_slot, line);
     fallback_fn(chunk, line);
@@ -7959,7 +8162,7 @@ pub fn emit_rich_to_string(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     let to_str = chunk.add_import("ecma:string", "String");
@@ -7990,7 +8193,7 @@ pub fn emit_rich_bool(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     crate::primitives::ops::emit_dyn_to_bool(chunk, line);
@@ -8061,7 +8264,8 @@ pub fn emit_rich_compare(
 /// this function takes `chunks`/`current` rather than a single chunk.
 pub enum RichFallback<'a> {
     Op(fn(&mut Chunk, u32)),
-    Target(&'a str) }
+    Target(&'a str),
+}
 
 impl RichFallback<'_> {
     fn emit(&self, chunks: &mut Vec<Chunk>, current: usize, line: u32) {
@@ -8123,7 +8327,7 @@ pub fn emit_rich_compare_locals(
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
     chunk.emit_else(line);
 
     // Not found: try compare-style methods like C# CompareTo / Ruby <=>.
@@ -8145,7 +8349,7 @@ pub fn emit_rich_compare_locals(
         chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, left_slot, line);
         chunk.emit_op_u16(Op::LOCAL_GET, right_slot, line);
-        chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
         core_wasm::i32_const(chunk, line, 0);
         fallback.emit(chunks, current, line);
         chunk = &mut chunks[current];
@@ -8208,7 +8412,7 @@ pub fn emit_smart_length(chunk: &mut Chunk, obj_slot: u16, line: u32) {
     chunk.emit_if(line);
     chunk.emit_op_u16(Op::LOCAL_GET, method_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_else(line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
     chunk.emit_op(Op::ARRAY_LENGTH, line);

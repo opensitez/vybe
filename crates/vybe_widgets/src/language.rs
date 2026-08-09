@@ -9,7 +9,8 @@ pub struct CommentDef {
     #[serde(rename = "lineComment")]
     pub line_comment: Option<String>,
     #[serde(rename = "blockComment")]
-    pub block_comment: Option<(String, String)> }
+    pub block_comment: Option<(String, String)>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LanguageDef {
@@ -19,17 +20,20 @@ pub struct LanguageDef {
     pub operators: HashSet<String>,
     pub ignore_case: bool,
     pub comments: Option<CommentDef>,
-    pub brackets: Vec<(String, String)> }
+    pub brackets: Vec<(String, String)>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LanguageJson {
     pub conf: Option<ConfJson>,
-    pub language: serde_json::Map<String, serde_json::Value> }
+    pub language: serde_json::Map<String, serde_json::Value>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConfJson {
     pub comments: Option<CommentDef>,
-    pub brackets: Option<Vec<(String, String)>> }
+    pub brackets: Option<Vec<(String, String)>>,
+}
 
 pub fn load_language(name: &str) -> Option<LanguageDef> {
     let name = name.to_lowercase();
@@ -69,7 +73,8 @@ pub fn load_language(name: &str) -> Option<LanguageDef> {
                     operators: HashSet::new(),
                     ignore_case: false,
                     comments: None,
-                    brackets: Vec::new() };
+                    brackets: Vec::new(),
+                };
 
                 // Extract ignoreCase
                 if let Some(ic) = json.language.get("ignoreCase").and_then(|v| v.as_bool()) {

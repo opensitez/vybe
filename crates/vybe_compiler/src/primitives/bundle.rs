@@ -184,7 +184,6 @@ pub fn emit_runtime_helper_preamble(script: &mut Chunk, stdlib_base: usize) {
     for (i, &(_chunk_name, global_name)) in MAPPINGS.iter().enumerate() {
         let ci = stdlib_base + i;
 
-
         // Check if global is already set: global_get + ref_is_null
         crate::primitives::globals::emit_read(script, global_name, 0);
         script.emit_op(Op::REF_IS_NULL, 0);
@@ -225,7 +224,7 @@ pub fn emit_call_push_func(chunk: &mut Chunk, global_name: &str, line: u32) {
 
 /// Emit call_ref after func + args are on stack.
 pub fn emit_call_invoke(chunk: &mut Chunk, argc: u8, line: u32) {
-    chunk.emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
 }
 
 /// Append referenced runtime helper chunks and register them as global_inits.
@@ -270,7 +269,8 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
         if let Some(global_name) = helper_global_for_export(chunk_name) {
             chunks[0].global_inits.push(GlobalInit {
                 name: global_name.to_string(),
-                init: ConstExpr::RefFunc(helper_base + i) });
+                init: ConstExpr::RefFunc(helper_base + i),
+            });
         }
     }
     chunks.extend(helpers.chunks);
@@ -287,7 +287,7 @@ pub fn finalize_with_runtime_helpers_excluding(chunks: &mut Vec<Chunk>, excluded
 /// For multi-arg calls, use the push_func/invoke pair.
 pub fn emit_call(chunk: &mut Chunk, global_name: &str, argc: u8, line: u32) {
     crate::primitives::globals::emit_read(chunk, global_name, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
 }
 
 fn referenced_helper_exports(chunks: &[Chunk]) -> BTreeSet<&'static str> {
@@ -338,7 +338,8 @@ fn helper_export_dependencies(export: &str) -> &'static [&'static str] {
         "__stdlib_minmax" => &["__stdlib_min", "__stdlib_max"],
         "__stdlib_pynext" => &["__stdlib_iter_drain"],
         "__stdlib_rotate" => &["__stdlib_fmod"],
-        _ => &[] }
+        _ => &[],
+    }
 }
 
 fn ordered_helper_exports(exports: &BTreeSet<&'static str>) -> Vec<&'static str> {

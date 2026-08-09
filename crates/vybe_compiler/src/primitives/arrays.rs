@@ -36,7 +36,8 @@ impl Compiler {
             _ => self
                 .infer_expr_type_hint(expr)
                 .as_deref()
-                .is_some_and(Self::is_case_insensitive_string_key_type_hint) }
+                .is_some_and(Self::is_case_insensitive_string_key_type_hint),
+        }
     }
 
     pub(super) fn compile_collection_key(
@@ -196,9 +197,10 @@ impl Compiler {
         if self.static_local_binding(name).is_some() {
             return true;
         }
-        self.scopes.iter().rev().any(|scope| {
-            scope.resolve(name).is_some()
-        })
+        self.scopes
+            .iter()
+            .rev()
+            .any(|scope| scope.resolve(name).is_some())
     }
 
     pub(super) fn static_local_binding(&self, name: &str) -> Option<&StaticLocalBinding> {
@@ -267,7 +269,8 @@ impl Compiler {
 
     pub(super) fn profile_array_index_semantics(&self) -> Option<ArrayIndexSemantics> {
         match self.profile.name.as_str() {
-            _ => None }
+            _ => None,
+        }
     }
 
     pub(super) fn normalized_array_index_operand_for_owner(
@@ -285,7 +288,8 @@ impl Compiler {
                 return normalize_array_index_operand(
                     normalized_index,
                     ArrayIndexSemantics {
-                        first_index: dimension.first_index },
+                        first_index: dimension.first_index,
+                    },
                 );
             }
         }
@@ -382,7 +386,8 @@ impl Compiler {
         let binding = StaticLocalBinding {
             init_flag_name: format!("{}__init", global_name),
             global_name,
-            type_hint: normalized_type_hint };
+            type_hint: normalized_type_hint,
+        };
         bindings.insert(canon_name, binding.clone());
         Ok(binding)
     }
@@ -641,10 +646,7 @@ impl Compiler {
                 if !skip_c_coerce {
                     self.bind_value_to_declared_type(effective_type_hint, Some(init_expr))?;
                 }
-                self.maybe_promote_array_literal_to_set(
-                    decl.type_hint.as_deref(),
-                    init_expr,
-                );
+                self.maybe_promote_array_literal_to_set(decl.type_hint.as_deref(), init_expr);
             }
         } else if let Some(ref bounds) = decl.array_bounds {
             if self.profile.array_bounds_declare_fixed_shape {
@@ -722,7 +724,8 @@ impl Compiler {
                     Some(type_hint) if Self::is_string_type_hint(type_hint) => {
                         self.emit_const(Value::String(Arc::from("")))
                     }
-                    _ => self.emit_null() }
+                    _ => self.emit_null(),
+                }
             }
         }
         if let Some(target_len) = decl
@@ -854,8 +857,8 @@ impl Compiler {
             // The emitted sequence is unchanged — modulus and sign threshold
             // come from the width rather than from a repeated literal.
             _ if vybe_ast::builtin_types::int_width_of(&normalized).is_some() => {
-                let width = vybe_ast::builtin_types::int_width_of(&normalized)
-                    .expect("guard just matched");
+                let width =
+                    vybe_ast::builtin_types::int_width_of(&normalized).expect("guard just matched");
                 self.emit_int_width_wrap(width);
             }
             "float" | "single" => {

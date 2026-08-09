@@ -19,7 +19,8 @@
 
 use super::*;
 use crate::primitives::calls::{
-    extract_generic_type_name, resolve_receiver_type_hint, strip_generic_suffix, terminal_type_name };
+    extract_generic_type_name, resolve_receiver_type_hint, strip_generic_suffix, terminal_type_name,
+};
 use crate::primitives::instructions::host;
 
 impl Compiler {
@@ -57,7 +58,8 @@ impl Compiler {
                 self.resolve_known_enum_type(strip_generic_suffix(&enum_type))
             }
             _ => resolve_receiver_type_hint(self, expr)
-                .and_then(|hint| self.resolve_known_enum_type(strip_generic_suffix(&hint))) }
+                .and_then(|hint| self.resolve_known_enum_type(strip_generic_suffix(&hint))),
+        }
     }
 
     pub(super) fn console_enum_type_from_expr(&self, expr: &Expression) -> Option<String> {
@@ -66,7 +68,8 @@ impl Compiler {
             ExprKind::Member { object, .. } if !matches!(&object.kind, ExprKind::Ident(_)) => {
                 self.canonical_enum_type_from_expr(expr)
             }
-            _ => None }
+            _ => None,
+        }
     }
 
     pub(super) fn resolve_known_enum_type(&self, name: &str) -> Option<String> {
@@ -140,13 +143,34 @@ impl Compiler {
                     key: None,
                     value: Expression::string(value),
                     spread: false,
-                    by_ref: false })
+                    by_ref: false,
+                })
                 .collect(),
         ));
         self.compile_expr(&expr)
     }
 
-    pub(super) fn emit_enum_name_lookup(
+    /// `name → the member CONSTANT, or null` — `Enum.Parse`, `Enum.TryParse`.
+    ///
+    /// A parsed value IS the object a member read yields, so it renders through
+    /// the same `ToString` role, coerces through the same `Int` role, and
+    /// compares equal to `Color.Green` by identity. This replaced a lookup that
+    /// answered with the NAME STRING — a difference invisible while a member
+    /// read const-folded to an ordinal (both were "not an object", both
+    /// stringified to something plausible), and one more representation of an
+    /// enum value once it was not.
+    ///
+    /// Because the answer is an object rather than a string, callers must still
+    /// be able to see that it is an ENUM: `infer_expr_type_hint` names the type
+    /// from `Enum.Parse`'s runtime-type argument, and without that the console
+    /// and `ToString` paths fall through to a generic one that cannot read the
+    /// role.
+    ///
+    /// Compile-time over the declared members rather than a runtime read of the
+    /// class object: a static constant compiles to a GLOBAL, not to a property
+    /// hanging off the class, so there is nothing to `get` at runtime. The
+    /// members are known here anyway.
+    pub(super) fn emit_enum_member_lookup(
         &mut self,
         enum_type: &str,
         value_expr: &Expression,
@@ -157,44 +181,34 @@ impl Compiler {
             return Ok(());
         };
 
-        // Case-sensitive: `input` names a member iff a raw read of the enum
-        // object (`ecma:object.get`, bypassing the index getter) yields its
-        // NUMERIC forward field. A numeric-string input would instead hit a
-        // reverse (value→name) field, which is a string and so correctly
-        // rejected. Returns the input name (== the canonical name on an exact
-        // match) or null — same contract as the old if-chain.
-        if !ignore_case {
-            self.compile_expr(&Expression::ident(enum_type))?;
-            self.compile_expr(value_expr)?;
-            let line = self.line;
-            emit_name_to_member_or_null(self.chunk(), line);
-            return Ok(());
-        }
-
-        // Case-insensitive: the reverse map is keyed by exact name, so fall
-        // back to the compile-time member table with lowercased comparison.
         let to_str_idx = self.import("ecma:string", "String");
-        let lower_idx = self.import("ecma:string", "toLowerCase");
-
         self.compile_expr(value_expr)?;
         self.emit_host_call(to_str_idx, 1);
-        self.emit_host_call(lower_idx, 1);
-        let input_slot = self.define_local("__enum_name_input");
+        if ignore_case {
+            let lower_idx = self.import("ecma:string", "toLowerCase");
+            self.emit_host_call(lower_idx, 1);
+        }
+        let input_slot = self.define_local("__enum_member_input");
         self.emit_u16(Op::LOCAL_SET, input_slot);
 
-        let result_slot = self.define_local("__enum_name_result");
-        let matched_slot = self.define_local("__enum_name_matched");
+        let result_slot = self.define_local("__enum_member_result");
+        let matched_slot = self.define_local("__enum_member_matched");
         self.emit_null();
         self.emit_u16(Op::LOCAL_SET, result_slot);
         self.emit_const(Value::I32(0));
         self.emit_u16(Op::LOCAL_SET, matched_slot);
-        for (_, name) in entries {
+        for (_, name) in &entries {
+            let probe = if ignore_case {
+                name.to_ascii_lowercase()
+            } else {
+                name.clone()
+            };
             self.emit_u16(Op::LOCAL_GET, matched_slot);
             self.emit(Op::I32_EQZ);
             let line = self.line;
             self.chunk().emit_if(line);
             self.emit_u16(Op::LOCAL_GET, input_slot);
-            self.emit_const(Value::String(Arc::from(name.to_ascii_lowercase().as_str())));
+            self.emit_const(Value::String(Arc::from(probe.as_str())));
             {
                 let line = self.line;
                 crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
@@ -202,7 +216,15 @@ impl Compiler {
             let line = self.line;
             crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
             self.chunk().emit_if(line);
-            self.emit_const(Value::String(Arc::from(name.as_str())));
+            // The constant read itself — the same expression the source would
+            // have written, so it resolves however that language's member reads
+            // resolve.
+            let constant = Expression::new(ExprKind::Member {
+                object: Box::new(Expression::ident(enum_type)),
+                field: name.clone(),
+                null_safe: false,
+            });
+            self.compile_expr(&constant)?;
             self.emit_u16(Op::LOCAL_SET, result_slot);
             self.emit_const(Value::I32(1));
             self.emit_u16(Op::LOCAL_SET, matched_slot);
@@ -214,13 +236,138 @@ impl Compiler {
         Ok(())
     }
 
-    pub(super) fn emit_enum_value_to_string(
+    /// How an enum value RENDERS — its `ToString` role when it is a constant
+    /// OBJECT, and its own stringification when it is a bare number (a flags
+    /// combination). The same two-faced shape `emit_dotnet_console_arg` uses,
+    /// minus the console's numeric formatting.
+    pub(super) fn emit_enum_render(&mut self, expr: &Expression) -> Result<(), String> {
+        self.compile_expr(expr)?;
+        let value_slot = self.define_local("__enum_render_value");
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        inst!(self, recipes::is_object);
+        let line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if_value(line);
+        {
+            let line = self.line;
+            let current = self.current;
+            crate::primitives::expressions::emit_rich_to_string(
+                &mut self.chunks[current],
+                value_slot,
+                line,
+            );
+        }
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.chunk().emit_end(line);
+        Ok(())
+    }
+
+    /// `Enum.IsDefined` — does this NAME or this VALUE name a member.
+    ///
+    /// It takes either (`IsDefined(typeof(Num), 5)` and
+    /// `IsDefined(typeof(Phase), "Start")` are both .NET), so it cannot be the
+    /// member lookup above with a null test bolted on. Both halves come from
+    /// the one declared member table.
+    pub(super) fn emit_enum_is_defined(
         &mut self,
         enum_type: &str,
         value_expr: &Expression,
     ) -> Result<(), String> {
         let Some(entries) = self.enum_entries_sorted(enum_type) else {
-            self.compile_expr(value_expr)?;
+            inst!(self, core_wasm::bool_const, false);
+            return Ok(());
+        };
+
+        self.compile_expr(value_expr)?;
+        let input_slot = self.define_local("__enum_is_defined_input");
+        self.emit_u16(Op::LOCAL_SET, input_slot);
+        let found_slot = self.define_local("__enum_is_defined_found");
+        self.emit_const(Value::I32(0));
+        self.emit_u16(Op::LOCAL_SET, found_slot);
+
+        for (value, name) in &entries {
+            for probe in [
+                Value::String(Arc::from(name.as_str())),
+                Value::F64(*value as f64),
+            ] {
+                self.emit_u16(Op::LOCAL_GET, input_slot);
+                self.emit_const(probe);
+                {
+                    let line = self.line;
+                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
+                };
+                let line = self.line;
+                crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+                self.chunk().emit_if(line);
+                self.emit_const(Value::I32(1));
+                self.emit_u16(Op::LOCAL_SET, found_slot);
+                self.chunk().emit_end(line);
+            }
+        }
+
+        self.emit_u16(Op::LOCAL_GET, found_slot);
+        let line = self.line;
+        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
+        Ok(())
+    }
+
+    /// How an enum-TYPED value stringifies, wherever a declared enum type is
+    /// what put it on the stack (`Console.WriteLine(d)`, `d.ToString()`).
+    ///
+    /// Forks on the value's FACE, because which face a value carries is a
+    /// runtime fact and nothing static can settle it: a constant is an OBJECT
+    /// that fills the `ToString` role and answers for itself, while a flags
+    /// combination or an int stored into an enum-typed local arrives as a bare
+    /// NUMBER with no role to ask. The tables below are the number face ONLY.
+    ///
+    /// Before this fork the number face ran unconditionally, so an `Enum.Parse`
+    /// / `TryParse` result — an object since the parse started answering with
+    /// the member constant — was looked up in the reverse map by object
+    /// identity, found nothing, and rendered empty. The fork lives here, at the
+    /// one site that owns "how does an enum value stringify", rather than at
+    /// each of its callers.
+    pub(super) fn emit_enum_value_to_string(
+        &mut self,
+        enum_type: &str,
+        value_expr: &Expression,
+    ) -> Result<(), String> {
+        if self.enum_entries_sorted(enum_type).is_none() {
+            return self.emit_enum_render(value_expr);
+        }
+
+        self.compile_expr(value_expr)?;
+        let value_slot = self.define_local("__enum_tostring_value");
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        inst!(self, recipes::is_object);
+        let line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if_value(line);
+        {
+            let current = self.current;
+            crate::primitives::expressions::emit_rich_to_string(
+                &mut self.chunks[current],
+                value_slot,
+                line,
+            );
+        }
+        self.chunk().emit_else(line);
+        self.emit_enum_number_to_string(enum_type, value_slot)?;
+        self.chunk().emit_end(line);
+        Ok(())
+    }
+
+    /// The NUMBER face of the above: an underlying integer back to the name(s)
+    /// it stands for. Never reached with an object.
+    fn emit_enum_number_to_string(
+        &mut self,
+        enum_type: &str,
+        value_slot: u16,
+    ) -> Result<(), String> {
+        let Some(entries) = self.enum_entries_sorted(enum_type) else {
+            self.emit_u16(Op::LOCAL_GET, value_slot);
             let to_str_idx = self.import("ecma:string", "String");
             self.emit_host_call(to_str_idx, 1);
             return Ok(());
@@ -235,15 +382,11 @@ impl Compiler {
         // (name→value) field when the input happens to be a member name.
         if !self.enum_flags.contains(enum_type) {
             self.compile_expr(&Expression::ident(enum_type))?;
-            self.compile_expr(value_expr)?;
+            self.emit_u16(Op::LOCAL_GET, value_slot);
             let line = self.line;
             emit_value_to_name(self.chunk(), line);
             return Ok(());
         }
-
-        let value_slot = self.define_local("__enum_tostring_value");
-        self.compile_expr(value_expr)?;
-        self.emit_u16(Op::LOCAL_SET, value_slot);
 
         let result_slot = self.define_local("__enum_tostring_result");
         let matched_slot = self.define_local("__enum_tostring_matched");
@@ -347,14 +490,14 @@ impl Compiler {
     }
 
     pub(super) fn emit_dotnet_console_arg(&mut self, expr: &Expression) -> Result<(), String> {
-        if let Some((_, member_name)) = self.qualified_enum_member_expr(expr) {
-            self.emit_const(Value::String(Arc::from(member_name.as_str())));
-            return Ok(());
-        }
-        if let Some(enum_type) = self.console_enum_type_from_expr(expr) {
-            self.emit_enum_value_to_string(&enum_type, expr)?;
-            return Ok(());
-        }
+        // No enum special-case here any more. There were two — a member
+        // expression folded straight to its name STRING, and an enum-typed
+        // value routed through the reverse map — and together with the ordinal
+        // fold in `expressions.rs` they gave one enum value three different
+        // representations depending on which site rendered it. An enum constant
+        // is an OBJECT that fills the `ToString` role like any other, so the
+        // object arm below renders it, and it renders a user class's own
+        // `ToString` at the same time.
 
         // No language gate: every caller already reached here BECAUSE the tree
         // resolved the call to `dotnet.console_writeline` / `dotnet.console_write`
@@ -364,6 +507,29 @@ impl Compiler {
         self.compile_expr(expr)?;
         let value_slot = self.define_local("__dotnet_console_value");
         self.emit_u16(Op::LOCAL_SET, value_slot);
+
+        // An OBJECT renders through the `ToString` SLOT — filled by whatever
+        // the object's own language spells it, so an enum constant, a C# class
+        // overriding `ToString`, and a Python class defining `__str__` all
+        // reach their own conversion. Without this the host's generic
+        // stringification answers `[object Color]`, because it looks for the
+        // literal spelling `toString` and a case-folding language stored
+        // `tostring`.
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        inst!(self, recipes::is_object);
+        let obj_line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), obj_line);
+        self.chunk().emit_if_value(obj_line);
+        {
+            let line = self.line;
+            let current = self.current;
+            crate::primitives::expressions::emit_rich_to_string(
+                &mut self.chunks[current],
+                value_slot,
+                line,
+            );
+        }
+        self.chunk().emit_else(obj_line);
 
         self.emit_u16(Op::LOCAL_GET, value_slot);
         fn_call!(self, "ecma:value", "typeof", 1);
@@ -380,9 +546,45 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.emit_const(Value::String(Arc::from("F12")));
         self.emit_const(Value::F64(0.0));
-        self.emit_u8_u8(Op::CALL_REF, 3, 1);
+        self.emit_direct_callable_invoke(3);
         let parse_float = self.import("ecma:number", "parseFloat");
         self.emit_host_call(parse_float, 1);
+        self.chunk().emit_else(line);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.chunk().emit_end(line);
+        self.chunk().emit_end(obj_line);
+        Ok(())
+    }
+
+    /// An enum constant's integer VALUE — the `Int` ROLE the enum lowering
+    /// declares (`enum_lowering::INT_METHOD`, returning `__value`).
+    ///
+    /// THE one site that answers "what is the int of this enum". The `(int)e`
+    /// cast, the flags operators `| & ^ ~`, and `HasFlag` all coerce through
+    /// here: two sites resolving the same question independently is exactly how
+    /// an enum value grew four representations in the first place.
+    ///
+    /// Tolerant of an operand that is ALREADY a number. A flags combination
+    /// names no member — `Perm.A | Perm.B` has no constant behind it — so the
+    /// result of one operator flows back into the next as a bare integer, and
+    /// the `Int` read has nothing to call. The object test is a runtime one
+    /// because that is a runtime fact; the DECISION to read the role at all
+    /// stays static, resolved from the operand's declared type by the caller.
+    pub(super) fn emit_enum_int_value(&mut self, expr: &Expression) -> Result<(), String> {
+        self.compile_expr(expr)?;
+        let value_slot = self.define_local("__enum_int_value");
+        self.emit_u16(Op::LOCAL_SET, value_slot);
+
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        inst!(self, recipes::is_object);
+        let line = self.line;
+        crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
+        self.chunk().emit_if_value(line);
+        let key = self.str_const(&vybe_ast::protocol_slot_key(vybe_ast::ProtocolSlot::Int));
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_struct_field_op(Op::STRUCT_GET, 0, key);
+        self.emit_u16(Op::LOCAL_GET, value_slot);
+        self.emit_direct_callable_invoke(1);
         self.chunk().emit_else(line);
         self.emit_u16(Op::LOCAL_GET, value_slot);
         self.chunk().emit_end(line);
@@ -394,8 +596,11 @@ impl Compiler {
         value_expr: &Expression,
         flag_expr: &Expression,
     ) -> Result<(), String> {
-        self.compile_expr(value_expr)?;
-        self.compile_expr(flag_expr)?;
+        // Both operands through the shared coercion: `HasFlag` is a bit test on
+        // the underlying values, and either side may be a constant OBJECT or an
+        // already-combined integer.
+        self.emit_enum_int_value(value_expr)?;
+        self.emit_enum_int_value(flag_expr)?;
         let line = self.line;
         emit_has_flag(self.chunk(), line);
         Ok(())
@@ -433,7 +638,8 @@ impl Compiler {
                     return Ok(false);
                 }
             }
-            _ => return Ok(false) };
+            _ => return Ok(false),
+        };
         let field_name = strip_generic_suffix(field);
 
         if static_enum_call {
@@ -470,7 +676,15 @@ impl Compiler {
                     else {
                         return Ok(false);
                     };
-                    self.emit_enum_name_lookup(&enum_type, &args[1].value, false)?;
+                    // `Enum.Parse(type, value, ignoreCase)` is the real .NET
+                    // overload, and that third argument is the only thing that
+                    // separates a case-insensitive parse from a case-sensitive
+                    // one. Reading it here keeps `TryParse`'s ignore-case form
+                    // — which the walker normalizes onto this very call — on
+                    // the SAME lookup instead of a second one.
+                    let ignore_case = args.len() >= 3
+                        && matches!(&args[2].value.kind, ExprKind::Lit(Literal::Bool(true)));
+                    self.emit_enum_member_lookup(&enum_type, &args[1].value, ignore_case)?;
                     return Ok(true);
                 }
                 "IsDefined" if args.len() >= 2 => {
@@ -479,28 +693,39 @@ impl Compiler {
                     else {
                         return Ok(false);
                     };
-                    self.emit_enum_name_lookup(&enum_type, &args[1].value, false)?;
-                    self.emit(Op::REF_IS_NULL);
-                    {
-                        let line = self.line;
-                        crate::primitives::ops::emit_dyn_not(self.chunk(), line);
-                    };
+                    self.emit_enum_is_defined(&enum_type, &args[1].value)?;
                     return Ok(true);
                 }
                 "GetUnderlyingType" if args.len() == 1 => {
                     let expr = Expression::new(ExprKind::Object(vec![
                         ObjectProperty::KeyValue {
                             key: Expression::string("Name"),
-                            value: Expression::string("Int32") },
+                            value: Expression::string("Int32"),
+                        },
                         ObjectProperty::KeyValue {
                             key: Expression::string("FullName"),
-                            value: Expression::string("System.Int32") },
+                            value: Expression::string("System.Int32"),
+                        },
                     ]));
                     self.compile_expr(&expr)?;
                     return Ok(true);
                 }
                 "Format" if args.len() >= 3 => {
-                    self.compile_expr(&args[1].value)?;
+                    // The format letter picks WHICH of the constant's two faces
+                    // renders — `"D"` its declared value, `"G"`/`"F"` its name —
+                    // and each is read through the role that owns it rather
+                    // than re-derived here. Ignoring the letter and calling
+                    // `String()` answered with whichever face the value
+                    // happened to be carrying.
+                    let decimal = matches!(
+                        &args[2].value.kind,
+                        ExprKind::Lit(Literal::Str(fmt)) if fmt.eq_ignore_ascii_case("d")
+                    );
+                    if decimal {
+                        self.emit_enum_int_value(&args[1].value)?;
+                    } else {
+                        self.emit_enum_render(&args[1].value)?;
+                    }
                     let to_str_idx = self.import("ecma:string", "String");
                     self.emit_host_call(to_str_idx, 1);
                     return Ok(true);
@@ -536,7 +761,7 @@ impl Compiler {
                     } else {
                         (&visible_args[0].value, false, &visible_args[1].value)
                     };
-                    self.emit_enum_name_lookup(&enum_type, value_arg, ignore_case)?;
+                    self.emit_enum_member_lookup(&enum_type, value_arg, ignore_case)?;
                     let parsed_slot = self.define_local("__enum_try_parse_value");
                     self.emit_u16(Op::LOCAL_SET, parsed_slot);
                     self.emit_u16(Op::LOCAL_GET, parsed_slot);
@@ -561,7 +786,17 @@ impl Compiler {
             return Ok(false);
         };
 
-        let Some(enum_type) = self.canonical_enum_type_from_expr(object) else {
+        // `HasFlag` asks the ARGUMENT as well as the receiver. A combined flags
+        // value is a bare integer with no declared type left on it — that is
+        // what `A | B` produces — so `combined.HasFlag(Perm.Read)` is only
+        // recognisable from the constant it is handed. Nothing else spells
+        // `HasFlag` with an enum constant for an argument.
+        let enum_type = self.canonical_enum_type_from_expr(object).or_else(|| {
+            (field_name.eq_ignore_ascii_case("HasFlag") && args.len() == 1)
+                .then(|| self.canonical_enum_type_from_expr(&args[0].value))
+                .flatten()
+        });
+        let Some(enum_type) = enum_type else {
             return Ok(false);
         };
 
@@ -578,7 +813,8 @@ impl Compiler {
                 self.emit_enum_value_to_string(&enum_type, object)?;
                 Ok(true)
             }
-            _ => Ok(false) }
+            _ => Ok(false),
+        }
     }
 }
 
@@ -682,4 +918,9 @@ pub fn emit_has_flag(chunk: &mut Chunk, line: u32) {
     chunk.emit_op(Op::I32_AND, line);
     chunk.emit_op_u16(Op::LOCAL_GET, flag, line);
     crate::primitives::ops::emit_dyn_eq(chunk, line);
+    // `HasFlag` returns a BOOLEAN, and `emit_dyn_eq` answers with a raw i32 —
+    // so the result printed `1`/`0` where .NET prints `True`/`False`. The same
+    // conversion `emit_enum_is_defined` ends with, for the same reason: a
+    // predicate's answer is a bool, not the integer that computed it.
+    crate::primitives::ops::emit_i32_to_bool(chunk, line);
 }

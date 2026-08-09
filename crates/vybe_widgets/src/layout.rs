@@ -51,7 +51,8 @@ pub struct LayoutRect {
     pub x: f32,
     pub y: f32,
     pub w: f32,
-    pub h: f32 }
+    pub h: f32,
+}
 
 impl LayoutRect {
     pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
@@ -63,7 +64,8 @@ impl LayoutRect {
             x: 0.0,
             y: 0.0,
             w: 0.0,
-            h: 0.0 }
+            h: 0.0,
+        }
     }
 
     /// Test whether a point lies inside this rectangle.
@@ -120,14 +122,16 @@ impl LayoutRect {
 pub enum MouseButton {
     Left,
     Right,
-    Middle }
+    Middle,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum MouseEventKind {
     Press(MouseButton),
     Release(MouseButton),
     Move,
-    Scroll(f32) }
+    Scroll(f32),
+}
 
 /// A mouse event with absolute logical coordinates.
 #[derive(Clone, Copy, Debug)]
@@ -137,7 +141,8 @@ pub struct MouseEvent {
     pub kind: MouseEventKind,
     pub cmd: bool,
     pub shift: bool,
-    pub alt: bool }
+    pub alt: bool,
+}
 
 /// A keyboard event with modifier state.
 #[derive(Clone, Debug)]
@@ -148,7 +153,8 @@ pub struct KeyEvent {
     pub cmd: bool,
     pub shift: bool,
     pub alt: bool,
-    pub text: Option<String> }
+    pub text: Option<String>,
+}
 
 // ── Render Context ─────────────────────────────────────────────────────
 
@@ -157,7 +163,8 @@ pub struct RenderContext<'a> {
     pub pixmap: &'a mut Pixmap,
     pub font_system: &'a mut FontSystem,
     pub swash_cache: &'a mut SwashCache,
-    pub scale: f32 }
+    pub scale: f32,
+}
 
 impl<'a> RenderContext<'a> {
     /// Draw monospace UI text at physical pixel coordinates.
@@ -276,7 +283,8 @@ pub enum CursorMotion {
     BufferStart,
     BufferEnd,
     LeftWord,
-    RightWord }
+    RightWord,
+}
 
 // ── Dock ───────────────────────────────────────────────────────────────
 
@@ -287,7 +295,8 @@ pub enum Dock {
     Right,
     Top,
     Bottom,
-    Fill }
+    Fill,
+}
 
 // ── Widget Events ──────────────────────────────────────────────────────
 
@@ -305,7 +314,8 @@ pub enum CommandValue {
     /// An index value (selected item, tab index, etc.).
     Index(usize),
     /// An RGBA colour.
-    Color(u8, u8, u8, u8) }
+    Color(u8, u8, u8, u8),
+}
 
 /// Read a `Custom` command payload as a number. Commands cross the host
 /// boundary as text (`set_property` stringifies every value), so a numeric
@@ -315,7 +325,8 @@ pub fn command_number(val: &CommandValue) -> Option<f64> {
         CommandValue::Number(n) => Some(*n),
         CommandValue::Index(i) => Some(*i as f64),
         CommandValue::Text(s) => s.trim().parse::<f64>().ok(),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Read a `Custom` command payload as an RGBA colour: a `Color` payload, a
@@ -326,7 +337,8 @@ pub fn command_color(val: &CommandValue) -> Option<(u8, u8, u8, u8)> {
         CommandValue::Color(r, g, b, a) => Some((*r, *g, *b, *a)),
         CommandValue::Number(n) => Some(argb_u32_to_rgba(*n as u32)),
         CommandValue::Text(s) => parse_color(s),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Split a packed `0xAARRGGBB` integer into RGBA components.
@@ -376,7 +388,8 @@ pub fn parse_color(s: &str) -> Option<(u8, u8, u8, u8)> {
         "lightgray" | "lightgrey" => Some((211, 211, 211, 255)),
         "darkgray" | "darkgrey" => Some((169, 169, 169, 255)),
         "transparent" => Some((0, 0, 0, 0)),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Tri-state check state for checkboxes.
@@ -384,7 +397,8 @@ pub fn parse_color(s: &str) -> Option<(u8, u8, u8, u8)> {
 pub enum CheckState {
     Unchecked,
     Checked,
-    Indeterminate }
+    Indeterminate,
+}
 
 impl CheckState {
     /// Cycle to the next state on toggle: Unchecked -> Checked -> Unchecked.
@@ -393,7 +407,8 @@ impl CheckState {
         match self {
             CheckState::Unchecked => CheckState::Checked,
             CheckState::Checked => CheckState::Unchecked,
-            CheckState::Indeterminate => CheckState::Checked }
+            CheckState::Indeterminate => CheckState::Checked,
+        }
     }
 
     pub fn is_checked(self) -> bool {
@@ -409,14 +424,16 @@ pub enum SelectionMode {
     /// Multiple items can be toggled independently with simple clicks.
     MultiSimple,
     /// Extended multi-select: Ctrl+click toggles, Shift+click selects range.
-    MultiExtended }
+    MultiExtended,
+}
 
 /// Text alignment for labels and similar widgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextAlign {
     Left,
     Center,
-    Right }
+    Right,
+}
 
 // ── Anchor ──────────────────────────────────────────────────────────────
 
@@ -475,7 +492,8 @@ pub struct AnchorLayout {
     /// Parent size when anchor was first set.
     pub parent_size: (f32, f32),
     /// Anchor edges.
-    pub anchor: Anchor }
+    pub anchor: Anchor,
+}
 
 impl AnchorLayout {
     /// Compute where the widget should be placed given the new parent size.
@@ -577,7 +595,8 @@ pub enum WidgetCommand {
     /// Remove all items.
     ClearItems,
     /// Custom command with a string key and arbitrary payload.
-    Custom(String, CommandValue) }
+    Custom(String, CommandValue),
+}
 
 /// Events emitted by widgets back to the host application.
 ///
@@ -638,7 +657,8 @@ pub enum WidgetEvent {
     /// Mouse entered a widget. Payload: widget name.
     MouseEnter(String),
     /// Mouse left a widget. Payload: widget name.
-    MouseLeave(String) }
+    MouseLeave(String),
+}
 
 // ── PanelWidget Trait ──────────────────────────────────────────────────
 
@@ -683,8 +703,6 @@ pub trait PanelWidget: Send + Sync {
     /// Render the widget into the pixmap.
     fn render(&mut self, ctx: &mut RenderContext);
 
-
-
     /// Downcast hook for the host bridge.
     ///
     /// Returns `Some(&mut dyn Any)` so callers can `downcast_mut` to a
@@ -711,11 +729,7 @@ pub trait PanelWidget: Send + Sync {
     /// widgets match their own name; containers override to recurse into
     /// children so nested controls (a Flutter tree) stay reachable by name —
     /// the basis for `setState` updating a control's property in place.
-    fn send_command_named(
-        &mut self,
-        name: &str,
-        cmd: &WidgetCommand,
-    ) -> Option<CommandValue> {
+    fn send_command_named(&mut self, name: &str, cmd: &WidgetCommand) -> Option<CommandValue> {
         if self.name() == name {
             Some(self.handle_command(cmd))
         } else {
@@ -857,12 +871,14 @@ pub fn take_widget(root: &mut dyn PanelWidget, name: &str) -> Option<Box<dyn Pan
 
 /// A no-op widget used as a placeholder in containers.
 pub struct NullWidget {
-    rect: LayoutRect }
+    rect: LayoutRect,
+}
 
 impl NullWidget {
     pub fn new() -> Self {
         Self {
-            rect: LayoutRect::zero() }
+            rect: LayoutRect::zero(),
+        }
     }
 }
 
@@ -898,7 +914,8 @@ pub struct FocusManager {
     /// Frame counter incremented each time hover is updated.
     frame_counter: u64,
     /// Number of frames to wait before showing a tooltip (approx ~60fps → 45 frames ≈ 750ms).
-    tooltip_delay_frames: u64 }
+    tooltip_delay_frames: u64,
+}
 
 impl FocusManager {
     pub fn new() -> Self {
@@ -907,7 +924,8 @@ impl FocusManager {
             hovered: None,
             tooltip_state: None,
             frame_counter: 0,
-            tooltip_delay_frames: 45 }
+            tooltip_delay_frames: 45,
+        }
     }
 
     /// The currently focused widget index.

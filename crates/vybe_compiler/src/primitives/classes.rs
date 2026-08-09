@@ -78,10 +78,12 @@ impl Compiler {
                         key: None,
                         value: element_expr.clone(),
                         spread: false,
-                        by_ref: false })
+                        by_ref: false,
+                    })
                     .collect(),
             ))),
-            type_name: trimmed.to_string() }))
+            type_name: trimmed.to_string(),
+        }))
     }
 
     fn array_default_element_expr(type_hint: Option<&str>) -> Expression {
@@ -98,7 +100,8 @@ impl Compiler {
             | Some("sbyte") | Some("char") => Expression::new(ExprKind::Lit(Literal::Int(0))),
             Some("boolean") | Some("bool") => Expression::new(ExprKind::Lit(Literal::Bool(false))),
             Some(type_hint) if Self::is_string_type_hint(type_hint) => Expression::string(""),
-            _ => Expression::null() }
+            _ => Expression::null(),
+        }
     }
 
     fn array_bounds_extent_expr(bounds: &[Expression]) -> Option<Expression> {
@@ -108,7 +111,8 @@ impl Compiler {
             Expression::new(ExprKind::Binary {
                 op: BinOp::Mul,
                 left: Box::new(acc),
-                right: Box::new(bound) })
+                right: Box::new(bound),
+            })
         }))
     }
 
@@ -135,7 +139,8 @@ impl Compiler {
                         Argument::positional(extent),
                         Argument::positional(Self::array_default_element_expr(type_hint)),
                     ],
-                    optional: false });
+                    optional: false,
+                });
                 self.compile_expr(&init_expr)?;
             }
         } else if let Some(init_expr) = type_hint.and_then(Self::fixed_array_zero_expr) {
@@ -330,15 +335,6 @@ impl Compiler {
         )
     }
 
-    /// True when `parent_name` is a framework GUI control used as a class
-    /// parent under a profile that has the dotnet namespace mounted.
-    ///
-    /// `canonical_control_name` is a global, language-blind string table, so it
-    /// matches `"Timer"`/`"Panel"`/… regardless of which language is compiling.
-    /// Gating on `use_dotnet` re-establishes the resolver scoping the bare
-    /// string match skips: only treat the name as a control when `dotnet.*` is
-    /// actually in scope, so a same-named class in a non-GUI language (e.g. a
-    /// Python `class X(Timer)`) never misroutes to `vybe:gui`.
     /// Is this class parent a framework GUI control?
     ///
     /// That is a property of the PARENT TYPE, not of which platform happens to
@@ -365,11 +361,27 @@ impl Compiler {
             return true;
         }
         // dotnet INFERS its controls from the canonical name instead of
-        // registering a `CtorSpec`, so it still needs its own signal. When the
-        // dotnet registrar declares `control_fn` like the others, this arm and
-        // the flag it reads both go away.
-        self.profile.namespaces.use_dotnet
-            && !common::gui::canonical_control_name(parent_name).is_empty()
+        // registering a `CtorSpec`, so the registry arm above cannot answer for
+        // it yet — its `tree_register` builds `Type { ctor: None, … }`. Until
+        // it declares `control_fn` like plib and flutter, the deciding question
+        // is whether THIS profile's namespace tree registers a type by that
+        // name, which `type_scopes` already scopes.
+        //
+        // `canonical_control_name` alone cannot decide it: it is a shared,
+        // language-blind table holding generic words (`image`, `panel`,
+        // `label`, `container`, `slider`), so a Python `class X(Timer)` would
+        // otherwise misroute to a GUI control. Registration is the signal; the
+        // table only maps a framework's spelling onto the canonical role.
+        //
+        // This is the INHERITANCE twin of the standalone-construction site in
+        // `calls.rs` (`New Button()`), which already asks exactly this pair —
+        // the two guard the same hazard and now answer the same way. It used to
+        // read `profile.namespaces.use_dotnet`, a language-family check
+        // standing in for the scoping.
+        vybe_runtime::namespaces::is_registered_type(
+            &self.profile.namespaces.type_scopes,
+            parent_name,
+        ) && !common::gui::canonical_control_name(parent_name).is_empty()
     }
 
     /// The parent is a registered type whose construction is a GUI control.
@@ -381,9 +393,25 @@ impl Compiler {
         .is_some_and(|spec| spec.control_fn.is_some())
     }
 
+    /// A PLATFORM owns this parent class, so there is no user constructor
+    /// global to bind — the descriptor supplies construction.
+    ///
+    /// `platform_owns_descriptor_class` asks every LINKED platform, not the
+    /// ones this profile mounts, so on its own it answers `true` for a Python
+    /// `class X(Timer)` merely because some other language in the workspace
+    /// links dotnet. `is_registered_type` supplies the missing scoping, which
+    /// is what `use_dotnet` used to stand in for.
+    ///
+    /// The two questions cover the SAME class set: `descriptor.classes` is
+    /// built by iterating `dotnet_class_exports()` (`descriptor.rs`), the same
+    /// source `tree_register` walks. So within a profile that mounts the
+    /// scopes this narrows nothing, and outside one it narrows exactly the
+    /// language-family check that used to be spelled as a flag.
     fn dotnet_descriptor_parent_has_no_user_ctor(&self, parent_name: &str) -> bool {
-        self.profile.namespaces.use_dotnet
-            && vybe_runtime::registry::platform_owns_descriptor_class(parent_name)
+        vybe_runtime::namespaces::is_registered_type(
+            &self.profile.namespaces.type_scopes,
+            parent_name,
+        ) && vybe_runtime::registry::platform_owns_descriptor_class(parent_name)
             && !self.is_framework_control_parent(parent_name)
             && !self.defined_classes.contains(&self.canon(parent_name))
     }
@@ -410,9 +438,11 @@ impl Compiler {
         // `TForm` canonicalised to "" and this bailed: the derived
         // constructor then never allocated `this`, every field write landed
         // on null, and every field read came back `undefined`.
-        let registered =
-            common::gui::registered_control_element(&self.profile.namespaces.type_scopes, parent_name)
-                .is_some();
+        let registered = common::gui::registered_control_element(
+            &self.profile.namespaces.type_scopes,
+            parent_name,
+        )
+        .is_some();
         if !registered && common::gui::canonical_control_name(parent_name).is_empty() {
             return Ok(false);
         }
@@ -569,7 +599,8 @@ impl Compiler {
         let canon = self.canon(name);
         let bases: Vec<String> = match self.pending_classes.get(&canon) {
             Some(pc) => pc.bases.iter().map(|b| self.canon(b)).collect(),
-            None => return vec![canon] };
+            None => return vec![canon],
+        };
         if bases.is_empty() {
             return vec![canon];
         }
@@ -706,10 +737,7 @@ impl Compiler {
             line,
         );
         for capture_name in capture_names {
-            if let Some(slot) = self
-                .scope()
-                .resolve(capture_name)
-            {
+            if let Some(slot) = self.scope().resolve(capture_name) {
                 common::functions::emit_closure_upvalue(
                     &mut self.chunks[self.current],
                     true,
@@ -941,7 +969,10 @@ impl Compiler {
         );
         self.function_param_types.insert(
             cname.clone(),
-            params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect(),
+            params
+                .iter()
+                .map(|param| param.type_hint.as_deref().map(str::to_string))
+                .collect(),
         );
         self.function_min_arity.insert(
             cname.clone(),
@@ -1136,7 +1167,8 @@ impl Compiler {
                         pascal_bounds: p
                             .type_hint
                             .as_deref()
-                            .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint)) },
+                            .and_then(|type_hint| self.pascal_array_type_hint_metadata(type_hint)),
+                    },
                 );
             }
             if simple_arguments_alias {
@@ -1160,7 +1192,8 @@ impl Compiler {
             *self.js_arguments_bindings.last_mut().unwrap() = Some(JsArgumentsBinding {
                 args_slot: slot,
                 aliased_params,
-                aliased_indices });
+                aliased_indices,
+            });
         }
 
         if uses_js_arguments {
@@ -1306,7 +1339,7 @@ impl Compiler {
             self.active_async_try_depth += 1;
         }
 
-        if self.profile.ambient_this_binding
+        if self.ambient_this()
             && crate::primitives::closures_in_body_reference_this(body)
         {
             self.emit_global_read("__js_this");
@@ -1680,7 +1713,8 @@ impl Compiler {
                     members: nm,
                     ..
                 } => (nn, nm, None),
-                _ => continue };
+                _ => continue,
+            };
             let qualified_nested_name = Self::qualified_nested_type_name(enclosing, nested_name);
             let nested_canon = self.canon(&qualified_nested_name);
             let nested_leaf_canon =
@@ -1971,7 +2005,8 @@ impl Compiler {
                             }),
                         FieldType {
                             hint: Self::normalize_type_hint(t),
-                            value_type: f.value_type.clone() },
+                            value_type: f.value_type.clone(),
+                        },
                     )
                 })
             })
@@ -1987,7 +2022,8 @@ impl Compiler {
                         .entry(self.canon(name))
                         .or_insert_with(|| FieldType {
                             hint: Self::normalize_type_hint(type_hint),
-                            value_type: None });
+                            value_type: None,
+                        });
                 }
                 ClassMember::Property {
                     name,
@@ -2003,7 +2039,8 @@ impl Compiler {
                         .entry(self.canon(name))
                         .or_insert_with(|| FieldType {
                             hint: Self::normalize_type_hint(type_hint),
-                            value_type: None });
+                            value_type: None,
+                        });
                 }
                 _ => {}
             }
@@ -2076,7 +2113,8 @@ impl Compiler {
                                 | StmtKind::EnumDecl { name, .. } => {
                                     Some(Self::qualified_nested_type_name(&class.name, name))
                                 }
-                                _ => None }
+                                _ => None,
+                            }
                         } else {
                             None
                         }
@@ -2151,6 +2189,13 @@ impl Compiler {
         {
             let cname = self.canon(&class.name);
             self.classes_with_indexer.insert(cname);
+        }
+        // Same shape, different fact: record the DECLARED late-static-binding
+        // trait so a call site reads what the method chunk was built from
+        // instead of re-deriving it from the profile name.
+        if class.late_static_binding {
+            let cname = self.canon(&class.name);
+            self.classes_with_late_static_binding.insert(cname);
         }
         for m in class
             .instance_methods
@@ -2291,7 +2336,7 @@ impl Compiler {
             // The receiver (`this`) is bound ambiently from the call context
             // (`__js_this`) rather than passed as an explicit first positional
             // parameter. Capability-driven — not gated on the language name.
-            let ambient_this = cc.profile.ambient_this_binding;
+            let ambient_this = cc.ambient_this();
             let uses_js_arguments = cc.profile.has_arguments_object
                 && ambient_this
                 && !m.is_generator
@@ -2317,13 +2362,13 @@ impl Compiler {
             // The `is_static` arm is the last language-name check here. It asks
             // whether STATIC methods carry a receiver, which is late static
             // binding (`static::`, `get_called_class()`) — a class-shape trait
-            // the frontend should declare, the way seven frontends already set
-            // `explicit_self_param`, not something shared code infers from a
-            // profile name.
+            // the frontend DECLARES, the way seven frontends already set
+            // `explicit_self_param`. It used to be read off `profile.name ==
+            // "php"` here; the declaration is the fact.
             let has_receiver = if is_static_init {
                 false
             } else if is_static {
-                cc.static_methods_take_receiver()
+                class.late_static_binding
             } else if ambient_this {
                 false
             } else {
@@ -2417,7 +2462,8 @@ impl Compiler {
                             type_hint: p.type_hint.as_deref().map(str::to_string),
                             pascal_bounds: p.type_hint.as_deref().and_then(|type_hint| {
                                 cc.pascal_array_type_hint_metadata(type_hint)
-                            }) },
+                            }),
+                        },
                     );
                 }
             }
@@ -2618,10 +2664,7 @@ impl Compiler {
                 for s in &m.body {
                     cc.compile_stmt(s)?;
                 }
-                if let Some(slot) = cc
-                    .scope()
-                    .resolve(&self_kw)
-                {
+                if let Some(slot) = cc.scope().resolve(&self_kw) {
                     cc.emit_u16(Op::LOCAL_GET, slot);
                     cc.emit_return_through_finally(1)?;
                 }
@@ -2750,14 +2793,16 @@ impl Compiler {
                                 is_rest: true,
                                 is_kwargs: false,
                                 is_optional: false,
-                                is_nullable: false }]
+                                is_nullable: false,
+                            }]
                         } else {
                             user_params
                                 .iter()
                                 .map(|param| (*param).clone())
                                 .collect::<Vec<_>>()
                         }),
-                        is_virtual });
+                        is_virtual,
+                    });
             }
             let explicit_overload_extends_ancestor = !is_static
                 && !is_ctor
@@ -2839,10 +2884,10 @@ impl Compiler {
                             self.canon(nested_name),
                             self.canon(nested_name.rsplit('.').next().unwrap_or(nested_name)),
                         ),
-                        _ => (String::new(), String::new()) };
+                        _ => (String::new(), String::new()),
+                    };
                     self.compile_stmt(&nested)?;
                     if !qualified_nested.is_empty() && qualified_nested != leaf_nested {
-
                         self.emit_global_read(&qualified_nested);
                         self.emit_global_write(&leaf_nested);
                         for arity in 0..=IMPLICIT_CTOR_FORWARD_ARGS {
@@ -3226,7 +3271,7 @@ impl Compiler {
                 Some(vybe_ast::TypeHint::descriptive(class.name.clone())),
             );
             let this_slot = user_arity as u16;
-            if self.profile.ambient_this_binding {
+            if self.ambient_this() {
                 self.emit_global_read("__js_this");
                 self.emit_u16(Op::LOCAL_SET, this_slot);
             }
@@ -3302,10 +3347,7 @@ impl Compiler {
                         false
                     } else {
                         let pname = self.canon(parent_name);
-                        let has_local = self
-                            .scope()
-                            .resolve(parent_name)
-                            .is_some();
+                        let has_local = self.scope().resolve(parent_name).is_some();
                         let has_upvalue = self.scopes.len() > 1
                             && self
                                 .resolve_upvalue(self.scopes.len() - 1, parent_name)
@@ -3718,7 +3760,8 @@ impl Compiler {
                                 }
                                 end
                             }
-                            None => 0 };
+                            None => 0,
+                        };
                         for stmt in &body_stmts[..preamble_end] {
                             self.compile_stmt(stmt)?;
                         }
@@ -3742,8 +3785,7 @@ impl Compiler {
                                 &method_capture_name_map,
                                 &method_rest_fixed_counts,
                                 class.is_value_type,
-                                class.semantics.equality
-                                    == vybe_ast::ValueEquality::Structural,
+                                class.semantics.equality == vybe_ast::ValueEquality::Structural,
                                 should_stamp_form_identity,
                                 body_stmts,
                                 user_body,
@@ -3769,8 +3811,7 @@ impl Compiler {
                                 &method_capture_name_map,
                                 &method_rest_fixed_counts,
                                 class.is_value_type,
-                                class.semantics.equality
-                                    == vybe_ast::ValueEquality::Structural,
+                                class.semantics.equality == vybe_ast::ValueEquality::Structural,
                                 should_stamp_form_identity,
                                 body_stmts,
                                 user_body,
@@ -4195,7 +4236,6 @@ impl Compiler {
             let ctor_key = self.str_const("constructor");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, ctor_key);
 
-
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::String(Arc::from("prototype")));
             common::dict::emit_new(&mut self.chunks, self.current, self.line);
@@ -4222,12 +4262,10 @@ impl Compiler {
             let name_key = self.str_const("name");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, name_key);
 
-
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.emit_const(Value::F64(0.0));
             let length_key = self.str_const("length");
             self.emit_struct_field_op(Op::STRUCT_SET, 0, length_key);
-
 
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             crate::primitives::prototypes::emit_stamp_fn_metadata_nonenum(self.chunk(), line);
@@ -4369,7 +4407,7 @@ impl Compiler {
         self.emit_u16(Op::LOCAL_GET, ctor_local);
         self.emit_u16(Op::LOCAL_SET, static_self_slot);
 
-        let saved_static_js_this = if self.profile.ambient_this_binding {
+        let saved_static_js_this = if self.ambient_this() {
             let saved = self.save_js_this("__js_prev_this_static_init");
             self.emit_u16(Op::LOCAL_GET, ctor_local);
             self.set_js_this_from_stack();
@@ -4396,8 +4434,7 @@ impl Compiler {
                 self.emit(Op::DROP);
                 continue;
             }
-            if self.profile.static_fields_are_own_properties
-                && !fname.starts_with("__js_private_")
+            if self.profile.static_fields_are_own_properties && !fname.starts_with("__js_private_")
             {
                 self.emit_u16(Op::LOCAL_GET, ctor_local);
                 if let Some(init_expr) = init {
@@ -4414,7 +4451,8 @@ impl Compiler {
                                 type_hint.as_deref(),
                             )),
                         ],
-                        optional: false });
+                        optional: false,
+                    });
                     self.compile_expr(&init_expr)?;
                 } else {
                     inst!(self, core_wasm::undefined);
@@ -4540,7 +4578,8 @@ impl Compiler {
         let mut all_statics: Vec<(String, usize)> = Vec::new();
         // Late static binding: the class object rides along as the static
         // method's receiver so `static::` resolves against the CALLED class.
-        let php_static_receiver = if self.static_methods_take_receiver() {
+        // Same declaration `has_receiver` above reads — one fact, one source.
+        let php_static_receiver = if class.late_static_binding {
             Some(ctor_local)
         } else {
             None
@@ -4699,7 +4738,8 @@ impl Compiler {
             vybe_ast::ClassKind::Class if class.is_value_type => {
                 crate::primitives::reflection::ReflectKind::Struct
             }
-            kind => crate::primitives::reflection::ReflectKind::from_class_kind(kind) };
+            kind => crate::primitives::reflection::ReflectKind::from_class_kind(kind),
+        };
 
         // The declared-kind annotation is stamped unconditionally: it is what
         // `interface_exists` / `trait_exists` / `kind_of?` read, and every
@@ -4949,7 +4989,8 @@ fn stmt_has_result_member_assign(stmt: &Statement) -> bool {
                     .as_ref()
                     .is_some_and(|body| body_has_result_member_assign(body))
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn expr_is_result_member(expr: &Expression) -> bool {
@@ -5229,10 +5270,12 @@ pub fn emit_stamp_class_members(
         chunks[current].emit_i32_const(param_count as i32, line);
         match type_name {
             Some(t) => chunks[current].emit_string_const(t, line),
-            None => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+            None => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+        }
         match return_type {
             Some(t) => chunks[current].emit_string_const(t, line),
-            None => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line) }
+            None => chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+        }
         for param_type in param_types {
             chunks[current].emit_string_const(param_type, line);
         }
@@ -5261,7 +5304,6 @@ pub fn emit_stamp_class_members(
     chunks[current].emit_op_u16(Op::LOCAL_GET, ctor_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, fields_slot, line);
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, fields_key, line);
-
 
     for (name, param_count, return_type, param_types, modifiers) in methods {
         push_token(
@@ -5306,7 +5348,6 @@ pub fn emit_stamp_class_mro(
     push_array_value_local(chunks, current, self_ctor_slot, line);
     // push each base by global name
     for g in base_globals {
-
         chunks[current].emit_dup(line); // [ctor, arr, arr]
         crate::primitives::globals::emit_read(&mut chunks[current], g.as_str(), line); // [ctor, arr, arr, base]
         crate::primitives::collections::emit_push(chunks, current, line);
@@ -5342,7 +5383,6 @@ pub fn emit_stamp_class_bases(
         chunks[current].emit_op(Op::DROP, line);
     } else {
         for g in base_globals {
-    
             chunks[current].emit_dup(line);
             crate::primitives::globals::emit_read(&mut chunks[current], g.as_str(), line);
             crate::primitives::collections::emit_push(chunks, current, line);
@@ -5895,7 +5935,8 @@ pub fn register_type(
         is_interface,
         implements,
         constructor_chunk,
-        field_descriptors };
+        field_descriptors,
+    };
     // Fill a slot RESERVED by `reserve_type_slot` if there is one, so the type
     // keeps the table position its constructor already baked into its
     // `struct.new_default $T` immediate. Pushing a second entry under the same
@@ -5904,7 +5945,8 @@ pub fn register_type(
     // instance would allocate against a type with no fields.
     match chunks[0].types.iter_mut().find(|t| t.name == name) {
         Some(slot) => *slot = entry,
-        None => chunks[0].types.push(entry) }
+        None => chunks[0].types.push(entry),
+    }
 }
 
 /// Reserve this class's entry in chunk 0's type table **before** its
@@ -5946,7 +5988,8 @@ pub fn heaptype_for_name(
     match name {
         "object" => HeapType::Abstract(HT_STRUCT),
         "function" => HeapType::Abstract(HT_FUNC),
-        _ => HeapType::Concrete(reserve_type_slot(chunks, name) as u32) }
+        _ => HeapType::Concrete(reserve_type_slot(chunks, name) as u32),
+    }
 }
 
 pub fn reserve_type_slot(chunks: &mut [Chunk], name: &str) -> u16 {
@@ -5962,7 +6005,8 @@ pub fn reserve_type_slot(chunks: &mut [Chunk], name: &str) -> u16 {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new() });
+        field_descriptors: std::collections::HashMap::new(),
+    });
     chunks[0].types.len() as u16
 }
 
@@ -5998,7 +6042,8 @@ pub fn register_gc_array_type(chunks: &mut [Chunk], name: &str, elem_type: &str)
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new() });
+        field_descriptors: std::collections::HashMap::new(),
+    });
     type_index
 }
 
@@ -6030,12 +6075,14 @@ pub fn register_interface(
         is_interface: true,
         implements,
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new() };
+        field_descriptors: std::collections::HashMap::new(),
+    };
     // Fill a reserved slot when one exists — a class that named this
     // interface before it was compiled already declared it.
     match chunks[0].types.iter_mut().find(|t| t.name == name) {
         Some(slot) => *slot = entry,
-        None => chunks[0].types.push(entry) }
+        None => chunks[0].types.push(entry),
+    }
 }
 
 /// Register a class that implements one or more interfaces.

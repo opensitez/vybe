@@ -35,7 +35,8 @@ pub struct Keybinding {
     pub shift: bool,
     #[serde(default)]
     pub alt: bool,
-    pub action: String }
+    pub action: String,
+}
 
 // ── Layout Constants ───────────────────────────────────────────────────
 
@@ -54,13 +55,15 @@ pub(crate) const SIDEBAR_TAB_H: f32 = 28.0;
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum SidebarTab {
     Files,
-    Project }
+    Project,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 #[allow(dead_code)]
 pub(crate) enum BottomPanelTab {
     Output,
-    Problems }
+    Problems,
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum EditAction {
@@ -69,13 +72,15 @@ pub(crate) enum EditAction {
     Cut,
     Copy,
     Paste,
-    Delete }
+    Delete,
+}
 
 /// A single action runnable from the command palette.
 #[derive(Clone)]
 pub(crate) struct PaletteCommand {
     pub(crate) label: &'static str,
-    pub(crate) action: PaletteAction }
+    pub(crate) action: PaletteAction,
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum PaletteAction {
@@ -90,7 +95,8 @@ pub(crate) enum PaletteAction {
     PrevTab,
     FindInFile,
     FindInProject,
-    GoToLine }
+    GoToLine,
+}
 
 pub(crate) fn palette_commands() -> &'static [PaletteCommand] {
     use crate::form_designer_tab::MenuAction::*;
@@ -98,91 +104,120 @@ pub(crate) fn palette_commands() -> &'static [PaletteCommand] {
     &[
         PaletteCommand {
             label: "File: New Project",
-            action: Menu(NewProject) },
+            action: Menu(NewProject),
+        },
         PaletteCommand {
             label: "File: Open Project…",
-            action: Menu(OpenProject) },
+            action: Menu(OpenProject),
+        },
         PaletteCommand {
             label: "File: Save Project",
-            action: Menu(SaveProject) },
+            action: Menu(SaveProject),
+        },
         PaletteCommand {
             label: "File: Save Project As…",
-            action: Menu(SaveAs) },
+            action: Menu(SaveAs),
+        },
         PaletteCommand {
             label: "File: Exit",
-            action: Menu(Exit) },
+            action: Menu(Exit),
+        },
         PaletteCommand {
             label: "Edit: Undo",
-            action: Edit(EditAction::Undo) },
+            action: Edit(EditAction::Undo),
+        },
         PaletteCommand {
             label: "Edit: Redo",
-            action: Edit(EditAction::Redo) },
+            action: Edit(EditAction::Redo),
+        },
         PaletteCommand {
             label: "Edit: Cut",
-            action: Edit(EditAction::Cut) },
+            action: Edit(EditAction::Cut),
+        },
         PaletteCommand {
             label: "Edit: Copy",
-            action: Edit(EditAction::Copy) },
+            action: Edit(EditAction::Copy),
+        },
         PaletteCommand {
             label: "Edit: Paste",
-            action: Edit(EditAction::Paste) },
+            action: Edit(EditAction::Paste),
+        },
         PaletteCommand {
             label: "Edit: Delete",
-            action: Edit(EditAction::Delete) },
+            action: Edit(EditAction::Delete),
+        },
         PaletteCommand {
             label: "Project: Add Form",
-            action: Menu(AddForm) },
+            action: Menu(AddForm),
+        },
         PaletteCommand {
             label: "Project: Add Module",
-            action: Menu(AddModule) },
+            action: Menu(AddModule),
+        },
         PaletteCommand {
             label: "Project: Add Existing Form…",
-            action: Menu(AddExistingForm) },
+            action: Menu(AddExistingForm),
+        },
         PaletteCommand {
             label: "Project: Add Existing Code…",
-            action: Menu(AddExistingCode) },
+            action: Menu(AddExistingCode),
+        },
         PaletteCommand {
             label: "Project: Add Resource File",
-            action: Menu(AddResourceFile) },
+            action: Menu(AddResourceFile),
+        },
         PaletteCommand {
             label: "Project: Properties…",
-            action: Menu(ProjectProperties) },
+            action: Menu(ProjectProperties),
+        },
         PaletteCommand {
             label: "Run: Start",
-            action: Menu(RunProject) },
+            action: Menu(RunProject),
+        },
         PaletteCommand {
             label: "Run: Stop",
-            action: Menu(StopProject) },
+            action: Menu(StopProject),
+        },
         PaletteCommand {
             label: "View: Toggle Output Panel",
-            action: ToggleOutput },
+            action: ToggleOutput,
+        },
         PaletteCommand {
             label: "View: Show Problems",
-            action: ToggleProblems },
+            action: ToggleProblems,
+        },
         PaletteCommand {
             label: "View: Close Tab",
-            action: CloseTab },
+            action: CloseTab,
+        },
         PaletteCommand {
             label: "View: Close Other Tabs",
-            action: CloseOthers },
+            action: CloseOthers,
+        },
         PaletteCommand {
             label: "View: Close All Tabs",
-            action: CloseAll },
+            action: CloseAll,
+        },
         PaletteCommand {
             label: "View: Next Tab",
-            action: NextTab },
+            action: NextTab,
+        },
         PaletteCommand {
             label: "View: Previous Tab",
-            action: PrevTab },
+            action: PrevTab,
+        },
         PaletteCommand {
             label: "Find: In File",
-            action: FindInFile },
+            action: FindInFile,
+        },
         PaletteCommand {
             label: "Find: In Project",
-            action: FindInProject },
+            action: FindInProject,
+        },
         PaletteCommand {
             label: "Go: To Line",
-            action: GoToLine },
+            action: GoToLine,
+        },
     ]
 }
 
@@ -191,7 +226,8 @@ pub(crate) fn palette_commands() -> &'static [PaletteCommand] {
 pub(crate) struct ProjectSearchHit {
     pub(crate) file: String,
     pub(crate) line: usize,
-    pub(crate) snippet: String }
+    pub(crate) snippet: String,
+}
 
 // ── Helper Structs ─────────────────────────────────────────────────────
 
@@ -200,7 +236,8 @@ pub(crate) struct ProjectExplorerState {
     pub(crate) forms_collapsed: bool,
     pub(crate) code_collapsed: bool,
     pub(crate) refs_collapsed: bool,
-    pub(crate) resources_collapsed: bool }
+    pub(crate) resources_collapsed: bool,
+}
 
 impl ProjectExplorerState {
     fn new() -> Self {
@@ -209,7 +246,8 @@ impl ProjectExplorerState {
             forms_collapsed: false,
             code_collapsed: false,
             refs_collapsed: false,
-            resources_collapsed: false }
+            resources_collapsed: false,
+        }
     }
 }
 
@@ -218,7 +256,8 @@ impl ProjectExplorerState {
 pub enum TabContent {
     Code(CodeEditorWidget),
     Form(crate::form_designer_tab::FormDesignerState),
-    Resources(vybe_widgets::ResourceEditor) }
+    Resources(vybe_widgets::ResourceEditor),
+}
 
 pub struct Tab {
     pub name: String,
@@ -227,7 +266,8 @@ pub struct Tab {
     pub is_sticky: bool,
     #[allow(dead_code)]
     pub buffer: Option<()>,
-    pub is_modified: bool }
+    pub is_modified: bool,
+}
 
 // ── App ────────────────────────────────────────────────────────────────
 
@@ -313,7 +353,8 @@ pub(crate) struct App {
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum BuildConfig {
     Debug,
-    Release }
+    Release,
+}
 
 impl App {
     fn new(_my_editor: MyEditor, open_form: bool) -> Self {
@@ -428,113 +469,135 @@ impl App {
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "Undo".into() },
+                            action: "Undo".into(),
+                        },
                         Keybinding {
                             key: "z".into(),
                             cmd: true,
                             shift: true,
                             alt: false,
-                            action: "Redo".into() },
+                            action: "Redo".into(),
+                        },
                         Keybinding {
                             key: "a".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "SelectAll".into() },
+                            action: "SelectAll".into(),
+                        },
                         Keybinding {
                             key: "s".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "Save".into() },
+                            action: "Save".into(),
+                        },
                         Keybinding {
                             key: "f".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "Find".into() },
+                            action: "Find".into(),
+                        },
                         Keybinding {
                             key: "h".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "Replace".into() },
+                            action: "Replace".into(),
+                        },
                         Keybinding {
                             key: "/".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "ToggleComment".into() },
+                            action: "ToggleComment".into(),
+                        },
                         Keybinding {
                             key: "Tab".into(),
                             cmd: false,
                             shift: false,
                             alt: false,
-                            action: "Indent".into() },
+                            action: "Indent".into(),
+                        },
                         Keybinding {
                             key: "Tab".into(),
                             cmd: false,
                             shift: true,
                             alt: false,
-                            action: "Unindent".into() },
+                            action: "Unindent".into(),
+                        },
                         Keybinding {
                             key: "`".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "ToggleOutput".into() },
+                            action: "ToggleOutput".into(),
+                        },
                         Keybinding {
                             key: "ArrowUp".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "MoveBufferStart".into() },
+                            action: "MoveBufferStart".into(),
+                        },
                         Keybinding {
                             key: "ArrowDown".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "MoveBufferEnd".into() },
+                            action: "MoveBufferEnd".into(),
+                        },
                         Keybinding {
                             key: "ArrowLeft".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "MoveLineStart".into() },
+                            action: "MoveLineStart".into(),
+                        },
                         Keybinding {
                             key: "ArrowRight".into(),
                             cmd: true,
                             shift: false,
                             alt: false,
-                            action: "MoveLineEnd".into() },
+                            action: "MoveLineEnd".into(),
+                        },
                         Keybinding {
                             key: "ArrowLeft".into(),
                             cmd: false,
                             shift: false,
                             alt: true,
-                            action: "MoveWordLeft".into() },
+                            action: "MoveWordLeft".into(),
+                        },
                         Keybinding {
                             key: "ArrowRight".into(),
                             cmd: false,
                             shift: false,
                             alt: true,
-                            action: "MoveWordRight".into() },
+                            action: "MoveWordRight".into(),
+                        },
                     ];
                 }
                 kb
             },
             sidebar_tab: SidebarTab::Project,
             project: {
-                let mut p = vybe_platform_dotnet::winforms::designer::project::Project::new("Project1".to_string());
-                let mut form = vybe_platform_dotnet::winforms::designer::Form::new("Form1".to_string());
+                let mut p = vybe_platform_dotnet::winforms::designer::project::Project::new(
+                    "Project1".to_string(),
+                );
+                let mut form =
+                    vybe_platform_dotnet::winforms::designer::Form::new("Form1".to_string());
                 form.width = 640;
                 form.height = 480;
-                p.forms
-                    .push(vybe_platform_dotnet::winforms::designer::project::FormModule::new_classic(
+                p.forms.push(
+                    vybe_platform_dotnet::winforms::designer::project::FormModule::new_classic(
                         form,
-                    ));
+                    ),
+                );
                 p.startup_object =
-                    vybe_platform_dotnet::winforms::designer::project::StartupObject::Form("Form1".to_string());
+                    vybe_platform_dotnet::winforms::designer::project::StartupObject::Form(
+                        "Form1".to_string(),
+                    );
                 p
             },
             project_explorer: ProjectExplorerState::new(),
@@ -574,7 +637,8 @@ impl App {
                 st.add_tab_header("Project", false);
                 st.set_active(1); // default to Project tab
                 st
-            } }
+            },
+        }
     }
 
     /// Height in logical pixels of menu bar + toolbar (always present if any Form tab exists).
@@ -736,7 +800,8 @@ impl App {
                     "config" => {
                         self.build_config = match self.build_config {
                             BuildConfig::Debug => BuildConfig::Release,
-                            BuildConfig::Release => BuildConfig::Debug };
+                            BuildConfig::Release => BuildConfig::Debug,
+                        };
                     }
                     "diagnostics" => {
                         self.output_panel.set_visible(true);
@@ -755,7 +820,8 @@ impl App {
                 WidgetEvent::TabChanged(idx) => {
                     self.sidebar_tab = match idx {
                         0 => SidebarTab::Files,
-                        _ => SidebarTab::Project };
+                        _ => SidebarTab::Project,
+                    };
                 }
                 _ => {}
             }
@@ -816,7 +882,8 @@ impl App {
             12 => Theme::cyber(),
             13 => Theme::titanium(),
             14 => Theme::indigo_night(),
-            _ => Theme::one_dark() }
+            _ => Theme::one_dark(),
+        }
     }
 
     pub fn get_theme_name(&self) -> &str {
@@ -836,7 +903,8 @@ impl App {
             12 => "Cyber",
             13 => "Titanium",
             14 => "Indigo Night",
-            _ => "One Dark" }
+            _ => "One Dark",
+        }
     }
 
     fn draw_ui_text(
@@ -879,7 +947,8 @@ impl App {
             "r" => "r",
             "f90" | "f95" | "f03" | "f08" | "for" | "f" => "fortran",
             "cob" | "cbl" => "cobol",
-            _ => "plaintext" }
+            _ => "plaintext",
+        }
     }
 
     /// Build a file URI for a tab: uses `tab.path` when set, otherwise
@@ -929,7 +998,8 @@ impl vybe_widgets::Application for App {
             content: TabContent::Form(designer_state),
             is_sticky: true,
             buffer: None,
-            is_modified: false });
+            is_modified: false,
+        });
         self.active_tab = 0;
         self.sync_tab_headers();
         self.relayout();
@@ -978,7 +1048,8 @@ impl vybe_widgets::Application for App {
                 let winit_btn = match btn {
                     WMouseButton::Left => winit::event::MouseButton::Left,
                     WMouseButton::Right => winit::event::MouseButton::Right,
-                    WMouseButton::Middle => winit::event::MouseButton::Middle };
+                    WMouseButton::Middle => winit::event::MouseButton::Middle,
+                };
                 let winit_state = if matches!(event.kind, MouseEventKind::Press(_)) {
                     ElementState::Pressed
                 } else {

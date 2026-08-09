@@ -14,7 +14,8 @@ use crate::opcode::heaptype::HeapType;
 use crate::opcode::{Op, read_leb_u32};
 use crate::value::{Function, Object, ObjectKind, TypedArrayState, TypedElemKind, Upvalue, Value};
 use crate::vm::{
-    ActiveContinuation, BlockTargets, ExceptionHandler, ImportTarget, LabelEntry, ResumeMode, VM };
+    ActiveContinuation, BlockTargets, ExceptionHandler, ImportTarget, LabelEntry, ResumeMode, VM,
+};
 use std::collections::HashMap;
 
 impl VM {
@@ -66,12 +67,14 @@ impl VM {
             name,
             arity,
             chunk_index: func_idx,
-            upvalues: Vec::new() };
+            upvalues: Vec::new(),
+        };
         let mut obj = Object {
             properties: indexmap::IndexMap::new(),
             kind: ObjectKind::Function(func),
             type_id: 0,
-            fields: Vec::new() };
+            fields: Vec::new(),
+        };
         let table_idx = self.func_table.len();
         obj.properties
             .insert("__table_idx".into(), Value::F64(table_idx as f64));
@@ -112,8 +115,7 @@ impl VM {
                             for uv in &f.upvalues {
                                 let mut u = uv.lock().unwrap();
                                 if let crate::value::UpvalueLocation::Open(slot) = u.location {
-                                    let v =
-                                        self.stack.get(slot).cloned().unwrap_or(Value::Null);
+                                    let v = self.stack.get(slot).cloned().unwrap_or(Value::Null);
                                     u.location = crate::value::UpvalueLocation::Closed(v);
                                 }
                             }
@@ -272,7 +274,8 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
                     .entry(if_start)
                     .or_insert(BlockTargets {
                         else_ip: None,
-                        end_ip: 0 })
+                        end_ip: 0,
+                    })
                     .else_ip = Some(opcode_start);
                 else_of.insert(if_start, opcode_start);
             }
@@ -287,7 +290,8 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
                     .entry(entry_start)
                     .or_insert(BlockTargets {
                         else_ip: None,
-                        end_ip: 0 })
+                        end_ip: 0,
+                    })
                     .end_ip = end_ip;
                 // ELSE also needs the same end_ip so it can jump past END.
                 if let Some(&else_start) = else_of.get(&entry_start) {
@@ -295,7 +299,8 @@ pub(crate) fn build_block_table(code: &[u8]) -> HashMap<usize, BlockTargets> {
                         .entry(else_start)
                         .or_insert(BlockTargets {
                             else_ip: None,
-                            end_ip: 0 })
+                            end_ip: 0,
+                        })
                         .end_ip = end_ip;
                 }
             }
@@ -337,7 +342,8 @@ fn descriptor_of(value: &Value) -> Value {
             .get("__descriptor")
             .cloned()
             .unwrap_or(Value::Null),
-        _ => Value::Null }
+        _ => Value::Null,
+    }
 }
 
 /// `ref.eq` — reference identity. Shared by the `REF_EQ` opcode and by the
@@ -357,7 +363,8 @@ fn ref_eq(a: &Value, b: &Value) -> bool {
         (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
         (Value::Symbol(a), Value::Symbol(b)) => Arc::ptr_eq(a, b),
         (Value::String(a), Value::String(b)) => Arc::ptr_eq(a, b),
-        _ => false }
+        _ => false,
+    }
 }
 
 /// The stringref "WTF-8 position treatment": a byte offset past the end clamps
@@ -461,7 +468,8 @@ fn array_elem_storage_kind(name: &str) -> Option<(usize, u8)> {
         "i64" => (8, 1),
         "f32" => (4, 2),
         "f64" => (8, 3),
-        _ => return None })
+        _ => return None,
+    })
 }
 
 /// Decode `bytes` (little-endian, exactly the element width) into the numeric
@@ -475,7 +483,8 @@ fn decode_le_numeric(kind: u8, bytes: &[u8]) -> Value {
         3 => Value::F64(f64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))),
         4 => Value::I32(bytes.first().map(|b| *b as i32).unwrap_or(0)),
         5 => Value::I32(u16::from_le_bytes(bytes.try_into().unwrap_or([0; 2])) as i32),
-        _ => Value::I32(i32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))) }
+        _ => Value::I32(i32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))),
+    }
 }
 
 /// Decode `bytes` (little-endian, exactly `kind.bytes_per_element()`) into the
@@ -490,7 +499,8 @@ fn decode_typed_le(kind: crate::value::TypedElemKind, bytes: &[u8]) -> Value {
         I32 | U32 => Value::I32(i32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))),
         F32 => Value::F32(f32::from_le_bytes(bytes.try_into().unwrap_or([0; 4]))),
         F64 => Value::F64(f64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))),
-        BigI64 | BigU64 => Value::I64(i64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))) }
+        BigI64 | BigU64 => Value::I64(i64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]))),
+    }
 }
 
 fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
@@ -553,7 +563,8 @@ fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
             let bits = match value {
                 Value::BigInt(n) => n.to_i64_wrapping(),
                 Value::I64(n) => *n,
-                other => other.as_i32() as i64 };
+                other => other.as_i32() as i64,
+            };
             buf[abs..abs + 8].copy_from_slice(&bits.to_le_bytes());
         }
         TypedElemKind::BigU64 => {
@@ -561,7 +572,8 @@ fn typed_array_write(ta: &TypedArrayState, idx: usize, value: &Value) -> bool {
             let bits = match value {
                 Value::BigInt(n) => n.to_u64_wrapping(),
                 Value::I64(n) => *n as u64,
-                other => other.as_i32() as u64 };
+                other => other.as_i32() as u64,
+            };
             buf[abs..abs + 8].copy_from_slice(&bits.to_le_bytes());
         }
     }
@@ -810,7 +822,11 @@ impl VM {
                 .get("status")
                 .map(|v| format!("{}", v))
                 .unwrap_or_default();
-            let result = task.properties.get("result").cloned().unwrap_or(Value::Null);
+            let result = task
+                .properties
+                .get("result")
+                .cloned()
+                .unwrap_or(Value::Null);
             let exception = task.properties.get("exception").cloned();
             (status, result, exception)
         };
@@ -884,17 +900,17 @@ impl VM {
             self.memory.mark_parked();
             let success = match handle.join() {
                 Ok(result) => result.first().copied().unwrap_or(1) == 0,
-                Err(_) => false };
+                Err(_) => false,
+            };
             self.memory.unmark_parked();
             let mut task = task_obj.lock().unwrap();
             task.properties
                 .insert("iscompleted".into(), Value::Bool(true));
             task.properties.insert("isalive".into(), Value::Bool(false));
-            task.properties.insert("hasexited".into(), Value::Bool(true));
-            task.properties.insert(
-                "exitcode".into(),
-                Value::I32(if success { 0 } else { -1 }),
-            );
+            task.properties
+                .insert("hasexited".into(), Value::Bool(true));
+            task.properties
+                .insert("exitcode".into(), Value::I32(if success { 0 } else { -1 }));
             task.properties.insert(
                 "status".into(),
                 Value::String(Arc::from(if success {
@@ -909,10 +925,7 @@ impl VM {
     /// Execute a Component Model canonical built-in (VM-implemented import
     /// under module "canon" — see `ImportTarget::Canon`). Args and results
     /// ride the operand stack; each builtin pops exactly its own args.
-    pub(crate) fn exec_canon_builtin(
-        &mut self,
-        b: crate::vm::CanonBuiltin,
-    ) -> Result<(), VMError> {
+    pub(crate) fn exec_canon_builtin(&mut self, b: crate::vm::CanonBuiltin) -> Result<(), VMError> {
         use crate::value::ObjectKind;
         use crate::vm::CanonBuiltin as B;
         match b {
@@ -951,9 +964,7 @@ impl VM {
                 let result = self.pop();
                 if let Some(task) = self.cm_tasks.last_mut() {
                     if !task.mark_returned() {
-                        return Err(VMError::new(
-                            "task.return called twice on same task (trap)",
-                        ));
+                        return Err(VMError::new("task.return called twice on same task (trap)"));
                     }
                 }
                 // Push the result back — the function body may continue running.
@@ -968,15 +979,14 @@ impl VM {
             B::SubtaskCancel => {
                 // canon subtask.cancel — pops subtask handle (i32), cancels the subtask.
                 let handle = self.pop().as_i32() as u32;
-                let fid = if let Some(crate::handle_table::HandleEntry::Subtask {
-                    future_id,
-                    ..
-                }) = self.handle_table.get(handle)
-                {
-                    Some(*future_id)
-                } else {
-                    None
-                };
+                let fid =
+                    if let Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) =
+                        self.handle_table.get(handle)
+                    {
+                        Some(*future_id)
+                    } else {
+                        None
+                    };
                 if let Some(fid) = fid {
                     let mut el = self.event_loop.borrow_mut();
                     if let Some(fiber) =
@@ -1051,7 +1061,8 @@ impl VM {
                     Some(crate::handle_table::HandleEntry::Subtask { future_id, .. }) => {
                         Some(crate::waitable::Waitable::Subtask(*future_id))
                     }
-                    _ => None };
+                    _ => None,
+                };
                 if let Some(w) = waitable {
                     if let Some(set) = self.waitable_sets.get_mut(set_handle) {
                         set.join(w);
@@ -1062,12 +1073,16 @@ impl VM {
                 // canon stream.new — create a stream; push readable_handle
                 // and writable_handle (i32).
                 let stream_id = self.event_loop.borrow_mut().create_stream();
-                let rd = self
-                    .handle_table
-                    .insert(crate::handle_table::HandleEntry::ReadableStreamEnd(stream_id));
-                let wr = self
-                    .handle_table
-                    .insert(crate::handle_table::HandleEntry::WritableStreamEnd(stream_id));
+                let rd =
+                    self.handle_table
+                        .insert(crate::handle_table::HandleEntry::ReadableStreamEnd(
+                            stream_id,
+                        ));
+                let wr =
+                    self.handle_table
+                        .insert(crate::handle_table::HandleEntry::WritableStreamEnd(
+                            stream_id,
+                        ));
                 self.push(Value::I32(rd as i32))?;
                 self.push(Value::I32(wr as i32))?;
             }
@@ -1088,8 +1103,10 @@ impl VM {
                     }
                     Value::I32(handle) => match self.handle_table.get(handle as u32) {
                         Some(crate::handle_table::HandleEntry::WritableStreamEnd(id)) => Some(*id),
-                        _ => None },
-                    _ => None };
+                        _ => None,
+                    },
+                    _ => None,
+                };
                 if let Some(stream_id) = stream_id {
                     let mut el = self.event_loop.borrow_mut();
                     if let Some(fiber) = el.stream_push(stream_id, item) {
@@ -1181,12 +1198,16 @@ impl VM {
             B::FutureNew => {
                 // canon future.new — create a future; push readable_handle and writable_handle (i32).
                 let future_id = self.event_loop.borrow_mut().create_future();
-                let rd = self.handle_table.insert(
-                    crate::handle_table::HandleEntry::ReadableFutureEnd(future_id),
-                );
-                let wr = self.handle_table.insert(
-                    crate::handle_table::HandleEntry::WritableFutureEnd(future_id),
-                );
+                let rd =
+                    self.handle_table
+                        .insert(crate::handle_table::HandleEntry::ReadableFutureEnd(
+                            future_id,
+                        ));
+                let wr =
+                    self.handle_table
+                        .insert(crate::handle_table::HandleEntry::WritableFutureEnd(
+                            future_id,
+                        ));
                 self.push(Value::I32(rd as i32))?;
                 self.push(Value::I32(wr as i32))?;
             }
@@ -1262,7 +1283,8 @@ impl VM {
             other => Err(VMError::new(format!(
                 "trap: expected stringref, got {}",
                 other.type_tag()
-            ))) }
+            ))),
+        }
     }
 
     /// Read a codepoint-iterator view (`string.as_iter` result): its backing
@@ -1270,14 +1292,17 @@ impl VM {
     fn read_string_iter(&mut self, view: &Value) -> Result<(Arc<str>, usize), VMError> {
         let obj = match view {
             Value::Object(o) => o,
-            _ => return Err(VMError::new("trap: null stringview_iter reference")) };
+            _ => return Err(VMError::new("trap: null stringview_iter reference")),
+        };
         let guard = obj.lock().unwrap();
         let s = match guard.properties.get("__iter_str") {
             Some(Value::String(s)) => s.clone(),
-            _ => return Err(VMError::new("trap: not a stringview_iter")) };
+            _ => return Err(VMError::new("trap: not a stringview_iter")),
+        };
         let pos = match guard.properties.get("__iter_pos") {
             Some(Value::I32(p)) => *p as usize,
-            _ => 0 };
+            _ => 0,
+        };
         Ok((s, pos))
     }
 
@@ -1302,11 +1327,13 @@ impl VM {
     ) -> Result<Vec<u32>, VMError> {
         let obj = match arr {
             Value::Object(o) => o,
-            _ => return Err(VMError::new("trap: null array reference")) };
+            _ => return Err(VMError::new("trap: null array reference")),
+        };
         let guard = obj.lock().unwrap();
         let elems = match &guard.kind {
             ObjectKind::Array(v) => v,
-            _ => return Err(VMError::new("trap: expected array reference")) };
+            _ => return Err(VMError::new("trap: expected array reference")),
+        };
         if start > end || end > elems.len() {
             return Err(VMError::new("trap: array access out of bounds"));
         }
@@ -1454,7 +1481,24 @@ impl VM {
         // Track this loop's floor so exception unwinding defers instead of
         // crossing it (see `raise_exception_value`). Pop on every exit.
         self.exec_floors.push(min_depth);
-        let result = self.execute_until_inner(min_depth);
+        let mut result = self.execute_until_inner(min_depth);
+        // TRAP → HOST BOUNDARY. A trap leaves the dispatch loop as a plain
+        // `Err`, but `frames`, `stack` and `exception_handlers` are VM fields,
+        // so the machine state is still fully intact here — this is the one
+        // place a trap can be offered to a host-level handler without touching
+        // the interpreter loop at all. `raise_trap` unwinds to that handler if
+        // one exists (and returns Ok), and we resume; otherwise the trap keeps
+        // escaping exactly as before. Cold path only: zero cost per instruction.
+        while let Err(e) = &result {
+            if !e.is_trap() {
+                break;
+            }
+            let message = e.message.clone();
+            if self.raise_trap(&message).is_err() {
+                break; // no host-level handler — the trap escapes
+            }
+            result = self.execute_until_inner(min_depth);
+        }
         self.exec_floors.pop();
         result
     }
@@ -1681,7 +1725,8 @@ impl VM {
                                 .ok_or_else(|| {
                                     VMError::new("trap: struct.get field index out of range")
                                 })?,
-                            _ => return Err(VMError::new("trap: struct.get on a non-struct")) };
+                            _ => return Err(VMError::new("trap: struct.get on a non-struct")),
+                        };
                         self.push(val)?;
                         continue;
                     }
@@ -1761,7 +1806,8 @@ impl VM {
                             let next = node.lock().unwrap().properties.get("__proto__").cloned();
                             current = match next {
                                 Some(Value::Object(p)) => Some(Value::Object(p)),
-                                _ => None };
+                                _ => None,
+                            };
                         }
                         if let Some(getter_fn) = getter {
                             self.push(getter_fn)?;
@@ -1793,7 +1839,8 @@ impl VM {
                                 })?;
                                 *slot = val;
                             }
-                            _ => return Err(VMError::new("trap: struct.set on a non-struct")) }
+                            _ => return Err(VMError::new("trap: struct.set on a non-struct")),
+                        }
                         continue;
                     }
                     let name = self.constant_str(idx);
@@ -1872,7 +1919,8 @@ impl VM {
                                         Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => {
                                             Some(*n as usize)
                                         }
-                                        _ => None };
+                                        _ => None,
+                                    };
                                     match idx {
                                         Some(i) if i < a.len() => {
                                             let v = a[i].clone();
@@ -1898,7 +1946,8 @@ impl VM {
                                             Some(*n as usize)
                                         }
                                         Value::String(s) => s.parse::<usize>().ok(),
-                                        _ => None };
+                                        _ => None,
+                                    };
                                     if let Some(idx) = numeric_idx {
                                         let val =
                                             typed_array_read(ta, idx).unwrap_or(Value::Undefined);
@@ -1999,7 +2048,8 @@ impl VM {
                                 self.push(Value::Null)?;
                             }
                         }
-                        _ => self.push(Value::Null)? }
+                        _ => self.push(Value::Null)?,
+                    }
                 }
                 _ if op == Op::ARRAY_SET => {
                     let val = self.pop();
@@ -2017,7 +2067,8 @@ impl VM {
                                 Value::I32(n) if *n >= 0 => Some(*n as usize),
                                 Value::I64(n) if *n >= 0 => Some(*n as usize),
                                 Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
-                                _ => None };
+                                _ => None,
+                            };
                             let mut ob = o.lock().unwrap();
                             if let ObjectKind::Array(a) = &mut ob.kind {
                                 match idx {
@@ -2041,7 +2092,8 @@ impl VM {
                                         Some(*n as usize)
                                     }
                                     Value::String(s) => s.parse::<usize>().ok(),
-                                    _ => None };
+                                    _ => None,
+                                };
                                 if let Some(idx) = numeric_idx {
                                     typed_array_write(ta, idx, &val);
                                     continue;
@@ -2874,12 +2926,14 @@ impl VM {
                         name,
                         arity,
                         chunk_index: func_idx,
-                        upvalues };
+                        upvalues,
+                    };
                     let mut obj = Object {
                         properties: indexmap::IndexMap::new(),
                         kind: ObjectKind::Function(func),
                         type_id: 0,
-                        fields: Vec::new() };
+                        fields: Vec::new(),
+                    };
                     // Add to function table for call_indirect
                     let table_idx = self.func_table.len();
                     obj.properties
@@ -2966,7 +3020,8 @@ impl VM {
                                 name: None,
                                 arity,
                                 chunk_index,
-                                upvalues: Vec::new() };
+                                upvalues: Vec::new(),
+                            };
                             let mut obj = crate::value::Object::new();
                             obj.kind = crate::value::ObjectKind::Function(func);
                             let func_val = Value::Object(crate::heap::alloc(obj));
@@ -2995,8 +3050,7 @@ impl VM {
                             for _ in 1..argc {
                                 self.pop();
                             }
-                            let eager =
-                                matches!(target, ImportTarget::JspiSuspendEager);
+                            let eager = matches!(target, ImportTarget::JspiSuspendEager);
                             self.do_await(val, eager)?;
                         }
                         ImportTarget::JspiYield => {
@@ -3063,21 +3117,21 @@ impl VM {
                         obj.type_id = type_id;
                         self.push(Value::Object(crate::heap::alloc(obj)))?;
                     } else {
-                    let mut obj = Object::new();
-                    let needed = count * 2;
-                    let available = self.stack.len();
-                    let start = if needed <= available {
-                        available - needed
-                    } else {
-                        0
-                    };
-                    for i in 0..count {
-                        let key = format!("{}", self.stack[start + i * 2]);
-                        let val = self.stack[start + i * 2 + 1].clone();
-                        obj.set(key, val);
-                    }
-                    self.stack.truncate(start);
-                    self.push(Value::Object(crate::heap::alloc(obj)))?;
+                        let mut obj = Object::new();
+                        let needed = count * 2;
+                        let available = self.stack.len();
+                        let start = if needed <= available {
+                            available - needed
+                        } else {
+                            0
+                        };
+                        for i in 0..count {
+                            let key = format!("{}", self.stack[start + i * 2]);
+                            let val = self.stack[start + i * 2 + 1].clone();
+                            obj.set(key, val);
+                        }
+                        self.stack.truncate(start);
+                        self.push(Value::Object(crate::heap::alloc(obj)))?;
                     }
                 }
                 // `array.new_fixed $t N` — pops N values off the stack
@@ -3164,9 +3218,7 @@ impl VM {
                         .iter()
                         .map(|b| Value::I32(*b as i32))
                         .collect();
-                    self.push(Value::Object(crate::heap::alloc(Object::new_array(
-                        elems,
-                    ))))?;
+                    self.push(Value::Object(crate::heap::alloc(Object::new_array(elems))))?;
                 }
                 _ if op == Op::ARRAY_NEW_ELEM => {
                     let _typeidx = self.read_u16();
@@ -3216,9 +3268,11 @@ impl VM {
                         Value::Object(o) if self.is_gc_array_obj(o) => {
                             match &o.lock().unwrap().kind {
                                 ObjectKind::Array(a) => Some(a.len()),
-                                _ => None }
+                                _ => None,
+                            }
                         }
-                        _ => None };
+                        _ => None,
+                    };
                     if let Some(len) = gc_len {
                         if raw_idx < 0 || raw_idx as usize >= len {
                             return Err(VMError::new("trap: array.get out of bounds"));
@@ -3253,7 +3307,8 @@ impl VM {
                                         };
                                         Value::I32(v)
                                     }
-                                    _ => Value::Null }
+                                    _ => Value::Null,
+                                }
                             }
                             ObjectKind::ArrayBuffer(ab) => {
                                 let buf = ab.bytes.lock().unwrap();
@@ -3268,7 +3323,8 @@ impl VM {
                             ObjectKind::Array(elems) => {
                                 elems.get(idx).cloned().unwrap_or(Value::Null)
                             }
-                            _ => Value::Null }
+                            _ => Value::Null,
+                        }
                     } else {
                         Value::Null
                     };
@@ -3348,7 +3404,8 @@ impl VM {
                                     typed_array_write(ta, dst_offset + i, &v);
                                 }
                             }
-                            _ => return Err(VMError::new("array.init_data: not an array")) }
+                            _ => return Err(VMError::new("array.init_data: not an array")),
+                        }
                     } else {
                         return Err(VMError::new("array.init_data: not an array"));
                     }
@@ -3501,8 +3558,7 @@ impl VM {
                         return Err(VMError::new("trap: br_on_cast_desc_eq on null descriptor"));
                     }
                     let val = self.peek(0).clone();
-                    let matched =
-                        !val.is_null_ref() && ref_eq(&descriptor_of(&val), &expected);
+                    let matched = !val.is_null_ref() && ref_eq(&descriptor_of(&val), &expected);
                     let take = if op == Op::BR_ON_CAST_DESC_EQ {
                         matched
                     } else {
@@ -3780,7 +3836,8 @@ impl VM {
                     let s = self.pop_stringref()?;
                     let obj = match &arr {
                         Value::Object(o) => o.clone(),
-                        _ => return Err(VMError::new("trap: null array reference")) };
+                        _ => return Err(VMError::new("trap: null array reference")),
+                    };
                     let wtf16 = op == Op::STRING_ENCODE_WTF16_ARRAY;
                     let units: Vec<u32> = if wtf16 {
                         s.encode_utf16().map(|u| u as u32).collect()
@@ -3790,7 +3847,8 @@ impl VM {
                     let mut guard = obj.lock().unwrap();
                     let elems = match &mut guard.kind {
                         ObjectKind::Array(v) => v,
-                        _ => return Err(VMError::new("trap: expected array reference")) };
+                        _ => return Err(VMError::new("trap: expected array reference")),
+                    };
                     if start.saturating_add(units.len()) > elems.len() {
                         return Err(VMError::new("trap: array access out of bounds"));
                     }
@@ -3814,7 +3872,8 @@ impl VM {
                     let eq = match (&a, &b) {
                         _ if a.is_null_ref() && b.is_null_ref() => true,
                         (Value::String(x), Value::String(y)) => x == y,
-                        _ => false };
+                        _ => false,
+                    };
                     self.push(Value::I32(i32::from(eq)))?;
                 }
                 _ if op == Op::STRING_AS_WTF8 || op == Op::STRING_AS_WTF16 => {
@@ -3874,12 +3933,14 @@ impl VM {
                     let s = self.pop_stringref()?;
                     let obj = match &arr {
                         Value::Object(o) => o.clone(),
-                        _ => return Err(VMError::new("trap: null array reference")) };
+                        _ => return Err(VMError::new("trap: null array reference")),
+                    };
                     let units: Vec<u32> = s.as_bytes().iter().map(|&b| b as u32).collect();
                     let mut guard = obj.lock().unwrap();
                     let elems = match &mut guard.kind {
                         ObjectKind::Array(v) => v,
-                        _ => return Err(VMError::new("trap: expected array reference")) };
+                        _ => return Err(VMError::new("trap: expected array reference")),
+                    };
                     if start.saturating_add(units.len()) > elems.len() {
                         return Err(VMError::new("trap: array access out of bounds"));
                     }
@@ -4245,7 +4306,8 @@ impl VM {
                             _chunk_index: chunk_index,
                             kind,
                             tag_entity,
-                            group });
+                            group,
+                        });
                     }
                     // Push in reverse so the FIRST clause is on top (spec:
                     // "catch clauses are tried in the order they appear").
@@ -4269,7 +4331,8 @@ impl VM {
                         is_loop: false,
                         is_try: true,
                         result_arity: 0,
-                        stack_height: self.stack.len() });
+                        stack_height: self.stack.len(),
+                    });
                 }
 
                 // -- Tail call --
@@ -4621,7 +4684,8 @@ impl VM {
                         is_loop: false,
                         is_try: false,
                         result_arity,
-                        stack_height: self.stack.len() });
+                        stack_height: self.stack.len(),
+                    });
                 }
                 _ if op == Op::LOOP => {
                     // Blocktype = (param_count, result_count). Spec: a `br`
@@ -4638,7 +4702,8 @@ impl VM {
                         is_loop: true,
                         is_try: false,
                         result_arity: param_arity,
-                        stack_height: self.stack.len() });
+                        stack_height: self.stack.len(),
+                    });
                 }
                 _ if op == Op::IF => {
                     // Blocktype = (param_count, result_count); label arity
@@ -4652,7 +4717,8 @@ impl VM {
                         .copied()
                         .unwrap_or(BlockTargets {
                             else_ip: None,
-                            end_ip: self.frame().ip });
+                            end_ip: self.frame().ip,
+                        });
                     // WASM `if` consumes an i32 condition (spec §4.4.1).
                     // The compiler must lower dynamic truthiness to i32 before this opcode.
                     // We also accept Bool (from VM-internal ops like REF_IS_*, emit_dyn_eq etc.)
@@ -4675,7 +4741,8 @@ impl VM {
                             is_loop: false,
                             is_try: false,
                             result_arity,
-                            stack_height: self.stack.len() });
+                            stack_height: self.stack.len(),
+                        });
                     } else if let Some(else_ip) = targets.else_ip {
                         // Condition false, ELSE exists — push label and jump into else-body.
                         // The else-body ends at END which pops the label.
@@ -4685,7 +4752,8 @@ impl VM {
                             is_loop: false,
                             is_try: false,
                             result_arity,
-                            stack_height: self.stack.len() });
+                            stack_height: self.stack.len(),
+                        });
                         self.frame_mut().ip = else_ip + 4; // +4 skips the ELSE opcode bytes
                     } else {
                         // Condition false, no ELSE — skip the block entirely.
@@ -4835,9 +4903,7 @@ impl VM {
                         return Err(VMError::new("trap: memory.init source out of bounds"));
                     }
                     if dst.saturating_add(count) > self.mem_len(memidx) {
-                        return Err(VMError::new(
-                            "trap: memory.init destination out of bounds",
-                        ));
+                        return Err(VMError::new("trap: memory.init destination out of bounds"));
                     }
                     if count > 0 {
                         let bytes =
@@ -4876,7 +4942,14 @@ impl VM {
                         .ok_or_else(|| VMError::new("trap: table.grow unknown table"))?;
                     let old_size = table.len();
                     let new_size = old_size.saturating_add(delta);
-                    let exceeds_max = max.is_some_and(|m| new_size > m);
+                    // Three ways a grow reports -1 without resizing: the
+                    // DECLARED max, the INDEX-TYPE bound (a table32 cannot
+                    // exceed 2^32-1 elements), and the host's own allocation
+                    // limit — the spec permits refusing for any reason, and a
+                    // spec-legal 2^32-1-element table is a multi-GB `Vec`.
+                    let exceeds_max = max.is_some_and(|m| new_size > m)
+                        || (!is64 && new_size as u64 > crate::vm::MAX_TABLE32_ELEMS)
+                        || new_size as u64 > crate::vm::TABLE_ALLOC_LIMIT;
                     if exceeds_max {
                         if is64 {
                             self.push(Value::I64(-1))?;
@@ -5023,9 +5096,7 @@ impl VM {
                 _ if op == Op::ARRAY_NEW_DEFAULT => {
                     let len = self.pop().as_i32().max(0) as usize;
                     let elems = vec![Value::Null; len];
-                    self.push(Value::Object(crate::heap::alloc(Object::new_array(
-                        elems,
-                    ))))?;
+                    self.push(Value::Object(crate::heap::alloc(Object::new_array(elems))))?;
                 }
                 _ if op == Op::ARRAY_FILL => {
                     // Spec `array.fill $t`: stack `[arrayref, index, value, count]`,
@@ -5045,7 +5116,8 @@ impl VM {
                         if self.is_gc_array_obj(obj) {
                             let len = match &obj.lock().unwrap().kind {
                                 ObjectKind::Array(a) => a.len(),
-                                _ => 0 };
+                                _ => 0,
+                            };
                             if start + count > len {
                                 return Err(VMError::new("trap: array.fill out of bounds"));
                             }
@@ -5081,8 +5153,10 @@ impl VM {
                             match v {
                                 Value::Object(o) => match &o.lock().unwrap().kind {
                                     ObjectKind::Array(a) => a.len(),
-                                    _ => 0 },
-                                _ => 0 }
+                                    _ => 0,
+                                },
+                                _ => 0,
+                            }
                         };
                         if src_off + len > arr_len(&src) || dst_off + len > arr_len(&dst) {
                             return Err(VMError::new("trap: array.copy out of bounds"));
@@ -5132,18 +5206,21 @@ impl VM {
                     let state = crate::value::ContinuationState {
                         entry: func_val,
                         saved: std::sync::Mutex::new(None),
-                        state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready) };
+                        state: std::sync::Mutex::new(crate::value::ContinuationPhase::Ready),
+                    };
                     let obj = Object {
                         properties: indexmap::IndexMap::new(),
                         kind: ObjectKind::Continuation(state),
                         type_id: 0,
-                        fields: Vec::new() };
+                        fields: Vec::new(),
+                    };
                     let mut obj = obj;
                     let entry_async = match &obj.kind {
                         ObjectKind::Continuation(cs) => {
                             crate::calls::continuation_entry_is_async(&self.chunks, &cs.entry)
                         }
-                        _ => false };
+                        _ => false,
+                    };
                     crate::calls::attach_continuation_protocols(
                         &mut obj.properties,
                         &self.globals,
@@ -5164,7 +5241,8 @@ impl VM {
                             cont,
                             caller_fiber,
                             mode,
-                            handlers }) => {
+                            handlers,
+                        }) => {
                             let fiber = self.save_fiber();
                             if let Value::Object(ref obj) = cont {
                                 let o = obj.lock().unwrap();
@@ -5237,7 +5315,8 @@ impl VM {
                                                 Vec::new()
                                             }
                                         }
-                                        _ => Vec::new() }
+                                        _ => Vec::new(),
+                                    }
                                 };
                                 let argc = bound.len() + 1;
                                 self.push(entry)?;
@@ -5276,7 +5355,8 @@ impl VM {
                             cont: cont.clone(),
                             caller_fiber,
                             mode: ResumeMode::Raw,
-                            handlers: resume_handlers });
+                            handlers: resume_handlers,
+                        });
                     } else {
                         return Err(VMError::new("resume: not a continuation"));
                     }
@@ -5327,7 +5407,8 @@ impl VM {
                             let bound: Vec<Value> = {
                                 let o = match &target {
                                     Value::Object(obj) => obj.lock().unwrap(),
-                                    _ => unreachable!() };
+                                    _ => unreachable!(),
+                                };
                                 match o.properties.get("__bound_args") {
                                     Some(Value::Object(arr)) => {
                                         let a = arr.lock().unwrap();
@@ -5337,7 +5418,8 @@ impl VM {
                                             Vec::new()
                                         }
                                     }
-                                    _ => Vec::new() }
+                                    _ => Vec::new(),
+                                }
                             };
                             let argc = bound.len() + 1;
                             self.push(entry)?;
@@ -5351,7 +5433,8 @@ impl VM {
                             let saved = {
                                 let o = match &target {
                                     Value::Object(obj) => obj.lock().unwrap(),
-                                    _ => unreachable!() };
+                                    _ => unreachable!(),
+                                };
                                 if let ObjectKind::Continuation(cs) = &o.kind {
                                     cs.saved.lock().unwrap().take()
                                 } else {
@@ -5362,12 +5445,14 @@ impl VM {
                                 self.resume_fiber_with(fiber, Some(val))?;
                             }
                         }
-                        crate::value::ContinuationPhase::Done => unreachable!() }
+                        crate::value::ContinuationPhase::Done => unreachable!(),
+                    }
                     self.active_continuations.push(ActiveContinuation {
                         cont: target.clone(),
                         caller_fiber: current.caller_fiber,
                         mode: current.mode,
-                        handlers: current.handlers });
+                        handlers: current.handlers,
+                    });
                 }
                 // `cont.bind argc` — partially apply `argc` args to a
                 // continuation. Stack: [cont, arg0, ..., arg(argc-1)] →
@@ -5409,9 +5494,11 @@ impl VM {
                                     saved: std::sync::Mutex::new(None),
                                     state: std::sync::Mutex::new(
                                         crate::value::ContinuationPhase::Ready,
-                                    ) }),
+                                    ),
+                                }),
                                 type_id: 0,
-                                fields: Vec::new() };
+                                fields: Vec::new(),
+                            };
                             let entry_async = match &new_obj.kind {
                                 ObjectKind::Continuation(cs) => {
                                     crate::calls::continuation_entry_is_async(
@@ -5419,7 +5506,8 @@ impl VM {
                                         &cs.entry,
                                     )
                                 }
-                                _ => false };
+                                _ => false,
+                            };
                             crate::calls::attach_continuation_protocols(
                                 &mut new_obj.properties,
                                 &self.globals,
@@ -5432,7 +5520,8 @@ impl VM {
                                 properties: indexmap::IndexMap::new(),
                                 kind: ObjectKind::Array(args),
                                 type_id: 0,
-                                fields: Vec::new() };
+                                fields: Vec::new(),
+                            };
                             new_obj.properties.insert(
                                 "__bound_args".into(),
                                 Value::Object(crate::heap::alloc(bound)),
@@ -5497,7 +5586,8 @@ impl VM {
                                     cont: cont.clone(),
                                     caller_fiber,
                                     mode: ResumeMode::Raw,
-                                    handlers: resume_handlers });
+                                    handlers: resume_handlers,
+                                });
                                 if self.raise_exception_value(exn).is_err() {
                                     let thrown = self.last_exception.take().unwrap_or(Value::Null);
                                     if let Some(ac) = self.active_continuations.pop() {
@@ -5520,7 +5610,8 @@ impl VM {
                                     cont: cont.clone(),
                                     caller_fiber,
                                     mode: ResumeMode::Raw,
-                                    handlers: resume_handlers });
+                                    handlers: resume_handlers,
+                                });
                                 self.push(entry)?;
                                 self.push(exn)?;
                                 self.call_value(1)?;
@@ -5530,7 +5621,8 @@ impl VM {
                                 self.cur_fiber_id = self.next_fiber_id;
                                 self.next_fiber_id += 1;
                             }
-                            _ => unreachable!() }
+                            _ => unreachable!(),
+                        }
                     } else {
                         return Err(VMError::new("resume_throw: operand is not a continuation"));
                     }
@@ -5582,7 +5674,8 @@ impl VM {
                                     cont: cont.clone(),
                                     caller_fiber,
                                     mode: ResumeMode::Raw,
-                                    handlers: resume_handlers });
+                                    handlers: resume_handlers,
+                                });
                                 if self.raise_exception_value(exn).is_err() {
                                     let thrown = self.last_exception.take().unwrap_or(Value::Null);
                                     if let Some(ac) = self.active_continuations.pop() {
@@ -5605,7 +5698,8 @@ impl VM {
                                     cont: cont.clone(),
                                     caller_fiber,
                                     mode: ResumeMode::Raw,
-                                    handlers: resume_handlers });
+                                    handlers: resume_handlers,
+                                });
                                 self.push(entry)?;
                                 self.push(exn)?;
                                 self.call_value(1)?;
@@ -5615,7 +5709,8 @@ impl VM {
                                 self.cur_fiber_id = self.next_fiber_id;
                                 self.next_fiber_id += 1;
                             }
-                            _ => unreachable!() }
+                            _ => unreachable!(),
+                        }
                     } else {
                         return Err(VMError::new(
                             "resume_throw_ref: operand is not a continuation",
@@ -7698,7 +7793,7 @@ impl VM {
                 // backpressure/context) -- no opcodes; they are "canon"-module
                 // imports executed by exec_canon_builtin via the CALL arm.
 
-// -- Iteration protocol --
+                // -- Iteration protocol --
                 // iter_get, iter_next: removed (non-WASM, were unused by compilers)
                 // class_new, method_def, inherit: removed (non-WASM, were NOPs)
                 _ => {

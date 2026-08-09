@@ -59,7 +59,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 detail,
                 line: stmt.span.start_line,
                 end_line: stmt.span.end_line,
-                children });
+                children,
+            });
         }
 
         StmtKind::ClassDecl {
@@ -83,7 +84,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 detail,
                 line: stmt.span.start_line,
                 end_line: stmt.span.end_line,
-                children });
+                children,
+            });
         }
 
         StmtKind::InterfaceDecl { name, members, .. } => {
@@ -97,7 +99,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 detail: String::new(),
                 line: stmt.span.start_line,
                 end_line: stmt.span.end_line,
-                children });
+                children,
+            });
         }
 
         StmtKind::EnumDecl { name, members, .. } => {
@@ -109,7 +112,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                     detail: String::new(),
                     line: 0,
                     end_line: 0,
-                    children: Vec::new() })
+                    children: Vec::new(),
+                })
                 .collect();
             out.push(Symbol {
                 name: name.clone(),
@@ -117,7 +121,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 detail: String::new(),
                 line: stmt.span.start_line,
                 end_line: stmt.span.end_line,
-                children });
+                children,
+            });
         }
 
         StmtKind::StructDecl { name, members, .. } => {
@@ -131,7 +136,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 detail: String::new(),
                 line: stmt.span.start_line,
                 end_line: stmt.span.end_line,
-                children });
+                children,
+            });
         }
 
         StmtKind::ModuleDecl { name, members, .. } => {
@@ -145,7 +151,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 detail: String::new(),
                 line: stmt.span.start_line,
                 end_line: stmt.span.end_line,
-                children });
+                children,
+            });
         }
 
         StmtKind::NamespaceDecl { name, body } => {
@@ -159,7 +166,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 detail: String::new(),
                 line: stmt.span.start_line,
                 end_line: stmt.span.end_line,
-                children });
+                children,
+            });
         }
 
         StmtKind::VarDecl { declarations, kind } => {
@@ -172,7 +180,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
             for decl in declarations {
                 let name = match &decl.pattern {
                     BindingPattern::Ident(n) => n.clone(),
-                    _ => continue };
+                    _ => continue,
+                };
                 let detail = decl.type_hint.as_deref().unwrap_or_default().to_string();
                 out.push(Symbol {
                     name,
@@ -180,7 +189,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                     detail,
                     line: stmt.span.start_line,
                     end_line: stmt.span.end_line,
-                    children: Vec::new() });
+                    children: Vec::new(),
+                });
             }
         }
 
@@ -202,7 +212,8 @@ fn extract_stmt(stmt: &Statement, out: &mut Vec<Symbol>) {
                 detail,
                 line: stmt.span.start_line,
                 end_line: stmt.span.end_line,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
 
         // Recurse into blocks and control flow to find nested declarations
@@ -228,7 +239,8 @@ fn extract_class_member(member: &ClassMember, out: &mut Vec<Symbol>) {
                 detail: type_hint.clone().unwrap_or_default(),
                 line: 0,
                 end_line: 0,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
         ClassMember::Method(stmt) => {
             extract_stmt(stmt, out);
@@ -241,7 +253,8 @@ fn extract_class_member(member: &ClassMember, out: &mut Vec<Symbol>) {
                 detail: format!("({})", param_str),
                 line: 0,
                 end_line: 0,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
         ClassMember::Property {
             name, type_hint, ..
@@ -252,7 +265,8 @@ fn extract_class_member(member: &ClassMember, out: &mut Vec<Symbol>) {
                 detail: type_hint.clone().unwrap_or_default(),
                 line: 0,
                 end_line: 0,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
         ClassMember::Event {
             name, type_hint, ..
@@ -263,7 +277,8 @@ fn extract_class_member(member: &ClassMember, out: &mut Vec<Symbol>) {
                 detail: type_hint.clone().unwrap_or_default(),
                 line: 0,
                 end_line: 0,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
         ClassMember::Const {
             name, type_hint, ..
@@ -274,7 +289,8 @@ fn extract_class_member(member: &ClassMember, out: &mut Vec<Symbol>) {
                 detail: type_hint.clone().unwrap_or_default(),
                 line: 0,
                 end_line: 0,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
         ClassMember::NestedType(stmt) => {
             extract_stmt(stmt, out);
@@ -314,7 +330,8 @@ fn extract_interface_member(member: &InterfaceMember, out: &mut Vec<Symbol>) {
                 detail,
                 line: 0,
                 end_line: 0,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
         InterfaceMember::Property {
             name, type_hint, ..
@@ -325,7 +342,8 @@ fn extract_interface_member(member: &InterfaceMember, out: &mut Vec<Symbol>) {
                 detail: type_hint.clone().unwrap_or_default(),
                 line: 0,
                 end_line: 0,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
         InterfaceMember::Event {
             name, type_hint, ..
@@ -336,7 +354,8 @@ fn extract_interface_member(member: &InterfaceMember, out: &mut Vec<Symbol>) {
                 detail: type_hint.clone().unwrap_or_default(),
                 line: 0,
                 end_line: 0,
-                children: Vec::new() });
+                children: Vec::new(),
+            });
         }
     }
 }
@@ -819,7 +838,8 @@ pub fn language_keywords(lang: Lang) -> &'static [&'static str] {
             "PIC",
             "VALUE",
         ],
-        _ => &[] }
+        _ => &[],
+    }
 }
 
 /// Detect language from file extension and return Lang enum.
@@ -835,5 +855,6 @@ pub fn detect_language(uri: &str) -> Lang {
         "dart" => Lang::Dart,
         "pas" | "pp" | "dpr" | "lpr" => Lang::Pascal,
         "cob" | "cbl" => Lang::Cobol,
-        _ => Lang::Unknown }
+        _ => Lang::Unknown,
+    }
 }

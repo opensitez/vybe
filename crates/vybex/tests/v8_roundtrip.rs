@@ -120,7 +120,8 @@ fn extract_imports(wasm: &[u8]) -> Vec<(String, String)> {
                         let (_, r) = read_leb(wasm, p);
                         p += r;
                     } // tag
-                    _ => break }
+                    _ => break,
+                }
                 out.push((m, n));
             }
         }

@@ -14,11 +14,11 @@
 use std::io::{BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use serde_json::{json, Value as J};
+use serde_json::{Value as J, json};
 
 use vybe_runtime::debugger::{DebugEvent, DebugResponse, PauseReason};
 use vybe_runtime::{DebugCommand, DebugRequest, VM};
@@ -62,7 +62,12 @@ fn serve(
     }
 
     // Request loop: DAP requests → DebugCommand → DAP responses.
-    let session = Session { cmd_tx, writer, seq, source_path };
+    let session = Session {
+        cmd_tx,
+        writer,
+        seq,
+        source_path,
+    };
     let mut reader = BufReader::new(stream);
     while let Some(msg) = read_message(&mut reader) {
         if msg.get("type").and_then(J::as_str) == Some("request") {
@@ -79,7 +84,8 @@ struct Session {
     cmd_tx: Sender<DebugRequest>,
     writer: Arc<Mutex<std::net::TcpStream>>,
     seq: Arc<AtomicI64>,
-    source_path: String }
+    source_path: String,
+}
 
 impl Session {
     /// Handle one DAP request. Returns true if the session should end.
@@ -90,7 +96,11 @@ impl Session {
 
         match command {
             "initialize" => {
-                self.respond(req_seq, command, true, json!({
+                self.respond(
+                    req_seq,
+                    command,
+                    true,
+                    json!({
                     "supportsConfigurationDoneRequest": true,
                     "supportsConditionalBreakpoints": true,
                     "supportsHitConditionalBreakpoints": true,
@@ -98,7 +108,8 @@ impl Session {
                     "supportsSetVariable": true,
                     "supportsEvaluateForHovers": true,
                     "supportsTerminateRequest": true,
-                    "supportsRestartRequest": true }));
+                    "supportsRestartRequest": true }),
+                );
                 // Ready for breakpoint configuration.
                 self.event("initialized", J::Null);
             }
@@ -123,7 +134,8 @@ impl Session {
                             Some(DebugResponse::Breakpoints(v)) => {
                                 v.first().and_then(|b| b.line).unwrap_or(line)
                             }
-                            _ => line };
+                            _ => line,
+                        };
                         verified.push(json!({ "verified": ok, "line": actual_line }));
                     }
                 }
@@ -133,9 +145,14 @@ impl Session {
                 self.respond(req_seq, command, true, J::Null);
             }
             "threads" => {
-                self.respond(req_seq, command, true, json!({
-                    "threads": [{ "id": 1, "name": "main" }]
-                }));
+                self.respond(
+                    req_seq,
+                    command,
+                    true,
+                    json!({
+                        "threads": [{ "id": 1, "name": "main" }]
+                    }),
+                );
             }
             "stackTrace" => {
                 let frames = match self.run(DebugCommand::Backtrace) {
@@ -150,37 +167,58 @@ impl Session {
                         .collect::<Vec<_>>(),
                     _ => Vec::new() };
                 let total = frames.len();
-                self.respond(req_seq, command, true, json!({
-                    "stackFrames": frames, "totalFrames": total
-                }));
+                self.respond(
+                    req_seq,
+                    command,
+                    true,
+                    json!({
+                        "stackFrames": frames, "totalFrames": total
+                    }),
+                );
             }
             "scopes" => {
                 let frame_id = args.get("frameId").and_then(J::as_i64).unwrap_or(0);
                 // variablesReference encodes the frame (offset by 1 so it's nonzero).
-                self.respond(req_seq, command, true, json!({
-                    "scopes": [{
-                        "name": "Locals",
-                        "variablesReference": frame_id + 1,
-                        "expensive": false }]
-                }));
+                self.respond(
+                    req_seq,
+                    command,
+                    true,
+                    json!({
+                        "scopes": [{
+                            "name": "Locals",
+                            "variablesReference": frame_id + 1,
+                            "expensive": false }]
+                    }),
+                );
             }
             "variables" => {
-                let vref = args.get("variablesReference").and_then(J::as_i64).unwrap_or(0);
+                let vref = args
+                    .get("variablesReference")
+                    .and_then(J::as_i64)
+                    .unwrap_or(0);
                 let frame = (vref - 1).max(0) as usize;
                 let vars = match self.run(DebugCommand::Locals { frame }) {
                     Some(DebugResponse::Locals(slots)) => slots
                         .iter()
-                        .map(|s| json!({
+                        .map(|s| {
+                            json!({
                             "name": s.name.clone().unwrap_or_else(|| format!("[{}]", s.index)),
                             "value": s.value,
-                            "variablesReference": 0 }))
+                            "variablesReference": 0 })
+                        })
                         .collect::<Vec<_>>(),
-                    _ => Vec::new() };
+                    _ => Vec::new(),
+                };
                 self.respond(req_seq, command, true, json!({ "variables": vars }));
             }
             "continue" => {
                 self.run(DebugCommand::Continue);
-                self.respond(req_seq, command, true, json!({ "allThreadsContinued": true }));
+                self.respond(
+                    req_seq,
+                    command,
+                    true,
+                    json!({ "allThreadsContinued": true }),
+                );
             }
             "next" => {
                 self.run(DebugCommand::StepOver);
@@ -200,24 +238,49 @@ impl Session {
             }
             "evaluate" => {
                 let expr = args.get("expression").and_then(J::as_str).unwrap_or("");
-                let (ok, result) = match self.run(DebugCommand::Print { path: expr.to_string() }) {
+                let (ok, result) = match self.run(DebugCommand::Print {
+                    path: expr.to_string(),
+                }) {
                     Some(DebugResponse::Value(v)) => (true, v),
                     Some(DebugResponse::Error(e)) => (false, e),
-                    _ => (false, "eval unavailable".to_string()) };
-                self.respond(req_seq, command, ok, json!({
-                    "result": result, "variablesReference": 0
-                }));
+                    _ => (false, "eval unavailable".to_string()),
+                };
+                self.respond(
+                    req_seq,
+                    command,
+                    ok,
+                    json!({
+                        "result": result, "variablesReference": 0
+                    }),
+                );
             }
             "setVariable" => {
-                let name = args.get("name").and_then(J::as_str).unwrap_or("").to_string();
-                let value = args.get("value").and_then(J::as_str).unwrap_or("").to_string();
-                let (ok, shown) = match self.run(DebugCommand::SetVar { name, literal: value.clone() }) {
+                let name = args
+                    .get("name")
+                    .and_then(J::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let value = args
+                    .get("value")
+                    .and_then(J::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let (ok, shown) = match self.run(DebugCommand::SetVar {
+                    name,
+                    literal: value.clone(),
+                }) {
                     Some(DebugResponse::Value(_)) => (true, value),
                     Some(DebugResponse::Error(e)) => (false, e),
-                    _ => (false, "set failed".to_string()) };
-                self.respond(req_seq, command, ok, json!({
-                    "value": shown, "variablesReference": 0
-                }));
+                    _ => (false, "set failed".to_string()),
+                };
+                self.respond(
+                    req_seq,
+                    command,
+                    ok,
+                    json!({
+                        "value": shown, "variablesReference": 0
+                    }),
+                );
             }
             "disconnect" | "terminate" => {
                 self.run(DebugCommand::Quit);
@@ -235,7 +298,12 @@ impl Session {
     /// Send a `DebugCommand` and wait for its reply.
     fn run(&self, command: DebugCommand) -> Option<DebugResponse> {
         let (reply_tx, reply_rx) = channel::<DebugResponse>();
-        self.cmd_tx.send(DebugRequest { command, reply: reply_tx }).ok()?;
+        self.cmd_tx
+            .send(DebugRequest {
+                command,
+                reply: reply_tx,
+            })
+            .ok()?;
         reply_rx.recv().ok()
     }
 
@@ -258,20 +326,40 @@ impl Session {
 fn emit_event(writer: &Arc<Mutex<std::net::TcpStream>>, seq: &Arc<AtomicI64>, event: DebugEvent) {
     match event {
         DebugEvent::Paused { reason, .. } => {
-            emit_named(writer, seq, "stopped", json!({
+            emit_named(
+                writer,
+                seq,
+                "stopped",
+                json!({
                 "reason": dap_stop_reason(&reason),
                 "threadId": 1,
-                "allThreadsStopped": true }));
+                "allThreadsStopped": true }),
+            );
         }
         DebugEvent::Resumed => {
-            emit_named(writer, seq, "continued", json!({ "threadId": 1, "allThreadsContinued": true }));
+            emit_named(
+                writer,
+                seq,
+                "continued",
+                json!({ "threadId": 1, "allThreadsContinued": true }),
+            );
         }
         DebugEvent::Exited { value } => {
-            emit_named(writer, seq, "output", json!({ "category": "stdout", "output": format!("exited → {value}\n") }));
+            emit_named(
+                writer,
+                seq,
+                "output",
+                json!({ "category": "stdout", "output": format!("exited → {value}\n") }),
+            );
             emit_named(writer, seq, "terminated", J::Null);
         }
         DebugEvent::Log { message } => {
-            emit_named(writer, seq, "output", json!({ "category": "console", "output": format!("{message}\n") }));
+            emit_named(
+                writer,
+                seq,
+                "output",
+                json!({ "category": "console", "output": format!("{message}\n") }),
+            );
         }
         DebugEvent::Opcode { .. } => {}
     }
@@ -284,10 +372,16 @@ fn dap_stop_reason(r: &PauseReason) -> &'static str {
         PauseReason::Step => "step",
         PauseReason::Interrupt => "pause",
         PauseReason::Watchpoint { .. } => "data breakpoint",
-        PauseReason::Exception { .. } => "exception" }
+        PauseReason::Exception { .. } => "exception",
+    }
 }
 
-fn emit_named(writer: &Arc<Mutex<std::net::TcpStream>>, seq: &Arc<AtomicI64>, event: &str, body: J) {
+fn emit_named(
+    writer: &Arc<Mutex<std::net::TcpStream>>,
+    seq: &Arc<AtomicI64>,
+    event: &str,
+    body: J,
+) {
     let msg = json!({
         "seq": seq.fetch_add(1, Ordering::SeqCst),
         "type": "event",

@@ -365,7 +365,7 @@ pub fn emit_flat_map_generator_mapper_into_array(chunks: &mut [Chunk], current: 
 
     chunks[current].emit_op_u16(Op::LOCAL_GET, mapper_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, item_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, cont_slot, line);
 
     let inner_block = chunks[current].emit_block(line);
@@ -592,7 +592,7 @@ pub fn emit_resolve_async_iterator(
     crate::primitives::globals::emit_write(chunk, "__js_this", line);
     chunk.emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     let result_slot = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, result_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, result_slot, line);
@@ -701,7 +701,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     crate::primitives::globals::emit_write(chunk, "__js_this", line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, obj_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_op_u16(Op::LOCAL_SET, iter_slot, line);
 
     // iter null → exit
@@ -783,7 +783,7 @@ fn emit_drain_iterable_inner(chunks: &mut [Chunk], current: usize, line: u32, as
     crate::primitives::globals::emit_write(chunk, "__js_this", line);
     chunk.emit_op_u16(Op::LOCAL_GET, next_fn_slot, line);
     chunk.emit_op_u16(Op::LOCAL_GET, iter_slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     if async_iter {
         // §25.5.2.1: Await IteratorResult from async next()
         super::functions::emit_await(chunk, line);
@@ -1220,7 +1220,6 @@ impl Compiler {
         self.emit_const(Value::Bool(true));
         self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
 
-
         self.emit_u16(Op::LOCAL_GET, has_more_slot);
         {
             let line = self.line;
@@ -1482,7 +1481,6 @@ impl Compiler {
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_const(Value::Bool(true));
                 self.emit_struct_field_op(Op::STRUCT_SET, 0, started_key);
-
 
                 self.emit_u16(Op::LOCAL_GET, has_more_slot);
                 {

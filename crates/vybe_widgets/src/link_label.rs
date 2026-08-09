@@ -3,7 +3,8 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use cosmic_text::Color as CosmicColor;
 use tiny_skia::*;
 
@@ -17,7 +18,8 @@ pub struct LinkLabel {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    pending_events: Vec<WidgetEvent> }
+    pending_events: Vec<WidgetEvent>,
+}
 
 impl LinkLabel {
     pub fn new<S: Into<String>>(text: S) -> Self {
@@ -36,7 +38,8 @@ impl LinkLabel {
                 ..WidgetColors::default()
             },
             rect: LayoutRect::zero(),
-            pending_events: Vec::new() }
+            pending_events: Vec::new(),
+        }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -156,7 +159,8 @@ impl PanelWidget for LinkLabel {
                 CommandValue::None
             }
             WidgetCommand::GetText => CommandValue::Text(self.text.clone()),
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

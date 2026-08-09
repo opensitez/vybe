@@ -13,7 +13,8 @@ use tiny_skia::*;
 pub struct TabEntry {
     pub name: String,
     pub widget: Box<dyn PanelWidget>,
-    pub closable: bool }
+    pub closable: bool,
+}
 
 /// A tabbed panel container.
 pub struct TabPanel {
@@ -31,7 +32,8 @@ pub struct TabPanel {
     accent_color: (u8, u8, u8, u8),
     pending_events: Vec<WidgetEvent>,
     hovering_close: Option<usize>,
-    scroll_x: f32 }
+    scroll_x: f32,
+}
 
 impl TabPanel {
     pub fn new() -> Self {
@@ -50,7 +52,8 @@ impl TabPanel {
             accent_color: (0, 122, 204, 255),
             pending_events: Vec::new(),
             hovering_close: None,
-            scroll_x: 0.0 }
+            scroll_x: 0.0,
+        }
     }
 
     pub fn set_tab_height(&mut self, h: f32) {
@@ -82,7 +85,8 @@ impl TabPanel {
         self.tabs.push(TabEntry {
             name: name.to_string(),
             widget,
-            closable });
+            closable,
+        });
         self.relayout();
     }
 
@@ -92,7 +96,8 @@ impl TabPanel {
         self.tabs.push(TabEntry {
             name: name.to_string(),
             widget: Box::new(NullWidget::new()),
-            closable });
+            closable,
+        });
     }
 
     /// Insert a tab header at a specific position.
@@ -103,7 +108,8 @@ impl TabPanel {
             TabEntry {
                 name: name.to_string(),
                 widget: Box::new(NullWidget::new()),
-                closable },
+                closable,
+            },
         );
     }
 
@@ -194,8 +200,6 @@ impl TabPanel {
 }
 
 impl PanelWidget for TabPanel {
-    
-
     /// The document tree's children — what `find_widget_mut` / `take_widget`
     /// walk, so a node stays reachable by name however deeply it is nested.
     fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
@@ -209,9 +213,13 @@ impl PanelWidget for TabPanel {
     }
 
     fn find_rect(&self, name: &str) -> Option<LayoutRect> {
-        if self.name() == name { return Some(self.rect()); }
+        if self.name() == name {
+            return Some(self.rect());
+        }
         for tab in &self.tabs {
-            if let Some(r) = tab.widget.find_rect(name) { return Some(r); }
+            if let Some(r) = tab.widget.find_rect(name) {
+                return Some(r);
+            }
         }
         None
     }

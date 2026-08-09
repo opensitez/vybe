@@ -139,8 +139,6 @@ impl SplitPanel {
 }
 
 impl PanelWidget for SplitPanel {
-    
-
     /// The document tree's children — what `find_widget_mut` / `take_widget`
     /// walk, so a node stays reachable by name however deeply it is nested.
     fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
@@ -152,22 +150,38 @@ impl PanelWidget for SplitPanel {
 
     /// `removeChild` against a direct child.
     fn detach(&mut self, name: &str) -> Option<Box<dyn PanelWidget>> {
-        if self.panel1.as_ref().map(|p| p.name() == name).unwrap_or(false) {
+        if self
+            .panel1
+            .as_ref()
+            .map(|p| p.name() == name)
+            .unwrap_or(false)
+        {
             return self.panel1.take();
         }
-        if self.panel2.as_ref().map(|p| p.name() == name).unwrap_or(false) {
+        if self
+            .panel2
+            .as_ref()
+            .map(|p| p.name() == name)
+            .unwrap_or(false)
+        {
             return self.panel2.take();
         }
         None
     }
 
     fn find_rect(&self, name: &str) -> Option<LayoutRect> {
-        if self.name() == name { return Some(self.rect()); }
+        if self.name() == name {
+            return Some(self.rect());
+        }
         if let Some(w) = &self.panel1 {
-            if let Some(r) = w.find_rect(name) { return Some(r); }
+            if let Some(r) = w.find_rect(name) {
+                return Some(r);
+            }
         }
         if let Some(w) = &self.panel2 {
-            if let Some(r) = w.find_rect(name) { return Some(r); }
+            if let Some(r) = w.find_rect(name) {
+                return Some(r);
+            }
         }
         None
     }

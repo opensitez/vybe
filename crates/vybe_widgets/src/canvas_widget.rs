@@ -59,7 +59,8 @@ pub struct Canvas {
     /// coordinates by translating the canvas origin to the widget's
     /// top-left before replay. If false, the recording is in
     /// pixmap-absolute coordinates. Default: true.
-    relative_coords: bool }
+    relative_coords: bool,
+}
 
 impl Canvas {
     /// Construct an empty canvas.
@@ -70,7 +71,8 @@ impl Canvas {
             id: WidgetId::next(),
             background: None,
             recording: RecordingCanvas::new(),
-            relative_coords: true }
+            relative_coords: true,
+        }
     }
 
     /// Set the widget's name (used for control lookup by the host
@@ -151,8 +153,16 @@ impl PanelWidget for Canvas {
     fn render(&mut self, ctx: &mut RenderContext) {
         if crate::canvas::trace_enabled() {
             let cmds = self.recording.commands_for_debug();
-            let text_n = cmds.iter().filter(|c| format!("{:?}", c).starts_with("FillText")).count();
-            eprintln!("[canvas] RENDER widget={:?} total_cmds={} filltext={}", self.name, cmds.len(), text_n);
+            let text_n = cmds
+                .iter()
+                .filter(|c| format!("{:?}", c).starts_with("FillText"))
+                .count();
+            eprintln!(
+                "[canvas] RENDER widget={:?} total_cmds={} filltext={}",
+                self.name,
+                cmds.len(),
+                text_n
+            );
         }
         let r = self.rect;
         if r.w <= 0.0 || r.h <= 0.0 {

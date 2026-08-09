@@ -39,10 +39,12 @@
 
 use tiny_skia::{
     FillRule, FilterQuality, LineCap as TsLineCap, LineJoin as TsLineJoin, Mask, Paint, Path,
-    PathBuilder, Pixmap, PixmapPaint, PixmapRef, Stroke as TsStroke, Transform };
+    PathBuilder, Pixmap, PixmapPaint, PixmapRef, Stroke as TsStroke, Transform,
+};
 
 use cosmic_text::{
-    Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, Shaping, SwashCache };
+    Attrs, Buffer, Color as CosmicColor, Family, FontSystem, Metrics, Shaping, SwashCache,
+};
 
 use super::{Canvas, Color, Font, FontStyle, FontWeight, Image, LineCap, LineJoin};
 
@@ -66,7 +68,8 @@ pub struct TinySkiaCanvas<'a> {
     text_ctx: Option<TextCtx<'a>>,
     /// Active clip mask (if `clip` was called). Combined with the
     /// current transform when issuing draw ops. None = no clipping.
-    clip_mask: Option<Mask> }
+    clip_mask: Option<Mask>,
+}
 
 /// One entry on the `save`/`restore` stack — paint state + a snapshot
 /// of the active clip mask. Cloning the `Mask` is the only way to
@@ -76,7 +79,8 @@ pub struct TinySkiaCanvas<'a> {
 #[derive(Clone)]
 struct PaintFrame {
     state: PaintState,
-    clip_mask: Option<Mask> }
+    clip_mask: Option<Mask>,
+}
 
 /// Borrowed cosmic-text resources used for text rendering. Shared with
 /// the rest of the toolkit via `RenderContext::font_system /
@@ -84,7 +88,8 @@ struct PaintFrame {
 /// to set up cosmic-text.
 struct TextCtx<'a> {
     font_system: &'a mut FontSystem,
-    swash_cache: &'a mut SwashCache }
+    swash_cache: &'a mut SwashCache,
+}
 
 #[derive(Clone)]
 struct PaintState {
@@ -99,7 +104,8 @@ struct PaintState {
     transform: Transform,
     dash_intervals: Vec<f32>,
     dash_offset: f32,
-    image_smoothing: bool }
+    image_smoothing: bool,
+}
 
 impl Default for PaintState {
     fn default() -> Self {
@@ -116,7 +122,8 @@ impl Default for PaintState {
             dash_intervals: Vec::new(),
             dash_offset: 0.0,
             // HTML5 canvas defaults `imageSmoothingEnabled` to true.
-            image_smoothing: true }
+            image_smoothing: true,
+        }
     }
 }
 
@@ -130,7 +137,8 @@ impl<'a> TinySkiaCanvas<'a> {
             state_stack: Vec::new(),
             path: PathBuilder::new(),
             text_ctx: None,
-            clip_mask: None }
+            clip_mask: None,
+        }
     }
 
     /// Wrap a pixmap as a canvas with text rendering enabled. The
@@ -149,8 +157,10 @@ impl<'a> TinySkiaCanvas<'a> {
             path: PathBuilder::new(),
             text_ctx: Some(TextCtx {
                 font_system,
-                swash_cache }),
-            clip_mask: None }
+                swash_cache,
+            }),
+            clip_mask: None,
+        }
     }
 
     /// Measure the logical width and height of `text` in the current
@@ -469,7 +479,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
             let h = self.pixmap.height();
             let mut mask = match Mask::new(w, h) {
                 Some(m) => m,
-                None => return };
+                None => return,
+            };
             mask.fill_path(&path, FillRule::Winding, true, self.state.transform);
             // If there's already a clip mask, intersect them. tiny-skia's
             // Mask::intersect_path is the natural primitive for this.
@@ -507,7 +518,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
                     FilterQuality::Bilinear
                 } else {
                     FilterQuality::Nearest
-                } };
+                },
+            };
             self.pixmap.draw_pixmap(0, 0, src, &pp, xform, None);
         }
     }
@@ -517,7 +529,8 @@ impl<'a> Canvas for TinySkiaCanvas<'a> {
     fn save(&mut self) {
         self.state_stack.push(PaintFrame {
             state: self.state.clone(),
-            clip_mask: self.clip_mask.clone() });
+            clip_mask: self.clip_mask.clone(),
+        });
     }
 
     fn restore(&mut self) {
@@ -565,14 +578,16 @@ fn line_cap_to_ts(cap: LineCap) -> TsLineCap {
     match cap {
         LineCap::Butt => TsLineCap::Butt,
         LineCap::Round => TsLineCap::Round,
-        LineCap::Square => TsLineCap::Square }
+        LineCap::Square => TsLineCap::Square,
+    }
 }
 
 fn line_join_to_ts(join: LineJoin) -> TsLineJoin {
     match join {
         LineJoin::Miter => TsLineJoin::Miter,
         LineJoin::Round => TsLineJoin::Round,
-        LineJoin::Bevel => TsLineJoin::Bevel }
+        LineJoin::Bevel => TsLineJoin::Bevel,
+    }
 }
 
 /// Build a `cosmic_text::Attrs` from a canvas `Font`.
@@ -594,9 +609,11 @@ fn build_attrs<'f>(font: &'f Font) -> Attrs<'f> {
     };
     let weight = match font.weight {
         FontWeight::Normal => cosmic_text::Weight::NORMAL,
-        FontWeight::Bold => cosmic_text::Weight::BOLD };
+        FontWeight::Bold => cosmic_text::Weight::BOLD,
+    };
     let style = match font.style {
         FontStyle::Normal => cosmic_text::Style::Normal,
-        FontStyle::Italic => cosmic_text::Style::Italic };
+        FontStyle::Italic => cosmic_text::Style::Italic,
+    };
     Attrs::new().family(family).weight(weight).style(style)
 }

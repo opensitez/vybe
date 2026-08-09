@@ -17,15 +17,16 @@
 // `impl Compiler` walkers alongside them are one layer now — this crate IS
 // the emitter, so there is no second module to route through.
 pub mod addressable_storage;
+pub mod bigint;
 pub mod builtin_slots;
 pub mod bundle;
-pub mod codepoints;
+pub mod callable;
 pub mod clone; // what it means to COPY a value — records, collections, arguments
+pub mod codepoints;
 pub mod collections;
-pub mod csv;
 pub mod complex;
-pub mod bigint;
 pub mod convert;
+pub mod csv;
 pub mod datetime;
 pub mod delegates;
 pub mod dict;
@@ -35,8 +36,8 @@ pub mod enum_lowering;
 pub mod errors;
 pub mod functions;
 pub mod generators;
-pub mod globals;
 pub mod generics;
+pub mod globals;
 pub mod gui;
 pub mod heap;
 pub mod instructions;
@@ -52,8 +53,11 @@ pub mod ops;
 pub mod packing;
 pub mod platforms;
 pub mod pointers;
+pub mod prelude; // parse cache + splice for language preludes — one place, not four
+pub mod proxy;
 pub mod random;
 pub mod runtime_helpers;
+pub mod sets;
 pub mod sorted_collection;
 pub mod sprintf;
 pub mod string_encoding;
@@ -90,6 +94,7 @@ macro_rules! fn_call {
 }
 
 mod arrays;
+pub mod async_ops;
 mod bindings;
 mod builtins;
 mod calls;
@@ -118,7 +123,6 @@ mod metadata;
 pub mod namespaces;
 mod operators;
 mod overloads;
-pub mod async_ops;
 pub mod prototypes;
 pub mod records;
 pub mod references;
@@ -170,7 +174,8 @@ struct LoopCtx {
     /// blocks pushed *inside* it (those at indices >= this value) before
     /// branching out — ECMA-262 §14.2: abrupt loop completion still runs
     /// pending `finally` bodies.
-    finally_depth: usize }
+    finally_depth: usize,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Pending class bookkeeping
@@ -197,7 +202,8 @@ struct FieldType {
     /// (`field.type_hint.as_deref()?`), so `value_type: Some` never occurs
     /// with `type_hint: None`. If that ever stops holding, entries land in
     /// neither map and nested records alias again.
-    value_type: Option<String> }
+    value_type: Option<String>,
+}
 
 struct PendingClass {
     parent: Option<String>,
@@ -237,7 +243,8 @@ struct PendingClass {
     /// Nested type names attached to this class constructor object.
     nested_types: Vec<String>,
     /// Static methods: (name, chunk_idx) — tracked for inheritance
-    statics: Vec<(String, usize)> }
+    statics: Vec<(String, usize)>,
+}
 
 #[derive(Debug, Clone)]
 struct PendingMethodOverload {
@@ -251,7 +258,8 @@ struct PendingMethodOverload {
     /// call path never has to re-derive per-language virtuality rules.
     /// `chunk_idx` names the DECLARED type's body, which is the wrong target
     /// for a virtual call — see `resolve_instance_method_overload_chunk`.
-    is_virtual: bool }
+    is_virtual: bool,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallSignature {
@@ -270,7 +278,8 @@ pub(crate) struct CallSignature {
     /// from `has_rest` (which is "the LAST param is rest", the shape the runtime
     /// rest-packing handles): with a trailing `**kwargs` the rest is NOT last, so
     /// only the named-arg reorder collects positionals into it.
-    rest_index: Option<usize> }
+    rest_index: Option<usize>,
+}
 
 impl CallSignature {
     pub(crate) fn from_params(params: &[Param]) -> Self {
@@ -286,20 +295,23 @@ impl CallSignature {
                 .count(),
             has_rest: params.last().is_some_and(|param| param.is_rest),
             has_kwargs: params.last().is_some_and(|param| param.is_kwargs),
-            rest_index: params.iter().position(|param| param.is_rest) }
+            rest_index: params.iter().position(|param| param.is_rest),
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AttributeUsageMetadata {
     pub allow_multiple: bool,
-    pub inherited: bool }
+    pub inherited: bool,
+}
 
 impl Default for AttributeUsageMetadata {
     fn default() -> Self {
         Self {
             allow_multiple: false,
-            inherited: true }
+            inherited: true,
+        }
     }
 }
 
@@ -307,7 +319,8 @@ impl Default for AttributeUsageMetadata {
 pub(crate) struct ReflectionParamMetadata {
     pub name: String,
     pub decorators: Vec<Expression>,
-    pub type_name: Option<String> }
+    pub type_name: Option<String>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReflectionMethodMetadata {
@@ -318,7 +331,8 @@ pub(crate) struct ReflectionMethodMetadata {
     pub visibility: Visibility,
     pub is_abstract: bool,
     pub is_virtual: bool,
-    pub generic_params: Vec<String> }
+    pub generic_params: Vec<String>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReflectionMemberMetadata {
@@ -327,7 +341,8 @@ pub(crate) struct ReflectionMemberMetadata {
     pub can_write: bool,
     pub type_name: Option<String>,
     pub params: Vec<ReflectionParamMetadata>,
-    pub visibility: Visibility }
+    pub visibility: Visibility,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReflectionConstructorMetadata {
@@ -335,7 +350,8 @@ pub(crate) struct ReflectionConstructorMetadata {
     pub params: Vec<ReflectionParamMetadata>,
     pub decorators: Vec<Expression>,
     pub visibility: Visibility,
-    pub is_static: bool }
+    pub is_static: bool,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReflectionTypeMetadata {
@@ -348,65 +364,78 @@ pub(crate) struct ReflectionTypeMetadata {
     pub is_sealed: bool,
     pub methods: HashMap<String, ReflectionMethodMetadata>,
     pub properties: HashMap<String, ReflectionMemberMetadata>,
-    pub fields: HashMap<String, ReflectionMemberMetadata> }
+    pub fields: HashMap<String, ReflectionMemberMetadata>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum ReflectionBinding {
     Type(String),
     Constructor {
         type_name: String,
-        param_types: Vec<String> },
+        param_types: Vec<String>,
+    },
     Method {
         type_name: String,
         method_name: String,
-        generic_args: Vec<String> },
+        generic_args: Vec<String>,
+    },
     Property {
         type_name: String,
-        property_name: String },
+        property_name: String,
+    },
     Field {
         type_name: String,
-        field_name: String },
+        field_name: String,
+    },
     Assembly,
     AssemblyName,
     Parameter {
         type_name: String,
         method_name: String,
-        index: usize } }
+        index: usize,
+    },
+}
 
 #[derive(Debug, Clone)]
 struct StaticLocalBinding {
     global_name: String,
     init_flag_name: String,
-    type_hint: Option<String> }
+    type_hint: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 struct PascalArrayDimensionMetadata {
     first_index: i64,
     length: usize,
-    uses_char_ordinal: bool }
+    uses_char_ordinal: bool,
+}
 
 #[derive(Debug, Clone)]
 struct PascalArrayBoundsMetadata {
     is_fixed: bool,
-    dimensions: Vec<PascalArrayDimensionMetadata> }
+    dimensions: Vec<PascalArrayDimensionMetadata>,
+}
 
 #[derive(Debug, Clone)]
 struct ArrayBindingMetadata {
     is_fixed: bool,
     type_hint: Option<String>,
-    pascal_bounds: Option<PascalArrayBoundsMetadata> }
+    pascal_bounds: Option<PascalArrayBoundsMetadata>,
+}
 
 #[derive(Debug, Clone)]
 struct FortranInterfaceOverload {
     target_name: String,
     min_arity: usize,
-    param_types: Vec<Option<String>> }
+    param_types: Vec<Option<String>>,
+}
 
 #[derive(Debug, Clone)]
 struct JsArgumentsBinding {
     args_slot: u16,
     aliased_params: HashMap<String, (u16, usize)>,
-    aliased_indices: HashMap<usize, u16> }
+    aliased_indices: HashMap<usize, u16>,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Compiler
@@ -455,7 +484,13 @@ pub struct Compiler {
 
     shared_global_slots: HashMap<String, u16>,
     shared_global_names: Vec<String>,
-    pub(crate) defined_functions: HashSet<String>,
+    /// Fx-hashed, not SipHash: `resolve_namespaced_function_identity` probes
+    /// this set once or more per identifier compiled, and a warm-job profile
+    /// put std's default hasher among the largest single costs. The keys are
+    /// function names from the program being compiled, in the compiler's own
+    /// table — SipHash's resistance to attacker-chosen keys buys nothing here.
+    /// See [`vybe_runtime::chunk::FxBuildHasher`].
+    pub(crate) defined_functions: HashSet<String, vybe_runtime::chunk::FxBuildHasher>,
     function_param_modes: HashMap<String, Vec<PassBy>>,
     function_param_types: HashMap<String, Vec<Option<String>>>,
     function_min_arity: HashMap<String, usize>,
@@ -470,6 +505,15 @@ pub struct Compiler {
     /// Names of methods defined on any user class — used to avoid value method
     /// hijacking (e.g. user class `Calc.Add()` shouldn't match array `add`).
     defined_class_methods: HashSet<String>,
+    /// Classes whose STATIC methods take the called class as a receiver —
+    /// `NormalClass::late_static_binding`, recorded when the class is compiled
+    /// so a CALL SITE can read the same declaration the method chunk's arity
+    /// was built from.
+    ///
+    /// Both ends used to ask `profile.name == "php"` independently. That is one
+    /// fact answered twice from a proxy; a call site that disagreed with the
+    /// declaration would push a receiver the callee never bound.
+    pub(crate) classes_with_late_static_binding: HashSet<String>,
     /// Classes declaring an index operator (`operator []` / `__getitem__`).
     /// Indexing one of these is a method call, not a key lookup — resolved
     /// from the receiver's static type so arrays, dicts and strings keep the
@@ -489,6 +533,22 @@ pub struct Compiler {
     /// dynamically-typed language, so a hint-keyed gate would miss the case it
     /// exists for. Programs that bind the role nowhere pay nothing.
     pub(crate) program_has_getattr: bool,
+    /// Any class in this program exposes its index role as an ACCESSOR pair
+    /// (`__get___index__` / `__set___index__`) rather than as a slot-bound
+    /// method. A program-level flag for the same reason as
+    /// `program_has_getattr`: the receiver's type is unknown exactly where it
+    /// matters — an interface-typed reference, or a local whose initializer's
+    /// type never reached its binding.
+    ///
+    /// Deliberately narrower than `classes_with_indexer`. That set answers
+    /// "does some type fill `GetItem`", which is true wherever a Python
+    /// `__getitem__` or a Dart `operator []` exists — and a runtime probe on
+    /// THEIR receivers takes the emit away from what those languages declared
+    /// for `get_item`, so an ordinary `d[k]` on a dict stops maintaining what
+    /// its own path maintains. This flag answers the narrower question the
+    /// probe below actually asks, so producer and consumer agree by
+    /// construction.
+    pub(crate) program_has_index_accessor: bool,
     global_type_hints: HashMap<String, String>,
     /// Map from member name → containing namespace name.
     /// Used for bare-name resolution within modules/namespaces/enums.
@@ -711,13 +771,15 @@ pub struct Compiler {
     /// must emit matching TRY_END opcodes before RETURN so the VM does
     /// not retain stale handlers from the callee frame.
     active_async_try_depth: usize,
-    js_arguments_bindings: Vec<Option<JsArgumentsBinding>> }
+    js_arguments_bindings: Vec<Option<JsArgumentsBinding>>,
+}
 
 /// §16.2.1.3 wildcard — `import * as alias from "module"`.
 #[derive(Debug, Clone)]
 pub struct HostWildcardImport {
     pub alias: String,
-    pub module: String }
+    pub module: String,
+}
 
 #[derive(Debug, Clone)]
 enum FinallyAction {
@@ -725,7 +787,9 @@ enum FinallyAction {
     ResourceDispose {
         slot: u16,
         method: String,
-        line: u32 } }
+        line: u32,
+    },
+}
 
 /// Completion codes stored in a join's completion local. Written before the
 /// `br` to the join; read by the dispatch emitted after the `finally` body.
@@ -746,14 +810,16 @@ struct FinallyJoin {
     /// Local holding the completion code (see [`completion`]).
     completion_slot: u16,
     /// Local holding the pending `return` value while `finally` runs.
-    ret_slot: u16 }
+    ret_slot: u16,
+}
 
 /// §16.2.1 named — `import { name as local } from "module"`.
 #[derive(Debug, Clone)]
 pub struct HostImportNamed {
     pub local: String,
     pub module: String,
-    pub func: String }
+    pub func: String,
+}
 
 /// The number-path opcode for `emit_js_dynamic_arith` (the non-BigInt
 /// branch of a dynamically-dispatched `-`/`*`/`/`/`%`).
@@ -762,7 +828,8 @@ enum NumberArith {
     Sub,
     Mul,
     Div,
-    Mod }
+    Mod,
+}
 
 /// Map a compound-assignment operator to its plain binary operator, for
 /// desugaring `t OP= v` → `t = t OP v`. Returns `None` for the logical /
@@ -802,7 +869,8 @@ fn compound_op_to_binop(op: &CompoundOp) -> Option<BinOp> {
         CompoundOp::Shl => BinOp::Shl,
         CompoundOp::Shr => BinOp::Shr,
         CompoundOp::UShr => BinOp::UShr,
-        _ => return None })
+        _ => return None,
+    })
 }
 
 /// AST scan: returns true if the statement (or anything nested within
@@ -843,7 +911,7 @@ fn collect_addr_taken_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
                 }
             }
         }
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             for t in targets {
                 collect_addr_taken_in_expr(t, out);
             }
@@ -866,7 +934,8 @@ fn collect_addr_taken_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             collect_addr_taken_in_expr(cond, out);
             collect_addr_taken_idents(then_body, out);
             for (c, b) in elifs {
@@ -907,7 +976,8 @@ fn collect_addr_taken_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             collect_addr_taken_idents(body, out);
             for c in catches {
                 collect_addr_taken_idents(&c.body, out);
@@ -922,7 +992,8 @@ fn collect_addr_taken_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             collect_addr_taken_in_expr(expr, out);
             for case in cases {
                 collect_addr_taken_idents(&case.body, out);
@@ -941,7 +1012,8 @@ fn collect_addr_taken_in_expr(expr: &Expression, out: &mut HashSet<String>) {
     match &expr.kind {
         ExprKind::Unary {
             op: UnaryOp::AddrOf,
-            expr: inner } => {
+            expr: inner,
+        } => {
             if let ExprKind::Ident(name) = &inner.kind {
                 out.insert(name.clone());
             }
@@ -1073,7 +1145,8 @@ fn collect_declared_names_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             collect_declared_names(body, out);
             for c in catches {
                 if let Some(name) = &c.var_name {
@@ -1201,7 +1274,7 @@ fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>)
                 }
             }
         }
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             for t in targets {
                 collect_closure_captured_in_expr(t, out);
             }
@@ -1216,7 +1289,8 @@ fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>)
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             collect_closure_captured_in_expr(cond, out);
             collect_closure_captured_idents(then_body, out);
             for (c, b) in elifs {
@@ -1257,7 +1331,8 @@ fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>)
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             collect_closure_captured_idents(body, out);
             for c in catches {
                 collect_closure_captured_idents(&c.body, out);
@@ -1272,7 +1347,8 @@ fn collect_closure_captured_in_stmt(stmt: &Statement, out: &mut HashSet<String>)
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             collect_closure_captured_in_expr(expr, out);
             for case in cases {
                 collect_closure_captured_idents(&case.body, out);
@@ -1358,7 +1434,8 @@ fn stmt_contains_this(stmt: &Statement) -> bool {
                 || default.as_ref().is_some_and(|b| body_contains_this(b))
         }
         StmtKind::Labeled { body, .. } => stmt_contains_this(body),
-        _ => false }
+        _ => false,
+    }
 }
 
 pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
@@ -1366,7 +1443,8 @@ pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
         ExprKind::This | ExprKind::Super => true,
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Block(stmts) => body_contains_this(stmts),
-            LambdaBody::Expr(e) => expr_contains_this(e) },
+            LambdaBody::Expr(e) => expr_contains_this(e),
+        },
         ExprKind::FunctionExpr(_) => false,
         ExprKind::Unary { expr, .. }
         | ExprKind::Await(expr)
@@ -1379,7 +1457,8 @@ pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right } => expr_contains_this(left) || expr_contains_this(right),
+            value: right,
+        } => expr_contains_this(left) || expr_contains_this(right),
         ExprKind::Ternary { cond, then, else_ } => {
             expr_contains_this(cond) || expr_contains_this(then) || expr_contains_this(else_)
         }
@@ -1392,18 +1471,21 @@ pub(crate) fn expr_contains_this(expr: &Expression) -> bool {
         ExprKind::Array(elems) => elems.iter().any(|e| expr_contains_this(&e.value)),
         ExprKind::Object(props) => props.iter().any(|p| match p {
             ObjectProperty::KeyValue { value, .. } => expr_contains_this(value),
-            _ => false }),
+            _ => false,
+        }),
         ExprKind::Interpolation(parts) => parts.iter().any(|p| match p {
             crate::ast::InterpolPart::Expr(e) | crate::ast::InterpolPart::Formatted(e, _) => {
                 expr_contains_this(e)
             }
-            _ => false }),
+            _ => false,
+        }),
         ExprKind::Sequence(exprs) => exprs.iter().any(expr_contains_this),
         ExprKind::New { class, args } => {
             expr_contains_this(class) || args.iter().any(|a| expr_contains_this(&a.value))
         }
         ExprKind::Yield(Some(inner)) => expr_contains_this(inner),
-        _ => false }
+        _ => false,
+    }
 }
 
 pub(crate) fn closures_in_body_reference_this(stmts: &[Statement]) -> bool {
@@ -1485,14 +1567,16 @@ fn stmt_has_closure_with_this(stmt: &Statement) -> bool {
                     .is_some_and(|b| closures_in_body_reference_this(b))
         }
         StmtKind::Labeled { body, .. } => stmt_has_closure_with_this(body),
-        _ => false }
+        _ => false,
+    }
 }
 
 fn expr_has_closure_with_this(expr: &Expression) -> bool {
     match &expr.kind {
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Block(stmts) => body_contains_this(stmts),
-            LambdaBody::Expr(e) => expr_contains_this(e) },
+            LambdaBody::Expr(e) => expr_contains_this(e),
+        },
         ExprKind::FunctionExpr(_) => false,
         ExprKind::Unary { expr, .. } | ExprKind::Await(expr) | ExprKind::Spread(expr) => {
             expr_has_closure_with_this(expr)
@@ -1502,7 +1586,8 @@ fn expr_has_closure_with_this(expr: &Expression) -> bool {
         ExprKind::Binary { left, right, .. }
         | ExprKind::Assign {
             target: left,
-            value: right } => expr_has_closure_with_this(left) || expr_has_closure_with_this(right),
+            value: right,
+        } => expr_has_closure_with_this(left) || expr_has_closure_with_this(right),
         ExprKind::Ternary { cond, then, else_ } => {
             expr_has_closure_with_this(cond)
                 || expr_has_closure_with_this(then)
@@ -1518,13 +1603,15 @@ fn expr_has_closure_with_this(expr: &Expression) -> bool {
         ExprKind::Array(elems) => elems.iter().any(|e| expr_has_closure_with_this(&e.value)),
         ExprKind::Object(props) => props.iter().any(|p| match p {
             ObjectProperty::KeyValue { value, .. } => expr_has_closure_with_this(value),
-            _ => false }),
+            _ => false,
+        }),
         ExprKind::New { class, args } => {
             expr_has_closure_with_this(class)
                 || args.iter().any(|a| expr_has_closure_with_this(&a.value))
         }
         ExprKind::Sequence(exprs) => exprs.iter().any(expr_has_closure_with_this),
-        _ => false }
+        _ => false,
+    }
 }
 
 pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut HashSet<String>) {
@@ -1538,7 +1625,8 @@ pub(crate) fn collect_closure_captured_in_expr(expr: &Expression, out: &mut Hash
             let mut all_idents = HashSet::new();
             match body {
                 LambdaBody::Block(stmts) => collect_all_idents_in_stmts(stmts, &mut all_idents),
-                LambdaBody::Expr(e) => collect_all_idents_in_expr(e, &mut all_idents) }
+                LambdaBody::Expr(e) => collect_all_idents_in_expr(e, &mut all_idents),
+            }
             let mut local_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
             if let LambdaBody::Block(stmts) = body {
                 collect_declared_names(stmts, &mut local_names);
@@ -1686,7 +1774,7 @@ fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
                 }
             }
         }
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             for t in targets {
                 collect_all_idents_in_expr(t, out);
             }
@@ -1701,7 +1789,8 @@ fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             collect_all_idents_in_expr(cond, out);
             collect_all_idents_in_stmts(then_body, out);
             for (c, b) in elifs {
@@ -1742,7 +1831,8 @@ fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             collect_all_idents_in_stmts(body, out);
             for c in catches {
                 collect_all_idents_in_stmts(&c.body, out);
@@ -1757,7 +1847,8 @@ fn collect_all_idents_in_stmt(stmt: &Statement, out: &mut HashSet<String>) {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             collect_all_idents_in_expr(expr, out);
             for case in cases {
                 collect_all_idents_in_stmts(&case.body, out);
@@ -1857,7 +1948,8 @@ fn collect_all_idents_in_expr(expr: &Expression, out: &mut HashSet<String>) {
         }
         ExprKind::Lambda { body, .. } => match body {
             LambdaBody::Block(stmts) => collect_all_idents_in_stmts(stmts, out),
-            LambdaBody::Expr(e) => collect_all_idents_in_expr(e, out) },
+            LambdaBody::Expr(e) => collect_all_idents_in_expr(e, out),
+        },
         ExprKind::FunctionExpr(stmt) => {
             if let StmtKind::FunctionDecl { body, .. } = &stmt.kind {
                 collect_all_idents_in_stmts(body, out);
@@ -1905,7 +1997,8 @@ fn stmt_uses_proxy(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             expr_uses_proxy(cond)
                 || then_body.iter().any(stmt_uses_proxy)
                 || elifs
@@ -1949,7 +2042,8 @@ fn stmt_uses_proxy(stmt: &Statement) -> bool {
                         .as_ref()
                         .map_or(false, |s| s.body.iter().any(stmt_uses_proxy))
             }
-            _ => false }),
+            _ => false,
+        }),
         StmtKind::Try {
             body,
             catches,
@@ -1962,19 +2056,14 @@ fn stmt_uses_proxy(stmt: &Statement) -> bool {
                     .as_ref()
                     .map_or(false, |b| b.iter().any(stmt_uses_proxy))
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn expr_uses_proxy(expr: &Expression) -> bool {
     match &expr.kind {
-        ExprKind::New { class, args } => {
-            if let ExprKind::Ident(name) = &class.kind {
-                if name == "Proxy" {
-                    return true;
-                }
-            }
-            args.iter().any(|a| expr_uses_proxy(&a.value))
-        }
+        ExprKind::Proxy { .. } => true,
+        ExprKind::New { args, .. } => args.iter().any(|a| expr_uses_proxy(&a.value)),
         ExprKind::Call { callee, args, .. } => {
             // Proxy.revocable(...) creates a proxy without `new Proxy`.
             if let ExprKind::Member { object, field, .. } = &callee.kind {
@@ -1999,12 +2088,15 @@ fn expr_uses_proxy(expr: &Expression) -> bool {
             ObjectProperty::Computed { key, value } => {
                 expr_uses_proxy(key) || expr_uses_proxy(value)
             }
-            _ => false }),
+            _ => false,
+        }),
         ExprKind::Assign { value, .. } => expr_uses_proxy(value),
         ExprKind::Lambda { body, .. } => match body {
             crate::ast::LambdaBody::Expr(e) => expr_uses_proxy(e),
-            crate::ast::LambdaBody::Block(b) => b.iter().any(stmt_uses_proxy) },
-        _ => false }
+            crate::ast::LambdaBody::Block(b) => b.iter().any(stmt_uses_proxy),
+        },
+        _ => false,
+    }
 }
 
 fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
@@ -2018,7 +2110,7 @@ fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
         StmtKind::VarDecl { declarations, .. } => declarations
             .iter()
             .any(|decl| decl.init.as_ref().is_some_and(expr_uses_js_arguments)),
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             targets.iter().any(expr_uses_js_arguments) || expr_uses_js_arguments(value)
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -2031,7 +2123,8 @@ fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             expr_uses_js_arguments(cond)
                 || then_body.iter().any(stmt_uses_js_arguments)
                 || elifs.iter().any(|(cond, body)| {
@@ -2063,7 +2156,8 @@ fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             expr_uses_js_arguments(expr)
                 || cases.iter().any(|case| {
                     case.conditions.iter().any(|condition| match condition {
@@ -2071,7 +2165,8 @@ fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
                         CaseCondition::Range { from, to } => {
                             expr_uses_js_arguments(from) || expr_uses_js_arguments(to)
                         }
-                        CaseCondition::Comparison { expr, .. } => expr_uses_js_arguments(expr) }) || case.body.iter().any(stmt_uses_js_arguments)
+                        CaseCondition::Comparison { expr, .. } => expr_uses_js_arguments(expr),
+                    }) || case.body.iter().any(stmt_uses_js_arguments)
                 })
                 || default
                     .as_ref()
@@ -2081,7 +2176,8 @@ fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             body.iter().any(stmt_uses_js_arguments)
                 || catches
                     .iter()
@@ -2116,8 +2212,10 @@ fn stmt_uses_js_arguments(stmt: &Statement) -> bool {
                         .as_ref()
                         .is_some_and(|setter| setter.body.iter().any(stmt_uses_js_arguments))
             }
-            _ => false }),
-        _ => false }
+            _ => false,
+        }),
+        _ => false,
+    }
 }
 
 fn expr_uses_js_arguments(expr: &Expression) -> bool {
@@ -2167,7 +2265,8 @@ fn expr_uses_js_arguments(expr: &Expression) -> bool {
             ObjectProperty::Spread(expr) => expr_uses_js_arguments(expr),
             ObjectProperty::Method { value, .. } => stmt_uses_js_arguments(value),
             ObjectProperty::Accessor { value, .. } => stmt_uses_js_arguments(value),
-            _ => false }),
+            _ => false,
+        }),
         ExprKind::Assign { target, value } => {
             expr_uses_js_arguments(target) || expr_uses_js_arguments(value)
         }
@@ -2177,9 +2276,11 @@ fn expr_uses_js_arguments(expr: &Expression) -> bool {
                 .any(|param| param.default.as_ref().is_some_and(expr_uses_js_arguments))
                 || match body {
                     LambdaBody::Expr(expr) => expr_uses_js_arguments(expr),
-                    LambdaBody::Block(body) => body.iter().any(stmt_uses_js_arguments) }
+                    LambdaBody::Block(body) => body.iter().any(stmt_uses_js_arguments),
+                }
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 /// Named + wildcard ESM imports a compiled module binds against host
@@ -2187,7 +2288,8 @@ fn expr_uses_js_arguments(expr: &Expression) -> bool {
 #[derive(Debug, Default, Clone)]
 pub struct HostImportMetadata {
     pub named: Vec<HostImportNamed>,
-    pub wildcard: Vec<HostWildcardImport> }
+    pub wildcard: Vec<HostWildcardImport>,
+}
 
 /// Result of `Compiler::compile_with_imports` — chunks + ESM host-import
 /// metadata the VM setup uses to install runtime globals for
@@ -2195,7 +2297,8 @@ pub struct HostImportMetadata {
 #[derive(Debug, Default)]
 pub struct CompileResult {
     pub chunks: Vec<Chunk>,
-    pub host_imports: HostImportMetadata }
+    pub host_imports: HostImportMetadata,
+}
 
 fn is_php_builtin_constant_name(name: &str) -> bool {
     matches!(
@@ -2279,7 +2382,7 @@ impl Compiler {
             program_lexical_names: HashSet::new(),
             shared_global_slots: HashMap::new(),
             shared_global_names: Vec::new(),
-            defined_functions: HashSet::new(),
+            defined_functions: HashSet::default(),
             function_param_modes: HashMap::new(),
             function_param_types: HashMap::new(),
             function_min_arity: HashMap::new(),
@@ -2292,9 +2395,11 @@ impl Compiler {
             defined_classes: HashSet::new(),
             abstract_classes: HashSet::new(),
             defined_class_methods: HashSet::new(),
+            classes_with_late_static_binding: HashSet::new(),
             classes_with_indexer: HashSet::new(),
             classes_with_index_setter: HashSet::new(),
             program_has_getattr: false,
+            program_has_index_accessor: false,
             global_type_hints: HashMap::new(),
             enum_members: HashMap::new(),
             enum_value_names: HashMap::new(),
@@ -2354,7 +2459,8 @@ impl Compiler {
             active_async_try_depth: 0,
             uses_proxy: false,
             bigint_enabled: false,
-            js_arguments_bindings: Vec::new() }
+            js_arguments_bindings: Vec::new(),
+        }
     }
 
     fn current_js_arguments_binding(&self) -> Option<&JsArgumentsBinding> {
@@ -2394,7 +2500,8 @@ impl Compiler {
             ExprKind::Lit(Literal::Float(value)) if *value >= 0.0 && value.fract() == 0.0 => {
                 *value as usize
             }
-            _ => return None };
+            _ => return None,
+        };
         let slot = *binding.aliased_indices.get(&index)?;
         Some((binding.args_slot, slot, index))
     }
@@ -2575,7 +2682,8 @@ impl Compiler {
                 vybe_ast::ImportKind::Simple { path, .. }
                 | vybe_ast::ImportKind::Wildcard { path, .. }
                 | vybe_ast::ImportKind::Named { path, .. }
-                | vybe_ast::ImportKind::Default { path, .. } => path.clone() };
+                | vybe_ast::ImportKind::Default { path, .. } => path.clone(),
+            };
             active.insert(path);
         }
         self.active_namespaces = Some(active);
@@ -2667,11 +2775,35 @@ impl Compiler {
         let has_partial = module.body.iter().any(
             |s| matches!(&s.kind, StmtKind::ClassDecl { modifiers, .. } if modifiers.is_partial),
         );
-        let merged_body = if has_partial {
+        let mut merged_body = if has_partial {
             merge_partial_classes(&module.body, self.case_sensitive)
         } else {
             module.body.clone()
         };
+
+        // Builtins declared with `pass_by = [...]` in the profile enter the tree
+        // here, as an ordinary interface — `referenceplan.md` §10j.1. The profile
+        // row is source text; this declaration is the fact. An interface is the
+        // right carrier precisely because it can never become a call target
+        // (`StmtKind::InterfaceDecl` compiles to a no-op), so `bindParam` still
+        // routes through `[value_methods]` to its adapter — this DESCRIBES the
+        // callee, it does not implement it.
+        //
+        // Appended LAST so a same-named declaration written in source registers
+        // first and wins: `register_interface_method_signatures` is `or_insert`,
+        // so the builtin fills in only where the program itself said nothing.
+        if !self.profile.builtin_signatures.is_empty() {
+            merged_body.push(Statement::new(StmtKind::InterfaceDecl {
+                // Reserved spelling — a user type of this name is not expressible
+                // in any surface language here, so registering it as a type name
+                // cannot shadow a real class (php's own `PDOStatement` would).
+                name: "__vybe_builtin_signatures".to_string(),
+                parents: Vec::new(),
+                members: self.profile.builtin_signatures.clone(),
+                decorators: Vec::new(),
+            }));
+        }
+        let merged_body = merged_body;
 
         self.predeclare_type_names(&merged_body, None);
         self.collect_module_variable_names(&merged_body);
@@ -2834,7 +2966,8 @@ impl Compiler {
         let host_imports = self.collected_host_imports();
         Ok(CompileResult {
             chunks: self.chunks,
-            host_imports })
+            host_imports,
+        })
     }
 }
 
@@ -2869,7 +3002,8 @@ fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
                         match arity {
                             None => *arity = Some(n as u8),
                             Some(a) if *a as usize == n => {}
-                            _ => return false }
+                            _ => return false,
+                        }
                     } else {
                         return false;
                     }
@@ -2925,7 +3059,8 @@ fn uniform_tuple_return_arity(body: &[Statement]) -> Option<u8> {
                     body,
                     catches,
                     else_body,
-                    finally } => {
+                    finally,
+                } => {
                     if !walk(body, arity, saw_any) {
                         return false;
                     }
@@ -2986,7 +3121,8 @@ fn is_hoisted_deconstruction_block(stmts: &[Statement]) -> bool {
                 ..
             },
         ] => expr,
-        _ => return false };
+        _ => return false,
+    };
 
     let ExprKind::Call { callee, args, .. } = &call_stmt.kind else {
         return false;
@@ -3043,7 +3179,8 @@ fn body_has_super_call(body: &[Statement]) -> bool {
             match &e.kind {
                 ExprKind::SuperCall { .. } => true,
                 ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::Super),
-                _ => false }
+                _ => false,
+            }
         } else {
             false
         }
@@ -3161,7 +3298,8 @@ fn merge_partial_classes(body: &[Statement], case_sensitive: bool) -> Vec<Statem
                 }
                 result.push(merged);
             }
-            _ => result.push(stmt.clone()) }
+            _ => result.push(stmt.clone()),
+        }
     }
 
     result

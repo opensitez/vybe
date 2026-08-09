@@ -6,7 +6,8 @@
 
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use super::rounded_rect_path;
 use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
 use tiny_skia::*;
@@ -36,7 +37,8 @@ pub enum FontPickerEvent {
     /// User closed without picking.
     Closed,
     /// No interaction.
-    None }
+    None,
+}
 
 /// The font picker widget.
 pub struct FontPicker {
@@ -53,7 +55,8 @@ pub struct FontPicker {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    pending_events: Vec<WidgetEvent> }
+    pending_events: Vec<WidgetEvent>,
+}
 
 const ROW_H: f32 = 22.0;
 const FAMILY_W: f32 = 140.0;
@@ -72,7 +75,8 @@ impl FontPicker {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            pending_events: Vec::new() }
+            pending_events: Vec::new(),
+        }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -375,7 +379,8 @@ impl FontPicker {
                 self.family = FONT_FAMILIES[row].to_string();
                 return FontPickerEvent::Changed {
                     family: self.family.clone(),
-                    size: self.size };
+                    size: self.size,
+                };
             }
         }
 
@@ -387,7 +392,8 @@ impl FontPicker {
                 self.size = FONT_SIZES[row];
                 return FontPickerEvent::Changed {
                     family: self.family.clone(),
-                    size: self.size };
+                    size: self.size,
+                };
             }
         }
 
@@ -518,7 +524,8 @@ impl PanelWidget for FontPicker {
             WidgetCommand::GetText => {
                 CommandValue::Text(format!("{}, {}pt", self.family, self.size))
             }
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

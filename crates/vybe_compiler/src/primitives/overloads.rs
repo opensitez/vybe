@@ -64,13 +64,12 @@ impl Compiler {
 
             let target_name = signature_source.as_ref().unwrap_or(name);
             let target_canonical = self.canon(target_name);
-            let canonical_names = if self.profile.interface_block_is_generic_alias
-                && !interface_name.is_empty()
-            {
-                vec![target_canonical.clone(), interface_canonical.clone()]
-            } else {
-                vec![self.canon(name)]
-            };
+            let canonical_names =
+                if self.profile.interface_block_is_generic_alias && !interface_name.is_empty() {
+                    vec![target_canonical.clone(), interface_canonical.clone()]
+                } else {
+                    vec![self.canon(name)]
+                };
 
             if let Some(source_name) = signature_source.as_ref() {
                 let source_canonical = self.canon(source_name);
@@ -112,8 +111,10 @@ impl Compiler {
                 }
             } else {
                 let param_modes: Vec<PassBy> = params.iter().map(|param| param.pass_by).collect();
-                let param_types: Vec<Option<String>> =
-                    params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect();
+                let param_types: Vec<Option<String>> = params
+                    .iter()
+                    .map(|param| param.type_hint.as_deref().map(str::to_string))
+                    .collect();
                 let min_arity = params
                     .iter()
                     .take_while(|param| param.default.is_none() && !param.is_rest)
@@ -158,7 +159,11 @@ impl Compiler {
                         .iter()
                         .take_while(|param| param.default.is_none() && !param.is_rest)
                         .count(),
-                    param_types: params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect() };
+                    param_types: params
+                        .iter()
+                        .map(|param| param.type_hint.as_deref().map(str::to_string))
+                        .collect(),
+                };
 
                 if let Some(symbol) = operator_symbol.as_ref() {
                     let overloads = self
@@ -348,7 +353,8 @@ impl Compiler {
             BinOp::Mul => "*",
             BinOp::Div => "/",
             BinOp::Pow => "**",
-            _ => return None };
+            _ => return None,
+        };
 
         self.fortran_operator_overloads
             .get(symbol)

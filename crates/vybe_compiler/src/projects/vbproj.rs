@@ -101,7 +101,8 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
             .map_err(|e| format!("Cannot read {}: {}", file_path.display(), e))?;
         sources.push(SourceFile {
             path: file_path,
-            code });
+            code,
+        });
     }
 
     if sources.is_empty() {
@@ -136,5 +137,6 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         language: lang,
         sources,
         wasm_files: vec![],
-        entry_point })
+        entry_point,
+    })
 }

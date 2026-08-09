@@ -158,10 +158,7 @@ impl Compiler {
 
     pub(super) fn emit_self_ref(&mut self) -> bool {
         let self_kw = self.profile.self_keyword.clone();
-        if let Some(self_slot) = self
-            .scope()
-            .resolve(&self_kw)
-        {
+        if let Some(self_slot) = self.scope().resolve(&self_kw) {
             self.emit_u16(Op::LOCAL_GET, self_slot);
             return true;
         }
@@ -195,19 +192,13 @@ impl Compiler {
         self.profile.name == "php"
     }
 
-    /// Do STATIC methods carry a leading receiver slot (the class object)?
-    ///
-    /// This is late static binding: `static::` and `get_called_class()` resolve
-    /// against the class the call was made THROUGH, not the one the method was
-    /// declared in, so the callee cannot recover it and the caller has to pass
-    /// it. Languages whose statics are plain functions answer false.
-    ///
-    /// Still a name check, but now ONE — it was five, each re-deriving the same
-    /// condition inline. It wants to become a class-shape trait declared by the
-    /// frontend, the way `explicit_self_param` already is in seven of them.
-    pub(crate) fn static_methods_take_receiver(&self) -> bool {
-        self.profile.name == "php"
-    }
+    // `static_methods_take_receiver` is GONE. It answered "do STATIC methods
+    // carry the called class as a receiver" with `profile.name == "php"` — a
+    // language NAME standing in for a property of the DECLARATION. It is now
+    // `NormalClass::late_static_binding`, set by the php frontend the way seven
+    // frontends already set `explicit_self_param`, read directly where the
+    // class is in scope and through `classes_with_late_static_binding` where
+    // only its name is. One declaration, both ends.
 
     /// Must a method CALL pass the receiver as an explicit leading argument?
     ///
@@ -312,7 +303,7 @@ impl Compiler {
     }
 
     pub(super) fn save_js_this(&mut self, local_name: &str) -> Option<u16> {
-        if !self.profile.ambient_this_binding {
+        if !self.ambient_this() {
             return None;
         }
         let slot = self
@@ -324,8 +315,35 @@ impl Compiler {
         Some(slot)
     }
 
+    /// Clear the ambient receiver so a CONSTRUCTION allocates instead of
+    /// adopting whatever `this` happens to be live.
+    ///
+    /// A constructor reads its receiver from `__js_this` and allocates only
+    /// when that global is absent — `struct.new_default` sits in the `else` of
+    /// a null test at the top of every `__<Class>_ctor_N`. Every other
+    /// `save_js_this` site pairs the save with a `set_js_this_from_stack`; the
+    /// `New` emit was the one that saved and restored without ever writing a
+    /// value in between, so inside an instance method the constructor found the
+    /// enclosing receiver, skipped the allocation, and wrote its fields into
+    /// it. `One bump() => One(this.v + 1)` answered `identical(a, b) == true`;
+    /// a constructor in a class-static field initializer shared one object for
+    /// the same reason.
+    ///
+    /// `new` is unconditional: it always makes a fresh object, whatever the
+    /// caller's context. Clearing states that, rather than relying on the
+    /// caller happening to have no receiver.
+    pub(super) fn clear_js_this(&mut self) {
+        if !self.ambient_this() {
+            return;
+        }
+        let line = self.line;
+        self.chunk()
+            .emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+        self.emit_global_write("__js_this");
+    }
+
     pub(super) fn set_js_this_from_stack(&mut self) {
-        if !self.profile.ambient_this_binding {
+        if !self.ambient_this() {
             return;
         }
         self.emit_global_write("__js_this");
@@ -403,7 +421,8 @@ impl Compiler {
                 }
                 parts
             }
-            _ => Vec::new() }
+            _ => Vec::new(),
+        }
     }
 
     /// Extract plain expressions from Argument slice.

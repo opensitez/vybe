@@ -18,22 +18,29 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("# vybe-test: {slug}\n# origin: {origin}\n");
 
     let Some(raw) = case.expected.as_ref() else {
         return Emitted {
-            text: format!("{header}# vybe-test-mode: compile\n\n{}\n", case.source.trim()),
-            pairing: Pairing::Direct };
+            text: format!(
+                "{header}# vybe-test-mode: compile\n\n{}\n",
+                case.source.trim()
+            ),
+            pairing: Pairing::Direct,
+        };
     };
 
     // `run_python_one` JOINS every line with "\n" (unlike JS's `_one`, which
     // keeps only the first), so a single expected value splits straight back
     // into the line list.
     let expected: Vec<String> = if case.single_line {
-        raw.first().map(|s| s.split('\n').map(str::to_string).collect()).unwrap_or_default()
+        raw.first()
+            .map(|s| s.split('\n').map(str::to_string).collect())
+            .unwrap_or_default()
     } else {
         raw.clone()
     };
@@ -42,7 +49,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     if let Some(reason) = unpairable(&case.source, &prints) {
         return Emitted {
             text: format!("{header}\n{}\n", case.source.trim()),
-            pairing: Pairing::Unpairable(reason) };
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let mut body = case.source.clone();
@@ -56,7 +64,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: format!("{header}\n{harness}\n\n{}\n", body.trim()),
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// One print, rewritten to append to the buffer.
@@ -76,7 +85,8 @@ fn collect_call(args: &str) -> String {
         // The default terminator is a newline, which `__p` supplies.
         None => format!("__p({line})"),
         Some(e) if e.trim() == "''" || e.trim() == "\"\"" => format!("__pr({line})"),
-        Some(e) => format!("__pr({line} + {})", e.trim()) }
+        Some(e) => format!("__pr({line} + {})", e.trim()),
+    }
 }
 
 /// Split `a, b, end='x'` into (`a, b`, Some(`'x'`)). Only a TOP-LEVEL `end=`
@@ -102,7 +112,11 @@ fn split_end_kwarg(args: &str) -> (&str, Option<&str>) {
                 let before_ok = i == 0 || last_comma.is_some_and(|c| c < i);
                 if before_ok {
                     let cut = last_comma.unwrap_or(0);
-                    let values = if last_comma.is_some() { &args[..cut] } else { "" };
+                    let values = if last_comma.is_some() {
+                        &args[..cut]
+                    } else {
+                        ""
+                    };
                     return (values, Some(&args[i + 4..]));
                 }
             }
@@ -201,7 +215,11 @@ fn skip_atom(src: &str, bytes: &[u8], at: usize) -> Option<usize> {
     // A prefix only counts when a quote follows it directly.
     let mut start = at;
     let mut prefix = 0usize;
-    while prefix < 2 && matches!(bytes.get(start), Some(b'f' | b'F' | b'r' | b'R' | b'b' | b'B' | b'u' | b'U'))
+    while prefix < 2
+        && matches!(
+            bytes.get(start),
+            Some(b'f' | b'F' | b'r' | b'R' | b'b' | b'B' | b'u' | b'U')
+        )
     {
         start += 1;
         prefix += 1;
@@ -227,7 +245,10 @@ fn skip_atom(src: &str, bytes: &[u8], at: usize) -> Option<usize> {
             continue;
         }
         if triple {
-            if bytes[i] == quote && bytes.get(i + 1) == Some(&quote) && bytes.get(i + 2) == Some(&quote) {
+            if bytes[i] == quote
+                && bytes.get(i + 1) == Some(&quote)
+                && bytes.get(i + 2) == Some(&quote)
+            {
                 return Some(i + 3);
             }
         } else if bytes[i] == quote {
@@ -275,7 +296,8 @@ fn py_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out

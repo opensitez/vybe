@@ -3,7 +3,8 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use tiny_skia::*;
 
 pub struct ScrollBar {
@@ -19,7 +20,8 @@ pub struct ScrollBar {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    pending_events: Vec<WidgetEvent> }
+    pending_events: Vec<WidgetEvent>,
+}
 
 impl ScrollBar {
     pub fn new(vertical: bool) -> Self {
@@ -36,7 +38,8 @@ impl ScrollBar {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            pending_events: Vec::new() }
+            pending_events: Vec::new(),
+        }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -411,7 +414,8 @@ impl PanelWidget for ScrollBar {
                 CommandValue::None
             }
             WidgetCommand::GetValue => CommandValue::Number(self.pos as f64),
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

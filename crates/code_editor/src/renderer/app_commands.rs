@@ -126,9 +126,13 @@ impl App {
         self.flush_code_to_project();
         self.sync_active_form_to_project();
         if let Some(path) = self.project_path.clone() {
-            match vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(&self.project, &path) {
+            match vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(
+                &self.project,
+                &path,
+            ) {
                 Ok(_) => self.output_push(format!("Saved: {}", path)),
-                Err(e) => self.output_push(format!("Save error: {}", e)) }
+                Err(e) => self.output_push(format!("Save error: {}", e)),
+            }
         } else {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("VB Project", &["vbproj"])
@@ -141,7 +145,8 @@ impl App {
                     &path_str,
                 ) {
                     Ok(_) => self.output_push(format!("Saved: {}", path_str)),
-                    Err(e) => self.output_push(format!("Save error: {}", e)) }
+                    Err(e) => self.output_push(format!("Save error: {}", e)),
+                }
             }
         }
     }
@@ -156,10 +161,14 @@ impl App {
                 return;
             }
         };
-        let _ = vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(&self.project, &path);
+        let _ = vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(
+            &self.project,
+            &path,
+        );
         let config_flag = match self.build_config {
             super::BuildConfig::Debug => "--debug",
-            super::BuildConfig::Release => "--release" };
+            super::BuildConfig::Release => "--release",
+        };
         let vybec = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("vybex")))
@@ -201,7 +210,8 @@ impl App {
                 self.run_child = Some(child);
                 self.output_push(format!("Running project: {}", path));
             }
-            Err(e) => self.output_push(format!("Could not launch vybec: {}", e)) }
+            Err(e) => self.output_push(format!("Could not launch vybec: {}", e)),
+        }
     }
 
     pub(super) fn stop_project(&mut self) {
@@ -240,7 +250,8 @@ impl App {
                         }
                     }
                 }
-                Err(e) => self.output_push(format!("Failed to load form: {}", e)) }
+                Err(e) => self.output_push(format!("Failed to load form: {}", e)),
+            }
         }
     }
 
@@ -319,7 +330,8 @@ impl App {
                 content: TabContent::Code(widget),
                 is_sticky: true,
                 buffer: None,
-                is_modified: false });
+                is_modified: false,
+            });
             self.active_tab = self.tabs.len() - 1;
         }
         self.needs_redraw = true;
@@ -371,11 +383,12 @@ impl App {
                 }
             };
             if self.project.code_files.iter().all(|cf| cf.name != name) {
-                self.project
-                    .code_files
-                    .push(vybe_platform_dotnet::winforms::designer::project::CodeFile {
+                self.project.code_files.push(
+                    vybe_platform_dotnet::winforms::designer::project::CodeFile {
                         name: name.clone(),
-                        code: code.clone() });
+                        code: code.clone(),
+                    },
+                );
                 let lang = load_language("vb")
                     .or_else(|| load_language("rust"))
                     .expect("language not found");
@@ -392,7 +405,8 @@ impl App {
                     content: TabContent::Code(widget),
                     is_sticky: true,
                     buffer: None,
-                    is_modified: false });
+                    is_modified: false,
+                });
                 self.active_tab = self.tabs.len() - 1;
             }
         }
@@ -601,7 +615,8 @@ impl App {
                         vybe_widgets::ResourceTab::Audio => {
                             ("Audio", vec!["wav", "mp3", "ogg", "flac", "aiff"])
                         }
-                        _ => ("All Files", vec!["*"]) };
+                        _ => ("All Files", vec!["*"]),
+                    };
                     if !exts.is_empty() && exts[0] != "*" {
                         dialog = dialog.add_filter(filter_name, &exts);
                     }
@@ -620,7 +635,8 @@ impl App {
                                 value: path_str.clone(),
                                 comment: String::new(),
                                 tab: res_tab,
-                                file_name: Some(path_str.clone()) });
+                                file_name: Some(path_str.clone()),
+                            });
                             let rt = match res_tab {
                                 vybe_widgets::ResourceTab::Images => {
                                     vybe_platform_dotnet::winforms::designer::resources::ResourceType::Image
@@ -636,9 +652,10 @@ impl App {
                                 }
                                 _ => vybe_platform_dotnet::winforms::designer::resources::ResourceType::String };
                             if project.resource_files.is_empty() {
-                                project
-                                    .resource_files
-                                    .push(vybe_platform_dotnet::winforms::designer::ResourceManager::new());
+                                project.resource_files.push(
+                                    vybe_platform_dotnet::winforms::designer::ResourceManager::new(
+                                    ),
+                                );
                             }
                             if let Some(rm) = project.resource_files.first_mut() {
                                 rm.resources
@@ -654,7 +671,8 @@ impl App {
                         value: String::new(),
                         comment: String::new(),
                         tab,
-                        file_name: None });
+                        file_name: None,
+                    });
                 }
                 r.dirty = true;
             }
@@ -679,7 +697,8 @@ impl App {
                         vybe_widgets::ResourceTab::Audio => {
                             vec!["wav", "mp3", "ogg", "flac", "aiff"]
                         }
-                        _ => vec![] };
+                        _ => vec![],
+                    };
                     if !exts.is_empty() {
                         dialog = dialog.add_filter("Supported", &exts);
                     }
@@ -706,7 +725,8 @@ impl App {
                     value: value.clone(),
                     comment: comment.clone(),
                     tab,
-                    file_name: None });
+                    file_name: None,
+                });
                 r.dirty = true;
                 if project.resource_files.is_empty() {
                     project
@@ -714,7 +734,10 @@ impl App {
                         .push(vybe_platform_dotnet::winforms::designer::ResourceManager::new());
                 }
                 if let Some(rm) = project.resource_files.first_mut() {
-                    let mut item = vybe_platform_dotnet::winforms::designer::ResourceItem::new_string(name, value);
+                    let mut item =
+                        vybe_platform_dotnet::winforms::designer::ResourceItem::new_string(
+                            name, value,
+                        );
                     item.resource_type = match tab {
                         vybe_widgets::ResourceTab::Other => {
                             vybe_platform_dotnet::winforms::designer::resources::ResourceType::Other
@@ -780,10 +803,11 @@ impl App {
                     };
                     rm.resources.push(item);
                 } else {
-                    let mut item = vybe_platform_dotnet::winforms::designer::ResourceItem::new_string(
-                        entry.name.clone(),
-                        entry.value.clone(),
-                    );
+                    let mut item =
+                        vybe_platform_dotnet::winforms::designer::ResourceItem::new_string(
+                            entry.name.clone(),
+                            entry.value.clone(),
+                        );
                     item.resource_type = rt;
                     item.comment = if entry.comment.is_empty() {
                         None
@@ -945,7 +969,11 @@ impl App {
             .pick_file()
         {
             let path_str = path.to_string_lossy().to_string();
-            if let Ok(proj) = vybe_platform_dotnet::winforms::designer::serialization::load_project_auto(&path_str) {
+            if let Ok(proj) =
+                vybe_platform_dotnet::winforms::designer::serialization::load_project_auto(
+                    &path_str,
+                )
+            {
                 self.tabs.retain(|t| {
                     !matches!(&t.content, TabContent::Code(_))
                         && !matches!(&t.content, TabContent::Resources(_))
@@ -976,8 +1004,10 @@ impl App {
         {
             let path_str = path.to_string_lossy().to_string();
             self.project_path = Some(path_str.clone());
-            let _ =
-                vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(&self.project, &path_str);
+            let _ = vybe_platform_dotnet::winforms::designer::serialization::save_project_auto(
+                &self.project,
+                &path_str,
+            );
         }
     }
 
@@ -1005,11 +1035,12 @@ impl App {
 
     fn palette_add_module(&mut self) {
         let name = format!("Module{}.vb", self.project.code_files.len() + 1);
-        self.project
-            .code_files
-            .push(vybe_platform_dotnet::winforms::designer::project::CodeFile {
+        self.project.code_files.push(
+            vybe_platform_dotnet::winforms::designer::project::CodeFile {
                 name: name.clone(),
-                code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")) });
+                code: format!("Module {}\n\nEnd Module\n", name.replace(".vb", "")),
+            },
+        );
     }
 
     fn palette_add_resource_file(&mut self) {
@@ -1032,7 +1063,8 @@ impl App {
                 content: TabContent::Resources(editor),
                 is_sticky: true,
                 buffer: None,
-                is_modified: false });
+                is_modified: false,
+            });
             self.active_tab = self.tabs.len() - 1;
         }
     }
@@ -1068,7 +1100,8 @@ impl App {
                     out.push(ProjectSearchHit {
                         file: file.to_string(),
                         line: li,
-                        snippet });
+                        snippet,
+                    });
                 }
             }
         }
@@ -1158,7 +1191,8 @@ impl App {
             content: TabContent::Code(widget),
             is_sticky: false,
             buffer: None,
-            is_modified: false });
+            is_modified: false,
+        });
         self.active_tab = self.tabs.len() - 1;
     }
 }
@@ -1258,7 +1292,8 @@ pub(super) fn search_dir(
                     hits.push(super::ProjectSearchHit {
                         file: display.clone(),
                         line: li,
-                        snippet: line.trim().chars().take(120).collect() });
+                        snippet: line.trim().chars().take(120).collect(),
+                    });
                 }
             }
         }

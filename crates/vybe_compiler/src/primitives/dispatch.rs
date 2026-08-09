@@ -26,7 +26,8 @@ use vybe_runtime::opcode::Op;
 use crate::primitives::threading as thread_adapter;
 use crate::primitives::{
     collections, csv, dict, heap, http_cookie, http_form, http_request_env, http_session, io,
-    object, ops, reflection, strings, threading, url, xml };
+    object, ops, reflection, sets, strings, threading, url, xml,
+};
 
 /// Handle common ops that need only a chunk and line.
 /// Returns `true` if `name` was recognized and emitted, `false` otherwise.
@@ -123,7 +124,8 @@ pub fn emit_common(
         // ── Dict ops ──
         "dict.set_dynamic" => {
             dict::emit_set_dynamic(chunks, current, line);
-            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line); // void return
+            chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
+            // void return
         }
         "dict.get_dynamic" => dict::emit_get_dynamic(chunks, current, line),
         "dict.has" => dict::emit_method_has(chunks, current, line),
@@ -134,6 +136,32 @@ pub fn emit_common(
         "dict.values" => dict::emit_values(chunks, current, line),
         "dict.items" => dict::emit_items(chunks, current, line),
         "dict.new" => dict::emit_new(chunks, current, line),
+
+        // ── Set ops ──
+        // Language adapters normalize their surface (`setOf`, Python set
+        // literals, Pascal set operators, .NET HashSet) to these operations.
+        // The storage is ECMA Set, but that stays behind this primitive layer.
+        "sets.new" => sets::emit_new(chunks, current, line),
+        "sets.literal" => sets::emit_literal(chunks, current, argc, line),
+        "sets.from_iterable" => sets::emit_from_iterable(chunks, current, line),
+        "sets.add" => sets::emit_add(chunks, current, line),
+        "sets.add_changed" => sets::emit_add_changed(chunks, current, line),
+        "sets.delete" => sets::emit_delete(chunks, current, line),
+        "sets.has" => sets::emit_has(chunks, current, line),
+        "sets.size" => sets::emit_size(chunks, current, line),
+        "sets.clear" => sets::emit_clear(chunks, current, line),
+        "sets.union" => sets::emit_union(chunks, current, line),
+        "sets.union_with" => sets::emit_union_with(chunks, current, line),
+        "sets.intersection" => sets::emit_intersection(chunks, current, line),
+        "sets.intersect_with" => sets::emit_intersect_with(chunks, current, line),
+        "sets.difference" => sets::emit_difference(chunks, current, line),
+        "sets.except_with" => sets::emit_except_with(chunks, current, line),
+        "sets.symmetric_difference" => sets::emit_symmetric_difference(chunks, current, line),
+        "sets.symmetric_except_with" => sets::emit_symmetric_except_with(chunks, current, line),
+        "sets.is_subset_of" => sets::emit_is_subset_of(chunks, current, line),
+        "sets.is_superset_of" => sets::emit_is_superset_of(chunks, current, line),
+        "sets.is_disjoint_from" => sets::emit_is_disjoint_from(chunks, current, line),
+        "sets.values_array" => sets::emit_values_array(chunks, current, line),
 
         // ── Object ops ── ecma:object/new creates a plain JS Object.
         // The `.NET` Dictionary class uses this as its backing (matches
@@ -634,9 +662,12 @@ pub fn emit_common(
             csv::emit_format_row(chunks, current, csv::FormatOptions::minimal(), line)
         }
         // fpc `TStringList.CommaText` also encloses on whitespace.
-        "csv.format_row_quote_ws" => {
-            csv::emit_format_row(chunks, current, csv::FormatOptions::quote_whitespace(), line)
-        }
+        "csv.format_row_quote_ws" => csv::emit_format_row(
+            chunks,
+            current,
+            csv::FormatOptions::quote_whitespace(),
+            line,
+        ),
         "str_glob_match" => {
             strings::emit_glob_match(chunks, current, strings::GlobOptions::exact(), line)
         }
@@ -655,36 +686,41 @@ pub fn emit_common(
         // Canonical component reads, receiver on the stack — what a
         // PROFILE builtin gets. java `getProtocol`, php `parse_url` and
         // python `urlsplit` all read the same nine components.
-        "url.component_scheme" => url::emit_component_of(
-            chunks, current, url::UrlField::Scheme, line),
-        "url.component_user" => url::emit_component_of(
-            chunks, current, url::UrlField::User, line),
-        "url.component_pass" => url::emit_component_of(
-            chunks, current, url::UrlField::Pass, line),
-        "url.component_host" => url::emit_component_of(
-            chunks, current, url::UrlField::Host, line),
-        "url.component_port" => url::emit_component_of(
-            chunks, current, url::UrlField::Port, line),
-        "url.component_netloc" => url::emit_component_of(
-            chunks, current, url::UrlField::Netloc, line),
-        "url.component_path" => url::emit_component_of(
-            chunks, current, url::UrlField::Path, line),
-        "url.component_query" => url::emit_component_of(
-            chunks, current, url::UrlField::Query, line),
-        "url.component_fragment" => url::emit_component_of(
-            chunks, current, url::UrlField::Fragment, line),
-        "url.encode_form" => url::emit_percent_encode(
-            chunks, current, url::PercentOptions::form(), line),
-        "url.encode_form_rfc3986" => url::emit_percent_encode(
-            chunks, current, url::PercentOptions::form_rfc3986(), line),
-        "url.encode_rfc3986" => url::emit_percent_encode(
-            chunks, current, url::PercentOptions::rfc3986(), line),
-        "url.encode_path" => url::emit_percent_encode(
-            chunks, current, url::PercentOptions::path(), line),
-        "url.decode_form" => url::emit_percent_decode(
-            chunks, current, url::PercentOptions::form(), line),
-        "url.decode_rfc3986" => url::emit_percent_decode(
-            chunks, current, url::PercentOptions::rfc3986(), line),
+        "url.component_scheme" => {
+            url::emit_component_of(chunks, current, url::UrlField::Scheme, line)
+        }
+        "url.component_user" => url::emit_component_of(chunks, current, url::UrlField::User, line),
+        "url.component_pass" => url::emit_component_of(chunks, current, url::UrlField::Pass, line),
+        "url.component_host" => url::emit_component_of(chunks, current, url::UrlField::Host, line),
+        "url.component_port" => url::emit_component_of(chunks, current, url::UrlField::Port, line),
+        "url.component_netloc" => {
+            url::emit_component_of(chunks, current, url::UrlField::Netloc, line)
+        }
+        "url.component_path" => url::emit_component_of(chunks, current, url::UrlField::Path, line),
+        "url.component_query" => {
+            url::emit_component_of(chunks, current, url::UrlField::Query, line)
+        }
+        "url.component_fragment" => {
+            url::emit_component_of(chunks, current, url::UrlField::Fragment, line)
+        }
+        "url.encode_form" => {
+            url::emit_percent_encode(chunks, current, url::PercentOptions::form(), line)
+        }
+        "url.encode_form_rfc3986" => {
+            url::emit_percent_encode(chunks, current, url::PercentOptions::form_rfc3986(), line)
+        }
+        "url.encode_rfc3986" => {
+            url::emit_percent_encode(chunks, current, url::PercentOptions::rfc3986(), line)
+        }
+        "url.encode_path" => {
+            url::emit_percent_encode(chunks, current, url::PercentOptions::path(), line)
+        }
+        "url.decode_form" => {
+            url::emit_percent_decode(chunks, current, url::PercentOptions::form(), line)
+        }
+        "url.decode_rfc3986" => {
+            url::emit_percent_decode(chunks, current, url::PercentOptions::rfc3986(), line)
+        }
         "str_trim_chars" => strings::emit_trim_chars(
             chunks,
             current,
@@ -800,7 +836,8 @@ pub fn emit_common(
             chunks[current].emit_call(idx, 2, line);
         }
 
-        _ => return false }
+        _ => return false,
+    }
     true
 }
 
@@ -828,6 +865,7 @@ pub fn emit_common_with_imports(
             thread_adapter::emit_thread_sleep(chunk, sub_dur_idx, block_idx, line);
             chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
         }
-        _ => return false }
+        _ => return false,
+    }
     true
 }

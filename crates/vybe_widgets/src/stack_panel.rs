@@ -6,14 +6,16 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetEvent, WidgetId };
+    WidgetEvent, WidgetId,
+};
 use tiny_skia::*;
 
 /// Orientation for StackPanel layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Orientation {
     Vertical,
-    Horizontal }
+    Horizontal,
+}
 
 pub struct StackPanel {
     pub orientation: Orientation,
@@ -25,7 +27,8 @@ pub struct StackPanel {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    children: Vec<Box<dyn PanelWidget>> }
+    children: Vec<Box<dyn PanelWidget>>,
+}
 
 impl StackPanel {
     pub fn new(orientation: Orientation) -> Self {
@@ -40,7 +43,8 @@ impl StackPanel {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            children: Vec::new() }
+            children: Vec::new(),
+        }
     }
 
     pub fn vertical() -> Self {
@@ -121,8 +125,6 @@ impl StackPanel {
 }
 
 impl PanelWidget for StackPanel {
-    
-
     /// The document tree's children — what `find_widget_mut` / `take_widget`
     /// walk, and what makes a node reachable by name however deeply nested.
     fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
@@ -135,9 +137,13 @@ impl PanelWidget for StackPanel {
         Some(self.children.remove(i))
     }
     fn find_rect(&self, name: &str) -> Option<LayoutRect> {
-        if self.name() == name { return Some(self.rect()); }
+        if self.name() == name {
+            return Some(self.rect());
+        }
         for child in &self.children {
-            if let Some(r) = child.find_rect(name) { return Some(r); }
+            if let Some(r) = child.find_rect(name) {
+                return Some(r);
+            }
         }
         None
     }
@@ -231,6 +237,7 @@ impl PanelWidget for StackPanel {
                 }
                 CommandValue::None
             }
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 }

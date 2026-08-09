@@ -34,10 +34,7 @@ fn reflection_generic_params_from_method(
         }
         let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed);
         let is_generic_param = leaf.len() <= 3
-            && leaf
-                .chars()
-                .next()
-                .is_some_and(|ch| ch == 'T' || ch == 'U')
+            && leaf.chars().next().is_some_and(|ch| ch == 'T' || ch == 'U')
             && leaf
                 .chars()
                 .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit());
@@ -97,7 +94,8 @@ impl Compiler {
         let Some(bracket_start) = trimmed.find('[') else {
             return Some(PascalArrayBoundsMetadata {
                 is_fixed: false,
-                dimensions: Vec::new() });
+                dimensions: Vec::new(),
+            });
         };
         let bracket_end = trimmed[bracket_start + 1..].find(']')? + bracket_start + 1;
         let mut dimensions = Vec::new();
@@ -120,18 +118,21 @@ impl Compiler {
             dimensions.push(PascalArrayDimensionMetadata {
                 first_index: lower,
                 length,
-                uses_char_ordinal: lower_is_char });
+                uses_char_ordinal: lower_is_char,
+            });
         }
         Some(PascalArrayBoundsMetadata {
             is_fixed: !dimensions.is_empty(),
-            dimensions })
+            dimensions,
+        })
     }
 
     pub(super) fn pascal_ordinal_index_expr(index: Expression) -> Expression {
         Expression::new(ExprKind::Call {
             callee: Box::new(Expression::ident("Ord")),
             args: vec![Argument::positional(index)],
-            optional: false })
+            optional: false,
+        })
     }
 
     pub(super) fn pascal_indexed_type_hint(type_hint: &str) -> Option<String> {
@@ -213,11 +214,13 @@ impl Compiler {
                         .map(|index| ReflectionParamMetadata {
                             name: format!("arg{index}"),
                             decorators: Vec::new(),
-                            type_name: Some("System.Object".to_string()) })
+                            type_name: Some("System.Object".to_string()),
+                        })
                         .collect(),
                     decorators: Vec::new(),
                     visibility: Visibility::Public,
-                    is_static: false });
+                    is_static: false,
+                });
             }
             for property in class.properties {
                 metadata.properties.insert(
@@ -228,7 +231,8 @@ impl Compiler {
                         can_write: property.setter.is_some(),
                         type_name: None,
                         params: Vec::new(),
-                        visibility: Visibility::Public },
+                        visibility: Visibility::Public,
+                    },
                 );
             }
             for method in class.methods {
@@ -240,14 +244,16 @@ impl Compiler {
                             .map(|index| ReflectionParamMetadata {
                                 name: format!("arg{index}"),
                                 decorators: Vec::new(),
-                                type_name: Some("System.Object".to_string()) })
+                                type_name: Some("System.Object".to_string()),
+                            })
                             .collect(),
                         is_static: method.is_static,
                         return_type: None,
                         visibility: Visibility::Public,
                         is_abstract: false,
                         is_virtual: false,
-                        generic_params: Vec::new() },
+                        generic_params: Vec::new(),
+                    },
                 );
             }
             self.reflection_types.insert(runtime_name.clone(), metadata);
@@ -404,11 +410,13 @@ impl Compiler {
                                         decorators: Vec::new(),
                                         type_name: param.type_hint.as_deref().map(|type_name| {
                                             self.reflection_runtime_type_name(type_name, None)
-                                        }) })
+                                        }),
+                                    })
                                     .collect(),
                                 decorators: modifiers.decorators.clone(),
                                 visibility: modifiers.visibility,
-                                is_static: true });
+                                is_static: true,
+                            });
                         }
                         let mut method_decorators = Vec::new();
                         let mut param_decorators: HashMap<usize, Vec<Expression>> = HashMap::new();
@@ -447,8 +455,10 @@ impl Compiler {
                                             .unwrap_or_default(),
                                         type_name: param.type_hint.as_deref().map(|type_name| {
                                             self.reflection_runtime_type_name(type_name, None)
-                                        }) })
-                                    .collect() },
+                                        }),
+                                    })
+                                    .collect(),
+                            },
                         );
                     }
                 }
@@ -469,7 +479,8 @@ impl Compiler {
                                 self.reflection_runtime_type_name(type_name, None)
                             }),
                             params: Vec::new(),
-                            visibility: modifiers.visibility },
+                            visibility: modifiers.visibility,
+                        },
                     );
                 }
                 ClassMember::Field {
@@ -488,7 +499,8 @@ impl Compiler {
                                 self.reflection_runtime_type_name(type_name, None)
                             }),
                             params: Vec::new(),
-                            visibility: modifiers.visibility },
+                            visibility: modifiers.visibility,
+                        },
                     );
                 }
                 ClassMember::Constructor {
@@ -511,11 +523,13 @@ impl Compiler {
                                 decorators: Vec::new(),
                                 type_name: param.type_hint.as_deref().map(|type_name| {
                                     self.reflection_runtime_type_name(type_name, None)
-                                }) })
+                                }),
+                            })
                             .collect(),
                         decorators: Vec::new(),
                         visibility: *visibility,
-                        is_static: false });
+                        is_static: false,
+                    });
                 }
                 ClassMember::NestedType(stmt) => {
                     let nested_runtime = match &stmt.kind {
@@ -525,7 +539,8 @@ impl Compiler {
                         | StmtKind::EnumDecl { name, .. } => {
                             Some(self.reflection_runtime_type_name(name, Some(runtime_name)))
                         }
-                        _ => None };
+                        _ => None,
+                    };
                     if let Some(nested_runtime) = nested_runtime {
                         metadata.nested_types.push(nested_runtime);
                     }
@@ -561,7 +576,8 @@ impl Compiler {
                         }),
                         type_name: None,
                         params: method_meta.params,
-                        visibility: Visibility::Public },
+                        visibility: Visibility::Public,
+                    },
                 );
             }
         }
@@ -664,7 +680,8 @@ impl Compiler {
                     "char" | "Char" => "Char",
                     "string" | "String" => "String",
                     "object" | "Object" => "Object",
-                    other => other };
+                    other => other,
+                };
                 let normalized = normalized
                     .strip_prefix("System.System.")
                     .unwrap_or(normalized);
@@ -683,12 +700,14 @@ impl Compiler {
     pub(crate) fn reflection_attribute_type_name(&self, expr: &Expression) -> Option<String> {
         let class = match &expr.kind {
             ExprKind::New { class, .. } => class.as_ref(),
-            _ => return None };
+            _ => return None,
+        };
 
         let raw_name = match &class.kind {
             ExprKind::Ident(name) => name.clone(),
             ExprKind::Member { .. } => self.flatten_member_chain(class).join("."),
-            _ => return None };
+            _ => return None,
+        };
 
         if !raw_name.contains('.') {
             if let Some(resolved) = self.resolve_source_namespace_type(&raw_name) {
@@ -943,7 +962,8 @@ impl Compiler {
                 ImportKind::Simple { path, .. }
                 | ImportKind::Named { path, .. }
                 | ImportKind::Wildcard { path, .. }
-                | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case(namespace) })
+                | ImportKind::Default { path, .. } => path.eq_ignore_ascii_case(namespace),
+            })
     }
 
     pub(super) fn should_infer_winforms_form(&self, name: &str, parents: &[String]) -> bool {
@@ -984,7 +1004,8 @@ impl Compiler {
         })?;
         Some(ReflectionBinding::Constructor {
             type_name: lookup,
-            param_types: ctor.param_types.clone() })
+            param_types: ctor.param_types.clone(),
+        })
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1218,7 +1239,8 @@ impl Compiler {
                 .and_then(|type_hint| self.resolve_pending_class_name_for_type_hint(&type_hint))
                 .and_then(|class_name| {
                     self.visible_instance_field_storage_name_for_class(&class_name, field)
-                }) }
+                }),
+        }
     }
 
     pub(super) fn private_member_access_forbidden(&self, field: &str) -> bool {
@@ -1277,7 +1299,7 @@ impl Compiler {
         // whenever the method body had no closure to force a real `this`
         // local. Constructors keep the slot-based path (derived-ctor TDZ);
         // lambdas keep the upvalue path (they capture the enclosing `this`).
-        if self.profile.ambient_this_binding
+        if self.ambient_this()
             && self.current_class.is_some()
             && self.current_func_name.as_deref() != Some("<lambda>")
             && self
@@ -1290,10 +1312,7 @@ impl Compiler {
         }
 
         let self_kw = self.profile.self_keyword.clone();
-        if let Some(slot) = self
-            .scope()
-            .resolve(&self_kw)
-        {
+        if let Some(slot) = self.scope().resolve(&self_kw) {
             self.emit_u16(Op::LOCAL_GET, slot);
         } else if self.scopes.len() > 1
             && self
@@ -1313,7 +1332,7 @@ impl Compiler {
             let idx = self.closure_env_index("__js_this");
             let line = self.line;
             crate::primitives::closures::emit_env_get(self.chunk(), env, idx, line);
-        } else if self.profile.ambient_this_binding {
+        } else if self.ambient_this() {
             self.emit_global_read("__js_this");
         } else {
             self.emit_null();

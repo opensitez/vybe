@@ -182,7 +182,7 @@ pub fn emit_compare(chunk: &mut Chunk, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, cmp, line);
     chunk.emit_op_u16(Op::LOCAL_GET, a, line);
     chunk.emit_op_u16(Op::LOCAL_GET, b, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 2, line);
 
     chunk.emit_end(line);
     chunk.emit_end(line);

@@ -51,7 +51,7 @@ pub fn emit_deep_copy(chunks: &mut Vec<Chunk>, current: usize, slot: u16, force:
     chunks[current].emit(0u8, line); // upvalue count
     chunks[current].emit_op_u16(Op::LOCAL_GET, slot, line);
     chunks[current].emit_bool_const(force, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
 }
 
 /// Idempotent by chunk name, the same shape `sprintf::ensure_chunk` uses.
@@ -95,8 +95,7 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
 
     let base = chunks[idx].local_count;
     chunks[idx].alloc_scratch(5);
-    let (out, keys, i_slot, key, copied) =
-        (base, base + 1, base + 2, base + 3, base + 4);
+    let (out, keys, i_slot, key, copied) = (base, base + 1, base + 2, base + 3, base + 4);
 
     chunks[idx].emit_op_u16(Op::LOCAL_GET, force, LINE);
     ops::emit_dyn_to_bool(&mut chunks[idx], LINE);
@@ -165,7 +164,7 @@ fn emit_copy_body(chunks: &mut [Chunk], idx: usize) {
     let get_fn = chunks[idx].add_import("ecma:object", "get");
     chunks[idx].emit_call(get_fn, 2, LINE);
     chunks[idx].emit_bool_const(false, LINE);
-    chunks[idx].emit_op_u8_u8(Op::CALL_REF, 2, 1, LINE);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[idx], 2, LINE);
     chunks[idx].emit_op_u16(Op::LOCAL_SET, copied, LINE);
 
     chunks[idx].emit_op_u16(Op::LOCAL_GET, out, LINE);

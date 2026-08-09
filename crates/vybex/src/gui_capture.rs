@@ -14,8 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use vybe_platform_vybe::gui_state::GuiState;
-use vybe_widgets::{
-    FontSystem, PanelWidget, Pixmap, RenderContext, SwashCache, fill_background };
+use vybe_widgets::{FontSystem, PanelWidget, Pixmap, RenderContext, SwashCache, fill_background};
 
 /// Paint the form and its overlay canvases into `pixmap`.
 ///
@@ -37,17 +36,22 @@ pub fn render_into(
         pixmap,
         font_system,
         swash_cache,
-        scale };
+        scale,
+    };
     // The window shows the DOCUMENT — `vybe_widgets` owns the tree and paints
     // it. A control is `document.createElement(tag)`, so the document's form
     // is the only one that has anything on it; `GuiState`'s own form is a
     // second, empty instance nothing writes to any more, and rendering that
     // one is why a form opened blank with every control present in the tree.
-    let document_painted = vybe_platform_web::engine_widgets::with_document(
-        vybe_platform_web::html::active_document(),
-        |document| document.render(&mut ctx),
-    )
-    .is_some();
+    //
+    // Through `gui_document`, so this asks the same "is the document the live
+    // tree" question the runner and the debugger ask. Reaching for
+    // `html::active_document()` here instead painted an EMPTY document twice
+    // over: once for a designer form that never opened one, and once for the
+    // debugger's `capture`, which runs on the REPL thread where that
+    // thread-local is a different document entirely.
+    let document_painted =
+        crate::gui_document::with_live(|document| document.render(&mut ctx)).is_some();
     if !document_painted {
         g.form.render(&mut ctx);
     }
@@ -69,7 +73,11 @@ fn crop(src: &Pixmap, x: f32, y: f32, w: f32, h: f32) -> Option<Pixmap> {
         return None;
     }
     let mut out = Pixmap::new(x1 - x0, y1 - y0)?;
-    let (sw, ow, oh) = (src.width() as usize, out.width() as usize, out.height() as usize);
+    let (sw, ow, oh) = (
+        src.width() as usize,
+        out.width() as usize,
+        out.height() as usize,
+    );
     let (sp, op) = (src.data(), out.data_mut());
     for row in 0..oh {
         let s = ((y0 as usize + row) * sw + x0 as usize) * 4;
@@ -93,9 +101,13 @@ pub fn capture_to_png(
     control: Option<&str>,
     scale: f32,
 ) -> Result<(u32, u32), String> {
+    // The frame is the document's viewport when the document is the live tree
+    // — a form's `Width`/`Height` are CSS on the body and land there, not in
+    // `GuiState`, whose pair keeps its defaults.
     let (w, h) = {
         let g = gui.lock().map_err(|_| "gui state unavailable")?;
-        (g.width.max(1) as f32, g.height.max(1) as f32)
+        let (w, h) = crate::gui_document::viewport().unwrap_or((g.width, g.height));
+        (w.max(1) as f32, h.max(1) as f32)
     };
     let pw = (w * scale).round().max(1.0) as u32;
     let ph = (h * scale).round().max(1.0) as u32;
@@ -108,7 +120,8 @@ pub fn capture_to_png(
     {
         let mut g = gui.lock().map_err(|_| "gui state unavailable")?;
         if g.form.rect().w < 1.0 || g.form.rect().h < 1.0 {
-            g.form.set_rect(vybe_widgets::LayoutRect::new(0.0, 0.0, w, h));
+            g.form
+                .set_rect(vybe_widgets::LayoutRect::new(0.0, 0.0, w, h));
         }
     }
 

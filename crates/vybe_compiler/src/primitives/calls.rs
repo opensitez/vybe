@@ -10,7 +10,8 @@ fn python_is_identifier_literal(value: &str) -> bool {
     let mut chars = value.chars();
     match chars.next() {
         Some(ch) if ch == '_' || ch.is_alphabetic() => {}
-        _ => return false }
+        _ => return false,
+    }
     chars.all(|ch| ch == '_' || ch.is_alphanumeric())
 }
 
@@ -22,7 +23,8 @@ pub(super) fn terminal_type_name(expr: &Expression) -> Option<String> {
     match &expr.kind {
         ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
         ExprKind::Member { field, .. } => Some(field.clone()),
-        _ => None }
+        _ => None,
+    }
 }
 
 pub(super) fn strip_generic_suffix(name: &str) -> &str {
@@ -142,7 +144,8 @@ fn js_dynamic_import_alias(module: &str) -> String {
 enum JsPromiseChainKind {
     Then,
     Catch,
-    Finally }
+    Finally,
+}
 
 #[allow(dead_code)]
 const JS_PROMISE_CHAIN_INPUT: &str = "__js_promise_chain_input";
@@ -171,7 +174,8 @@ fn js_promise_chain_params(kind: JsPromiseChainKind) -> &'static [&'static str] 
     match kind {
         JsPromiseChainKind::Then => &JS_PROMISE_THEN_PARAMS,
         JsPromiseChainKind::Catch => &JS_PROMISE_CATCH_PARAMS,
-        JsPromiseChainKind::Finally => &JS_PROMISE_FINALLY_PARAMS }
+        JsPromiseChainKind::Finally => &JS_PROMISE_FINALLY_PARAMS,
+    }
 }
 
 #[allow(dead_code)]
@@ -189,7 +193,8 @@ fn js_call_ident(name: &str, args: Vec<Expression>) -> Expression {
     Expression::new(ExprKind::Call {
         callee: Box::new(js_ident(name)),
         args: args.into_iter().map(Argument::positional).collect(),
-        optional: false })
+        optional: false,
+    })
 }
 
 #[allow(dead_code)]
@@ -199,11 +204,14 @@ fn js_nullish_check(name: &str) -> Expression {
         left: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::StrictEq,
             left: Box::new(js_ident(name)),
-            right: Box::new(Expression::null()) })),
+            right: Box::new(Expression::null()),
+        })),
         right: Box::new(Expression::new(ExprKind::Binary {
             op: BinOp::StrictEq,
             left: Box::new(js_ident(name)),
-            right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))) })) })
+            right: Box::new(Expression::new(ExprKind::Lit(Literal::Undefined))),
+        })),
+    })
 }
 
 #[allow(dead_code)]
@@ -219,7 +227,8 @@ fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
                 else_body: Some(vec![Statement::new(StmtKind::Return(Some(js_call_ident(
                     JS_PROMISE_CHAIN_ON_FULFILLED,
                     vec![js_await(js_ident(JS_PROMISE_CHAIN_INPUT))],
-                ))))]) })],
+                ))))]),
+            })],
             catches: vec![CatchClause {
                 types: vec![],
                 var_name: Some(JS_PROMISE_CHAIN_ERROR.to_string()),
@@ -228,15 +237,19 @@ fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
                     cond: js_nullish_check(JS_PROMISE_CHAIN_ON_REJECTED),
                     then_body: vec![Statement::new(StmtKind::Throw {
                         expr: Some(js_ident(JS_PROMISE_CHAIN_ERROR)),
-                        cause: None })],
+                        cause: None,
+                    })],
                     elifs: vec![],
                     else_body: Some(vec![Statement::new(StmtKind::Return(Some(js_call_ident(
                         JS_PROMISE_CHAIN_ON_REJECTED,
                         vec![js_ident(JS_PROMISE_CHAIN_ERROR)],
-                    ))))]) })],
-                when_clause: None }],
+                    ))))]),
+                })],
+                when_clause: None,
+            }],
             else_body: None,
-            finally: None })],
+            finally: None,
+        })],
         JsPromiseChainKind::Catch => vec![Statement::new(StmtKind::Try {
             body: vec![Statement::new(StmtKind::Return(Some(js_await(js_ident(
                 JS_PROMISE_CHAIN_INPUT,
@@ -249,15 +262,19 @@ fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
                     cond: js_nullish_check(JS_PROMISE_CHAIN_ON_REJECTED),
                     then_body: vec![Statement::new(StmtKind::Throw {
                         expr: Some(js_ident(JS_PROMISE_CHAIN_ERROR)),
-                        cause: None })],
+                        cause: None,
+                    })],
                     elifs: vec![],
                     else_body: Some(vec![Statement::new(StmtKind::Return(Some(js_call_ident(
                         JS_PROMISE_CHAIN_ON_REJECTED,
                         vec![js_ident(JS_PROMISE_CHAIN_ERROR)],
-                    ))))]) })],
-                when_clause: None }],
+                    ))))]),
+                })],
+                when_clause: None,
+            }],
             else_body: None,
-            finally: None })],
+            finally: None,
+        })],
         JsPromiseChainKind::Finally => {
             let input_var = "__finally_val";
             vec![
@@ -268,7 +285,9 @@ fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
                         init: Some(js_await(js_ident(JS_PROMISE_CHAIN_INPUT))),
                         type_hint: None,
                         array_bounds: None,
-                        with_events: false }] }),
+                        with_events: false,
+                    }],
+                }),
                 Statement::new(StmtKind::If {
                     cond: js_nullish_check(JS_PROMISE_CHAIN_ON_FINALLY),
                     then_body: vec![],
@@ -276,7 +295,8 @@ fn js_promise_chain_body(kind: JsPromiseChainKind) -> Vec<Statement> {
                     else_body: Some(vec![Statement::new(StmtKind::Expr(js_call_ident(
                         JS_PROMISE_CHAIN_ON_FINALLY,
                         vec![],
-                    )))]) }),
+                    )))]),
+                }),
                 Statement::new(StmtKind::Return(Some(js_ident(input_var)))),
             ]
         }
@@ -319,7 +339,10 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                 if compiler.case_sensitive {
                     return None;
                 }
-                compiler.scope().resolve_type(local_name).map(|s| s.to_string())
+                compiler
+                    .scope()
+                    .resolve_type(local_name)
+                    .map(|s| s.to_string())
             })
             .or_else(|| {
                 let cn = compiler.canon(local_name);
@@ -342,8 +365,34 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                         || cn == "this"
                         || cn == "mybase"
                 });
+            // A property read is a typed receiver too. The `Call` arm below
+            // already asks `lookup_type_member_return`; without the symmetric
+            // ask here a chain lost its type at the property hop, so
+            // `M.Items.Add(x)` resolved `Add` against nothing and called
+            // `undefined` — while the identical `R := M.Items; R.Add(x)`
+            // worked, because there the hop went through a declared local.
+            // (`type_inference.rs` closed this same gap on its own Member arm.)
+            let declared_member_type = |compiler: &Compiler| {
+                if compiler.profile.namespaces.type_scopes.is_empty() {
+                    return None;
+                }
+                let receiver_type = resolve_receiver_type_hint(compiler, object)?;
+                compiler
+                    .resolve_pending_class_name_for_type_hint(&receiver_type)
+                    .is_none()
+                    .then(|| {
+                        vybe_runtime::namespaces::lookup_type_member_return(
+                            &compiler.profile.namespaces.type_scopes,
+                            &Compiler::normalize_type_hint(&receiver_type),
+                            field,
+                        )
+                    })
+                    .flatten()
+            };
             if owner_is_self {
-                compiler.is_class_static_field_type_hint(field)
+                compiler
+                    .is_class_static_field_type_hint(field)
+                    .or_else(|| declared_member_type(compiler))
             } else if let ExprKind::Ident(owner) = &object.kind {
                 let owner_name = owner.split('<').next().map(str::trim).unwrap_or(owner);
                 let canon_field = compiler.canon(field);
@@ -367,23 +416,43 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                         }
                     }
                 }
-                None
+                declared_member_type(compiler)
             } else {
-                None
+                declared_member_type(compiler)
             }
         }
         ExprKind::New { class, .. } => {
             terminal_type_name(class).map(|name| compiler.resolve_source_type_alias(&name))
         }
+        // A cast NAMES the static type of what it wraps, and every framework
+        // spells the same statement about an event's sender: `Sender as
+        // TButton`, `(Button)sender`, `CType(sender, Button)`. Without this
+        // arm the member below resolved against the DECLARED parameter type
+        // (`TObject`) instead, which has no such member — so
+        // `(Sender as TButton).Caption` read `undefined` while the identical
+        // `C := Sender as TButton; C.Caption` read the control. Measured on
+        // both spellings before and after.
+        //
+        // Answered only where the language's OWN tree declares the type — the
+        // same guard the array arm below uses, and the reason this is narrow:
+        // a value conversion (`(int)$x`, `(char*)p`, `int(f)`) names nothing
+        // registered and answers `None` exactly as before, and a profile with
+        // no `type_scopes` at all cannot reach a different answer.
+        ExprKind::Cast { type_name, .. } => {
+            let resolved = compiler.resolve_source_type_alias(type_name);
+            vybe_runtime::namespaces::is_registered_type(
+                &compiler.profile.namespaces.type_scopes,
+                &Compiler::normalize_type_hint(&resolved),
+            )
+            .then_some(resolved)
+        }
         // Element type of an indexed receiver. Every step is language-blind and
         // answers `None` when nothing is known, so there was nothing for a
         // family check to decide.
-        ExprKind::Index { object, .. } => {
-            resolve_receiver_type_hint(compiler, object)
-                .as_deref()
-                .and_then(array_element_type_hint)
-                .map(|name| compiler.resolve_source_type_alias(&name))
-        }
+        ExprKind::Index { object, .. } => resolve_receiver_type_hint(compiler, object)
+            .as_deref()
+            .and_then(array_element_type_hint)
+            .map(|name| compiler.resolve_source_type_alias(&name)),
         ExprKind::Call { callee, args, .. } => {
             if compiler.profile.parens_for_index && args.len() == 1 {
                 if let Some(type_hint) = resolve_receiver_type_hint(compiler, callee) {
@@ -444,7 +513,8 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
                         )
                         .map(|_| resolved)
                     }
-                    _ => None });
+                    _ => None,
+                });
 
             if inferred.is_some() {
                 return inferred;
@@ -493,7 +563,8 @@ pub(super) fn resolve_receiver_type_hint(compiler: &Compiler, recv: &Expression)
         {
             Some("IEnumerable".to_string())
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn resolves_to_static_container_method(
@@ -646,7 +717,8 @@ impl Compiler {
         name: &str,
         args: &[Argument],
     ) -> Result<bool, String> {
-        if !self.profile.bare_name_constructs_value_type || self.has_accessible_local_binding(name) {
+        if !self.profile.bare_name_constructs_value_type || self.has_accessible_local_binding(name)
+        {
             return Ok(false);
         }
 
@@ -785,7 +857,8 @@ impl Compiler {
         });
         match (matches.next(), matches.next()) {
             (Some(name), None) => Some(name.clone()),
-            _ => None }
+            _ => None,
+        }
     }
 
     fn match_method_overload_chunk(
@@ -975,7 +1048,8 @@ impl Compiler {
                         .and_then(|hint| self.resolve_pending_class_name_for_type_hint(&hint))
                 }
             }
-            _ => None };
+            _ => None,
+        };
 
         let Some(class_name) = class_name else {
             return false;
@@ -1063,22 +1137,21 @@ impl Compiler {
         if std::env::var_os("VYBE_DBG_RECV").is_some() {
             eprintln!(
                 "[vrs] class={class_name:?} method={method:?} fields={:?} ptr={:?}",
-                self.pending_classes.get(class_name).map(|p| p.fields.clone()),
+                self.pending_classes
+                    .get(class_name)
+                    .map(|p| p.fields.clone()),
                 self.pending_classes
                     .get(class_name)
                     .map(|p| p.instance_pointer_method_names.clone()),
             );
         }
-        let takes_copy = self
-            .pending_classes
-            .get(class_name)
-            .is_some_and(|pending| {
-                !pending
-                    .instance_pointer_method_names
-                    .iter()
-                    .any(|name| self.canon(name) == self.canon(method))
-                    && !pending.fields.is_empty()
-            });
+        let takes_copy = self.pending_classes.get(class_name).is_some_and(|pending| {
+            !pending
+                .instance_pointer_method_names
+                .iter()
+                .any(|name| self.canon(name) == self.canon(method))
+                && !pending.fields.is_empty()
+        });
         if !takes_copy {
             return obj_tmp;
         }
@@ -1252,7 +1325,7 @@ impl Compiler {
         saved_name: &str,
     ) -> Option<u16> {
         let saved_js_this = self.save_js_this(saved_name);
-        if !self.profile.ambient_this_binding {
+        if !self.ambient_this() {
             return saved_js_this;
         }
 
@@ -1314,7 +1387,9 @@ impl Compiler {
         for slot in arg_slots {
             self.emit_u16(Op::LOCAL_GET, *slot);
         }
-        if self.profile.pads_trailing_optional_arg && receiver_slot.is_none() && arg_slots.len() == 1
+        if self.profile.pads_trailing_optional_arg
+            && receiver_slot.is_none()
+            && arg_slots.len() == 1
         {
             inst!(self, core_wasm::undefined);
             self.emit_u8_u8(Op::CALL_REF, 2, 1);
@@ -1616,8 +1691,7 @@ impl Compiler {
                 inst!(self, core_wasm::undefined);
             }
             self.emit_u16(Op::LOCAL_GET, args_arr_slot);
-            let idx = self.import("ecma:proxy", "apply");
-            self.emit_host_call(idx, 3);
+            self.emit_proxy_apply();
             self.emit_u16(Op::LOCAL_SET, result_slot);
             return;
         }
@@ -2121,6 +2195,42 @@ impl Compiler {
         Ok(true)
     }
 
+    /// Compile one argument to a builtin in the mode that builtin DECLARED —
+    /// `referenceplan.md` §10e.26.
+    ///
+    /// `mode` comes from the profile row's `pass_by`, so this asks a language
+    /// nothing and knows no method names. `None` (the position was not declared,
+    /// which is every argument of every builtin that declares no `pass_by`) is
+    /// `Value` and compiles exactly as before.
+    ///
+    /// `Alias` is the only mode that changes the emission today: the argument
+    /// becomes the PLACE rather than its value, which is what php's
+    /// `bindParam(1, $n)` needs — the binder stores the storage and reads it at
+    /// a later `execute()`. `Ref` deliberately does NOT route here: that is the
+    /// copy-in/copy-out pack, it is driven by `Argument.by_ref` on the call
+    /// site, and step 1b is where the two spellings converge.
+    ///
+    /// An argument that denotes no storage falls back to its value. php raises a
+    /// notice there and a reference to a temporary is worse than a copy — the
+    /// same judgement `PlaceExpr::from_expr` returning `None` already encodes.
+    fn compile_builtin_argument(
+        &mut self,
+        arg: &Expression,
+        mode: Option<PassBy>,
+    ) -> Result<(), String> {
+        if mode == Some(PassBy::Alias) {
+            if let Some(place) = PlaceExpr::from_expr(arg) {
+                // Build the node a spelled `&$n` would have produced and compile
+                // THAT, so the four place kinds keep resolving through the one
+                // `ExprKind::RefOf` arm instead of a second copy of its match.
+                let reference =
+                    Expression::with_span(ExprKind::RefOf(Box::new(place)), arg.span.clone());
+                return self.compile_expr(&reference);
+            }
+        }
+        self.compile_expr(arg)
+    }
+
     pub(super) fn compile_call_args_array(
         &mut self,
         args: &[Argument],
@@ -2200,8 +2310,10 @@ impl Compiler {
                     .is_some_and(|ty| {
                         Compiler::normalize_type_hint(ty).eq_ignore_ascii_case("promise")
                     }),
-                _ => false },
-            _ => false }
+                _ => false,
+            },
+            _ => false,
+        }
     }
 
     #[allow(dead_code)]
@@ -2289,7 +2401,8 @@ impl Compiler {
         let callback_count: usize = match field {
             "then" => 2,
             "catch" | "finally" => 1,
-            _ => return Ok(false) };
+            _ => return Ok(false),
+        };
 
         self.compile_expr(object)?; // receiver promise = args[0]
         for arg in arg_exprs.iter().take(callback_count) {
@@ -2412,7 +2525,8 @@ impl Compiler {
             "URIError" => &["URIError", "Error"],
             "AggregateError" => &["AggregateError", "Error"],
             "SuppressedError" => &["SuppressedError", "Error"],
-            _ => &[] }
+            _ => &[],
+        }
     }
 
     pub(super) fn emit_js_exception_ctor_from_message_value(
@@ -2701,7 +2815,9 @@ impl Compiler {
                             // Matches the variadic's name or nothing → kwargs.
                             _ => kwargs_entries.push(ObjectProperty::KeyValue {
                                 key: Expression::new(ExprKind::Lit(Literal::Str(name.to_string()))),
-                                value: arg.value.clone() }) }
+                                value: arg.value.clone(),
+                            }),
+                        }
                     } else if rest_index.is_some_and(|r| next_positional >= r) {
                         // Positional past the variadic's slot → into the rest array.
                         rest_items.push(arg.value.clone());
@@ -2742,7 +2858,8 @@ impl Compiler {
                                     key: None,
                                     value,
                                     spread: false,
-                                    by_ref: false })
+                                    by_ref: false,
+                                })
                                 .collect(),
                         ))));
                     } else {
@@ -2847,7 +2964,8 @@ impl Compiler {
         let signatures = match &callee.kind {
             ExprKind::Ident(name) => self.function_signatures.get(&self.canon(name)),
             ExprKind::Member { field, .. } => self.function_signatures.get(&self.canon(field)),
-            _ => None };
+            _ => None,
+        };
 
         signatures
             .map(|signatures| self.reorder_named_args_with_signatures(args, signatures))
@@ -3098,7 +3216,8 @@ impl Compiler {
                 if name == "__js_dynamic_import" {
                     let Some(path) = args.first().and_then(|arg| match &arg.value.kind {
                         ExprKind::Lit(Literal::Str(path)) => Some(path.clone()),
-                        _ => None }) else {
+                        _ => None,
+                    }) else {
                         return Err(
                             "Dynamic import currently requires a string literal module specifier"
                                 .into(),
@@ -3176,7 +3295,8 @@ impl Compiler {
         if let ExprKind::Member {
             object,
             field,
-            null_safe } = &callee.kind
+            null_safe,
+        } = &callee.kind
         {
             // No language gate: the decision below is entirely the TREE's —
             // "does the receiver's declared type own a 0-arg `ToString`?" — and
@@ -3211,7 +3331,8 @@ impl Compiler {
                 let rewritten = Expression::new(ExprKind::Member {
                     object: Box::new(Expression::string(&text)),
                     field: field.clone(),
-                    null_safe: *null_safe });
+                    null_safe: *null_safe,
+                });
                 return self.compile_call(&rewritten, args);
             }
             if !null_safe
@@ -3331,7 +3452,8 @@ impl Compiler {
                             let bind_body = match &key_expr.kind {
                                 ExprKind::Lit(Literal::Str(s)) => s.to_string(),
                                 ExprKind::Lit(Literal::Int(n)) => n.to_string(),
-                                _ => continue };
+                                _ => continue,
+                            };
                             let bind_name = (ns.spell)(&bind_body);
                             self.compile_expr(&elem.value)?;
                             self.emit_var_set(&bind_name);
@@ -3429,10 +3551,7 @@ impl Compiler {
                     {
                         self.emit_js_exception_ctor_value(&parent_name, &arg_exprs)?;
                         let self_kw = self.profile.self_keyword.clone();
-                        if let Some(slot) = self
-                            .scope()
-                            .resolve(&self_kw)
-                        {
+                        if let Some(slot) = self.scope().resolve(&self_kw) {
                             inst!(self, core_wasm::dup);
                             self.emit_u16(Op::LOCAL_SET, slot);
                         }
@@ -3445,10 +3564,7 @@ impl Compiler {
                     self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
                     // Store result as this
                     let self_kw = self.profile.self_keyword.clone();
-                    if let Some(slot) = self
-                        .scope()
-                        .resolve(&self_kw)
-                    {
+                    if let Some(slot) = self.scope().resolve(&self_kw) {
                         inst!(self, core_wasm::dup);
                         self.emit_u16(Op::LOCAL_SET, slot);
                     }
@@ -3487,9 +3603,7 @@ impl Compiler {
                     .and_then(|cn| self.pending_classes.get(cn.as_str()))
                     .and_then(|pc| pc.parent.clone());
                 let self_kw = self.profile.self_keyword.clone();
-                let self_slot = self
-                    .scope()
-                    .resolve(&self_kw);
+                let self_slot = self.scope().resolve(&self_kw);
 
                 if let Some(_parent) = parent_name {
                     if self.profile.class_multiple_inheritance {
@@ -3524,7 +3638,7 @@ impl Compiler {
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, method_idx);
                     }
 
-                    if self.profile.ambient_this_binding {
+                    if self.ambient_this() {
                         let method_slot = self.define_local("__js_super_method_fn");
                         self.emit_u16(Op::LOCAL_SET, method_slot);
                         self.emit_js_current_this_value();
@@ -3697,9 +3811,7 @@ impl Compiler {
                         // has already agreed the receiver type declares `Add`.
                         if field.eq_ignore_ascii_case("Add")
                             && vybe_runtime::namespaces::scope_declares_member_arity(
-                                &scope_segments(
-                                    &self.profile.namespaces.runtime_collection_scope,
-                                ),
+                                &scope_segments(&self.profile.namespaces.runtime_collection_scope),
                                 field,
                                 arg_exprs.len() as u8,
                             )
@@ -3779,7 +3891,8 @@ impl Compiler {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false },
+                                        is_nullable: false,
+                                    },
                                     Param {
                                         name: "right".into(),
                                         type_hint: None,
@@ -3788,13 +3901,15 @@ impl Compiler {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false },
+                                        is_nullable: false,
+                                    },
                                 ],
                                 &LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
                                     cond: Box::new(Expression::new(ExprKind::Binary {
                                         op: BinOp::Lt,
                                         left: Box::new(Expression::ident("left")),
-                                        right: Box::new(Expression::ident("right")) })),
+                                        right: Box::new(Expression::ident("right")),
+                                    })),
                                     then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(
                                         -1,
                                     )))),
@@ -3802,13 +3917,16 @@ impl Compiler {
                                         cond: Box::new(Expression::new(ExprKind::Binary {
                                             op: BinOp::Gt,
                                             left: Box::new(Expression::ident("left")),
-                                            right: Box::new(Expression::ident("right")) })),
+                                            right: Box::new(Expression::ident("right")),
+                                        })),
                                         then: Box::new(Expression::new(ExprKind::Lit(
                                             Literal::Int(1),
                                         ))),
                                         else_: Box::new(Expression::new(ExprKind::Lit(
                                             Literal::Int(0),
-                                        ))) })) }))),
+                                        ))),
+                                    })),
+                                }))),
                                 &[],
                             )?;
                             common::collections::emit_sort_with_comparator(
@@ -3885,7 +4003,8 @@ impl Compiler {
         if let ExprKind::Member {
             object,
             field,
-            null_safe } = &callee.kind
+            null_safe,
+        } = &callee.kind
         {
             if self.profile.ecma_promise_methods && !*null_safe {
                 if let ExprKind::Ident(class_name) = &object.kind {
@@ -3897,7 +4016,8 @@ impl Compiler {
                         let host_name = match field.as_str() {
                             "resolve" | "reject" | "all" | "race" | "allSettled" | "any"
                             | "try" => Some(field.as_str()),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(host_name) = host_name {
                             if let Some(arg) = arg_exprs.first() {
                                 self.compile_expr(arg)?;
@@ -4076,7 +4196,8 @@ impl Compiler {
                                 .is_some_and(|mode| self.mode_needs_call_writeback(mode))
                         })
                         .collect(),
-                    None => args.iter().map(|arg| arg.by_ref).collect() };
+                    None => args.iter().map(|arg| arg.by_ref).collect(),
+                };
                 if writeback.iter().any(|packed| *packed) {
                     let pack_slot = self.define_local("__static_container_by_ref_pack");
                     self.emit_u16(Op::LOCAL_SET, pack_slot);
@@ -4179,7 +4300,8 @@ impl Compiler {
                         Some(super::resolver::Resolution::NamespaceAlias { module }) => {
                             Some(module)
                         }
-                        _ => None }
+                        _ => None,
+                    }
                 } else {
                     self.host_namespace_aliases.get(&key).cloned()
                 };
@@ -4300,7 +4422,8 @@ impl Compiler {
                                     ..
                                 },
                             )) => Some((module, func)),
-                            _ => None }
+                            _ => None,
+                        }
                     } else {
                         let prefix_lc = self.canon(prefix);
                         if matches!(prefix_lc.as_str(), "vybe" | "wasi" | "wasm") {
@@ -4546,10 +4669,16 @@ impl Compiler {
                         }
                         // Late static binding: the CLASS object is the static
                         // method's receiver, so `static::` inside it resolves
-                        // against the class the call went through. Mirrors the
-                        // `has_receiver` decision made when the method chunk
-                        // was declared (`classes.rs`).
-                        if self.static_methods_take_receiver() {
+                        // against the class the call went through.
+                        //
+                        // Reads the RECORDED declaration, so it cannot disagree
+                        // with the `has_receiver` decision the method chunk's
+                        // arity was built from (`classes.rs`). Both ends used to
+                        // ask `profile.name == "php"` separately.
+                        if self
+                            .classes_with_late_static_binding
+                            .contains(&self.canon(&class_canon))
+                        {
                             self.emit_global_read(&class_canon);
                             let receiver_slot = self.define_local("__early_static_receiver");
                             self.emit_u16(Op::LOCAL_SET, receiver_slot);
@@ -4702,7 +4831,8 @@ impl Compiler {
                                                 Self::normalize_type_hint(hint) == "char"
                                             })
                                         }
-                                        _ => false };
+                                        _ => false,
+                                    };
                                     let bound = self
                                         .profile
                                         .builtin_slots
@@ -4731,7 +4861,8 @@ impl Compiler {
                                 return Ok(());
                             }
                             Some(super::resolver::Resolution::NamespaceChain {
-                                parts: ns_parts }) => {
+                                parts: ns_parts,
+                            }) => {
                                 // If any contiguous sub-window of the chain is a profile namespace
                                 // constant (e.g. ["system","math","pi","tostring"] where "math.pi"
                                 // is a constant), emit the constant and dispatch remaining as a
@@ -4754,8 +4885,7 @@ impl Compiler {
                                     }
                                     if let Some((_const_start, const_end)) = found_window {
                                         let key = ns_parts[_const_start..const_end].join(".");
-                                        let cv =
-                                            self.lookup_named_constant(&key).unwrap();
+                                        let cv = self.lookup_named_constant(&key).unwrap();
                                         match &cv {
                                             ConstantValue::Bool(b) => {
                                                 self.emit_const(Value::Bool(*b))
@@ -4764,7 +4894,8 @@ impl Compiler {
                                                 self.emit_const(Value::F64(*f))
                                             }
                                             ConstantValue::Str(s) => self
-                                                .emit_const(Value::String(Arc::from(s.as_str()))) }
+                                                .emit_const(Value::String(Arc::from(s.as_str()))),
+                                        }
                                         let remaining = ns_parts[const_end..].to_vec();
                                         if let Some(method_name) = remaining.first() {
                                             let argc = arg_exprs.len() as u8;
@@ -4799,7 +4930,11 @@ impl Compiler {
                                                     _ => {
                                                         // Fallback: STRUCT_GET the method and call_ref
                                                         let idx = self.str_const(method_name);
-                                                        self.emit_struct_field_op(Op::STRUCT_GET, 0, idx);
+                                                        self.emit_struct_field_op(
+                                                            Op::STRUCT_GET,
+                                                            0,
+                                                            idx,
+                                                        );
                                                         self.emit_u8_u8(
                                                             Op::CALL_REF,
                                                             arg_exprs.len() as u8,
@@ -4814,7 +4949,11 @@ impl Compiler {
                                                 for a in &arg_exprs {
                                                     self.compile_expr(a)?;
                                                 }
-                                                self.emit_u8_u8(Op::CALL_REF, arg_exprs.len() as u8, 1);
+                                                self.emit_u8_u8(
+                                                    Op::CALL_REF,
+                                                    arg_exprs.len() as u8,
+                                                    1,
+                                                );
                                             }
                                         }
                                         return Ok(());
@@ -4978,7 +5117,8 @@ impl Compiler {
                             Some(super::resolver::Resolution::NamespaceAlias { module }) => {
                                 Some(module)
                             }
-                            _ => None }
+                            _ => None,
+                        }
                     } else {
                         self.host_namespace_aliases.get(&alias_key).cloned()
                     };
@@ -5005,9 +5145,7 @@ impl Compiler {
                                 let mut handled = false;
                                 for end in (2..lower_parts.len()).rev() {
                                     let const_key = parts[..end].join(".");
-                                    if let Some(cv) =
-                                        self.lookup_named_constant(&const_key)
-                                    {
+                                    if let Some(cv) = self.lookup_named_constant(&const_key) {
                                         match &cv {
                                             ConstantValue::Bool(b) => {
                                                 self.emit_const(Value::Bool(*b))
@@ -5016,7 +5154,8 @@ impl Compiler {
                                                 self.emit_const(Value::F64(*f))
                                             }
                                             ConstantValue::Str(s) => self
-                                                .emit_const(Value::String(Arc::from(s.as_str()))) }
+                                                .emit_const(Value::String(Arc::from(s.as_str()))),
+                                        }
                                         let method_name = &parts[end];
                                         let argc = arg_exprs.len() as u8;
                                         let def = self
@@ -5039,7 +5178,11 @@ impl Compiler {
                                                 }
                                                 _ => {
                                                     let midx = self.str_const(method_name);
-                                                    self.emit_struct_field_op(Op::STRUCT_GET, 0, midx);
+                                                    self.emit_struct_field_op(
+                                                        Op::STRUCT_GET,
+                                                        0,
+                                                        midx,
+                                                    );
                                                     self.emit_u8_u8(Op::CALL_REF, argc, 1);
                                                 }
                                             }
@@ -5077,7 +5220,8 @@ impl Compiler {
                                 Some((target_module, target_name)) => {
                                     (target_module.clone(), target_name.clone())
                                 }
-                                None => (module, func) };
+                                None => (module, func),
+                            };
                             let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                             for (index, arg) in arg_exprs.iter().enumerate() {
                                 self.compile_expr(arg)?;
@@ -5644,12 +5788,10 @@ impl Compiler {
             // emitted thunk. Returns `None` on a user override → dynamic.
             // `namespace_tree_instance_method_owner` is scoped by `type_scopes`
             // and finds nothing for a language declaring none, so the filter
-                // only decided who was allowed to consult the tree.
-            let framework_method_owner = class_name
-                .as_deref()
-                .and_then(|cn| {
-                    self.namespace_tree_instance_method_owner(cn, field, arg_exprs.len() as u8)
-                });
+            // only decided who was allowed to consult the tree.
+            let framework_method_owner = class_name.as_deref().and_then(|cn| {
+                self.namespace_tree_instance_method_owner(cn, field, arg_exprs.len() as u8)
+            });
             let surface_type: Option<String> = match &class_name {
                 _ if framework_method_owner.is_some() => framework_method_owner,
                 Some(cn) if self.resolve_pending_class_name_for_type_hint(cn).is_some() => None,
@@ -5680,7 +5822,8 @@ impl Compiler {
                 {
                     Some("IEnumerable".to_string())
                 }
-                None => None };
+                None => None,
+            };
             if let Some(class_name) = surface_type {
                 {
                     let owner = if class_name.eq_ignore_ascii_case("IEnumerable") {
@@ -5741,7 +5884,8 @@ impl Compiler {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false },
+                                        is_nullable: false,
+                                    },
                                     Param {
                                         name: "right".into(),
                                         type_hint: None,
@@ -5750,13 +5894,15 @@ impl Compiler {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false },
+                                        is_nullable: false,
+                                    },
                                 ],
                                 &LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
                                     cond: Box::new(Expression::new(ExprKind::Binary {
                                         op: BinOp::Lt,
                                         left: Box::new(Expression::ident("left")),
-                                        right: Box::new(Expression::ident("right")) })),
+                                        right: Box::new(Expression::ident("right")),
+                                    })),
                                     then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(
                                         -1,
                                     )))),
@@ -5764,13 +5910,16 @@ impl Compiler {
                                         cond: Box::new(Expression::new(ExprKind::Binary {
                                             op: BinOp::Gt,
                                             left: Box::new(Expression::ident("left")),
-                                            right: Box::new(Expression::ident("right")) })),
+                                            right: Box::new(Expression::ident("right")),
+                                        })),
                                         then: Box::new(Expression::new(ExprKind::Lit(
                                             Literal::Int(1),
                                         ))),
                                         else_: Box::new(Expression::new(ExprKind::Lit(
                                             Literal::Int(0),
-                                        ))) })) }))),
+                                        ))),
+                                    })),
+                                }))),
                                 &[],
                             )?;
                             common::collections::emit_sort_with_comparator(
@@ -5866,7 +6015,8 @@ impl Compiler {
         if let ExprKind::Member {
             object,
             field,
-            null_safe } = &callee.kind
+            null_safe,
+        } = &callee.kind
         {
             let canon_field = self.canon(field);
             let receiver_is_direct = matches!(
@@ -5933,7 +6083,8 @@ impl Compiler {
             // LINQ-style extension methods like Select/SelectMany).
             let prefer_dotnet_adapter = match matched_value_method.as_ref().map(|d| &d.emit) {
                 Some(BuiltinEmit::Common(name)) => name.starts_with("dotnet."),
-                _ => false };
+                _ => false,
+            };
             let receiver_type_hint = self.infer_expr_type_hint(object);
             // A receiver statically known to be a string keeps its string
             // value-method (`Contains` → str_includes, etc.). Names like
@@ -6066,13 +6217,10 @@ impl Compiler {
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         fn_call!(self, "ecma:value", "typeof", 1);
                         self.emit_u16(Op::LOCAL_SET, type_tmp);
-                        let primitive_slot =
-                            self.define_local("__shadowed_value_is_primitive");
+                        let primitive_slot = self.define_local("__shadowed_value_is_primitive");
                         self.emit_const(Value::I32(0));
                         self.emit_u16(Op::LOCAL_SET, primitive_slot);
-                        for type_name in
-                            ["number", "i32", "i64", "string", "boolean", "bigint"]
-                        {
+                        for type_name in ["number", "i32", "i64", "string", "boolean", "bigint"] {
                             self.emit_u16(Op::LOCAL_GET, type_tmp);
                             self.emit_const(Value::String(Arc::from(type_name)));
                             {
@@ -6108,8 +6256,7 @@ impl Compiler {
                         // slot's null. Receiver-less invocations (bare refs,
                         // `obj::method` values) don't come through here and
                         // keep the stamp as their dispatch mechanism.
-                        let field_name =
-                            self.js_member_storage_name_for_receiver(object, field);
+                        let field_name = self.js_member_storage_name_for_receiver(object, field);
                         let prop = self.str_const(&field_name);
                         self.emit_u16(Op::LOCAL_GET, obj_tmp);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
@@ -6118,8 +6265,7 @@ impl Compiler {
                         let receiver_key = self.str_const("__vybe_method_receiver");
                         self.emit_u16(Op::LOCAL_GET, fn_tmp);
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, receiver_key);
-                        let receiver_slot =
-                            self.define_local("__shadowed_value_bound_recv");
+                        let receiver_slot = self.define_local("__shadowed_value_bound_recv");
                         self.emit_u16(Op::LOCAL_SET, receiver_slot);
                         {
                             let line = self.line;
@@ -6134,16 +6280,12 @@ impl Compiler {
                         let mut arg_slots = Vec::with_capacity(arg_exprs.len());
                         for (index, arg) in arg_exprs.iter().enumerate() {
                             self.compile_expr(arg)?;
-                            let arg_slot = self
-                                .define_local(&format!("__shadowed_value_arg_{}", index));
+                            let arg_slot =
+                                self.define_local(&format!("__shadowed_value_arg_{}", index));
                             self.emit_u16(Op::LOCAL_SET, arg_slot);
                             arg_slots.push(arg_slot);
                         }
-                        self.emit_call_ref_with_arg_slots(
-                            fn_tmp,
-                            Some(receiver_slot),
-                            &arg_slots,
-                        );
+                        self.emit_call_ref_with_arg_slots(fn_tmp, Some(receiver_slot), &arg_slots);
                         self.chunk().emit_end(split_line);
                         return Ok(());
                     }
@@ -6152,16 +6294,15 @@ impl Compiler {
             } else if array_only_value_method_for_non_array {
                 // Array-only value methods like `.entries()` must not steal
                 // Map/Set receivers away from runtime method dispatch.
-            // `runtime_collection_scope` IS the gate: `scope_declares_member_arity`
-            // answers false on an empty scope, and only a language that declares
-            // that scope has one. The `use_dotnet` conjunct that used to lead
-            // here could not change the outcome.
+                // `runtime_collection_scope` IS the gate: `scope_declares_member_arity`
+                // answers false on an empty scope, and only a language that declares
+                // that scope has one. The `use_dotnet` conjunct that used to lead
+                // here could not change the outcome.
             } else if vybe_runtime::namespaces::scope_declares_member_arity(
-                    &scope_segments(&self.profile.namespaces.runtime_collection_scope),
-                    field,
-                    arg_exprs.len() as u8,
-                )
-                && !prefer_dotnet_adapter
+                &scope_segments(&self.profile.namespaces.runtime_collection_scope),
+                field,
+                arg_exprs.len() as u8,
+            ) && !prefer_dotnet_adapter
                 && !(receiver_is_known_string && matched_value_method.is_some())
             {
                 // Let the generic member-call path consult the runtime type
@@ -6241,8 +6382,31 @@ impl Compiler {
                 }
                 // Object is first arg, then explicit args
                 self.compile_expr(object)?;
-                for a in &arg_exprs {
-                    self.compile_expr(a)?;
+                // The callee's declared argument modes, read from the ONE registry
+                // every declaration feeds — source-written or materialised out of
+                // a profile row (`referenceplan.md` §10j.1).
+                //
+                // Gated on the method actually HAVING a builtin declaration, which
+                // is not pedantry: `function_param_modes` is keyed by bare method
+                // name, so an ungated lookup would let a program that declares
+                // `function push(&$item)` change how the BUILTIN `$arr->push($x)`
+                // passes its argument. The declaration that governs a builtin call
+                // is the builtin's own.
+                let declared_modes = self
+                    .profile
+                    .builtin_signatures
+                    .iter()
+                    .any(|member| match member {
+                        InterfaceMember::Method { name, .. } => self.canon(name) == self.canon(field),
+                        _ => false,
+                    })
+                    .then(|| self.function_param_modes.get(&self.canon(field)).cloned())
+                    .flatten();
+                for (index, a) in arg_exprs.iter().enumerate() {
+                    let mode = declared_modes
+                        .as_ref()
+                        .and_then(|modes| modes.get(index).copied());
+                    self.compile_builtin_argument(a, mode)?;
                 }
                 // Some opcodes need default args when called with fewer
                 // than required. Push defaults here.
@@ -6369,7 +6533,8 @@ impl Compiler {
                     "__array_every" => "every".to_string(),
                     "__array_flat_map" => "flatMap".to_string(),
                     "__array_reduce_right" => "reduceRight".to_string(),
-                    _ => field_lower };
+                    _ => field_lower,
+                };
                 // Compile arr and fn(s) into local slots
                 self.compile_expr(object)?;
                 let arr_slot = self.define_local("__hof_arr");
@@ -6668,7 +6833,8 @@ impl Compiler {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false },
+                                        is_nullable: false,
+                                    },
                                     Param {
                                         name: "right".into(),
                                         type_hint: None,
@@ -6677,13 +6843,15 @@ impl Compiler {
                                         is_rest: false,
                                         is_kwargs: false,
                                         is_optional: false,
-                                        is_nullable: false },
+                                        is_nullable: false,
+                                    },
                                 ],
                                 &LambdaBody::Expr(Box::new(Expression::new(ExprKind::Ternary {
                                     cond: Box::new(Expression::new(ExprKind::Binary {
                                         op: BinOp::Lt,
                                         left: Box::new(Expression::ident("left")),
-                                        right: Box::new(Expression::ident("right")) })),
+                                        right: Box::new(Expression::ident("right")),
+                                    })),
                                     then: Box::new(Expression::new(ExprKind::Lit(Literal::Int(
                                         -1,
                                     )))),
@@ -6691,13 +6859,16 @@ impl Compiler {
                                         cond: Box::new(Expression::new(ExprKind::Binary {
                                             op: BinOp::Gt,
                                             left: Box::new(Expression::ident("left")),
-                                            right: Box::new(Expression::ident("right")) })),
+                                            right: Box::new(Expression::ident("right")),
+                                        })),
                                         then: Box::new(Expression::new(ExprKind::Lit(
                                             Literal::Int(1),
                                         ))),
                                         else_: Box::new(Expression::new(ExprKind::Lit(
                                             Literal::Int(0),
-                                        ))) })) }))),
+                                        ))),
+                                    })),
+                                }))),
                                 &[],
                             )?;
                             common::collections::emit_sort_with_comparator(
@@ -7095,7 +7266,8 @@ impl Compiler {
         if let ExprKind::Member {
             object,
             field,
-            null_safe } = &callee.kind
+            null_safe,
+        } = &callee.kind
         {
             if self.private_member_access_forbidden(field) {
                 self.emit_private_access_denied(field)?;
@@ -7946,12 +8118,7 @@ impl Compiler {
                     for a in &arg_exprs {
                         self.compile_expr(a)?;
                     }
-                    common::delegates::emit_invoke(
-                        &mut self.chunks,
-                        self.current,
-                        (arg_exprs.len() + 1) as u8,
-                        self.line,
-                    );
+                    self.emit_multicast_delegate_invoke(arg_exprs.len() as u8);
                     self.chunk().emit_end(line);
                     return Ok(());
                 }
@@ -7986,19 +8153,16 @@ impl Compiler {
                         .is_some_and(|type_hint| self.type_hint_is_delegate_like(type_hint))
                     || matches!(
                         object.kind,
-                        ExprKind::Lambda { .. } | ExprKind::AddressOf(_)
+                        ExprKind::Lambda { .. }
+                            | ExprKind::FuncRef(_)
+                            | ExprKind::CallableRef { .. }
                     );
                 if receiver_is_delegate {
                     self.emit_u16(Op::LOCAL_GET, obj_tmp);
                     for arg in &arg_exprs {
                         self.compile_expr(arg)?;
                     }
-                    common::delegates::emit_invoke(
-                        &mut self.chunks,
-                        self.current,
-                        (arg_exprs.len() + 1) as u8,
-                        self.line,
-                    );
+                    self.emit_multicast_delegate_invoke(arg_exprs.len() as u8);
                     return Ok(());
                 }
             }
@@ -8040,7 +8204,8 @@ impl Compiler {
                             let line = self.line;
                             crate::primitives::generators::emit_resume(self.chunk(), line);
                         }
-                        _ => unreachable!() }
+                        _ => unreachable!(),
+                    }
                     if field_name == "send" {
                         let line = self.line;
                         crate::primitives::generators::emit_resume(self.chunk(), line);
@@ -8261,9 +8426,7 @@ impl Compiler {
                 } else {
                     None
                 };
-                if arg_exprs.is_empty()
-                    && field.eq_ignore_ascii_case("Count")
-                {
+                if arg_exprs.is_empty() && field.eq_ignore_ascii_case("Count") {
                     self.emit_u16(Op::LOCAL_GET, fn_tmp);
                     fn_call!(self, "ecma:value", "typeof", 1);
                     self.emit_const(Value::String(Arc::from("function")));
@@ -8556,9 +8719,14 @@ impl Compiler {
                         .and_then(|ty| self.resolve_pending_class_name_for_type_hint(&ty))
                     {
                         Some(class_name) => self.value_receiver_slot(&class_name, field, obj_tmp),
-                        None => obj_tmp };
+                        None => obj_tmp,
+                    };
                     self.emit_direct_instance_method_call(
-                        chunk_idx, field, receiver_tmp, args, &arg_exprs,
+                        chunk_idx,
+                        field,
+                        receiver_tmp,
+                        args,
+                        &arg_exprs,
                     )?;
                 }
                 return Ok(());
@@ -8616,12 +8784,12 @@ impl Compiler {
             self.emit_struct_field_op(Op::STRUCT_GET, 0, prop);
             let fn_tmp = self.define_local("__fn");
             self.emit_u16(Op::LOCAL_SET, fn_tmp);
-                // A php-only direct bind of a statically resolved overload used to
-                // sit here. It was DEAD: measured across 1200 php files, it never
-                // fired once. The ungated overload path above wins first and, unlike
-                // this one, declines the bind for a VIRTUAL method — which php
-                // methods are, so binding the DECLARED type's chunk here would have
-                // been wrong for any override.
+            // A php-only direct bind of a statically resolved overload used to
+            // sit here. It was DEAD: measured across 1200 php files, it never
+            // fired once. The ungated overload path above wins first and, unlike
+            // this one, declines the bind for a VIRTUAL method — which php
+            // methods are, so binding the DECLARED type's chunk here would have
+            // been wrong for any override.
             let member_index_if = if self.profile.parens_for_index && !arg_exprs.is_empty() {
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 fn_call!(self, "ecma:value", "typeof", 1);
@@ -8785,9 +8953,7 @@ impl Compiler {
             } else {
                 None
             };
-            if arg_exprs.is_empty()
-                && field.eq_ignore_ascii_case("Count")
-            {
+            if arg_exprs.is_empty() && field.eq_ignore_ascii_case("Count") {
                 self.emit_u16(Op::LOCAL_GET, fn_tmp);
                 fn_call!(self, "ecma:value", "typeof", 1);
                 self.emit_const(Value::String(Arc::from("function")));
@@ -9387,8 +9553,7 @@ impl Compiler {
                             }
                         }
 
-                        if args.len() == 1 && !args[0].spread
-                        {
+                        if args.len() == 1 && !args[0].spread {
                             if self
                                 .resolve_static_method_overload_for_type(
                                     &class_name,
@@ -9432,7 +9597,8 @@ impl Compiler {
                             Expression::new(ExprKind::Member {
                                 object: Box::new(Expression::ident(&module_name)),
                                 field: target_name.clone(),
-                                null_safe: false })
+                                null_safe: false,
+                            })
                         } else {
                             Expression::ident(&target_name)
                         };
@@ -9474,12 +9640,7 @@ impl Compiler {
                     for arg in &arg_exprs {
                         self.compile_expr(arg)?;
                     }
-                    common::delegates::emit_invoke(
-                        &mut self.chunks,
-                        self.current,
-                        (arg_exprs.len() + 1) as u8,
-                        self.line,
-                    );
+                    self.emit_multicast_delegate_invoke(arg_exprs.len() as u8);
                     return Ok(());
                 }
             }
@@ -9818,8 +9979,8 @@ impl Compiler {
                         }
                     }
                 }
-                let is_local = self.scope().resolve(name).is_some()
-                    || self.has_static_local_binding(name);
+                let is_local =
+                    self.scope().resolve(name).is_some() || self.has_static_local_binding(name);
                 let canon_name = self.canon(name);
                 let is_direct_global = self.defined_globals.contains(&canon_name)
                     || self.defined_functions.contains(&canon_name);
@@ -9942,8 +10103,8 @@ impl Compiler {
             }
 
             let callee_slot = self.define_local("__direct_call_callee");
-            let is_local = self.scope().resolve(name).is_some()
-                || self.has_static_local_binding(name);
+            let is_local =
+                self.scope().resolve(name).is_some() || self.has_static_local_binding(name);
             let canon_name = self.canon(name);
             let is_direct_global = self.defined_globals.contains(&canon_name)
                 || self.defined_functions.contains(&canon_name);
@@ -9972,7 +10133,12 @@ impl Compiler {
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, member_idx);
                     }
                 } else {
-                    self.emit_var_get(name);
+                    // Nothing at compile time claims this name: not a local, not
+                    // a declared global or function, not an enum member. It is
+                    // still a CALLEE, so it must not take a closed scope's
+                    // variable-read null — a runtime `include` may have defined
+                    // it moments ago.
+                    self.emit_callee_get(name);
                 }
             } else {
                 self.emit_var_get(name);
@@ -10155,20 +10321,23 @@ impl Compiler {
                     ExprKind::Member {
                         object,
                         field,
-                        null_safe: false } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                        null_safe: false,
+                    } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
                         let fallback_key = match field.as_str() {
                             "iterator" => Some("iterator"),
                             "asyncIterator" => Some("asyncIterator"),
                             "toPrimitive" => Some("toprimitive"),
                             "hasInstance" => Some("hasinstance"),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(fallback_key) = fallback_key {
                             self.emit_const(Value::String(Arc::from(fallback_key)));
                         } else {
                             self.compile_expr(index)?;
                         }
                     }
-                    _ => self.compile_expr(index)? }
+                    _ => self.compile_expr(index)?,
+                }
                 self.emit_u16(Op::LOCAL_SET, key_tmp);
                 self.emit_u16(Op::LOCAL_GET, obj_tmp);
                 self.emit_u16(Op::LOCAL_GET, key_tmp);
@@ -10192,20 +10361,23 @@ impl Compiler {
                     ExprKind::Member {
                         object,
                         field,
-                        null_safe: false } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                        null_safe: false,
+                    } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
                         let fallback_key = match field.as_str() {
                             "iterator" => Some("iterator"),
                             "asyncIterator" => Some("asyncIterator"),
                             "toPrimitive" => Some("toprimitive"),
                             "hasInstance" => Some("hasinstance"),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(fallback_key) = fallback_key {
                             self.emit_const(Value::String(Arc::from(fallback_key)));
                         } else {
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
                         }
                     }
-                    _ => self.emit_u16(Op::LOCAL_GET, key_tmp) }
+                    _ => self.emit_u16(Op::LOCAL_GET, key_tmp),
+                }
                 let reflect_idx = self.import("ecma:reflect", "get");
                 self.emit_host_call(reflect_idx, 2);
                 self.chunk().emit_else(line);
@@ -10228,20 +10400,23 @@ impl Compiler {
                     ExprKind::Member {
                         object,
                         field,
-                        null_safe: false } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
+                        null_safe: false,
+                    } if matches!(&object.kind, ExprKind::Ident(name) if name == "Symbol") => {
                         let fallback_key = match field.as_str() {
                             "iterator" => Some("iterator"),
                             "asyncIterator" => Some("asyncIterator"),
                             "toPrimitive" => Some("toprimitive"),
                             "hasInstance" => Some("hasinstance"),
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(fallback_key) = fallback_key {
                             self.emit_const(Value::String(Arc::from(fallback_key)));
                         } else {
                             self.emit_u16(Op::LOCAL_GET, key_tmp);
                         }
                     }
-                    _ => self.emit_u16(Op::LOCAL_GET, key_tmp) }
+                    _ => self.emit_u16(Op::LOCAL_GET, key_tmp),
+                }
                 let reflect_idx = self.import("ecma:reflect", "get");
                 self.emit_host_call(reflect_idx, 2);
                 self.chunk().emit_else(line);

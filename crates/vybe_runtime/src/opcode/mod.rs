@@ -56,7 +56,8 @@ pub mod heaptype {
         /// One of the `HT_*` constants above.
         Abstract(u8),
         /// Module type index.
-        Concrete(u32) }
+        Concrete(u32),
+    }
 
     impl HeapType {
         /// Decode the spec immediate. Negative is abstract — and the `HT_*`
@@ -77,7 +78,8 @@ pub mod heaptype {
             match self {
                 // Sign-extend the 7-bit abstract encoding back to negative.
                 HeapType::Abstract(byte) => (byte as i32) | !0x7F,
-                HeapType::Concrete(index) => index as i32 }
+                HeapType::Concrete(index) => index as i32,
+            }
         }
 
         /// The abstract heap type spelled by `name`, if it is one. The spec's
@@ -95,7 +97,8 @@ pub mod heaptype {
                 "none" => HT_NONE,
                 "nofunc" => HT_NOFUNC,
                 "noextern" => HT_NOEXTERN,
-                _ => return None }))
+                _ => return None,
+            }))
         }
     }
 
@@ -181,7 +184,8 @@ impl Op {
             0xFE => threads::operand_format(self.sub()),
             0xF0 => canon::operand_format(self.sub()),
             0xFF => vm_internal::operand_format(self.sub()),
-            _ => OperandFormat::None }
+            _ => OperandFormat::None,
+        }
     }
 
     /// WASM disassembly name, or None if not a valid opcode.
@@ -195,7 +199,8 @@ impl Op {
             0xFE => threads::name(self.sub()),
             0xF0 => canon::name(self.sub()),
             0xFF => vm_internal::name(self.sub()),
-            _ => None }
+            _ => None,
+        }
     }
 
     /// Resolve a WASM mnemonic (e.g. `"i32.clz"`) to its opcode. The inverse of
@@ -334,7 +339,8 @@ pub enum OperandFormat {
     /// 4 raw bytes (f32.const).
     RawF32,
     /// 8 raw bytes (f64.const).
-    RawF64 }
+    RawF64,
+}
 
 impl OperandFormat {
     /// Fixed operand size in bytes, or 0 for variable-length formats.
@@ -358,7 +364,8 @@ impl OperandFormat {
             | Self::BrTable
             | Self::TryTable
             | Self::SlI32
-            | Self::SlI64 => 0 }
+            | Self::SlI64 => 0,
+        }
     }
 
     /// Operand size for formats whose size depends on operand bytes.
@@ -389,7 +396,8 @@ impl OperandFormat {
                 let count = code.get(operand_start).copied().unwrap_or(0) as usize;
                 1 + count * 5
             }
-            fmt => fmt.fixed_size() }
+            fmt => fmt.fixed_size(),
+        }
     }
 }
 

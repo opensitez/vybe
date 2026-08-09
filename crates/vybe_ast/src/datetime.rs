@@ -32,7 +32,8 @@ pub enum MonthOverflow {
     Clamp,
     /// Let surplus days roll into the following month. PHP, JavaScript —
     /// a consequence of `Date.prototype.setMonth` semantics.
-    Overflow }
+    Overflow,
+}
 
 /// How a local wall-clock time that does NOT EXIST is resolved — the hour
 /// skipped when daylight saving begins.
@@ -48,7 +49,8 @@ pub enum DstGap {
     /// Move backward by the gap.
     ShiftBackward,
     /// Refuse — the local time is not a real instant.
-    Reject }
+    Reject,
+}
 
 /// How a local wall-clock time that occurs TWICE is resolved — the hour
 /// repeated when daylight saving ends.
@@ -59,7 +61,8 @@ pub enum DstAmbiguous {
     /// The second (standard-time) occurrence. Python `fold=1`.
     Later,
     /// Refuse rather than silently pick.
-    Reject }
+    Reject,
+}
 
 /// Which week-numbering rule `weekOfYear` follows.
 ///
@@ -74,7 +77,8 @@ pub enum WeekNumbering {
     /// Sunday first, week 1 contains 1 January. US convention.
     Us,
     /// Week 1 starts 1 January regardless of weekday; no week-year concept.
-    DayOfYearBased }
+    DayOfYearBased,
+}
 
 /// The unit a language's epoch timestamps are counted in. Java `Instant` is
 /// nanosecond-precision, JavaScript and PHP `DateTime` are milliseconds, Unix
@@ -88,7 +92,8 @@ pub enum EpochPrecision {
     Seconds,
     Millis,
     Micros,
-    Nanos }
+    Nanos,
+}
 
 /// Which weekday a language numbers first when it exposes a numeric weekday.
 ///
@@ -102,7 +107,8 @@ pub enum WeekdayBase {
     /// Monday = 1 … Sunday = 7. ISO-8601, Java, PHP `N`.
     MondayOne,
     /// Monday = 0 … Sunday = 6. Python `date.weekday()`.
-    MondayZero }
+    MondayZero,
+}
 
 /// Which integer a language uses for January.
 ///
@@ -117,7 +123,8 @@ pub enum MonthIndexing {
     /// January = 0. JavaScript, `ecma:date`.
     ZeroBased,
     /// January = 1. PHP, Python, Java, .NET, ISO-8601.
-    OneBased }
+    OneBased,
+}
 
 /// A language's calendar decisions, declared ONCE by its walker/normalizer and
 /// threaded into the shared emitters — the direct analogue of
@@ -135,7 +142,8 @@ pub struct DateTimePolicy {
     pub week_numbering: WeekNumbering,
     pub epoch_precision: EpochPrecision,
     pub weekday_base: WeekdayBase,
-    pub month_indexing: MonthIndexing }
+    pub month_indexing: MonthIndexing,
+}
 
 impl DateTimePolicy {
     /// ECMA-262 `Date` semantics — the baseline, because the runtime's time
@@ -149,7 +157,8 @@ impl DateTimePolicy {
         week_numbering: WeekNumbering::Us,
         epoch_precision: EpochPrecision::Millis,
         weekday_base: WeekdayBase::SundayZero,
-        month_indexing: MonthIndexing::ZeroBased };
+        month_indexing: MonthIndexing::ZeroBased,
+    };
 
     /// ISO-8601 / `java.time` semantics: clamping month arithmetic and ISO
     /// week numbering. Also the closest fit for .NET and Python.
@@ -160,7 +169,8 @@ impl DateTimePolicy {
         week_numbering: WeekNumbering::Iso,
         epoch_precision: EpochPrecision::Millis,
         weekday_base: WeekdayBase::MondayOne,
-        month_indexing: MonthIndexing::OneBased };
+        month_indexing: MonthIndexing::OneBased,
+    };
 }
 
 impl Default for DateTimePolicy {
@@ -196,7 +206,8 @@ pub fn days_in_month(year: i64, month: i64) -> i64 {
         4 | 6 | 9 | 11 => 30,
         2 if is_leap_year(year) => 29,
         2 => 28,
-        _ => 30 }
+        _ => 30,
+    }
 }
 
 /// The proleptic-Gregorian leap rule as an AST EXPRESSION:
@@ -218,7 +229,8 @@ pub fn leap_year_expr(year: Expression) -> Expression {
         Expression::new(ExprKind::Binary {
             op,
             left: Box::new(left),
-            right: Box::new(right) })
+            right: Box::new(right),
+        })
     };
     let divisible_by = |divisor: i64| {
         bin(

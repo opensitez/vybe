@@ -27,8 +27,9 @@
 //! Switching the host's GUI backend (or running on a non-Vybe VM with a
 //! different GUI binding) requires no compiler changes.
 
-use std::sync::Arc;
 use super::Compiler;
+use super::{collections, strings};
+use std::sync::Arc;
 use vybe_ast::Expression;
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
@@ -123,7 +124,8 @@ pub fn canonical_control_name(name: &str) -> String {
         // ── Forms ──
         "form" | "window" => "Form",
 
-        _ => return String::new() }
+        _ => return String::new(),
+    }
     .to_string()
 }
 
@@ -221,28 +223,36 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "createForm".to_string(),
                 params: vec![ValType::String],
-                results: vec![ValType::Any] }) },
+                results: vec![ValType::Any],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "addControl".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "addControl".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "setProperty".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "setProperty".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "getProperty".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "getProperty".to_string(),
                 params: vec![],
-                results: vec![ValType::Any] }) },
+                results: vec![ValType::Any],
+            }),
+        },
         // Event handling
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -250,21 +260,27 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "onEvent".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "removeEvent".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "removeEvent".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "raiseEvent".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "raiseEvent".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         // Collections
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -272,21 +288,27 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "newControlsCollection".to_string(),
                 params: vec![],
-                results: vec![ValType::Any] }) },
+                results: vec![ValType::Any],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "newComponentsCollection".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "newComponentsCollection".to_string(),
                 params: vec![],
-                results: vec![ValType::Any] }) },
+                results: vec![ValType::Any],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "controlsAdd".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "controlsAdd".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         // Application
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -294,14 +316,18 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "runApplication".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "appExit".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "appExit".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         // Form lifecycle
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -309,21 +335,27 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "showForm".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "closeForm".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "closeForm".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         ComponentExport {
             interface: GUI_MODULE.to_string(),
             name: "showFormDialog".to_string(),
             kind: ComponentItemKind::Function(FuncSig {
                 name: "showFormDialog".to_string(),
                 params: vec![],
-                results: vec![] }) },
+                results: vec![],
+            }),
+        },
         // Dialog
         ComponentExport {
             interface: GUI_MODULE.to_string(),
@@ -331,7 +363,9 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
             kind: ComponentItemKind::Function(FuncSig {
                 name: "msgBox".to_string(),
                 params: vec![],
-                results: vec![ValType::I32] }) },
+                results: vec![ValType::I32],
+            }),
+        },
     ]
 }
 
@@ -368,6 +402,23 @@ pub fn gui_component_exports() -> Vec<vybe_runtime::component_model::ComponentEx
 pub const PROP_SET_EMIT: &str = "gui.prop_set.";
 pub const PROP_GET_EMIT: &str = "gui.prop_get.";
 
+/// A control METHOD, by role — `gui.ctrl.<verb>`.
+///
+/// The same contract as the property roles one line up: a platform declares the
+/// VERB its framework spells (`Show`, `Hide`, `BringToFront`) and this is the
+/// only place a verb becomes a DOM operation. `TButton.Show` and
+/// `Button.Show()` are one verb, so VCL and WinForms reach one implementation.
+pub const CTRL_METHOD_EMIT: &str = "gui.ctrl.";
+
+/// `container.Add(child)` — insertion spelled as a METHOD rather than as the
+/// child's `Parent` property. Same DOM operation either way.
+///
+/// VCL menus are the case that needs it: `FMainMenu.Items.Add(MenuFile)`. The
+/// old binding was `vybe:gui.controlsAdd`, which nests inside `GuiState` — so
+/// a menu built that way never entered the document and could not render,
+/// be hit-tested, or be listed by `widgets`.
+pub const APPEND_CHILD_EMIT: &str = "gui.append_child";
+
 /// The DOM operation a property role IS. `(module, func, attribute-key)`.
 ///
 /// The roles ARE `vybe:gui`'s canonical property names — the vocabulary every
@@ -388,7 +439,25 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // So this needs no element test — the engine already knows.
         "text" | "caption" => (
             DOM_MODULE,
-            if setting { "setTextContent" } else { "textContent" },
+            if setting {
+                "setTextContent"
+            } else {
+                "textContent"
+            },
+            None,
+        ),
+        // The line count is DERIVED from the text — the DOM has no property
+        // for it, and inventing a host function to answer it would put a
+        // toolkit's question into `web:*`. So it reads the text like any other
+        // text role and `emit_gui_property_get` counts, exactly as the geometry
+        // roles read a CSS string and parse the unit off. Nothing writes it.
+        "linecount" => (
+            DOM_MODULE,
+            if setting {
+                "setTextContent"
+            } else {
+                "textContent"
+            },
             None,
         ),
         "value" => (
@@ -405,7 +474,11 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // `<label for>` resolve. Not HTML's `name`, the submission key.
         "name" => (
             DOM_MODULE,
-            if setting { "setAttribute" } else { "getAttribute" },
+            if setting {
+                "setAttribute"
+            } else {
+                "getAttribute"
+            },
             Some("id"),
         ),
         // Boolean content attributes, INVERTED: true by PRESENCE, so
@@ -413,24 +486,68 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
         // own add-or-remove.
         "enabled" => (
             DOM_MODULE,
-            if setting { "toggleAttribute" } else { "getAttribute" },
+            if setting {
+                "toggleAttribute"
+            } else {
+                "getAttribute"
+            },
             Some("disabled"),
         ),
         "visible" => (
             DOM_MODULE,
-            if setting { "toggleAttribute" } else { "getAttribute" },
+            if setting {
+                "toggleAttribute"
+            } else {
+                "getAttribute"
+            },
             Some("hidden"),
         ),
-        "left" | "top" | "width" | "height" => (
+        // `dock` joins these because it is geometry too, just expressed as a
+        // rule instead of a number: the container computes the rect from it.
+        // A frontend that spells it `Align` (VCL) or `Dock` (WinForms) reaches
+        // the same style property, and `vybe_widgets` owns the result.
+        "left" | "top" | "width" | "height" | "dock" => (
             CSSOM_MODULE,
-            if setting { "setStyleProperty" } else { "getStyleProperty" },
+            if setting {
+                "setStyleProperty"
+            } else {
+                "getStyleProperty"
+            },
             Some(""),
         ),
         _ => (
             DOM_MODULE,
-            if setting { "setAttribute" } else { "getAttribute" },
+            if setting {
+                "setAttribute"
+            } else {
+                "getAttribute"
+            },
             Some(""),
-        ) }
+        ),
+    }
+}
+
+/// The TYPE a property role's value has, for the roles whose type the DOM
+/// operation above already fixes.
+///
+/// A property that reads through `textContent` yields text, one that reads a
+/// boolean content attribute yields a boolean, and CSS geometry comes back a
+/// number because `emit_gui_property_get` parses the unit off. Declaring it is
+/// what lets the ordinary expression machinery work on the result — Delphi's
+/// `(Sender as TButton).Caption[1]` is a string subscript, and with no declared
+/// type it read `null` instead of the character.
+///
+/// Only the roles whose type the operation settles are answered. An unmapped
+/// role becomes an attribute of arbitrary meaning (`Anchors`, `Font`, `Items`),
+/// and guessing there would be worse than the `None` that leaves inference
+/// exactly as it was.
+pub fn property_value_type(role: &str) -> Option<&'static str> {
+    match role {
+        "text" | "caption" | "value" | "name" => Some("string"),
+        "checked" | "ischecked" | "enabled" | "visible" => Some("Boolean"),
+        "left" | "top" | "width" | "height" | "linecount" => Some("Integer"),
+        _ => None,
+    }
 }
 
 /// The event type an `on<type>` role registers, if it is one.
@@ -440,10 +557,138 @@ fn property_op(role: &str, setting: bool) -> (&'static str, &'static str, Option
 /// type. Nothing here is per-language and nothing is enumerated — HTML's own
 /// convention is that an event handler IDL attribute is `on` + the type.
 fn event_role_type(role: &str) -> Option<&str> {
-    role.strip_prefix("on").filter(|type_name| !type_name.is_empty())
+    role.strip_prefix("on")
+        .filter(|type_name| !type_name.is_empty())
 }
 
 impl Compiler {
+    /// The slot holding the receiver, when this code is inside a method or a
+    /// constructor. Resolved the same way `ExprKind::This` resolves it, and
+    /// through the profile's own keyword so no language is named.
+    fn receiver_slot(&mut self) -> Option<u16> {
+        let self_keyword = self.profile.self_keyword.clone();
+        self.scope()
+            .resolve(&self_keyword)
+            .or_else(|| self.scope().resolve("Self"))
+            .or_else(|| self.scope().resolve("self"))
+            .or_else(|| self.scope().resolve("this"))
+    }
+
+    /// Lower `gui.append_child` — stack in `[parent, child]`, out `[child]`.
+    ///
+    /// The operands already arrive container-first, which is `appendChild`'s
+    /// own order — unlike the `parent` ROLE, where the assignment names the
+    /// child first and the two have to be swapped.
+    pub fn emit_gui_append_child(&mut self, line: u32) {
+        let child = self.define_local("__gui_add_child");
+        let parent = self.define_local("__gui_add_parent");
+        self.emit_u16(Op::LOCAL_SET, child);
+        self.emit_u16(Op::LOCAL_SET, parent);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, parent);
+        self.emit_u16(Op::LOCAL_GET, child);
+        let idx = self.import(DOM_MODULE, "appendChild");
+        self.emit_host_call(idx, 3);
+    }
+
+    /// Lower `gui.ctrl.<verb>` — stack in `[control]`, out `[value]`.
+    ///
+    /// A toolkit's control verbs ARE DOM operations once you stop treating the
+    /// control as an object beside the document:
+    ///
+    /// | verb | what it IS |
+    /// |---|---|
+    /// | `show` / `hide` | the `visible` ROLE — the `hidden` attribute |
+    /// | `focus` | `HTMLElement.focus()`, which the DOM has outright |
+    /// | `bring_to_front` | re-`appendChild` — last child paints on top |
+    /// | `send_to_back` | `insertBefore(parent.firstChild)` |
+    /// | `refresh` / `invalidate` / `update` | **nothing** |
+    ///
+    /// The repaint trio really is nothing, and that is a statement about the
+    /// model rather than a shortcut. WinForms and the VCL are IMMEDIATE-mode at
+    /// the paint layer: the app owns the pixels and must ask for them back. A
+    /// document is RETAINED — mutate the tree and the engine repaints what
+    /// changed. There is no DOM call these can lower to because there is
+    /// nothing left for the author to ask for. Emitting a no-op is the honest
+    /// answer; inventing a host function to receive it would be a shim.
+    ///
+    /// Every arm leaves exactly one value so a call in expression position
+    /// behaves like any other, and statement position drops it as usual.
+    pub fn emit_gui_control_method(&mut self, verb: &str, line: u32) {
+        // `Show`/`Hide` are the `visible` role with the answer already known,
+        // so they route through the SAME lowering a `Visible := True` write
+        // takes. Not a parallel path — one role, two spellings, which is what
+        // stops the two drifting on what `hidden` means.
+        if let Some(visible) = match verb {
+            "show" => Some(true),
+            "hide" => Some(false),
+            _ => None,
+        } {
+            self.emit_const(Value::Bool(visible));
+            self.emit_gui_property_set("visible", line);
+            return;
+        }
+
+        // `Refresh`/`Invalidate`/`Update` — see the table above. Drop the
+        // receiver and answer null, so the stack contract still holds.
+        if matches!(verb, "refresh" | "invalidate" | "update") {
+            self.emit(Op::DROP);
+            self.emit_null();
+            return;
+        }
+
+        let ctrl = self.define_local("__gui_ctrl_recv");
+        self.emit_u16(Op::LOCAL_SET, ctrl);
+        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+
+        // Z-ORDER IS DOCUMENT ORDER. Both verbs re-parent the control among its
+        // existing siblings rather than assigning a `z-index`: painting order
+        // is what the toolkit means, `appendChild` on an already-parented node
+        // MOVES it (the DOM's own rule, not a trick), and a stacking context
+        // created by `z-index` would change how descendants composite.
+        if matches!(verb, "bring_to_front" | "send_to_back") {
+            let parent = self.define_local("__gui_ctrl_parent");
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.emit_u16(Op::LOCAL_GET, ctrl);
+            let parent_idx = self.import(DOM_MODULE, "parentNode");
+            self.emit_host_call(parent_idx, 2);
+            self.emit_u16(Op::LOCAL_SET, parent);
+
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.emit_u16(Op::LOCAL_GET, parent);
+            self.emit_u16(Op::LOCAL_GET, ctrl);
+            if verb == "bring_to_front" {
+                let idx = self.import(DOM_MODULE, "appendChild");
+                self.emit_host_call(idx, 3);
+            } else {
+                // The reference node is the CURRENT first child. Reading it
+                // before the move is why this is `insertBefore` and not a
+                // second `appendChild`.
+                self.chunk().emit_call(doc_idx, 0, line);
+                self.emit_u16(Op::LOCAL_GET, parent);
+                let first_idx = self.import(DOM_MODULE, "firstChild");
+                self.emit_host_call(first_idx, 2);
+                let idx = self.import(DOM_MODULE, "insertBefore");
+                self.emit_host_call(idx, 4);
+            }
+            return;
+        }
+
+        // `focus` — and anything a platform declares later that the web
+        // platform names identically. The verb IS the method, which is the
+        // point of spelling these as roles.
+        //
+        // It lives on `web:html`, not `web:dom`: focusing is an HTMLElement
+        // behaviour, not a Node one, and the split is the spec's own. Naming
+        // the wrong module is not a silent miss — it is an `Unresolved import`
+        // at run time, which is how this was caught.
+        self.chunk().emit_call(doc_idx, 0, line);
+        self.emit_u16(Op::LOCAL_GET, ctrl);
+        let idx = self.import(DOCUMENT_MODULE, verb);
+        self.emit_host_call(idx, 2);
+    }
+
     /// Lower `gui.prop_get.<role>` — stack in `[control]`, out `[value]`.
     pub fn emit_gui_property_get(&mut self, role: &str, line: u32) {
         let (module, func, key) = property_op(role, false);
@@ -457,7 +702,8 @@ impl Compiler {
                 emit_string_const(self.chunk(), if k.is_empty() { role } else { k }, line);
                 3
             }
-            None => 2 };
+            None => 2,
+        };
         let idx = self.import(module, func);
         self.emit_host_call(idx, argc);
         // The DOM answers in the DOM's own terms; the role's value type is
@@ -484,6 +730,40 @@ impl Compiler {
                 let parse_float = self.import("ecma:number", "parseFloat");
                 self.emit_host_call(parse_float, 1);
             }
+            // Lines, from the text just read. Splitting on `\n` gives one more
+            // element than there are lines whenever the text is empty or ends
+            // in a break — and in exactly those cases the LAST element is the
+            // empty string. So the correction is `1` precisely when that
+            // element has length zero, which `i32.eqz` already answers as 1 or
+            // 0; subtracting it needs no branch.
+            //
+            //   ""       → [""]            → 1 - 1 = 0
+            //   "a"      → ["a"]           → 1 - 0 = 1
+            //   "a\n"    → ["a", ""]       → 2 - 1 = 1
+            //   "a\nb"   → ["a", "b"]      → 2 - 0 = 2
+            //
+            // A `\r\n` break leaves its `\r` on the end of the previous line,
+            // which changes no length that matters here.
+            "linecount" => {
+                emit_string_const(self.chunk(), "\n", line);
+                strings::emit_split(self.chunk(), line);
+                let lines = self.define_local("__gui_lines");
+                self.emit_u16(Op::LOCAL_SET, lines);
+
+                self.emit_u16(Op::LOCAL_GET, lines);
+                collections::emit_array_length(self.chunk(), line);
+
+                self.emit_u16(Op::LOCAL_GET, lines);
+                self.emit_u16(Op::LOCAL_GET, lines);
+                collections::emit_array_length(self.chunk(), line);
+                self.emit_const(Value::I32(1));
+                self.emit(Op::I32_SUB);
+                self.emit(Op::ARRAY_GET);
+                strings::emit_length(self.chunk(), line);
+                self.emit(Op::I32_EQZ);
+
+                self.emit(Op::I32_SUB);
+            }
             _ => {}
         }
     }
@@ -506,8 +786,81 @@ impl Compiler {
             self.emit_u16(Op::LOCAL_GET, ctrl);
             emit_string_const(self.chunk(), event_type, line);
             self.emit_u16(Op::LOCAL_GET, value);
+            // A DOM listener is called by the document with an Event and
+            // NOTHING else — there is no second channel for a receiver, and a
+            // host that keeps one (`GuiState.form_object`, `__f`) is holding
+            // form state the document already owns.
+            //
+            // Every language that spells this assignment means a BOUND method:
+            // Delphi's `OnClick := bClick` inside `TForm.Create` is a method
+            // pointer, which is a `(Self, code)` pair, and a C#/VB
+            // `Click += OnClick` is a delegate over `this`. The receiver is
+            // part of the VALUE in all of them, so it is bound here, once,
+            // with the spec's own operation rather than carried out of band.
+            // Outside a method there is no receiver and none is bound — a free
+            // function is already a complete listener.
+            if let Some(receiver) = self.receiver_slot() {
+                self.emit_u16(Op::LOCAL_GET, receiver);
+                // HOW a receiver reaches a body is the profile's answer, not a
+                // language's name. Where `this` is ambient (ECMA §10.2.1.1 —
+                // JS, Dart) `bind`'s `thisArg` IS the binding and the handler's
+                // own parameters are untouched. Where the receiver is an
+                // explicit first parameter it must also arrive as a bound
+                // ARGUMENT, or slot 0 stays empty and the handler reads the
+                // Event as its own `Self` — which is precisely the nil-receiver
+                // failure this replaces.
+                //
+                // The SAME frameworks bind the control in as well. A DOM
+                // listener is handed an Event; a method-pointer/delegate
+                // framework declares its handler `(Sender: TObject)` /
+                // `(object sender, EventArgs e)` and means the control the
+                // listener is attached to — `currentTarget`, which is exactly
+                // the `ctrl` this registration is for. Bound here, it arrives
+                // ahead of the Event, so VCL reads the control as `Sender` and
+                // WinForms reads `(control, event)`; without it `Sender` IS the
+                // Event and `(Sender as TButton).Caption` reads nothing.
+                let argc = if self.ambient_this() {
+                    2
+                } else {
+                    self.emit_u16(Op::LOCAL_GET, receiver);
+                    self.emit_u16(Op::LOCAL_GET, ctrl);
+                    4
+                };
+                let bind_idx = self.import("ecma:function", "bind");
+                self.emit_host_call(bind_idx, argc);
+            }
             let idx = self.import(DOM_MODULE, "addEventListener");
             self.emit_host_call(idx, 4);
+            return;
+        }
+        // `child.Parent := container` IS `container.appendChild(child)`. VCL,
+        // WinForms and MAUI all spell insertion as a property on the CHILD,
+        // which is why it needs its own branch rather than a `property_op` row:
+        // the operands are the other way round from every other setter, and the
+        // DOM's insertion op takes the container first.
+        //
+        // Without this the assignment fell through to `setAttribute("parent",
+        // <element>)` — the control stored as markup on itself, never inserted,
+        // so a form built the VCL way came up empty while every control existed.
+        // The same insertion the other way round: `form.Menu := m` names the
+        // CONTAINER on the left, which is already the operand order the DOM
+        // wants, so this is `Add` spelled as a property. Same emit, so a
+        // frontend may map whichever spelling it has and get one behavior.
+        if role == "child" {
+            self.emit_gui_append_child(line);
+            return;
+        }
+        if role == "parent" {
+            let parent = self.define_local("__gui_parent");
+            let child = self.define_local("__gui_child");
+            self.emit_u16(Op::LOCAL_SET, parent);
+            self.emit_u16(Op::LOCAL_SET, child);
+            let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
+            self.chunk().emit_call(doc_idx, 0, line);
+            self.emit_u16(Op::LOCAL_GET, parent);
+            self.emit_u16(Op::LOCAL_GET, child);
+            let idx = self.import(DOM_MODULE, "appendChild");
+            self.emit_host_call(idx, 3);
             return;
         }
         let (module, func, key) = property_op(role, true);
@@ -557,7 +910,8 @@ impl ControlElement {
         let (tag, input_type) = decl.split_once(':').unwrap_or((decl, ""));
         ControlElement {
             tag: tag.trim().to_ascii_lowercase(),
-            input_type: input_type.trim().to_ascii_lowercase() }
+            input_type: input_type.trim().to_ascii_lowercase(),
+        }
     }
 
     /// Is this element FORM-ASSOCIATED — i.e. does it belong to
@@ -593,7 +947,8 @@ impl ControlElement {
         let bare = bare.trim_start_matches(['T', 't']).to_ascii_lowercase();
         ControlElement {
             tag: format!("vybe-{}", if bare.is_empty() { "control" } else { &bare }),
-            input_type: String::new() }
+            input_type: String::new(),
+        }
     }
 }
 
@@ -641,6 +996,53 @@ impl Compiler {
         None
     }
 
+    /// The ROLE a class declares for one of its properties.
+    ///
+    /// The class is the authority on what its property means: plib declares
+    /// that `ClientWidth` fills the `width` role, `Hint` the `tooltip` role,
+    /// `Menu` the `child` role. Asking it here is what keeps the per-language
+    /// vocabulary in the platform that owns it — this file only ever sees a
+    /// role.
+    ///
+    /// Answers `None` when nothing is declared, and the caller keeps the source
+    /// spelling. That is why the bypass went unnoticed for so long: a property
+    /// whose Pascal word happens to EQUAL its role (`Caption`, `Width`,
+    /// `Enabled`) lands correctly either way, so only the renames were broken —
+    /// silently, as an attribute no widget reads.
+    ///
+    /// Walks the user chain for the same reason `control_element_for_type`
+    /// does: `TForm1 = class(TForm)` inherits `TForm`'s declarations, and the
+    /// receiver's static type is the subclass.
+    fn declared_property_role(&self, type_name: &str, prop: &str, setting: bool) -> Option<String> {
+        let scopes = &self.profile.namespaces.type_scopes;
+        let declared = |name: &str| {
+            let target = if setting {
+                vybe_runtime::namespaces::lookup_type_property_setter_target(scopes, name, prop)
+            } else {
+                vybe_runtime::namespaces::lookup_type_property_target(scopes, name, prop)
+            }?;
+            match target {
+                vybe_runtime::component_model::InstancePropertyTarget::Common { emit } => emit
+                    .strip_prefix(if setting { PROP_SET_EMIT } else { PROP_GET_EMIT })
+                    .map(str::to_string),
+                // A host-backed accessor is already a complete target; it is
+                // not a role and must not be rewritten into one.
+                _ => None,
+            }
+        };
+        if let Some(role) = declared(type_name) {
+            return Some(role);
+        }
+        let mut current = self.pending_class_parent(type_name);
+        while let Some(parent) = current {
+            if let Some(role) = declared(&parent) {
+                return Some(role);
+            }
+            current = self.pending_class_parent(&parent);
+        }
+        None
+    }
+
     /// `control.<prop> = value` → the DOM.
     ///
     /// Property NAMES arrive already normalised by the frontend (Pascal's
@@ -669,10 +1071,20 @@ impl Compiler {
         // `setAttribute("onclick", <closure>)` — a stringified function on an
         // attribute — because only the other path had learned that an
         // `on<type>` role registers a listener.
+        //
+        // The ROLE comes from the CLASS, not from the source word. The frontend
+        // declares `ClientWidth`→`width`, `Hint`→`tooltip`, `Menu`→`child` in
+        // its own platform tree, and this is the write path that has to honour
+        // it — lowercasing the Pascal spelling and calling it a role sent every
+        // RENAMED property to `setAttribute("clientwidth", …)`, which no widget
+        // reads, with no error to show for it.
         let prop = prop.to_ascii_lowercase();
+        let role = self
+            .declared_property_role(type_name, &prop, true)
+            .unwrap_or_else(|| prop.clone());
         self.compile_expr(object)?;
         self.emit_u16(Op::LOCAL_GET, value_tmp);
-        self.emit_gui_property_set(&prop, line);
+        self.emit_gui_property_set(&role, line);
         self.emit(Op::DROP);
 
         // A designer `Name` is BOTH of HTML's two identifiers, which are not
@@ -681,12 +1093,10 @@ impl Compiler {
         // form-control submission key that `form.elements[…]` and
         // serialization read. A control that set only `id` would look right
         // and submit nothing, so set both.
-        let form_associated = registered_control_element(
-            &self.profile.namespaces.type_scopes,
-            type_name,
-        )
-        .map(|e| e.is_form_associated())
-        .unwrap_or(false);
+        let form_associated =
+            registered_control_element(&self.profile.namespaces.type_scopes, type_name)
+                .map(|e| e.is_form_associated())
+                .unwrap_or(false);
         if prop == "name" && form_associated {
             let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
             self.chunk().emit_call(doc_idx, 0, line);
@@ -700,36 +1110,15 @@ impl Compiler {
         Ok(())
     }
 
-    /// `control.<prop>` → the DOM. Stack on exit: [value].
-    pub fn emit_control_property_get(
-        &mut self,
-        object: &Expression,
-        prop: &str,
-        line: u32,
-    ) -> Result<(), String> {
-        let prop = prop.to_ascii_lowercase();
-        let (module, func, key): (&str, &str, Option<&str>) = match prop.as_str() {
-            "text" | "caption" => (DOM_MODULE, "textContent", None),
-            "value" => (DOCUMENT_MODULE, "value", None),
-            "checked" | "ischecked" => (DOCUMENT_MODULE, "checked", None),
-            "name" => (DOM_MODULE, "getAttribute", Some("id")),
-            "left" | "top" | "width" | "height" => (CSSOM_MODULE, "getStyleProperty", Some("")),
-            _ => (DOM_MODULE, "getAttribute", Some("")) };
-
-        let doc_idx = self.import(DOCUMENT_MODULE, HOST_FN_ACTIVE_DOCUMENT);
-        self.chunk().emit_call(doc_idx, 0, line);
-        self.compile_expr(object)?;
-        let argc = match key {
-            Some(k) => {
-                let name = if k.is_empty() { prop.as_str() } else { k };
-                emit_string_const(self.chunk(), name, line);
-                3
-            }
-            None => 2 };
-        let idx = self.import(module, func);
-        self.emit_host_call(idx, argc);
-        Ok(())
-    }
+    // There is deliberately no `emit_control_property_get` here. A property
+    // READ already arrives as the `gui.prop_get.<role>` the platform tree
+    // declared (`builtins.rs` strips the prefix and calls
+    // `emit_gui_property_get`), so the role is canonical by construction and
+    // needs no second resolution. The function that used to sit here had no
+    // caller and carried a THIRD copy of `property_op` — one that never
+    // learned the conversions `emit_gui_property_get` does, so it would have
+    // read `Enabled` back as the raw `disabled` attribute instead of a boolean
+    // and `Width` as `"780px"` instead of a number.
 
     /// Create a control — the ONE place a frontend turns a canonical control
     /// name into bytecode.

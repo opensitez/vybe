@@ -28,7 +28,8 @@ pub enum Mode {
     /// Execute it; a NON-zero exit is the pass. `must_fail(script)` asserts a
     /// wrong result really is caught — distinct from `CompileFail`, which
     /// asserts the front-end rejects the source before it ever runs.
-    RunFail }
+    RunFail,
+}
 
 /// The exit status a test is expected to end with, from a
 /// `vybe-test-exit: <n>` header. Defaults to 0.
@@ -82,7 +83,8 @@ impl Mode {
                     "compile" => Mode::Compile,
                     "compile-fail" => Mode::CompileFail,
                     "run-fail" => Mode::RunFail,
-                    _ => Mode::Run };
+                    _ => Mode::Run,
+                };
             }
         }
         Mode::Run
@@ -92,7 +94,8 @@ impl Mode {
 pub struct Outcome {
     pub result: TestResult,
     pub message: String,
-    pub duration_ms: u128 }
+    pub duration_ms: u128,
+}
 
 pub fn run_case(
     vybex: &Path,
@@ -134,7 +137,9 @@ pub fn run_foreign(
     timeout_secs: u64,
     slow: &dyn Fn(u64),
 ) -> Outcome {
-    let want_exit = std::fs::read_to_string(file).map(|t| expected_exit(&t)).unwrap_or(0);
+    let want_exit = std::fs::read_to_string(file)
+        .map(|t| expected_exit(&t))
+        .unwrap_or(0);
     let mut cmd = Command::new(program);
     cmd.args(args).arg(file);
     execute(cmd, mode, timeout_secs, slow, want_exit)
@@ -153,7 +158,9 @@ fn execute(
     // and the verdict becomes "timeout" on a machine and "passes" on a laptop
     // where someone hit return. Measured on COBOL `ACCEPT`: `< /dev/null` exits
     // 0 immediately, inherited it never returns.
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -161,7 +168,8 @@ fn execute(
             return Outcome {
                 result: TestResult::Error,
                 message: format!("spawn failed: {e}"),
-                duration_ms: started.elapsed().as_millis() };
+                duration_ms: started.elapsed().as_millis(),
+            };
         }
     };
 
@@ -169,8 +177,14 @@ fn execute(
     // ~64KB; `vybex -d` writes a disassembly far larger than that, so a parent
     // that waits first deadlocks against a child blocked on write — which is
     // exactly how every compile-mode test turned into a 30s timeout.
-    let out_reader = child.stdout.take().map(|s| std::thread::spawn(move || drain(s)));
-    let err_reader = child.stderr.take().map(|s| std::thread::spawn(move || drain(s)));
+    let out_reader = child
+        .stdout
+        .take()
+        .map(|s| std::thread::spawn(move || drain(s)));
+    let err_reader = child
+        .stderr
+        .take()
+        .map(|s| std::thread::spawn(move || drain(s)));
 
     // Wait in slices rather than one blocking call, so a test that is still
     // running can say so. The warm pool does the same with `recv_timeout`; the
@@ -186,13 +200,16 @@ fn execute(
             return Outcome {
                 result: TestResult::Timeout,
                 message: format!("timeout after {timeout_secs}s"),
-                duration_ms: started.elapsed().as_millis() };
+                duration_ms: started.elapsed().as_millis(),
+            };
         };
         let wait = if warned {
             remaining
         } else {
             remaining.min(
-                crate::pool::SLOW_AFTER.saturating_sub(elapsed).max(Duration::from_millis(1)),
+                crate::pool::SLOW_AFTER
+                    .saturating_sub(elapsed)
+                    .max(Duration::from_millis(1)),
             )
         };
         match child.wait_timeout(wait) {
@@ -208,7 +225,8 @@ fn execute(
                 return Outcome {
                     result: TestResult::Error,
                     message: format!("wait failed: {e}"),
-                    duration_ms: started.elapsed().as_millis() };
+                    duration_ms: started.elapsed().as_millis(),
+                };
             }
         }
     };
@@ -230,9 +248,18 @@ fn execute(
         clean
     };
     Outcome {
-        result: if pass { TestResult::Pass } else { TestResult::Fail },
-        message: if pass { String::new() } else { failure_line(&text) },
-        duration_ms: started.elapsed().as_millis() }
+        result: if pass {
+            TestResult::Pass
+        } else {
+            TestResult::Fail
+        },
+        message: if pass {
+            String::new()
+        } else {
+            failure_line(&text)
+        },
+        duration_ms: started.elapsed().as_millis(),
+    }
 }
 
 fn drain<R: std::io::Read>(mut stream: R) -> String {
@@ -271,7 +298,8 @@ pub fn run_each(
     use rayon::prelude::*;
     let pool = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
         Ok(pool) => pool,
-        Err(_) => return Vec::new() };
+        Err(_) => return Vec::new(),
+    };
     pool.install(|| {
         files
             .par_iter()
@@ -287,7 +315,8 @@ pub fn run_each(
                     name,
                     result: outcome.result,
                     message: outcome.message,
-                    duration_ms: outcome.duration_ms };
+                    duration_ms: outcome.duration_ms,
+                };
                 note(&execution);
                 execution
             })

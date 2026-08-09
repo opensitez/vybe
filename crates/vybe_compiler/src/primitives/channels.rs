@@ -1084,7 +1084,9 @@ pub fn build_task_new(imports: &mut Chunk) -> Chunk {
     set(&mut c, "__thread_id", &|c| {
         c.emit_op_u16(Op::LOCAL_GET, tid, line)
     });
-    set(&mut c, "__futex", &|c| c.emit_op_u16(Op::LOCAL_GET, base, line));
+    set(&mut c, "__futex", &|c| {
+        c.emit_op_u16(Op::LOCAL_GET, base, line)
+    });
     set(&mut c, "isalive", &|c| c.emit_bool_const(true, line));
     set(&mut c, "iscompleted", &|c| c.emit_bool_const(false, line));
     set(&mut c, "status", &|c| c.emit_string_const("Running", line));
@@ -1160,16 +1162,20 @@ fn channel_literal(capacity: Option<&Expression>, zero: &Expression) -> Expressi
         // its extra deref hop mis-read under cross-thread capture cloning.
         ObjectProperty::KeyValue {
             key: Expression::string("queue"),
-            value: Expression::new(ExprKind::Array(Vec::new())) },
+            value: Expression::new(ExprKind::Array(Vec::new())),
+        },
         ObjectProperty::KeyValue {
             key: Expression::string("closed"),
-            value: Expression::bool(false) },
+            value: Expression::bool(false),
+        },
         ObjectProperty::KeyValue {
             key: Expression::string("capacity"),
-            value: capacity.cloned().unwrap_or_else(|| Expression::int(0)) },
+            value: capacity.cloned().unwrap_or_else(|| Expression::int(0)),
+        },
         ObjectProperty::KeyValue {
             key: Expression::string("__zero"),
-            value: zero.clone() },
+            value: zero.clone(),
+        },
     ]))
 }
 
@@ -1291,9 +1297,8 @@ impl crate::primitives::Compiler {
             ChanOp::RecvOrFail { channel, error } => {
                 self.chan_helper_call("__vybe_chan_recv_or_throw", &[channel, error])
             }
-            ChanOp::WaitReadable(ch) => {
-                self.chan_helper_call("__vybe_chan_wait_readable", &[ch])
-            } }
+            ChanOp::WaitReadable(ch) => self.chan_helper_call("__vybe_chan_wait_readable", &[ch]),
+        }
     }
 
     /// `select` — readiness choice (Go §Select statements). Test each arm's
@@ -1395,11 +1400,7 @@ impl crate::primitives::Compiler {
             // recv arms register as waiting receivers for the slice so a
             // paired unbuffered send can see readiness.
             for &(_, slot, is_recv) in &ready {
-                crate::primitives::bundle::emit_call_push_func(
-                    c,
-                    "__vybe_chan_wait_slice",
-                    line,
-                );
+                crate::primitives::bundle::emit_call_push_func(c, "__vybe_chan_wait_slice", line);
                 c.emit_op_u16(Op::LOCAL_GET, slot, line);
                 c.emit_bool_const(is_recv, line);
                 crate::primitives::bundle::emit_call_invoke(c, 2, line);

@@ -88,7 +88,8 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
             // without the name.
             let label = match chunk.imports.get(fn_idx as usize) {
                 Some(imp) => format!(" ({}:{})", imp.module, imp.name),
-                None => " (OUT-OF-RANGE)".to_string() };
+                None => " (OUT-OF-RANGE)".to_string(),
+            };
             (
                 format!("CallHost fn={} argc={}{}", fn_idx, argc, label),
                 operand_start + 3,
@@ -124,7 +125,8 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
                 // `(typeidx, count)` — typeidx 0 builds a dynamic object from
                 // `count` key/value pairs; non-zero is the spec `struct.new $t`.
                 Op::STRUCT_NEW => format!("{} type={} count={}", name, a, b),
-                _ => format!("{} type={} {}", name, a, b) };
+                _ => format!("{} type={} {}", name, a, b),
+            };
             (text, operand_start + 4)
         }
         OperandFormat::U16_I16 => {
@@ -232,7 +234,8 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> (String, usize) 
                     1 => format!("catch_ref tag={tag}"),
                     2 => "catch_all".to_string(),
                     3 => "catch_all_ref".to_string(),
-                    k => format!("kind{k}?") };
+                    k => format!("kind{k}?"),
+                };
                 clauses.push(name);
             }
             (
@@ -297,7 +300,8 @@ fn vybe_runtime_simd_memarg_render(code: &[u8], operand_start: usize) -> (String
 pub struct VerifyIssue {
     /// Byte offset the problem was found at.
     pub offset: usize,
-    pub what: String }
+    pub what: String,
+}
 
 /// Check a chunk's two structural invariants and report every violation.
 ///
@@ -331,16 +335,23 @@ pub fn verify_chunk(chunk: &Chunk) -> Vec<VerifyIssue> {
                     "does not decode as an opcode (0x{:04X} 0x{:04X}) — the previous \
                      instruction's operand width is wrong",
                     group, sub
-                ) });
+                ),
+            });
             break;
         };
         let operand_start = ip + 4;
         let size = op.operand_format().size_in(code, operand_start);
 
         // Relative branch offsets: `i16` immediately after the opcode.
-        if matches!(op.operand_format(), crate::opcode::OperandFormat::I16) && operand_start + 1 < code.len() {
+        if matches!(op.operand_format(), crate::opcode::OperandFormat::I16)
+            && operand_start + 1 < code.len()
+        {
             let rel = i16::from_be_bytes([code[operand_start], code[operand_start + 1]]) as i64;
-            jumps.push((operand_start, operand_start as i64 + 2 + rel, op.wasm_name()));
+            jumps.push((
+                operand_start,
+                operand_start as i64 + 2 + rel,
+                op.wasm_name(),
+            ));
         }
         // `try_table` catch targets: u8 count, then per clause
         // (u8 kind, u16 tag, i16 catch offset relative to just past itself).
@@ -361,11 +372,13 @@ pub fn verify_chunk(chunk: &Chunk) -> Vec<VerifyIssue> {
         if target < 0 || target as usize > code.len() {
             issues.push(VerifyIssue {
                 offset: at,
-                what: format!("{what} target {target} is outside the chunk") });
+                what: format!("{what} target {target} is outside the chunk"),
+            });
         } else if target as usize != code.len() && !starts.contains(&(target as usize)) {
             issues.push(VerifyIssue {
                 offset: at,
-                what: format!("{what} target {target} is not an instruction start") });
+                what: format!("{what} target {target} is not an instruction start"),
+            });
         }
     }
     issues

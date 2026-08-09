@@ -119,22 +119,16 @@ pub fn emit_class_from_ast(
             // These two are supplied by the caller at definition time; the
             // declaration pass has no way to know them.
             // `is_value_type` is STORAGE, its original meaning: does assignment copy.
-    // Equality is a separate axis and reads `nc.semantics.equality`.
-    nc.is_value_type = semantics.storage == vybe_ast::ValueStorage::Value;
-    nc.semantics = semantics;
+            // Equality is a separate axis and reads `nc.semantics.equality`.
+            nc.is_value_type = semantics.storage == vybe_ast::ValueStorage::Value;
+            nc.semantics = semantics;
             nc.bases = parents.to_vec();
             nc
         }
         None => normalize_class_from_ast(
-            compiler,
-            span,
-            cname,
-            parents,
-            interfaces,
-            members,
-            modifiers,
-            semantics,
-        )? };
+            compiler, span, cname, parents, interfaces, members, modifiers, semantics,
+        )?,
+    };
     // Set centrally, like `bases`: every path lands here — the stored
     // declaration-pass copy and each per-language normalizer alike — so no
     // language has to remember to carry it.
@@ -189,7 +183,8 @@ fn normalize_from_ast_legacy(
                     array_bounds: array_bounds.clone(),
                     access: access_from_visibility(modifiers.visibility),
                     readonly: modifiers.is_readonly,
-                    value_type: None };
+                    value_type: None,
+                };
                 if modifiers.is_shared {
                     static_fields.push(field);
                 } else {
@@ -219,7 +214,8 @@ fn normalize_from_ast_legacy(
                     raw_extra_members.push(member.clone());
                 }
             }
-            _ => raw_extra_members.push(member.clone()) }
+            _ => raw_extra_members.push(member.clone()),
+        }
     }
 
     NormalClass {

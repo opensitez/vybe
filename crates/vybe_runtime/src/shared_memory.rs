@@ -16,12 +16,14 @@ use std::sync::{Arc, Condvar, Mutex};
 #[derive(Default)]
 struct WaitState {
     waiters: usize,
-    notifications: usize }
+    notifications: usize,
+}
 
 #[derive(Default)]
 struct WaitEntry {
     state: Mutex<WaitState>,
-    condvar: Condvar }
+    condvar: Condvar,
+}
 
 /// WASM trap on out-of-bounds memory access.
 #[derive(Debug, Clone)]
@@ -29,7 +31,9 @@ pub enum MemoryTrap {
     OutOfBounds {
         addr: usize,
         size: usize,
-        limit: usize } }
+        limit: usize,
+    },
+}
 
 impl std::fmt::Display for MemoryTrap {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -38,7 +42,8 @@ impl std::fmt::Display for MemoryTrap {
                 f,
                 "memory access out of bounds: addr={} size={} limit={}",
                 addr, size, limit
-            ) }
+            ),
+        }
     }
 }
 
@@ -78,7 +83,8 @@ pub struct SharedMemory {
     /// waiter's point of view; the deadlock panic itself stays in helper
     /// BYTECODE (observed via the `wasm:threads.all_parked` intrinsic) —
     /// the wait32 opcode remains spec-shaped.
-    parked: Arc<AtomicI32> }
+    parked: Arc<AtomicI32>,
+}
 
 impl Clone for SharedMemory {
     fn clone(&self) -> Self {
@@ -88,7 +94,8 @@ impl Clone for SharedMemory {
             max_pages: self.max_pages,
             waiters: Arc::clone(&self.waiters),
             live_threads: Arc::clone(&self.live_threads),
-            parked: Arc::clone(&self.parked) }
+            parked: Arc::clone(&self.parked),
+        }
     }
 }
 
@@ -99,7 +106,8 @@ impl SharedMemory {
             max_pages: None,
             waiters: Arc::new(Mutex::new(HashMap::new())),
             live_threads: Arc::new(AtomicI32::new(1)),
-            parked: Arc::new(AtomicI32::new(0)) }
+            parked: Arc::new(AtomicI32::new(0)),
+        }
     }
 
     pub fn from_vec(v: Vec<u8>) -> Self {
@@ -108,7 +116,8 @@ impl SharedMemory {
             max_pages: None,
             waiters: Arc::new(Mutex::new(HashMap::new())),
             live_threads: Arc::new(AtomicI32::new(1)),
-            parked: Arc::new(AtomicI32::new(0)) }
+            parked: Arc::new(AtomicI32::new(0)),
+        }
     }
 
     /// A VM thread sharing this memory was spawned (THREAD_SPAWN).
@@ -153,7 +162,8 @@ impl SharedMemory {
         self.len() == 0
     }
 
-    /// Grow memory by `pages` (each page = 64KB). Returns old size in pages.
+    /// Grow memory by `pages` (each page = 64KB). Returns old size in pages,
+    /// or `usize::MAX` (the `-1` `memory.grow` reports to the guest) on failure.
     pub fn grow(&self, pages: usize) -> usize {
         let mut buf = self.buffer.lock().unwrap();
         let old_len = buf.len();
@@ -165,6 +175,18 @@ impl SharedMemory {
             if new_pages > max_pages {
                 return usize::MAX;
             }
+        }
+        // The ARCHITECTURAL ceiling, independent of any declared max: a 32-bit
+        // memory spans at most 2^32 bytes = 65536 pages (WASM 3.0, limits of
+        // `i32` memtypes). `memory.grow` past it must REPORT failure, not try
+        // the allocation — `(memory 0)` grown by `0x10000` is a 4GiB `resize`
+        // that stalls the host instead of returning -1 (memory_grow.wast:11).
+        // Memories 1..n already enforce this (`Vm::mem_grow`); memory 0 is the
+        // same memory model and gets the same bound. Nothing is lost for a
+        // memory64 memory, whose 2^48-page spec ceiling is unreachable here
+        // anyway — the backing buffer is a real `Vec`.
+        if new_pages > 65536 {
+            return usize::MAX;
         }
         let Some(new_len) = new_pages.checked_mul(65536) else {
             return usize::MAX;
@@ -188,7 +210,8 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 4,
-                limit: buf.len() });
+                limit: buf.len(),
+            });
         }
         Ok(i32::from_le_bytes(buf[addr..addr + 4].try_into().unwrap()))
     }
@@ -199,7 +222,8 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 4,
-                limit: buf.len() });
+                limit: buf.len(),
+            });
         }
         buf[addr..addr + 4].copy_from_slice(&val.to_le_bytes());
         Ok(())
@@ -211,7 +235,8 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 8,
-                limit: buf.len() });
+                limit: buf.len(),
+            });
         }
         Ok(i64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap()))
     }
@@ -222,7 +247,8 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 8,
-                limit: buf.len() });
+                limit: buf.len(),
+            });
         }
         buf[addr..addr + 8].copy_from_slice(&val.to_le_bytes());
         Ok(())
@@ -234,7 +260,8 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 8,
-                limit: buf.len() });
+                limit: buf.len(),
+            });
         }
         Ok(f64::from_le_bytes(buf[addr..addr + 8].try_into().unwrap()))
     }
@@ -245,7 +272,8 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 8,
-                limit: buf.len() });
+                limit: buf.len(),
+            });
         }
         buf[addr..addr + 8].copy_from_slice(&val.to_le_bytes());
         Ok(())
@@ -257,7 +285,8 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 1,
-                limit: buf.len() });
+                limit: buf.len(),
+            });
         }
         Ok(buf[addr])
     }
@@ -268,7 +297,8 @@ impl SharedMemory {
             return Err(MemoryTrap::OutOfBounds {
                 addr,
                 size: 1,
-                limit: buf.len() });
+                limit: buf.len(),
+            });
         }
         buf[addr] = val;
         Ok(())

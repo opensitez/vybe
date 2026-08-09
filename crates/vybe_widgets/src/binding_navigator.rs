@@ -10,7 +10,8 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use cosmic_text::Color as CosmicColor;
 use tiny_skia::*;
 
@@ -22,7 +23,8 @@ pub enum NavAction {
     Next,
     Last,
     Add,
-    Remove }
+    Remove,
+}
 
 impl NavAction {
     pub fn as_str(&self) -> &'static str {
@@ -32,7 +34,8 @@ impl NavAction {
             NavAction::Next => "next",
             NavAction::Last => "last",
             NavAction::Add => "add",
-            NavAction::Remove => "remove" }
+            NavAction::Remove => "remove",
+        }
     }
 }
 
@@ -42,7 +45,8 @@ struct NavButton {
     action: NavAction,
     rect: LayoutRect,
     hovered: bool,
-    pressed: bool }
+    pressed: bool,
+}
 
 pub struct BindingNavigator {
     pub name: String,
@@ -55,7 +59,8 @@ pub struct BindingNavigator {
     counter_rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
     focused: bool,
-    hovered: bool }
+    hovered: bool,
+}
 
 impl BindingNavigator {
     pub fn new(name: &str) -> Self {
@@ -76,7 +81,8 @@ impl BindingNavigator {
             counter_rect: LayoutRect::zero(),
             pending_events: Vec::new(),
             focused: false,
-            hovered: false }
+            hovered: false,
+        }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -117,7 +123,8 @@ impl BindingNavigator {
                 action,
                 rect: LayoutRect::new(cx, cy, btn_w, btn_h),
                 hovered: false,
-                pressed: false });
+                pressed: false,
+            });
             cx += btn_w + gap;
         }
 
@@ -132,7 +139,8 @@ impl BindingNavigator {
                 action,
                 rect: LayoutRect::new(cx, cy, btn_w, btn_h),
                 hovered: false,
-                pressed: false });
+                pressed: false,
+            });
             cx += btn_w + gap;
         }
 
@@ -146,7 +154,8 @@ impl BindingNavigator {
                 action,
                 rect: LayoutRect::new(cx, cy, btn_w, btn_h),
                 hovered: false,
-                pressed: false });
+                pressed: false,
+            });
             cx += btn_w + gap;
         }
     }
@@ -327,7 +336,8 @@ impl PanelWidget for BindingNavigator {
                 }
                 true
             }
-            _ => false }
+            _ => false,
+        }
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool {
@@ -366,8 +376,10 @@ impl PanelWidget for BindingNavigator {
                         }
                         CommandValue::None
                     }
-                    _ => CommandValue::None }
+                    _ => CommandValue::None,
+                }
             }
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 }

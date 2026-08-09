@@ -31,12 +31,15 @@ use std::path::Path;
 /// `units` is ordered — every secondary language first, the entry language
 /// LAST — so libraries are defined before the program that uses them.
 pub struct Program {
-    pub units: Vec<Bundle> }
+    pub units: Vec<Bundle>,
+}
 
 impl Program {
     /// A single-language program.
     pub fn single(bundle: Bundle) -> Self {
-        Program { units: vec![bundle] }
+        Program {
+            units: vec![bundle],
+        }
     }
 
     /// The entry-language unit — the one whose entry point starts the program.
@@ -70,7 +73,8 @@ pub fn load(path: &Path) -> Result<Bundle, String> {
         "vybe" => vybe::load(path),
         "vbproj" => vbproj::load(path),
         "csproj" | "pyproj" | "ipyproj" => managed_msbuild::load(path),
-        _ => single_file::load(path, &ext) }
+        _ => single_file::load(path, &ext),
+    }
 }
 
 /// Load one or more paths given on the command line.
@@ -126,7 +130,8 @@ pub fn load_program(paths: &[std::path::PathBuf]) -> Result<Program, String> {
                 .unwrap_or_default();
             match ext.as_str() {
                 "vybe" => vybe::load_program(single),
-                _ => load(single).map(Program::single) }
+                _ => load(single).map(Program::single),
+            }
         }
         _ => {
             reject_project_files(paths)?;

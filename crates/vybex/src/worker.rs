@@ -21,7 +21,25 @@
 //! → /path/to/program.go                one job per line, optional \tcompile
 //! ← ...the program's own output...
 //! ← ##vybe-result\tok                  or  ##vybe-result\terr\t<message>
+//! → /path/to/harness.js\tpreload       fold into the baseline (see below)
 //! ```
+//!
+//! ## Loaded state vs tenant state
+//!
+//! Two kinds of code run here and they are not the same thing:
+//!
+//! - a **tenant** — one job, one program. It must leave NOTHING behind: the
+//!   next job has to be unable to tell it ever ran. That is `reset_to`'s
+//!   contract, and any difference between warm and cold execution is a bug in
+//!   it, not a property of warm mode.
+//! - **loaded state** — a test harness, a runtime prelude: code the EMBEDDER
+//!   puts there deliberately, that every job is supposed to see. Sent with
+//!   mode `preload`, it runs into the VM and the baseline is re-snapshotted,
+//!   so it costs one load per worker rather than one per job.
+//!
+//! Without the second, the only way to make code persist was for it to survive
+//! a reset — which is precisely the property a tenant must never have. Keeping
+//! them separate is what lets the reset be total.
 //!
 //! The program's output is NOT captured or redirected — it goes to this
 //! process's real stdout through the real host functions, and the sentinel line
@@ -38,22 +56,18 @@ pub const READY: &str = "##vybe-ready";
 pub const RESULT: &str = "##vybe-result";
 
 pub fn run(caps: Capabilities) -> ! {
-    // Tracking must be on BEFORE the first allocation, or boot-time objects are
-    // outside the registry and a reset cannot roll back mutations to them.
-    vybe_runtime::heap::enable_tracking();
+    // The boot sequence — tracking on before the first allocation, plugins,
+    // adapters, primed prototypes, snapshot — lives in `crate::warm` because
+    // `--serve` needs the identical one. When it lived here in a copy, the
+    // server's copy was missing two of those steps.
+    let (mut vm, mut baseline) = match crate::warm::boot(&caps) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("[worker] {e}");
+            std::process::exit(1);
+        }
+    };
 
-    let mut vm = VM::new();
-    crate::cli::register_plugins(&mut vm, &caps);
-    crate::server::programmatic::register(&mut vm);
-    if let Err(e) = crate::adapters::register_all(&mut vm) {
-        eprintln!("[worker] adapter registration failed: {e}");
-        std::process::exit(1);
-    }
-    // Force the shared prototypes into the tracked heap so a program that
-    // mutates `Object.prototype` cannot leak into the next one.
-    vybe_platform_ecma::prime_shared_prototypes();
-
-    let baseline = vm.snapshot();
     println!("{READY}");
     let _ = std::io::stdout().flush();
 
@@ -68,10 +82,42 @@ pub fn run(caps: Capabilities) -> ! {
         let mut fields = line.split('\t');
         let path = fields.next().unwrap_or(line);
         let mode = fields.next().unwrap_or("run");
-        let want_exit: i32 = fields.next().and_then(|f| f.trim().parse().ok()).unwrap_or(0);
+        let want_exit: i32 = fields
+            .next()
+            .and_then(|f| f.trim().parse().ok())
+            .unwrap_or(0);
 
-        vm.reset_to(&baseline);
-        vybe_platform_wasi::reset_host_globals();
+        // `preload` is LOADED STATE, not a tenant. The file is run into the warm
+        // VM and the baseline is re-snapshotted, so every later reset restores
+        // TO it: a test harness or a runtime prelude is paid for ONCE per
+        // worker instead of once per job, without ever becoming something a
+        // reset has to flush.
+        //
+        // The distinction is the whole point. A job's script must leave nothing
+        // behind — that is what `reset_to` guarantees. Something the EMBEDDER
+        // loads on purpose is not the script, and there was previously no way
+        // to say so: the only way to make code survive was to have it survive a
+        // reset, which is exactly the property a tenant must not have.
+        if mode == "preload" {
+            crate::warm::reset(&mut vm, &baseline);
+            match run_job(&mut vm, path, "run", &caps) {
+                Ok(()) => {
+                    baseline = vm.snapshot();
+                    println!("{RESULT}\tok");
+                }
+                // A preload that fails leaves the OLD baseline in place — a
+                // half-loaded harness would poison every job after it, which is
+                // the failure this whole mechanism exists to prevent.
+                Err(e) => {
+                    crate::warm::reset(&mut vm, &baseline);
+                    println!("{RESULT}\terr\t{}", one_line(&e));
+                }
+            }
+            let _ = std::io::stdout().flush();
+            continue;
+        }
+
+        crate::warm::reset(&mut vm, &baseline);
 
         let outcome = run_job(&mut vm, path, mode, &caps);
         let _ = std::io::stdout().flush();
@@ -87,7 +133,8 @@ pub fn run(caps: Capabilities) -> ! {
                 vm.pending_exit_code
             ),
             Ok(()) => println!("{RESULT}\tok"),
-            Err(e) => println!("{RESULT}\terr\t{}", one_line(&e)) }
+            Err(e) => println!("{RESULT}\terr\t{}", one_line(&e)),
+        }
         let _ = std::io::stdout().flush();
     }
     std::process::exit(0)
@@ -108,7 +155,8 @@ fn run_job(vm: &mut VM, path: &str, mode: &str, caps: &Capabilities) -> Result<(
         return match (mode, &result) {
             ("compile-fail", Ok(())) => Err("expected the front-end to reject this".into()),
             ("compile-fail", Err(_)) => Ok(()),
-            _ => result };
+            _ => result,
+        };
     }
 
     // Other languages of a multi-language program link in first, exactly as on

@@ -175,7 +175,8 @@ fn load_type_table_interface() {
             is_interface: true,
             implements: Vec::new(),
             constructor_chunk: None,
-            field_descriptors: std::collections::HashMap::new() },
+            field_descriptors: std::collections::HashMap::new(),
+        },
         TypeEntry {
             name: "dog".into(),
             kind: vybe_runtime::chunk::CompositeKind::Struct,
@@ -186,7 +187,8 @@ fn load_type_table_interface() {
             // `ianimal` is entry 1 of this same table — the link is an index.
             implements: vec![1],
             constructor_chunk: Some(3),
-            field_descriptors: std::collections::HashMap::new() },
+            field_descriptors: std::collections::HashMap::new(),
+        },
     ];
 
     reg.load_type_table(&entries);
@@ -216,7 +218,8 @@ fn load_type_table_cross_language_inheritance() {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: Some(1),
-        field_descriptors: std::collections::HashMap::new() }];
+        field_descriptors: std::collections::HashMap::new(),
+    }];
 
     // The C# module inherits from a type ANOTHER module defined, so it
     // declares that supertype in its own table and links to it by index.
@@ -233,7 +236,8 @@ fn load_type_table_cross_language_inheritance() {
             is_interface: false,
             implements: Vec::new(),
             constructor_chunk: None,
-            field_descriptors: std::collections::HashMap::new() },
+            field_descriptors: std::collections::HashMap::new(),
+        },
         TypeEntry {
             name: "dog".into(),
             kind: vybe_runtime::chunk::CompositeKind::Struct,
@@ -243,7 +247,8 @@ fn load_type_table_cross_language_inheritance() {
             is_interface: false,
             implements: Vec::new(),
             constructor_chunk: Some(7),
-            field_descriptors: std::collections::HashMap::new() },
+            field_descriptors: std::collections::HashMap::new(),
+        },
     ];
 
     // Load VB types first, then C# types

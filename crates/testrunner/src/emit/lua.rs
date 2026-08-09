@@ -17,7 +17,8 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     let header = format!("-- vybe-test: {slug}\n-- origin: {origin}\n");
@@ -26,14 +27,16 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     let Some(expected) = case.expected.as_ref() else {
         return Emitted {
             text: format!("{header}\n{body}\n"),
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     };
 
     let prints = find_prints(body);
     if let Some(reason) = unpairable(body, &prints) {
         return Emitted {
             text: format!("{header}\n{body}\n"),
-            pairing: Pairing::Unpairable(reason) };
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let mut out = body.to_string();
@@ -49,7 +52,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
             "{header}\nlocal __w1 = {want}\nlocal __i = 0\n\n{out}\n\n\
              if __i == 0 then error(\"FAIL: no output, wanted [\" .. __w1 .. \"]\") end\n"
         ),
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// One print, rewritten to render its arguments and check print #1.
@@ -66,7 +70,8 @@ struct Print {
     start: usize,
     end: usize,
     /// The arguments rendered the way `print` renders them.
-    rendered: String }
+    rendered: String,
+}
 
 fn find_prints(src: &str) -> Vec<Print> {
     let bytes = src.as_bytes();
@@ -94,7 +99,11 @@ fn find_prints(src: &str) -> Vec<Print> {
                             .collect::<Vec<_>>()
                             .join(" .. \"\\t\" .. ")
                     };
-                    out.push(Print { start: i, end: close + 1, rendered });
+                    out.push(Print {
+                        start: i,
+                        end: close + 1,
+                        rendered,
+                    });
                     i = close + 1;
                     continue;
                 }
@@ -167,7 +176,8 @@ fn split_args(text: &str) -> Vec<String> {
                 cur.push(ch);
             }
             ',' if depth == 0 => out.push(std::mem::take(&mut cur)),
-            _ => cur.push(ch) }
+            _ => cur.push(ch),
+        }
         i += 1;
     }
     if !cur.trim().is_empty() {
@@ -186,7 +196,8 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b if b == quote => return Some(i + 1),
-                    _ => i += 1 }
+                    _ => i += 1,
+                }
             }
             Some(bytes.len())
         }
@@ -201,7 +212,8 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
             }
             Some(bytes.len())
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn is_ident(byte: u8) -> bool {
@@ -218,7 +230,8 @@ fn lua_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out

@@ -18,22 +18,28 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
 
     let Some(expected) = case.expected.as_ref() else {
         return Emitted {
-            text: format!("{header}// vybe-test-mode: compile\n\n{}\n", reflow(&case.source)),
-            pairing: Pairing::Direct };
+            text: format!(
+                "{header}// vybe-test-mode: compile\n\n{}\n",
+                reflow(&case.source)
+            ),
+            pairing: Pairing::Direct,
+        };
     };
 
     let (body, rewritten) = rewrite_prints(&case.source);
     if let Some(reason) = unpairable(&case.source, rewritten) {
         return Emitted {
             text: format!("{header}\n{}\n", reflow(&case.source)),
-            pairing: Pairing::Unpairable(reason) };
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let want = kt_string(&expected.join("\n"));
@@ -41,7 +47,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: format!("{header}\n{}", splice_harness(&reflow(&body), harness)),
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// Put `__check(…)` at the END of `main`, where every print has already run.
@@ -60,7 +67,8 @@ fn close_main_with(src: &str, call: &str) -> String {
     };
     match matching_brace(src.as_bytes(), open) {
         Some(close) => format!("{}\n{call}\n{}", &src[..close], &src[close..]),
-        None => format!("{src}\n{call}\n") }
+        None => format!("{src}\n{call}\n"),
+    }
 }
 
 /// `fun main(` outside a string literal.
@@ -118,18 +126,25 @@ fn rewrite_prints(src: &str) -> (String, usize) {
         }
         // Longest first: `println(` also starts with `print(`, and the Java
         // spelling appears in a handful of Kotlin cases.
-        let hit = ["System.out.println(", "System.out.print(", "println(", "print("]
-            .into_iter()
-            .find(|n| src.is_char_boundary(i) && src[i..].starts_with(n))
-            // A qualified call — `writer.println(` — writes somewhere else.
-            .filter(|n| {
-                n.starts_with("System") || !is_ident(if i == 0 { b' ' } else { bytes[i - 1] })
-            });
+        let hit = [
+            "System.out.println(",
+            "System.out.print(",
+            "println(",
+            "print(",
+        ]
+        .into_iter()
+        .find(|n| src.is_char_boundary(i) && src[i..].starts_with(n))
+        // A qualified call — `writer.println(` — writes somewhere else.
+        .filter(|n| n.starts_with("System") || !is_ident(if i == 0 { b' ' } else { bytes[i - 1] }));
         if let Some(needle) = hit {
             let args_start = i + needle.len();
             if let Some(end) = close_paren(bytes, args_start) {
                 let args = src[args_start..end].trim();
-                let target = if needle.ends_with("println(") { "__p" } else { "__pr" };
+                let target = if needle.ends_with("println(") {
+                    "__p"
+                } else {
+                    "__pr"
+                };
                 // Render HERE, where the expression still has its static type.
                 // `__p(x)` with an `Any?` parameter renders a Boolean as 1/0
                 // and cannot resolve `toString` at all — see harness/kotlin.
@@ -155,7 +170,8 @@ fn rewrite_prints(src: &str) -> (String, usize) {
 fn splice_harness(src: &str, harness: &str) -> String {
     match src.find("fun main(") {
         Some(at) => format!("{}{harness}\n\n{}", &src[..at], &src[at..]),
-        None => format!("{src}\n{harness}\n") }
+        None => format!("{src}\n{harness}\n"),
+    }
 }
 
 /// Under collection the only thing that defeats the check is output that never
@@ -213,7 +229,10 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                     continue;
                 }
                 if triple {
-                    if bytes[i] == b'"' && bytes.get(i + 1) == Some(&b'"') && bytes.get(i + 2) == Some(&b'"') {
+                    if bytes[i] == b'"'
+                        && bytes.get(i + 1) == Some(&b'"')
+                        && bytes.get(i + 2) == Some(&b'"')
+                    {
                         return Some(i + 3);
                     }
                 } else if bytes[i] == b'"' {
@@ -229,11 +248,13 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b'\'' => return Some(i + 1),
-                    _ => i += 1 }
+                    _ => i += 1,
+                }
             }
             Some(bytes.len())
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 /// `print(` but not `println(`.
@@ -272,7 +293,8 @@ fn kt_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out

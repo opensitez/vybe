@@ -12,22 +12,29 @@ pub enum Pairing {
     Direct,
     /// The print-to-line mapping is not static; the case is reported rather
     /// than guessed at.
-    Unpairable(String) }
+    Unpairable(String),
+}
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let mut header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
 
     let Some(expected) = case.expected.as_ref() else {
-        let mode = if case.expect_failure { "compile-fail" } else { "compile" };
+        let mode = if case.expect_failure {
+            "compile-fail"
+        } else {
+            "compile"
+        };
         header.push_str(&format!("// vybe-test-mode: {mode}\n\n"));
         return Emitted {
             text: header + &reflow(&case.source),
             // A compile case never had an expectation to pair.
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     };
     header.push('\n');
 
@@ -35,7 +42,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     if let Some(reason) = unpairable_reason(&case.source, rewritten) {
         return Emitted {
             text: header + &reflow(&case.source),
-            pairing: Pairing::Unpairable(reason) };
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let want = go_string(&expected.join("\n"));
@@ -43,7 +51,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: header + &splice_harness(&reflow(&body), harness),
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// Put `__check(…)` at the END of `main`, after every print AND after every
@@ -55,7 +64,8 @@ fn close_main_with(src: &str, call: &str) -> String {
         // `end - 1` — inserting at `end` puts it at file scope, where Go has
         // no statements at all.
         Some((_, end)) => format!("{}\n{call}\n{}", &src[..end - 1], &src[end - 1..]),
-        None => format!("{src}\n{call}\n") }
+        None => format!("{src}\n{call}\n"),
+    }
 }
 
 /// Rewrite every print into a buffer append. Returns the new source and how
@@ -83,7 +93,8 @@ fn rewrite_prints(src: &str) -> (String, usize) {
                 let call = match needle {
                     "fmt.Println(" => format!("__p({})", render_println_args(args)),
                     "fmt.Printf(" => format!("__pr(fmt.Sprintf({args}))"),
-                    _ => format!("__pr(fmt.Sprint({args}))") };
+                    _ => format!("__pr(fmt.Sprint({args}))"),
+                };
                 out.push_str(&call);
                 count += 1;
                 i = args_end + 1;
@@ -102,7 +113,8 @@ fn rewrite_prints(src: &str) -> (String, usize) {
 fn splice_harness(src: &str, harness: &str) -> String {
     match src.find("func main(") {
         Some(at) => format!("{}{harness}\n\n{}", &src[..at], &src[at..]),
-        None => format!("{src}\n{harness}\n") }
+        None => format!("{src}\n{harness}\n"),
+    }
 }
 
 /// Under collection the only thing that defeats the check is output whose
@@ -172,7 +184,8 @@ fn render_println_args(args: &str) -> String {
             .iter()
             .map(|p| format!("fmt.Sprint({p})"))
             .collect::<Vec<_>>()
-            .join(" + \" \" + ") }
+            .join(" + \" \" + "),
+    }
 }
 
 /// Split a call's arguments on the commas that separate them — not on commas
@@ -212,7 +225,8 @@ struct Span {
     start: usize,
     args_start: usize,
     args_end: usize,
-    end: usize }
+    end: usize,
+}
 
 /// Index of the `)` closing a call whose arguments start at `from`.
 fn close_paren(bytes: &[u8], from: usize) -> Option<usize> {
@@ -249,7 +263,8 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b'"' => return Some(i + 1),
-                    _ => i += 1 }
+                    _ => i += 1,
+                }
             }
             Some(bytes.len())
         }
@@ -266,11 +281,13 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
                 match bytes[i] {
                     b'\\' => i += 2,
                     b'\'' => return Some(i + 1),
-                    _ => i += 1 }
+                    _ => i += 1,
+                }
             }
             Some(bytes.len())
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn has_keyword(src: &str, word: &str) -> bool {
@@ -325,7 +342,8 @@ fn go_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out
@@ -366,7 +384,11 @@ fn reflow(src: &str) -> String {
             '{' if in_clause => in_clause = false,
             _ => {}
         }
-        if !in_clause && paren == 0 && src.is_char_boundary(i) && starts_control_clause(src, bytes, i) {
+        if !in_clause
+            && paren == 0
+            && src.is_char_boundary(i)
+            && starts_control_clause(src, bytes, i)
+        {
             in_clause = true;
         }
 
@@ -400,8 +422,7 @@ fn starts_control_clause(src: &str, bytes: &[u8], at: usize) -> bool {
         return false;
     }
     KEYWORDS.iter().any(|kw| {
-        src[at..].starts_with(kw)
-            && !is_ident(bytes.get(at + kw.len()).copied().unwrap_or(b' '))
+        src[at..].starts_with(kw) && !is_ident(bytes.get(at + kw.len()).copied().unwrap_or(b' '))
     })
 }
 
@@ -412,4 +433,3 @@ fn push_line(lines: &mut Vec<String>, current: &mut String) {
     }
     current.clear();
 }
-

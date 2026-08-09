@@ -30,7 +30,10 @@ pub enum ShiftKind {
 /// is ECMA-legal), and the result wraps via `asIntN(width, …)` so
 /// `1L shl 63` goes negative the way a JVM long does.
 pub fn emit_wrapped_shift(chunk: &mut Chunk, width: u32, kind: ShiftKind, line: u32) {
-    debug_assert!(width.is_power_of_two(), "shift-count mask needs a 2^n width");
+    debug_assert!(
+        width.is_power_of_two(),
+        "shift-count mask needs a 2^n width"
+    );
     let count = chunk.alloc_scratch(1);
     let value = chunk.alloc_scratch(1);
     chunk.emit_op_u16(Op::LOCAL_SET, count, line);

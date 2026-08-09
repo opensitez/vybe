@@ -102,7 +102,8 @@ impl Compiler {
         match &expr.kind {
             ExprKind::Ident(name) => Some(name.rsplit('.').next().unwrap_or(name).to_string()),
             ExprKind::Member { field, .. } => Some(field.clone()),
-            _ => None }
+            _ => None,
+        }
     }
 
     pub(super) fn infer_namespace_tree_factory_return_type(
@@ -175,7 +176,8 @@ impl Compiler {
                 }
                 self.function_return_types.get(&self.canon(field)).cloned()
             }
-            _ => None }
+            _ => None,
+        }
     }
 
     pub(super) fn infer_array_element_type_hint<'a>(
@@ -208,7 +210,8 @@ impl Compiler {
                 let prefix = Self::member_access_path(object)?;
                 Some(format!("{prefix}.{field}"))
             }
-            _ => None }
+            _ => None,
+        }
     }
 
     pub(super) fn infer_vb_runtime_member_type_hint(&self, expr: &Expression) -> Option<String> {
@@ -232,7 +235,8 @@ impl Compiler {
             | "system.environment.tickcount"
             | "screen.width"
             | "screen.height" => Some("integer".into()),
-            _ => None }
+            _ => None,
+        }
     }
 
     /// The receiver's declared type is a class that defines an index
@@ -295,24 +299,29 @@ impl Compiler {
             ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
             ExprKind::Unary {
                 op: UnaryOp::Neg | UnaryOp::Pos,
-                expr } => self.infer_expr_type_hint(expr),
+                expr,
+            } => self.infer_expr_type_hint(expr),
             ExprKind::RefOf(place) => {
                 let pointee_type = match place.as_ref() {
                     PlaceExpr::Ident(name) => self.lookup_var_type_hint(name).map(str::to_string),
                     PlaceExpr::Member {
                         object,
                         field,
-                        null_safe } => self.infer_expr_type_hint(&Expression::new(ExprKind::Member {
+                        null_safe,
+                    } => self.infer_expr_type_hint(&Expression::new(ExprKind::Member {
                         object: object.clone(),
                         field: field.clone(),
-                        null_safe: *null_safe })),
+                        null_safe: *null_safe,
+                    })),
                     PlaceExpr::Index {
                         object,
                         index,
-                        null_safe } => self.infer_expr_type_hint(&Expression::new(ExprKind::Index {
+                        null_safe,
+                    } => self.infer_expr_type_hint(&Expression::new(ExprKind::Index {
                         object: object.clone(),
                         index: index.clone(),
-                        null_safe: *null_safe })),
+                        null_safe: *null_safe,
+                    })),
                     PlaceExpr::Deref(expr) => self.infer_expr_type_hint(expr).map(|type_hint| {
                         type_hint
                             .trim()
@@ -322,17 +331,20 @@ impl Compiler {
                             .trim_start_matches('^')
                             .trim()
                             .to_string()
-                    }) }?;
+                    }),
+                }?;
                 Some(format!("*{}", pointee_type.trim()))
             }
             ExprKind::Unary {
                 op: UnaryOp::AddrOf,
-                expr } => self
+                expr,
+            } => self
                 .infer_expr_type_hint(expr)
                 .map(|type_hint| format!("*{}", type_hint.trim().trim_end_matches('?').trim())),
             ExprKind::Unary {
                 op: UnaryOp::Deref,
-                expr }
+                expr,
+            }
             | ExprKind::RefLoad(expr) => self.infer_expr_type_hint(expr).map(|type_hint| {
                 type_hint
                     .trim()
@@ -356,6 +368,34 @@ impl Compiler {
                         "{}()",
                         self.infer_array_element_type_hint(args.iter().map(|arg| &arg.value))
                     ));
+                }
+                // `Enum.Parse(typeof(T), s)` answers with a `T`, and saying so
+                // is what keeps a parsed value an ENUM to everything
+                // downstream. A parse result is a member OBJECT now, so a site
+                // that asks "is this enum-typed?" and hears nothing falls to a
+                // generic path that cannot read the `ToString` role: C#
+                // `p.ToString()` trapped in a numeric coercion and VB's
+                // `Console.WriteLine(p)` printed `[object Status]`. Both are
+                // one missing answer, not two rendering bugs — fixing either
+                // print path alone would have left the other broken.
+                //
+                // The type is already in the first argument: the same
+                // runtime-type string `Enum.Parse` itself reads to find the
+                // members, read here through the same helper.
+                if let ExprKind::Member { object, field, .. } = &callee.kind {
+                    if field.eq_ignore_ascii_case("Parse")
+                        && args.len() >= 2
+                        && Self::member_access_path(object).is_some_and(|path| {
+                            path.eq_ignore_ascii_case("Enum")
+                                || path.eq_ignore_ascii_case("System.Enum")
+                        })
+                    {
+                        if let Some(enum_type) =
+                            self.canonical_enum_type_from_runtime_type(&args[0].value)
+                        {
+                            return Some(enum_type);
+                        }
+                    }
                 }
                 // JS conversion builtins have a known result type — e.g.
                 // `BigInt(x)` is a BigInt, so `BigInt(a) % BigInt(b)` routes
@@ -510,6 +550,17 @@ impl Compiler {
                     None
                 }
             }
+            // UNREACHABLE, and load-bearing that way. The arm above matches the
+            // same three ops with no further guard, so a bitwise `Binary`
+            // always lands there and answers `None` unless an operand is a
+            // BigInt. Rust warns about neither, because both arms are guarded.
+            //
+            // What depends on it: `expressions.rs` lowers `a | b` on enum
+            // operands to the underlying INTEGER, so `var c = A | B;` must
+            // infer as not-an-enum. If this arm were ever reordered ahead of
+            // the BigInt one, `(int)c` would resolve `c` as enum-typed and read
+            // the `Int` role off a raw number. Delete it or leave it dead —
+            // do not promote it without changing the flags lowering with it.
             ExprKind::Binary { op, left, right }
                 if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor) =>
             {
@@ -523,7 +574,8 @@ impl Compiler {
                     None
                 }
             }
-            _ => None }
+            _ => None,
+        }
     }
 
     /// Does this spelling denote a type STORED BY VALUE, or one that merely
@@ -703,18 +755,16 @@ impl Compiler {
                     // The remaining bitwise ops leave an exact i32, which is
                     // exact for `int` but says nothing about narrower widths.
                     BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => is_i32,
-                    _ => false }
+                    _ => false,
+                }
             }
 
-            _ => false }
+            _ => false,
+        }
     }
 
     /// Would `coerce_c_value_for_type_hint` be a no-op for this value?
-    pub(super) fn coercion_is_redundant(
-        &self,
-        expr: &Expression,
-        type_hint: Option<&str>,
-    ) -> bool {
+    pub(super) fn coercion_is_redundant(&self, expr: &Expression, type_hint: Option<&str>) -> bool {
         let Some(type_hint) = type_hint else {
             return false;
         };
@@ -734,7 +784,8 @@ impl Compiler {
                 .and_then(|type_hint| self.user_value_type_name_from_hint(type_hint)),
             _ => self
                 .infer_expr_type_hint(expr)
-                .and_then(|type_hint| self.user_value_type_name_from_hint(&type_hint)) }
+                .and_then(|type_hint| self.user_value_type_name_from_hint(&type_hint)),
+        }
     }
 
     /// Does this expression's STATIC type name a declared value type — one
@@ -762,7 +813,10 @@ impl Compiler {
         self.normalized_classes
             .get(&canon)
             .or_else(|| self.normalized_classes.get(&bare))
-            .or_else(|| self.normalized_classes.get(&Self::normalize_type_hint(&hint)))
+            .or_else(|| {
+                self.normalized_classes
+                    .get(&Self::normalize_type_hint(&hint))
+            })
             .is_some_and(|nc| nc.is_value_type)
     }
 
@@ -796,7 +850,8 @@ impl Compiler {
             {
                 self.expr_is_array_like(left) || self.expr_is_array_like(right)
             }
-            _ => false }
+            _ => false,
+        }
     }
 
     pub(super) fn vb_generic_type_display_name(&self, type_hint: &str) -> Option<String> {
@@ -875,7 +930,8 @@ impl Compiler {
             "string" | "system.string" => Some("String"),
             "datetime" | "date" | "system.datetime" => Some("Date"),
             "object" | "system.object" => Some("Object"),
-            _ => None };
+            _ => None,
+        };
         if let Some(name) = primitive {
             return Some(name.into());
         }
@@ -922,7 +978,8 @@ impl Compiler {
             ExprKind::Lit(Literal::Null | Literal::Undefined) => Some("Nothing".into()),
             _ => self
                 .infer_expr_type_hint(expr)
-                .and_then(|type_hint| self.vb_typename_from_type_hint(&type_hint)) }
+                .and_then(|type_hint| self.vb_typename_from_type_hint(&type_hint)),
+        }
     }
 
     pub(super) fn vb_is_reference_type_hint(&self, type_hint: &str) -> bool {
@@ -942,7 +999,8 @@ impl Compiler {
             Some("String" | "Object") => true,
             Some(name) if name.ends_with("()") => true,
             Some(_) => true,
-            None => false }
+            None => false,
+        }
     }
 
     pub(super) fn vb_is_object_type_hint(&self, type_hint: &str) -> bool {
@@ -962,7 +1020,8 @@ impl Compiler {
             ) => false,
             Some(name) if name.ends_with("()") => true,
             Some(_) => true,
-            None => false }
+            None => false,
+        }
     }
 
     pub(super) fn vb_is_reference_expr(&self, expr: &Expression) -> Option<bool> {
@@ -975,7 +1034,8 @@ impl Compiler {
             ExprKind::Lit(Literal::Str(_)) => Some(true),
             _ => self
                 .infer_expr_type_hint(expr)
-                .map(|type_hint| self.vb_is_reference_type_hint(&type_hint)) }
+                .map(|type_hint| self.vb_is_reference_type_hint(&type_hint)),
+        }
     }
 
     pub(super) fn vb_is_object_expr(&self, expr: &Expression) -> Option<bool> {
@@ -988,7 +1048,8 @@ impl Compiler {
             | ExprKind::Lit(Literal::Null | Literal::Undefined) => Some(false),
             _ => self
                 .infer_expr_type_hint(expr)
-                .map(|type_hint| self.vb_is_object_type_hint(&type_hint)) }
+                .map(|type_hint| self.vb_is_object_type_hint(&type_hint)),
+        }
     }
 
     pub(super) fn compile_expr_with_value_copy(&mut self, expr: &Expression) -> Result<(), String> {
@@ -1137,6 +1198,17 @@ impl Compiler {
             ExprKind::Ident(name) => self
                 .lookup_var_type_hint(name)
                 .is_some_and(Self::is_string_type_hint),
-            _ => false }
+            // Anything else the compiler can already TYPE. A string is a string
+            // however it was reached, and `infer_expr_type_hint` answers for the
+            // shapes the two arms above cannot: an array element, a field, a
+            // call's return. Without this, `Labels[I][1]` read null while the
+            // identical `S := Labels[I]; S[1]` read the character — the same
+            // expression taking two answers depending on whether a temporary
+            // happened to be introduced. Deferring to the one resolver is what
+            // keeps them the same.
+            _ => self
+                .infer_expr_type_hint(expr)
+                .is_some_and(|type_hint| Self::is_string_type_hint(&type_hint)),
+        }
     }
 }

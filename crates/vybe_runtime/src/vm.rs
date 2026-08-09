@@ -22,19 +22,46 @@ use crate::value::{Object, ObjectKind, Upvalue, Value};
 pub(crate) const MAX_FRAMES: usize = 16_384;
 pub(crate) const MAX_STACK: usize = 65536;
 
+/// Spec element-count bound for a 32-bit table: a table32's size must fit the
+/// index type, i.e. `2^32 - 1` elements (WASM 3.0, limits of `i32` tabletypes).
+/// `table.grow` past it MUST report `-1` — table_grow.wast:49 grows a `0x10`
+/// table by `0xffff_fff0`, which lands on `2^32` exactly and must fail.
+/// (table64's `2^64 - 1` is unreachable here — `TABLE_ALLOC_LIMIT` bites first.)
+pub(crate) const MAX_TABLE32_ELEMS: u64 = 0xffff_ffff;
+
+/// RESOURCE ceiling — the largest table this host will actually ALLOCATE.
+///
+/// This is deliberately NOT the spec bound above, and must not be "corrected"
+/// to it. `2^32 - 1` elements is a legal table32 size to declare and to grow
+/// to, but every element is a `Value`, so honouring it means a multi-gigabyte
+/// `Vec` — `(table 0xffff_ffff funcref)` is a ~70GB `resize` that gets the
+/// process OOM-killed instead of failing (table.wast exits 137).
+///
+/// The spec permits refusing: `table.grow` may report `-1` for ANY reason
+/// including allocation failure, and instantiation may fail on resource
+/// exhaustion. So the bound is a policy choice, and 2^26 is chosen to sit far
+/// above anything a real program tables (the whole official suite never grows
+/// past 800 elements) while keeping the worst case to a couple of gigabytes.
+///
+/// The same reasoning already governs memory: see `SharedMemory::grow`, where
+/// widening the ceiling to memory64's spec limit would reinstate that hang.
+pub(crate) const TABLE_ALLOC_LIMIT: u64 = 1 << 26;
+
 /// Result of VM execution — may complete or suspend for async.
 pub enum ExecResult {
     /// Execution completed with a value.
     Done(Value),
     /// Execution suspended — waiting for host/runtime resolution.
-    Suspended { kind: SuspensionKind, id: u64 } }
+    Suspended { kind: SuspensionKind, id: u64 },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuspensionKind {
     Await,
     Jspi,
     Future,
-    StreamRead }
+    StreamRead,
+}
 
 /// Restricted context passed to host functions.
 /// Provides only the capabilities a host function needs:
@@ -76,7 +103,8 @@ pub struct HostContext<'a> {
     handle_table_slot: *const crate::handle_table::HandleTable,
     /// Raw pointer to the VM's shared memory, for the `wasm:threads`
     /// scheduler intrinsics (`all_parked`). Null when no VM is attached.
-    shared_memory_slot: *const crate::shared_memory::SharedMemory }
+    shared_memory_slot: *const crate::shared_memory::SharedMemory,
+}
 
 // SAFETY: HostContext is always created and used on the VM's owning thread.
 // The raw pointer to last_exception_slot is valid for the duration of the host
@@ -251,7 +279,8 @@ impl<'a> HostContext<'a> {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Future { id },
                 type_id: 0,
-                fields: Vec::new() };
+                fields: Vec::new(),
+            };
             let val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)));
             (val, id)
         } else {
@@ -292,7 +321,8 @@ impl<'a> HostContext<'a> {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Stream { id },
                 type_id: 0,
-                fields: Vec::new() };
+                fields: Vec::new(),
+            };
             let val = Value::Object(std::sync::Arc::new(std::sync::Mutex::new(obj)));
             (val, id)
         } else {
@@ -344,7 +374,8 @@ impl<'a> HostContext<'a> {
             // work when called from guest bytecode.
             match self.resolve_readable_stream_handle(*handle as u32) {
                 Some(id) => id,
-                None => return Vec::new() }
+                None => return Vec::new(),
+            }
         } else {
             return Vec::new();
         };
@@ -384,7 +415,8 @@ impl<'a> HostContext<'a> {
             }
             match (*self.handle_table_slot).get(handle) {
                 Some(crate::handle_table::HandleEntry::ReadableStreamEnd(id)) => Some(*id),
-                _ => None }
+                _ => None,
+            }
         }
     }
 
@@ -400,7 +432,8 @@ impl<'a> HostContext<'a> {
             globals_slot: std::ptr::null_mut(),
             stack_slot: std::ptr::null(),
             handle_table_slot: std::ptr::null(),
-            shared_memory_slot: std::ptr::null() }
+            shared_memory_slot: std::ptr::null(),
+        }
     }
 
     /// From an awake host-fn caller's view: is every OTHER VM thread parked
@@ -529,7 +562,8 @@ pub enum ImportTarget {
     /// Component Model canonical built-in (module "canon"), VM-implemented —
     /// see [`CanonBuiltin`]. Args/results ride the operand stack; the
     /// builtin body pops what it needs.
-    Canon(CanonBuiltin) }
+    Canon(CanonBuiltin),
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CallFrame {
@@ -537,7 +571,8 @@ pub(crate) struct CallFrame {
     pub(crate) ip: usize,
     pub(crate) base: usize,
     pub(crate) label_base: usize,
-    pub(crate) upvalues: Vec<Arc<Mutex<Upvalue>>> }
+    pub(crate) upvalues: Vec<Arc<Mutex<Upvalue>>>,
+}
 
 /// Record of a live continuation on the VM's active-continuation
 /// stack. Each entry owns the continuation `Value` plus the caller's
@@ -553,7 +588,8 @@ pub struct ActiveContinuation {
     pub cont: crate::value::Value,
     pub caller_fiber: crate::fiber::Fiber,
     pub mode: ResumeMode,
-    pub handlers: Vec<crate::chunk::StackSwitchHandler> }
+    pub handlers: Vec<crate::chunk::StackSwitchHandler>,
+}
 
 /// Order-insensitive equality of two import tables (compile emits imports in
 /// HashMap order, which varies run to run). A genuine edit changes the SET.
@@ -561,8 +597,14 @@ fn imports_equal_as_set(a: &[crate::chunk::Import], b: &[crate::chunk::Import]) 
     if a.len() != b.len() {
         return false;
     }
-    let mut av: Vec<(&str, &str)> = a.iter().map(|i| (i.module.as_str(), i.name.as_str())).collect();
-    let mut bv: Vec<(&str, &str)> = b.iter().map(|i| (i.module.as_str(), i.name.as_str())).collect();
+    let mut av: Vec<(&str, &str)> = a
+        .iter()
+        .map(|i| (i.module.as_str(), i.name.as_str()))
+        .collect();
+    let mut bv: Vec<(&str, &str)> = b
+        .iter()
+        .map(|i| (i.module.as_str(), i.name.as_str()))
+        .collect();
     av.sort_unstable();
     bv.sort_unstable();
     av == bv
@@ -583,7 +625,8 @@ pub enum ResumeMode {
     /// Bare `RESUME` — push only the yielded value on caller's stack.
     Raw,
     /// `GEN_NEXT` iterator protocol — push `(value, has_more_i32)`.
-    Iterator }
+    Iterator,
+}
 
 /// Spec EH catch-clause kinds (exception-handling proposal `try_table`).
 pub(crate) const CATCH_KIND_CATCH: u8 = 0;
@@ -598,7 +641,8 @@ pub(crate) const CATCH_KIND_CATCH_ALL_REF: u8 = 3;
 #[derive(Debug, Clone)]
 pub(crate) struct TagEntity {
     pub(crate) debug_name: String,
-    pub(crate) arity: u8 }
+    pub(crate) arity: u8,
+}
 
 /// Exception handler entry — pushed per catch clause by `try_table`,
 /// popped (as a group) by TRY_END or on catch.
@@ -626,7 +670,8 @@ pub(crate) struct ExceptionHandler {
     pub(crate) tag_entity: usize,
     /// All clauses of one `try_table` share a group id, so a catch or
     /// TRY_END removes the whole table's clauses together.
-    pub(crate) group: u64 }
+    pub(crate) group: u64,
+}
 
 /// A language-agnostic bytecode virtual machine.
 ///
@@ -892,7 +937,8 @@ pub struct VM {
     /// Waitable set registry.
     pub waitable_sets: crate::waitable::WaitableRegistry,
     /// CM3 context slots (canon context.get/set).
-    pub context_slots: Vec<Value> }
+    pub context_slots: Vec<Value>,
+}
 
 /// A restorable post-boot baseline for [`VM::snapshot`] / [`VM::reset_to`].
 ///
@@ -932,6 +978,24 @@ pub struct VmSnapshot {
     chunks_len: usize,
     chunk_tag_maps_len: usize,
     tag_entities_len: usize,
+    // Registries a SCRIPT extends by running. Every one of these used to
+    // survive a reset — the doc comment on `reset_to` even advertised leaving
+    // the type registry and modules alone — so a program's class definitions
+    // and registered modules were still there for the NEXT tenant of a reused
+    // VM. That is a correctness bug between test runs and an isolation hole
+    // anywhere a VM serves more than one program.
+    //
+    // `type_registry` restores by value; `modules` holds non-Clone records, so
+    // the baseline KEY SET is captured instead and script-added entries are
+    // dropped by name; `deferred_sources` only ever grows, so a length is
+    // enough.
+    type_registry: crate::typedef::TypeRegistry,
+    module_keys: HashSet<String>,
+    deferred_sources_len: usize,
+    /// Whether type RECORDING was on at boot. The bank is indexed by chunk
+    /// index and chunk indices are REUSED after truncation, so a surviving
+    /// bank would apply one tenant's observations to another's code.
+    type_recording: bool,
     // Data-carrying "code-adjacent" fields a script run can extend: the funcref
     // index space (script closures), cross-language name aliases, and the import
     // table. Restored by value so a reset leaves them byte-identical to boot.
@@ -950,7 +1014,8 @@ pub struct VmSnapshot {
     // Coupled with `tag_entities` (maps imported-tag name → index into it). Must
     // restore together: truncating tag_entities without this would leave a
     // dangling index a later lookup could read out of bounds.
-    imported_tag_registry: HashMap<String, usize> }
+    imported_tag_registry: HashMap<String, usize>,
+}
 
 /// A registered finalizer for an object.
 #[derive(Clone)]
@@ -958,7 +1023,8 @@ pub(crate) struct FinalizerEntry {
     /// Weak reference to the target object.
     pub(crate) target: ArcWeak<Mutex<crate::value::Object>>,
     /// Callback to invoke when the object is about to be collected.
-    pub(crate) callback: Value }
+    pub(crate) callback: Value,
+}
 
 /// Entry in the structured control flow label stack.
 #[derive(Debug, Clone, Copy)]
@@ -974,7 +1040,8 @@ pub struct LabelEntry {
     pub result_arity: u8,
     /// Value-stack height at label entry. Branches restore this height while
     /// preserving the top `result_arity` values.
-    pub stack_height: usize }
+    pub stack_height: usize,
+}
 
 /// Pre-scanned jump targets for one BLOCK / LOOP / IF / ELSE opcode.
 /// Keyed by the opcode's position (first prefix byte) in chunk.code.
@@ -985,7 +1052,8 @@ pub struct BlockTargets {
     /// For BLOCK/LOOP: None.
     pub else_ip: Option<usize>,
     /// Position of the matching END opcode.
-    pub end_ip: usize }
+    pub end_ip: usize,
+}
 
 impl VM {
     /// Immutable borrow of the table at `tableidx`. Index 0 maps to
@@ -1033,7 +1101,8 @@ impl VM {
             exception_handlers: Vec::new(),
             tag_entities: vec![TagEntity {
                 debug_name: "vybe:exception".into(),
-                arity: 1 }],
+                arity: 1,
+            }],
             chunk_tag_maps: Vec::new(),
             try_group_counter: 0,
             imported_tag_registry: HashMap::from([("vybe:exception".to_string(), 0usize)]),
@@ -1090,7 +1159,8 @@ impl VM {
             cm_tasks: Vec::new(),
             next_cm_task_id: 1,
             waitable_sets: crate::waitable::WaitableRegistry::new(),
-            context_slots: Vec::new() }
+            context_slots: Vec::new(),
+        }
     }
 
     /// Capture the current state as a restorable warm baseline (VM hot-reset,
@@ -1120,6 +1190,10 @@ impl VM {
             chunks_len: self.chunks.len(),
             chunk_tag_maps_len: self.chunk_tag_maps.len(),
             tag_entities_len: self.tag_entities.len(),
+            type_registry: self.type_registry.clone(),
+            module_keys: self.modules.keys().cloned().collect(),
+            deferred_sources_len: self.deferred_sources.len(),
+            type_recording: self.type_recorder.is_some(),
             func_table: self.func_table.clone(),
             case_aliases: self.case_aliases.clone(),
             import_table: self.import_table.clone(),
@@ -1128,15 +1202,25 @@ impl VM {
             module_type_names: self.module_type_names.clone(),
             module_type_ids: self.module_type_ids.clone(),
             chunk_type_base: self.chunk_type_base.clone(),
-            imported_tag_registry: self.imported_tag_registry.clone() }
+            imported_tag_registry: self.imported_tag_registry.clone(),
+        }
     }
 
     /// Restore the VM to a [`snapshot`](VM::snapshot) baseline: free the whole
     /// post-snapshot script generation (objects + cycles, via `heap::restore`),
     /// drop script-added globals / restore reassigned ones, reset wasm memory &
     /// tables to boot bytes, and clear all transient execution state. Leaves the
-    /// VM byte-indistinguishable from a freshly-booted one. Code, host fns, type
-    /// registry, modules, and the debugger/eval/reload hooks are untouched.
+    /// VM byte-indistinguishable from a freshly-booted one.
+    ///
+    /// Anything a SCRIPT creates by running is flushed — including the type
+    /// registry, registered modules and deferred sources, which this used to
+    /// leave in place. Leaving them meant a program's classes and modules were
+    /// still resolvable by the next program in a reused VM: wrong between test
+    /// runs, and an isolation hole wherever one VM serves more than one tenant.
+    ///
+    /// What survives is BOOT infrastructure only, none of which a script
+    /// creates: host fns and their registry, the boot chunks (prelude), the
+    /// scheduler the embedder installed, and the debugger/eval/reload hooks.
     pub fn reset_to(&mut self, snap: &VmSnapshot) {
         // 1. Heap: force-clear the script generation (breaks cycles so refcounts
         //    collapse to 0) and rewire baseline objects to their boot contents.
@@ -1169,6 +1253,44 @@ impl VM {
         self.chunks.truncate(snap.chunks_len);
         self.chunk_tag_maps.truncate(snap.chunk_tag_maps_len);
         self.tag_entities.truncate(snap.tag_entities_len);
+        // 4c. Registries a SCRIPT extends by running. These are the ones that
+        //     used to survive: a program's class definitions stayed in the type
+        //     registry, its modules stayed registered, and the next program in
+        //     a reused VM resolved against them. Chunk indices are REUSED after
+        //     the truncation above, so a surviving type-observation bank would
+        //     also attribute one tenant's observations to another's code.
+        self.type_registry = snap.type_registry.clone();
+        self.modules
+            .retain(|name, _| snap.module_keys.contains(name));
+        // A deferred source registered at boot is infrastructure and stays —
+        // but its QUEUE belongs to the program that just ran. Those entries are
+        // `Value`s closing over chunks truncated one line above, whose indices
+        // the next program reuses.
+        for src in &self.deferred_sources {
+            src.clear_pending();
+        }
+        self.deferred_sources.truncate(snap.deferred_sources_len);
+        // 4d. Host-side per-program state, which no amount of VM restoring can
+        //     reach: plugins own it directly (timer/animation callbacks, DOM
+        //     listeners and documents, cached constructors, connections). It is
+        //     reset here rather than in an embedder so that EVERY caller of
+        //     `reset_to` gets a total reset — a warm worker, a `--serve` request
+        //     loop, or anything else that lets one VM serve two tenants.
+        crate::framework::reset_all_registered();
+        // 4e. Then drop the host resources the VM itself owns on the plugins'
+        //     behalf ([`crate::resources`]) — open descriptors, HTTP bodies,
+        //     key material, cached constructors, DOM listeners. LAST, and after
+        //     the hook above on purpose: a plugin whose `reset` performs an
+        //     ACTION (closing a socket, zeroing a key) has to iterate its table
+        //     to find the handles, so clearing the storage first would leave
+        //     those actions with nothing to close and leak in silence.
+        //
+        //     A plugin that only needs its state gone writes no `reset` at all
+        //     — that is the point of the store. See `resources.rs`.
+        crate::resources::clear_all();
+        self.type_recorder = snap
+            .type_recording
+            .then(crate::type_recorder::TypeRecorder::new);
         // Restore code-adjacent data fields a run can extend (script funcrefs,
         // name aliases, resolved imports) to their exact boot value.
         self.func_table = snap.func_table.clone();
@@ -1270,7 +1392,8 @@ impl VM {
         let mut hook = self.eval_hook.take();
         let result = match hook.as_mut() {
             Some(h) => h(self, expr, locals),
-            None => Err("expression eval unavailable (no compiler hook attached)".to_string()) };
+            None => Err("expression eval unavailable (no compiler hook attached)".to_string()),
+        };
         self.eval_hook = hook;
         result
     }
@@ -1294,7 +1417,8 @@ impl VM {
         let mut hook = self.event_fire_hook.take();
         let result = match hook.as_mut() {
             Some(h) => h(self, control, event),
-            None => Err("event simulation unavailable (no gui hook attached)".to_string()) };
+            None => Err("event simulation unavailable (no gui hook attached)".to_string()),
+        };
         self.event_fire_hook = hook;
         result
     }
@@ -1315,7 +1439,8 @@ impl VM {
         let mut hook = self.reload_hook.take();
         let compiled = match hook.as_mut() {
             Some(h) => h(self),
-            None => Err("hot reload unavailable (no compiler hook attached)".to_string()) };
+            None => Err("hot reload unavailable (no compiler hook attached)".to_string()),
+        };
         self.reload_hook = hook;
         let new_chunks = compiled?;
         self.apply_reload(new_chunks)
@@ -1460,7 +1585,12 @@ impl VM {
     pub fn debug_suspended_fibers(&self) -> Vec<(Vec<usize>, String)> {
         let mut out = Vec::new();
         for ac in &self.active_continuations {
-            let idxs: Vec<usize> = ac.caller_fiber.frames.iter().map(|f| f.chunk_index).collect();
+            let idxs: Vec<usize> = ac
+                .caller_fiber
+                .frames
+                .iter()
+                .map(|f| f.chunk_index)
+                .collect();
             out.push((idxs, "continuation".to_string()));
         }
         let el = self.event_loop.borrow();
@@ -1555,7 +1685,8 @@ impl VM {
                 crate::error::StackFrame {
                     chunk_name: chunk.name.clone(),
                     offset: f.ip,
-                    line }
+                    line,
+                }
             })
             .collect()
     }
@@ -1595,7 +1726,8 @@ impl VM {
                     (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_add(*b)),
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_add(*b)),
                     (Value::F64(a), Value::F64(b)) => Value::F64(a + b),
-                    _ => Value::F64(l.as_f64() + r.as_f64()) }
+                    _ => Value::F64(l.as_f64() + r.as_f64()),
+                }
             }
             ConstExpr::Mul(left, right) => {
                 let l = self.eval_const_expr(left);
@@ -1604,7 +1736,8 @@ impl VM {
                     (Value::I32(a), Value::I32(b)) => Value::I32(a.wrapping_mul(*b)),
                     (Value::I64(a), Value::I64(b)) => Value::I64(a.wrapping_mul(*b)),
                     (Value::F64(a), Value::F64(b)) => Value::F64(a * b),
-                    _ => Value::F64(l.as_f64() * r.as_f64()) }
+                    _ => Value::F64(l.as_f64() * r.as_f64()),
+                }
             }
             ConstExpr::RefFunc(chunk_idx) => {
                 if *chunk_idx < self.chunks.len() {
@@ -1613,7 +1746,8 @@ impl VM {
                         name: Some(chunk.name.clone()),
                         arity: chunk.arity,
                         chunk_index: *chunk_idx,
-                        upvalues: Vec::new() };
+                        upvalues: Vec::new(),
+                    };
                     let mut obj = Object::new();
                     obj.kind = ObjectKind::Function(func);
                     Value::Object(crate::heap::alloc(obj))
@@ -1677,6 +1811,15 @@ impl VM {
 
     fn instantiate_declared_tables(&mut self, min_sizes: &[u64]) -> Result<(), crate::VMError> {
         for (idx, size) in min_sizes.iter().copied().enumerate() {
+            // A declared minimum we cannot allocate must FAIL instantiation,
+            // never be attempted: `resize` on a 4-billion-element declaration
+            // faults in every page and the host dies before the module runs.
+            // The spec allows instantiation to fail on resource exhaustion.
+            if size > TABLE_ALLOC_LIMIT {
+                return Err(crate::VMError::new(
+                    "table declaration exceeds the host allocation limit",
+                ));
+            }
             let size = usize::try_from(size)
                 .map_err(|_| crate::VMError::new("table declaration size out of range"))?;
             if self.wasm_tables.len() <= idx {
@@ -1951,7 +2094,8 @@ impl VM {
         let mut visited = Vec::new();
         match self.resolve_host_export(module, name, &mut visited)? {
             ExportEntry::Function { idx } => Some(*idx),
-            _ => None }
+            _ => None,
+        }
     }
 
     /// Resolve host type exports (Class / ResourceType) through Module Records.
@@ -2009,8 +2153,10 @@ impl VM {
         match record.exports.get(name)? {
             ExportEntry::Indirect {
                 from,
-                name: target_name } => self.resolve_host_export(from, target_name, visited),
-            export => Some(export) }
+                name: target_name,
+            } => self.resolve_host_export(from, target_name, visited),
+            export => Some(export),
+        }
     }
 
     fn resolve_host_type_export(&self, module: &str, name: &str) -> Option<crate::TypeDef> {
@@ -2019,7 +2165,8 @@ impl VM {
             ExportEntry::Class { type_id } | ExportEntry::ResourceType { type_id } => {
                 self.type_registry.get(*type_id).cloned()
             }
-            _ => None }
+            _ => None,
+        }
     }
 
     /// Create a HostContext with callback capability for host functions.
@@ -2050,7 +2197,8 @@ impl VM {
             globals_slot: globals_ptr,
             stack_slot: &self.stack as *const Vec<Value>,
             handle_table_slot: &self.handle_table as *const crate::handle_table::HandleTable,
-            shared_memory_slot: &self.memory as *const crate::shared_memory::SharedMemory }
+            shared_memory_slot: &self.memory as *const crate::shared_memory::SharedMemory,
+        }
     }
 
     /// Close open upvalues in a lambda value that escapes the current stack frame.
@@ -2256,7 +2404,8 @@ impl VM {
                 ImportTarget::ChunkFn { chunk_index, arity } => {
                     self.import_table.push(ImportTarget::ChunkFn {
                         chunk_index: chunk_index + script_idx,
-                        arity });
+                        arity,
+                    });
                 }
                 ImportTarget::Host(idx) => {
                     self.import_table.push(ImportTarget::Host(idx));
@@ -2336,7 +2485,8 @@ impl VM {
             ip: 0,
             base: self.stack.len(),
             label_base: self.label_stack.len(),
-            upvalues: Vec::new() });
+            upvalues: Vec::new(),
+        });
         self.stack.resize(
             self.stack.len() + self.chunks[script_idx].local_count as usize,
             Value::Null,
@@ -2473,7 +2623,8 @@ impl VM {
                                         name: Some(chunk.name.clone()),
                                         arity: chunk.arity,
                                         chunk_index: chunk_idx,
-                                        upvalues: Vec::new() };
+                                        upvalues: Vec::new(),
+                                    };
                                     let mut obj = Object::new();
                                     obj.kind = ObjectKind::Function(func);
                                     Value::Object(crate::heap::alloc(obj))
@@ -2481,7 +2632,8 @@ impl VM {
                                     Value::Null
                                 }
                             }
-                            other => other })
+                            other => other,
+                        })
                         .collect()
                 })
                 .collect();
@@ -2605,7 +2757,8 @@ impl VM {
             ip: 0,
             base: 0,
             label_base: self.label_stack.len(),
-            upvalues: Vec::new() });
+            upvalues: Vec::new(),
+        });
 
         let local_count = self.chunks[script_idx].local_count as usize;
         for _ in 0..local_count {
@@ -2623,7 +2776,8 @@ impl VM {
             }
             ExecResult::Suspended {
                 kind: SuspensionKind::Jspi,
-                id } => {
+                id,
+            } => {
                 self.run_event_loop()?;
                 if self.has_pending_jspi() {
                     Err(VMError::new(format!("__jspi__:{}", id)))
@@ -2812,7 +2966,8 @@ impl VM {
                     } else {
                         self.tag_entities.push(TagEntity {
                             debug_name: decl.debug_name.clone(),
-                            arity: decl.arity });
+                            arity: decl.arity,
+                        });
                         let id = self.tag_entities.len() - 1;
                         self.imported_tag_registry.insert(decl.debug_name, id);
                         id
@@ -2820,7 +2975,8 @@ impl VM {
                 } else {
                     self.tag_entities.push(TagEntity {
                         debug_name: decl.debug_name,
-                        arity: decl.arity });
+                        arity: decl.arity,
+                    });
                     self.tag_entities.len() - 1
                 };
                 map.push(entity);
@@ -2886,7 +3042,7 @@ impl VM {
         self.deferred_sources.iter().find_map(|s| s.pop_due())
     }
 
-    /// Sleep until the earliest deferred deadline (`wasi:clocks` 
+    /// Sleep until the earliest deferred deadline (`wasi:clocks`
     /// subscribe-duration shape). Returns immediately if ready work exists.
     pub fn wait_for_deferred(&self) {
         if self.event_loop.borrow().has_pending() {
@@ -2966,11 +3122,7 @@ impl VM {
     /// (the import name IS the value, per js-string-builtins) → host
     /// functions through Module Records → `"*"` wildcard against globals →
     /// `__vybe_<name>` stdlib redirect → loud error.
-    pub fn resolve_import_target(
-        &self,
-        module: &str,
-        name: &str,
-    ) -> Result<ImportTarget, VMError> {
+    pub fn resolve_import_target(&self, module: &str, name: &str) -> Result<ImportTarget, VMError> {
         if module == "jspi" && name == "await" {
             return Ok(ImportTarget::JspiSuspend);
         }
@@ -3038,7 +3190,8 @@ impl VM {
     pub(crate) fn constant_str(&self, index: u16) -> String {
         match &self.get_constant(index) {
             Value::String(s) => s.to_string(),
-            v => format!("{}", v) }
+            v => format!("{}", v),
+        }
     }
 
     // -- SIMD helpers --
@@ -3050,27 +3203,32 @@ impl VM {
                 let id: u64 = e.message["__await__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended {
                     kind: SuspensionKind::Await,
-                    id })
+                    id,
+                })
             }
             Err(e) if e.message.starts_with("__jspi__:") => {
                 let id: u64 = e.message["__jspi__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended {
                     kind: SuspensionKind::Jspi,
-                    id })
+                    id,
+                })
             }
             Err(e) if e.message.starts_with("__future__:") => {
                 let id: u64 = e.message["__future__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended {
                     kind: SuspensionKind::Future,
-                    id })
+                    id,
+                })
             }
             Err(e) if e.message.starts_with("__stream_read__:") => {
                 let id: u64 = e.message["__stream_read__:".len()..].parse().unwrap_or(0);
                 Ok(ExecResult::Suspended {
                     kind: SuspensionKind::StreamRead,
-                    id })
+                    id,
+                })
             }
-            Err(e) => Err(e) }
+            Err(e) => Err(e),
+        }
     }
 
     pub(crate) fn execute(&mut self) -> Result<Value, VMError> {

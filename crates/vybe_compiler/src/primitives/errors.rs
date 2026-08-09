@@ -9,7 +9,7 @@ use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
 use crate::primitives::reflection;
-use vybe_ast::{CatchClause, ExprKind, Expression, StmtKind, Statement};
+use vybe_ast::{CatchClause, ExprKind, Expression, Statement, StmtKind};
 
 /// Wrap a module body in the program's ERROR BOUNDARY: a catch-all `Try` whose
 /// handler is the language's own uncaught-exception report.
@@ -67,7 +67,8 @@ pub fn wrap_module_in_error_boundary(
     let mut handler = handler;
     handler.push(Statement::new(StmtKind::Throw {
         expr: Some(Expression::new(ExprKind::Ident(catch_var.to_string()))),
-        cause: None }));
+        cause: None,
+    }));
     let mut out = declarations;
     out.push(Statement::new(StmtKind::Try {
         body: executable,
@@ -77,9 +78,11 @@ pub fn wrap_module_in_error_boundary(
             var_name: Some(catch_var.to_string()),
             stack_var: None,
             body: handler,
-            when_clause: None }],
+            when_clause: None,
+        }],
         else_body: None,
-        finally: None }));
+        finally: None,
+    }));
     out
 }
 
@@ -185,7 +188,8 @@ pub fn canonical_exception_name(name: &str) -> &str {
         "ioerror" | "ioexception" => "IOError",
         "oserror" => "OSError",
         "exception" | "error" => "Exception",
-        _ => trimmed }
+        _ => trimmed,
+    }
 }
 
 /// Spec EH catch-clause kinds (exception-handling proposal `try_table`).
@@ -210,7 +214,8 @@ pub fn exception_tag(chunk: &mut Chunk) -> u16 {
 #[derive(Clone, Copy)]
 pub struct TryTableClause {
     pub kind: u8,
-    pub tag: u16 }
+    pub tag: u16,
+}
 
 /// Emit a `try_table` header with N catch clauses — the single source of
 /// truth for the VM's internal try_table byte layout, shared by every
@@ -239,7 +244,8 @@ pub fn emit_try_start(chunk: &mut Chunk, line: u32) -> usize {
         chunk,
         &[TryTableClause {
             kind: CATCH_KIND_CATCH,
-            tag }],
+            tag,
+        }],
         line,
     )[0]
 }
@@ -558,7 +564,8 @@ pub fn exception_ancestors(name: &str) -> &'static [&'static str] {
             "BaseException",
         ],
         "StopAsyncIteration" => &["StopAsyncIteration", "Exception", "BaseException"],
-        _ => &[] }
+        _ => &[],
+    }
 }
 
 /// Stamp `__types` with the canonical ancestor chain so typed catches
@@ -606,7 +613,7 @@ pub fn emit_resource_dispose(chunk: &mut Chunk, slot: u16, dispose_method: &str,
     chunk.emit_br_if(0, line);
     // Stack: [method]. Push receiver and CALL_REF(1). Drop result.
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
-    chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
     chunk.emit_op(Op::DROP, line);
     // Skipped path leaves `method` (null/undef) on stack — the END
     // closes the block, after which we DROP unconditionally.

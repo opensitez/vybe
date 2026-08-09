@@ -43,13 +43,15 @@ fn assert_f64(val: &Value, expected: f64) {
             expected,
             v
         ),
-        _ => panic!("Expected F64({}), got {:?}", expected, val) }
+        _ => panic!("Expected F64({}), got {:?}", expected, val),
+    }
 }
 
 fn assert_i32(val: &Value, expected: i32) {
     match val {
         Value::I32(v) => assert_eq!(*v, expected, "Expected I32({}), got I32({})", expected, v),
-        _ => panic!("Expected I32({}), got {:?}", expected, val) }
+        _ => panic!("Expected I32({}), got {:?}", expected, val),
+    }
 }
 
 fn assert_bool(val: &Value, expected: bool) {
@@ -62,7 +64,8 @@ fn assert_bool(val: &Value, expected: bool) {
             expected as i32,
             v
         ),
-        _ => panic!("Expected Bool/i32({}), got {:?}", expected, val) }
+        _ => panic!("Expected Bool/i32({}), got {:?}", expected, val),
+    }
 }
 
 fn assert_string(val: &Value, expected: &str) {
@@ -74,7 +77,8 @@ fn assert_string(val: &Value, expected: &str) {
             expected,
             s.as_ref()
         ),
-        _ => panic!("Expected String({:?}), got {:?}", expected, val) }
+        _ => panic!("Expected String({:?}), got {:?}", expected, val),
+    }
 }
 
 // ============================================================
@@ -463,7 +467,8 @@ fn f64_div_by_zero_infinity() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) => assert!(v.is_infinite() && v > 0.0, "Expected +Infinity, got {}", v),
-        _ => panic!("Expected F64(Infinity), got {:?}", result) }
+        _ => panic!("Expected F64(Infinity), got {:?}", result),
+    }
 }
 
 #[test]
@@ -476,7 +481,8 @@ fn f64_div_negative_by_zero() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::F64(v) => assert!(v.is_infinite() && v < 0.0, "Expected -Infinity, got {}", v),
-        _ => panic!("Expected F64(-Infinity), got {:?}", result) }
+        _ => panic!("Expected F64(-Infinity), got {:?}", result),
+    }
 }
 
 #[test]
@@ -629,7 +635,8 @@ fn conv_i64_extend_i32() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::I64(-5) => {}
-        _ => panic!("Expected I64(-5), got {:?}", result) }
+        _ => panic!("Expected I64(-5), got {:?}", result),
+    }
 }
 
 #[test]
@@ -720,7 +727,8 @@ fn array_get_out_of_bounds() {
     // Out-of-bounds dynamic array access follows JS-like missing-value semantics.
     match result {
         Value::Undefined => {}
-        _ => panic!("Expected Undefined for out-of-bounds, got {:?}", result) }
+        _ => panic!("Expected Undefined for out-of-bounds, got {:?}", result),
+    }
 }
 
 #[test]
@@ -807,7 +815,8 @@ fn struct_get_missing_prop() {
     let result = run_chunks(vec![chunk]);
     match result {
         Value::Undefined => {}
-        _ => panic!("Expected Undefined for missing prop, got {:?}", result) }
+        _ => panic!("Expected Undefined for missing prop, got {:?}", result),
+    }
 }
 
 #[test]
@@ -1040,7 +1049,10 @@ fn ref_is_null_on_undefined() {
     let mut chunk = Chunk::new("test");
     chunk.local_count = 1;
     {
-        let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+        let name = format!(
+            "__test_arg_{}",
+            TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
         vm.globals.insert(name.clone(), Value::Undefined);
         let ci = chunk.intern_string_constant(&name);
         chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);

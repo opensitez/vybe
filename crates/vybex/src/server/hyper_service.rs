@@ -21,14 +21,29 @@ use super::response_stream::BoxBody;
 
 /// Construct the tower service hyper will call for each request on a
 /// given connection. We close over `config` and the `remote` addr.
-pub fn make_service(config: Arc<ServeConfig>, remote: SocketAddr) -> ServeHandler {
-    ServeHandler { config, remote }
+pub fn make_service(
+    config: Arc<ServeConfig>,
+    remote: SocketAddr,
+    pool: Option<Arc<super::vm_pool::VmPool>>,
+    cache: Option<Arc<super::compile_cache::CompileCache>>,
+) -> ServeHandler {
+    ServeHandler {
+        config,
+        remote,
+        pool,
+        cache,
+    }
 }
 
 #[derive(Clone)]
 pub struct ServeHandler {
     config: Arc<ServeConfig>,
     remote: SocketAddr,
+    /// `None` under `--cold`.
+    pool: Option<Arc<super::vm_pool::VmPool>>,
+    /// `None` under `--no-cache`. Independent of `pool`: the cold path caches
+    /// too, so `--cold` isolates the VM pool and nothing else.
+    cache: Option<Arc<super::compile_cache::CompileCache>>,
 }
 
 impl hyper::service::Service<Request<Incoming>> for ServeHandler {
@@ -41,13 +56,15 @@ impl hyper::service::Service<Request<Incoming>> for ServeHandler {
     fn call(&self, req: Request<Incoming>) -> Self::Future {
         let config = Arc::clone(&self.config);
         let remote = self.remote;
+        let pool = self.pool.clone();
+        let cache = self.cache.clone();
         Box::pin(async move {
             let start = std::time::Instant::now();
             let method = req.method().clone();
             let path = req.uri().path().to_string();
             let protocol = format!("{:?}", req.version());
 
-            let response = handle(req, config, remote).await;
+            let response = handle(req, config, remote, pool, cache).await;
 
             super::logging::log_request(
                 remote,
@@ -66,6 +83,8 @@ async fn handle(
     req: Request<Incoming>,
     config: Arc<ServeConfig>,
     remote: SocketAddr,
+    pool: Option<Arc<super::vm_pool::VmPool>>,
+    cache: Option<Arc<super::compile_cache::CompileCache>>,
 ) -> Response<BoxBody> {
     // Method gate: Phase 1 accepts common safe methods. Unsupported →
     // 501 Not Implemented.
@@ -137,6 +156,8 @@ async fn handle(
         config.no_sandbox,
         config.timeout_secs,
         config.shutdown.clone(),
+        pool,
+        cache,
     )
     .await
 }

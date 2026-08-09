@@ -209,7 +209,8 @@ fn main() {
         pixmap: &mut form_pixmap,
         font_system: &mut font_system,
         swash_cache: &mut swash_cache,
-        scale: 1.0 };
+        scale: 1.0,
+    };
     form.render(&mut ctx);
 
     let form_out = "target/canvas_widget_demo.png";

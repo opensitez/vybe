@@ -11,20 +11,24 @@ use crate::{
     BindingNavigator, Button, Checkbox, ContextMenu, DataGrid, DateTimePicker, FlowLayoutPanel,
     GroupBox, Label, ListBox, ListView, MaskedTextBox, MenuStrip, MonthCalendar, NumericUpDown,
     Panel, PictureBox, ProgressBar, Radio, ScrollBar, Select, Slider, SplitContainer, StatusStrip,
-    TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView };
+    TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView,
+};
 
 /// Create a boxed control from a kind name.
-pub fn make_widget(type_name: &str, name: &str, text: &str, w: f32, h: f32) -> Box<dyn PanelWidget> {
+pub fn make_widget(
+    type_name: &str,
+    name: &str,
+    text: &str,
+    w: f32,
+    h: f32,
+) -> Box<dyn PanelWidget> {
     match type_name.to_lowercase().as_str() {
         "canvas" | "paintbox" => {
             // The Canvas widget is the bare drawable surface. PaintBox
             // is the .NET BCL/FCL alias the dotnet wrapper uses.
 
             let mut c = crate::Canvas::new().with_name(name);
-            <crate::Canvas as PanelWidget>::set_rect(
-                &mut c,
-                LayoutRect::new(0.0, 0.0, w, h),
-            );
+            <crate::Canvas as PanelWidget>::set_rect(&mut c, LayoutRect::new(0.0, 0.0, w, h));
             Box::new(c)
         }
         "button" => {
@@ -39,8 +43,13 @@ pub fn make_widget(type_name: &str, name: &str, text: &str, w: f32, h: f32) -> B
             l.height = h;
             Box::new(l)
         }
-        "textbox" | "richtextbox" => {
+        kind @ ("textbox" | "richtextbox") => {
             let mut t = TextInput::new().with_name(name);
+            // A `<textarea>` / `TMemo` / `RichTextBox` is the same control with
+            // newlines as content. `html/rich.rs` already declares it that way
+            // (`white-space: pre-wrap`, `overflow: auto`); building it as a
+            // one-line field was what made a memo show only its first line.
+            t.multiline = kind == "richtextbox";
             t.value = text.to_string();
             t.cursor = t.value.len();
             t.width = w;

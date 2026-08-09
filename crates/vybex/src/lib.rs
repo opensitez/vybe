@@ -6,8 +6,10 @@ pub mod cli;
 pub mod dap;
 pub mod debug_repl;
 pub mod gui_capture;
+pub mod gui_document;
 pub mod gui_launch;
 pub mod server;
+pub mod warm;
 pub mod watch;
 pub mod worker;
 

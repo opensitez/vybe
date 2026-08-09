@@ -32,10 +32,27 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(60);
 /// out, it is still running.
 pub(crate) const SLOW_AFTER: Duration = Duration::from_secs(10);
 
+/// Pre-booted workers kept ready so replacing a hung one is instant.
+///
+/// Replacing a worker used to call [`spawn`] on the consuming thread, which
+/// waits for the fresh process to print `##vybe-ready`. That boot is the
+/// expensive part — a one-line program costs seconds standalone, versus
+/// milliseconds through a warm worker — so a hung test charged the queue the
+/// timeout AND a cold start, with that thread doing nothing for both. Spares
+/// move the boot off the critical path: a keeper thread keeps [`SPARES`] of
+/// them warm, and a replacement is a channel receive.
+///
+/// A `sync_channel` is the whole mechanism: the keeper blocks on `send` while
+/// the pool is full, so exactly `SPARES` idle processes exist, and it wakes to
+/// brew another the moment one is taken. When `run_all` drops the receiver the
+/// `send` fails and the keeper exits — no shutdown flag to get wrong.
+const SPARES: usize = 2;
+
 struct Worker {
     child: Child,
     stdin: ChildStdin,
-    lines: Receiver<String> }
+    lines: Receiver<String>,
+}
 
 fn spawn(vybex: &Path) -> Option<Worker> {
     let mut child = Command::new(vybex)
@@ -60,7 +77,11 @@ fn spawn(vybex: &Path) -> Option<Worker> {
     });
 
     match rx.recv_timeout(BOOT_TIMEOUT) {
-        Ok(line) if line.trim() == READY => Some(Worker { child, stdin, lines: rx }),
+        Ok(line) if line.trim() == READY => Some(Worker {
+            child,
+            stdin,
+            lines: rx,
+        }),
         _ => {
             let _ = child.kill();
             let _ = child.wait();
@@ -70,14 +91,18 @@ fn spawn(vybex: &Path) -> Option<Worker> {
 }
 
 enum Reply {
-    Done { pass: bool, message: String },
+    Done {
+        pass: bool,
+        message: String,
+    },
     /// The deadline passed with the worker still silent — a genuine hang.
     Timeout,
     /// The worker's pipe closed, or the job could not be written to it: the
     /// process is GONE, not slow. Reporting this as a timeout was a lie with a
     /// number attached — a worker that crashed at 40s was recorded as
     /// "no result within 60s", which reads as a hang that never happened.
-    Died }
+    Died,
+}
 
 /// Send one job and read until the result sentinel. Everything before the
 /// sentinel is the program's own output, which is where the harness prints its
@@ -85,6 +110,7 @@ enum Reply {
 fn dispatch(
     worker: &mut Worker,
     file: &Path,
+    text: &str,
     mode: Mode,
     timeout: Duration,
     slow: &(dyn Fn(&Path, u64) + Send + Sync),
@@ -93,14 +119,16 @@ fn dispatch(
         Mode::Run => "run",
         Mode::Compile => "compile",
         Mode::CompileFail => "compile-fail",
-        Mode::RunFail => "run" };
+        Mode::RunFail => "run",
+    };
     // Third field: the status the test is expected to end with
     // (`vybe-test-exit:`), so the worker can apply the same rule the cold path
     // does. Without it a test whose correct behaviour is `exit(1)` can never
     // pass under the warm pool.
-    let want_exit = std::fs::read_to_string(file)
-        .map(|t| crate::run::expected_exit(&t))
-        .unwrap_or(0);
+    // Read from the text the CALLER already loaded. Re-reading the file here
+    // meant two full reads of every test, and a job is now ~35ms — an I/O the
+    // run does not need is no longer lost in the noise.
+    let want_exit = crate::run::expected_exit(text);
     if writeln!(worker.stdin, "{}\t{tag}\t{want_exit}", file.display()).is_err()
         || worker.stdin.flush().is_err()
     {
@@ -157,7 +185,11 @@ fn dispatch(
                         // The program's own diagnostic beats the runtime's when
                         // it printed one.
                         let printed = crate::run::failure_line(&output.join("\n"));
-                        if printed.starts_with("FAIL: ") { printed } else { detail }
+                        if printed.starts_with("FAIL: ") {
+                            printed
+                        } else {
+                            detail
+                        }
                     };
                     return Reply::Done { pass, message };
                 }
@@ -171,7 +203,8 @@ fn dispatch(
                 slow(file, SLOW_AFTER.as_secs());
                 warned = true;
             }
-            Err(RecvTimeoutError::Disconnected) => return Reply::Died }
+            Err(RecvTimeoutError::Disconnected) => return Reply::Died,
+        }
     }
 }
 
@@ -191,13 +224,37 @@ pub fn run_all(
     let progress = Arc::new(progress);
     let slow = Arc::new(slow);
 
+    // Pre-booted replacements — see [`SPARES`]. Only worth it when more than
+    // one worker can hang; a single-worker run has nothing to overlap a boot
+    // with.
+    let (spare_tx, spare_rx) = channel::<Worker>();
+    let spares: Arc<Mutex<Receiver<Worker>>> = Arc::new(Mutex::new(spare_rx));
+
     std::thread::scope(|scope| {
+        if jobs > 1 {
+            for _ in 0..SPARES {
+                let spare_tx = spare_tx.clone();
+                // One boot each, then the thread is done. Deliberately NOT a
+                // keeper loop that refills: a thread parked on a full channel
+                // never observes shutdown, and `thread::scope` would wait on it
+                // forever. Booting the spares up front costs two processes and
+                // needs no lifecycle at all.
+                scope.spawn(move || {
+                    if let Some(worker) = spawn(vybex) {
+                        let _ = spare_tx.send(worker);
+                    }
+                });
+            }
+        }
+        drop(spare_tx);
+        let mut handles = Vec::new();
         for _ in 0..jobs {
+            let spares = spares.clone();
             let queue = queue.clone();
             let done = done.clone();
             let progress = progress.clone();
             let slow = slow.clone();
-            scope.spawn(move || {
+            handles.push(scope.spawn(move || {
                 let Some(mut worker) = spawn(vybex) else {
                     // Cannot start: leave the queue alone so `run_all`'s caller
                     // sees leftovers and reports a TRUNCATED run. Silently
@@ -221,13 +278,10 @@ pub fn run_all(
                     // testrunner stays the only thing that had to learn the
                     // directive.
                     if !crate::run::extra_units(&text, &file).is_empty() {
-                        let outcome = crate::run::run_case(
-                            vybex,
-                            &file,
-                            mode,
-                            timeout.as_secs(),
-                            &|secs| slow(&file, secs),
-                        );
+                        let outcome =
+                            crate::run::run_case(vybex, &file, mode, timeout.as_secs(), &|secs| {
+                                slow(&file, secs)
+                            });
                         let (language, category, name) = identify(&file);
                         let exec = TestExecution {
                             path: file,
@@ -236,13 +290,14 @@ pub fn run_all(
                             name,
                             result: outcome.result,
                             message: outcome.message,
-                            duration_ms: outcome.duration_ms };
+                            duration_ms: outcome.duration_ms,
+                        };
                         progress(&exec);
                         done.lock().unwrap().push(exec);
                         continue;
                     }
 
-                    let reply = dispatch(&mut worker, &file, mode, timeout, slow.as_ref());
+                    let reply = dispatch(&mut worker, &file, &text, mode, timeout, slow.as_ref());
                     let (result, message) = match reply {
                         // In run-fail mode the program is SUPPOSED to fail.
                         Reply::Done { pass, message } if mode == Mode::RunFail => {
@@ -262,7 +317,12 @@ pub fn run_all(
                             let hung = matches!(reply, Reply::Timeout);
                             let _ = worker.child.kill();
                             let _ = worker.child.wait();
-                            match spawn(vybex) {
+                            // A pre-booted spare if one is warm, otherwise boot
+                            // here as before. `try_recv` never blocks: an empty
+                            // pool must not add waiting-for-a-spare on top of
+                            // the timeout this thread has already paid.
+                            let ready = spares.lock().unwrap().try_recv().ok();
+                            match ready.or_else(|| spawn(vybex)) {
                                 Some(fresh) => worker = fresh,
                                 None => {
                                     queue.lock().unwrap().push_front(file);
@@ -298,13 +358,30 @@ pub fn run_all(
                         name,
                         result,
                         message,
-                        duration_ms: started.elapsed().as_millis() };
+                        duration_ms: started.elapsed().as_millis(),
+                    };
                     progress(&exec);
                     done.lock().unwrap().push(exec);
                 }
                 let _ = worker.child.kill();
                 let _ = worker.child.wait();
-            });
+            }));
+        }
+        // Join before draining: while a worker thread is alive it may still
+        // claim a spare, and a spare killed out from under it would be handed
+        // over already dead.
+        for handle in handles {
+            let _ = handle.join();
+        }
+        // Unclaimed spares are idle processes holding a booted VM. Nothing else
+        // reaps them — dropping a `Child` does not kill it on Unix, so without
+        // this every run would leave `SPARES` orphaned `vybex --worker`
+        // processes behind.
+        if let Ok(rx) = spares.lock() {
+            while let Ok(mut spare) = rx.try_recv() {
+                let _ = spare.child.kill();
+                let _ = spare.child.wait();
+            }
         }
     });
 
@@ -322,5 +399,7 @@ pub fn run_all(
         std::process::exit(2);
     }
 
-    Arc::try_unwrap(done).map(|m| m.into_inner().unwrap()).unwrap_or_default()
+    Arc::try_unwrap(done)
+        .map(|m| m.into_inner().unwrap())
+        .unwrap_or_default()
 }

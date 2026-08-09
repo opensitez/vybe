@@ -584,20 +584,23 @@ pub struct SplitOptions {
     pub limit_is_pieces: bool,
     /// A negative limit drops that many pieces off the END (php). Otherwise a
     /// negative limit means "no limit", which is python's `maxsplit=-1`.
-    pub negative_drops_tail: bool }
+    pub negative_drops_tail: bool,
+}
 
 impl SplitOptions {
     /// python `str.split(sep, maxsplit)`.
     pub const fn max_splits() -> SplitOptions {
         SplitOptions {
             limit_is_pieces: false,
-            negative_drops_tail: false }
+            negative_drops_tail: false,
+        }
     }
     /// php `explode(separator, string, limit)`.
     pub const fn max_pieces() -> SplitOptions {
         SplitOptions {
             limit_is_pieces: true,
-            negative_drops_tail: true }
+            negative_drops_tail: true,
+        }
     }
 }
 
@@ -619,7 +622,8 @@ pub fn emit_split_limit(
     }
 
     let base = chunks[current].alloc_scratch(6);
-    let (limit, sep, s, full, keep, tail) = (base, base + 1, base + 2, base + 3, base + 4, base + 5);
+    let (limit, sep, s, full, keep, tail) =
+        (base, base + 1, base + 2, base + 3, base + 4, base + 5);
 
     set(&mut chunks[current], limit, line);
     set(&mut chunks[current], sep, line);
@@ -742,7 +746,8 @@ pub enum PadSide {
     /// Left-align — python `ljust`, php `STR_PAD_RIGHT`.
     End,
     /// Centre — python `center`, php `STR_PAD_BOTH`.
-    Both }
+    Both,
+}
 
 /// Where the odd character goes when a centred pad does not divide evenly.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -751,7 +756,8 @@ pub enum CenterBias {
     Right,
     /// On the left when the margin AND the width are both odd, on the right
     /// otherwise — CPython `str.center`.
-    LeftWhenBothOdd }
+    LeftWhenBothOdd,
+}
 
 /// Pad `s` out to `width`. Stack: `[s, width]` or `[s, width, fill]` → `[string]`.
 ///
@@ -771,7 +777,8 @@ pub fn emit_pad(
     match side {
         PadSide::Start => pad_call(chunks, current, "padStart", line),
         PadSide::End => pad_call(chunks, current, "padEnd", line),
-        PadSide::Both => emit_pad_both(chunks, current, bias, line) }
+        PadSide::Both => emit_pad_both(chunks, current, bias, line),
+    }
 }
 
 fn pad_call(chunks: &mut [Chunk], current: usize, name: &str, line: u32) {
@@ -848,7 +855,8 @@ fn emit_margin(chunks: &mut [Chunk], current: usize, width: u16, len: u16, line:
 pub struct GlobOptions {
     /// Lower-case both pattern and subject before matching — python
     /// `fnmatch.fnmatch`. php `fnmatch` and python `fnmatchcase` do not.
-    pub fold_case: bool }
+    pub fold_case: bool,
+}
 
 impl GlobOptions {
     /// php `fnmatch`, python `fnmatchcase`.
@@ -1272,26 +1280,30 @@ pub struct TrimOptions {
     /// whitespace definition, which is what JS, Python, Dart and VB want.
     /// PHP passes `Some(" \t\n\r\0\x0B")`: its default includes NUL and
     /// vertical tab, which ECMA's does not.
-    pub default_chars: Option<&'static str> }
+    pub default_chars: Option<&'static str>,
+}
 
 impl TrimOptions {
     pub const fn both(default_chars: Option<&'static str>) -> TrimOptions {
         TrimOptions {
             left: true,
             right: true,
-            default_chars }
+            default_chars,
+        }
     }
     pub const fn start(default_chars: Option<&'static str>) -> TrimOptions {
         TrimOptions {
             left: true,
             right: false,
-            default_chars }
+            default_chars,
+        }
     }
     pub const fn end(default_chars: Option<&'static str>) -> TrimOptions {
         TrimOptions {
             left: false,
             right: true,
-            default_chars }
+            default_chars,
+        }
     }
 }
 
@@ -1323,7 +1335,8 @@ pub fn emit_trim_chars(
                 }
                 return;
             }
-            Some(defaults) => chunks[current].emit_string_const(defaults, line) }
+            Some(defaults) => chunks[current].emit_string_const(defaults, line),
+        }
     }
 
     let base = chunks[current].alloc_scratch(4);

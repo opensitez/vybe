@@ -35,7 +35,8 @@ pub enum ZeroStep {
     Empty,
     /// Raise the language value-error (Python: `ValueError: slice step
     /// cannot be zero`). The concrete type name is [`Options::value_error`].
-    Raise }
+    Raise,
+}
 
 /// Per-language slice semantics. Bounds always wrap from the end and clamp
 /// (the canonical, ecma-`slice`-compatible form every front-end already gets
@@ -48,7 +49,8 @@ pub struct Options {
     /// Exception type raised when `zero_step == Raise`. Normalized through
     /// `errors::canonical_exception_name`, so e.g. Python `ValueError` and
     /// Dart `FormatException` unify for cross-language `catch`.
-    pub value_error: &'static str }
+    pub value_error: &'static str,
+}
 
 impl Options {
     /// Build from the `slice_step_zero_raises` profile property. Property-
@@ -61,7 +63,8 @@ impl Options {
             } else {
                 ZeroStep::Empty
             },
-            value_error: "ValueError" }
+            value_error: "ValueError",
+        }
     }
 }
 
@@ -131,7 +134,8 @@ fn emit_bound_const(chunks: &mut [Chunk], current: usize, len: u16, v: i32, line
             core_wasm::i32_const(&mut chunks[current], line, 1);
             chunks[current].emit_op(Op::I32_SUB, line);
         }
-        _ => core_wasm::i32_const(&mut chunks[current], line, v) }
+        _ => core_wasm::i32_const(&mut chunks[current], line, v),
+    }
 }
 
 /// Push i32 bool: `slot < 0`.

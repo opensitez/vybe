@@ -26,7 +26,8 @@ fn main() {
             section = match trimmed {
                 "[dependencies]" => "deps",
                 "[dev-dependencies]" => "dev",
-                _ => "" };
+                _ => "",
+            };
             continue;
         }
         if section.is_empty() {

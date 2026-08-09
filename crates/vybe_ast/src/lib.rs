@@ -33,7 +33,8 @@ pub struct Module {
     /// This module's declared policy, in force from its first statement. The
     /// walker states its language's defaults here; a [`StmtKind::Directive`]
     /// in the body changes them from that point on. See [`Directives`].
-    pub directives: Directives }
+    pub directives: Directives,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
@@ -51,12 +52,14 @@ pub enum Lang {
     Lua,
     Java,
     Kotlin,
-    Unknown }
+    Unknown,
+}
 
 #[derive(Debug, Clone)]
 pub struct Import {
     pub kind: ImportKind,
-    pub span: Span }
+    pub span: Span,
+}
 
 #[derive(Debug, Clone)]
 pub enum ImportKind {
@@ -67,23 +70,27 @@ pub enum ImportKind {
     Named {
         path: String,
         names: Vec<ImportName>,
-        level: usize },
+        level: usize,
+    },
     /// `import * as ns from "mod"` / `from os import *`
     Wildcard { path: String, alias: Option<String> },
     /// `import defaultExport from "mod"` (JS)
-    Default { path: String, local: String } }
+    Default { path: String, local: String },
+}
 
 #[derive(Debug, Clone)]
 pub struct ImportName {
     pub name: String,
-    pub alias: Option<String> }
+    pub alias: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Span {
     pub start_line: u32,
     pub start_col: u32,
     pub end_line: u32,
-    pub end_col: u32 }
+    pub end_col: u32,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Types and generics
@@ -91,7 +98,8 @@ pub struct Span {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypePath {
-    pub segments: Vec<String> }
+    pub segments: Vec<String>,
+}
 
 impl TypePath {
     pub fn new(segments: Vec<String>) -> Self {
@@ -105,7 +113,8 @@ impl TypePath {
                 .map(str::trim)
                 .filter(|segment| !segment.is_empty())
                 .map(str::to_string)
-                .collect() }
+                .collect(),
+        }
     }
 
     pub fn display_name(&self) -> String {
@@ -115,19 +124,23 @@ impl TypePath {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeRef {
-    pub kind: TypeRefKind }
+    pub kind: TypeRefKind,
+}
 
 impl TypeRef {
     pub fn named(path: impl Into<String>) -> Self {
         Self {
             kind: TypeRefKind::Named {
                 path: TypePath::from_dotted(&path.into()),
-                args: Vec::new() } }
+                args: Vec::new(),
+            },
+        }
     }
 
     pub fn generic_param(name: impl Into<String>) -> Self {
         Self {
-            kind: TypeRefKind::GenericParam { name: name.into() } }
+            kind: TypeRefKind::GenericParam { name: name.into() },
+        }
     }
 }
 
@@ -135,46 +148,61 @@ impl TypeRef {
 pub enum TypeRefKind {
     Named {
         path: TypePath,
-        args: Vec<GenericArg> },
+        args: Vec<GenericArg>,
+    },
     GenericParam {
-        name: String },
+        name: String,
+    },
     Array {
         element: Box<TypeRef>,
-        rank: usize },
+        rank: usize,
+    },
     Tuple {
-        elements: Vec<TypeRef> },
+        elements: Vec<TypeRef>,
+    },
     Function {
         params: Vec<TypeRef>,
-        result: Box<TypeRef> },
+        result: Box<TypeRef>,
+    },
     Union {
-        members: Vec<TypeRef> },
+        members: Vec<TypeRef>,
+    },
     Intersection {
-        members: Vec<TypeRef> },
+        members: Vec<TypeRef>,
+    },
     Nullable {
-        inner: Box<TypeRef> },
+        inner: Box<TypeRef>,
+    },
     Pointer {
-        inner: Box<TypeRef> },
+        inner: Box<TypeRef>,
+    },
     Reference {
-        inner: Box<TypeRef> },
+        inner: Box<TypeRef>,
+    },
     Wildcard {
-        bound: Option<GenericBound> },
+        bound: Option<GenericBound>,
+    },
     SelfType,
     Infer,
-    Error }
+    Error,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GenericArg {
     Type(TypeRef),
-    Const(String) }
+    Const(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GenericBound {
     Extends(Box<TypeRef>),
-    Super(Box<TypeRef>) }
+    Super(Box<TypeRef>),
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct GenericDecl {
-    pub params: Vec<GenericParam> }
+    pub params: Vec<GenericParam>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GenericParam {
@@ -182,7 +210,8 @@ pub struct GenericParam {
     pub constraints: Vec<GenericConstraint>,
     pub variance: GenericVariance,
     pub default: Option<TypeRef>,
-    pub runtime: GenericRuntimeMode }
+    pub runtime: GenericRuntimeMode,
+}
 
 impl GenericParam {
     pub fn new(name: impl Into<String>) -> Self {
@@ -191,7 +220,8 @@ impl GenericParam {
             constraints: Vec::new(),
             variance: GenericVariance::Invariant,
             default: None,
-            runtime: GenericRuntimeMode::Erased }
+            runtime: GenericRuntimeMode::Erased,
+        }
     }
 }
 
@@ -200,7 +230,8 @@ pub enum GenericVariance {
     #[default]
     Invariant,
     Covariant,
-    Contravariant }
+    Contravariant,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GenericRuntimeMode {
@@ -208,7 +239,8 @@ pub enum GenericRuntimeMode {
     Erased,
     Reified,
     Specialized,
-    Shared }
+    Shared,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GenericConstraint {
@@ -229,7 +261,8 @@ pub enum GenericConstraint {
     NonNull,
     Nullable,
     Unmanaged,
-    CopyLike }
+    CopyLike,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Statements
@@ -238,17 +271,20 @@ pub enum GenericConstraint {
 #[derive(Debug, Clone)]
 pub struct Statement {
     pub kind: StmtKind,
-    pub span: Span }
+    pub span: Span,
+}
 
 #[derive(Debug, Clone)]
 pub struct RecordFieldFormat {
-    pub decimal_places: usize }
+    pub decimal_places: usize,
+}
 
 impl Statement {
     pub fn new(kind: StmtKind) -> Self {
         Self {
             kind,
-            span: Span::default() }
+            span: Span::default(),
+        }
     }
     pub fn with_span(kind: StmtKind, span: Span) -> Self {
         Self { kind, span }
@@ -267,7 +303,8 @@ pub enum StmtKind {
     /// re-evaluating operands. Lowered ONCE in `primitives/channels.rs`.
     Select {
         arms: Vec<SelectArm>,
-        default: Option<Vec<Statement>> },
+        default: Option<Vec<Statement>>,
+    },
 
     /// Block of statements.
     Block(Vec<Statement>),
@@ -277,12 +314,14 @@ pub enum StmtKind {
     /// — `scope` says how far the change reaches. See [`Directives`].
     Directive {
         set: Directives,
-        scope: DirectiveScope },
+        scope: DirectiveScope,
+    },
 
     // ── Variable declarations ────────────────────────────────────────────
     VarDecl {
         declarations: Vec<VarDeclarator>,
-        kind: VarDeclKind },
+        kind: VarDeclKind,
+    },
 
     // ── Functions (compiler_common::functions) ───────────────────────────
     FunctionDecl {
@@ -295,7 +334,8 @@ pub enum StmtKind {
         is_async: bool,
         /// Dart: `sync*`/`async*` generator functions
         is_generator: bool,
-        is_sub: bool },
+        is_sub: bool,
+    },
 
     // ── Classes (compiler_common::classes) ───────────────────────────────
     ClassDecl {
@@ -305,13 +345,15 @@ pub enum StmtKind {
         interfaces: Vec<String>,
         members: Vec<ClassMember>,
         modifiers: ClassModifiers,
-        decorators: Vec<Expression> },
+        decorators: Vec<Expression>,
+    },
 
     InterfaceDecl {
         name: String,
         parents: Vec<String>,
         members: Vec<InterfaceMember>,
-        decorators: Vec<Expression> },
+        decorators: Vec<Expression>,
+    },
 
     EnumDecl {
         name: String,
@@ -321,7 +363,8 @@ pub enum StmtKind {
         backing_type: Option<String>,
         interfaces: Vec<String>,
         body_members: Vec<ClassMember>,
-        decorators: Vec<Expression> },
+        decorators: Vec<Expression>,
+    },
 
     StructDecl {
         name: String,
@@ -332,36 +375,42 @@ pub enum StmtKind {
         /// Declared record semantics — storage, equality, layout, variant part.
         /// Defaults to a plain reference aggregate, so a walker that does not
         /// set it behaves exactly as before. See `recordprimitiveplan.md`.
-        semantics: ValueSemantics },
+        semantics: ValueSemantics,
+    },
 
     ModuleDecl {
         name: String,
         members: Vec<ClassMember>,
-        visibility: Visibility },
+        visibility: Visibility,
+    },
 
     NamespaceDecl {
         name: String,
-        body: Vec<Statement> },
+        body: Vec<Statement>,
+    },
 
     DelegateDecl {
         name: String,
         params: Vec<Param>,
         return_type: Option<String>,
         is_sub: bool,
-        visibility: Visibility },
+        visibility: Visibility,
+    },
 
     // ── Control flow (br_if, br, loop opcodes) ──────────────────────────
     If {
         cond: Expression,
         then_body: Vec<Statement>,
         elifs: Vec<(Expression, Vec<Statement>)>,
-        else_body: Option<Vec<Statement>> },
+        else_body: Option<Vec<Statement>>,
+    },
 
     For {
         init: Option<Box<Statement>>,
         cond: Option<Expression>,
         update: Option<Expression>,
-        body: Vec<Statement> },
+        body: Vec<Statement>,
+    },
 
     /// compiler_common::loops::emit_for_in
     ForIn {
@@ -375,18 +424,21 @@ pub enum StmtKind {
         /// Python: `for x in items: ... else: ...`
         else_body: Option<Vec<Statement>>,
         /// Python: `async for`
-        is_async: bool },
+        is_async: bool,
+    },
 
     While {
         cond: Expression,
         body: Vec<Statement>,
         /// Python: `while cond: ... else: ...`
-        else_body: Option<Vec<Statement>> },
+        else_body: Option<Vec<Statement>>,
+    },
 
     DoWhile {
         body: Vec<Statement>,
         cond: Expression,
-        until: bool },
+        until: bool,
+    },
 
     /// Switch / Select Case. Cases are in source order. A case with
     /// empty `conditions` is the default arm. The separate `default`
@@ -395,14 +447,16 @@ pub enum StmtKind {
     Switch {
         expr: Expression,
         cases: Vec<SwitchCase>,
-        default: Option<Vec<Statement>> },
+        default: Option<Vec<Statement>>,
+    },
 
     // ── Exception handling (compiler_common::errors) ─────────────────────
     Try {
         body: Vec<Statement>,
         catches: Vec<CatchClause>,
         else_body: Option<Vec<Statement>>,
-        finally: Option<Vec<Statement>> },
+        finally: Option<Vec<Statement>>,
+    },
 
     // ── With / Using / Lock ─────────────────────────────────────────────
     /// Python: `with a() as x, b() as y:` — multiple items
@@ -410,16 +464,19 @@ pub enum StmtKind {
     With {
         items: Vec<WithItem>,
         body: Vec<Statement>,
-        is_async: bool },
+        is_async: bool,
+    },
 
     Using {
         var: String,
         resource: Expression,
-        body: Vec<Statement> },
+        body: Vec<Statement>,
+    },
 
     Lock {
         expr: Expression,
-        body: Vec<Statement> },
+        body: Vec<Statement>,
+    },
 
     // ── Jumps ────────────────────────────────────────────────────────────
     Return(Option<Expression>),
@@ -428,7 +485,8 @@ pub enum StmtKind {
     /// Python: `raise X from Y` — cause is the chained exception
     Throw {
         expr: Option<Expression>,
-        cause: Option<Expression> },
+        cause: Option<Expression>,
+    },
 
     // ── Assignment ───────────────────────────────────────────────────────
     /// Python: `a = b = c = 5` — multiple targets
@@ -446,21 +504,25 @@ pub enum StmtKind {
         /// stored pointer VALUE — `p = &v` in c/go/c#/pascal keeps assigning a
         /// pointer and leaves this false, so rebinding `p` still rebinds rather
         /// than writing through.
-        by_ref: bool },
+        by_ref: bool,
+    },
 
     CompoundAssign {
         target: Expression,
         op: CompoundOp,
-        value: Expression },
+        value: Expression,
+    },
 
     // ── Array operations ─────────────────────────────────────────────────
     ReDim {
         preserve: bool,
         array: String,
-        bounds: Vec<Expression> },
+        bounds: Vec<Expression>,
+    },
 
     Erase {
-        array: String },
+        array: String,
+    },
 
     // ── Events ───────────────────────────────────────────────────────────
     //
@@ -481,16 +543,19 @@ pub enum StmtKind {
         event: String,
         /// Handler — any expression that evaluates to a function reference
         /// (a global function, a method on `me`, a lambda, etc.).
-        handler: Expression },
+        handler: Expression,
+    },
 
     RemoveHandler {
         control: Expression,
         event: String,
-        handler: Expression },
+        handler: Expression,
+    },
 
     RaiseEvent {
         event_name: String,
-        args: Vec<Expression> },
+        args: Vec<Expression>,
+    },
 
     // ── Error handling (VB6 legacy) ──────────────────────────────────────
     OnErrorResumeNext,
@@ -502,34 +567,42 @@ pub enum StmtKind {
     OpenFile {
         path: Expression,
         mode: FileMode,
-        file_number: Expression },
+        file_number: Expression,
+    },
     CloseFile(Option<Expression>),
     PrintFile {
         file_number: Expression,
-        items: Vec<Expression> },
+        items: Vec<Expression>,
+    },
     WriteFile {
         file_number: Expression,
-        items: Vec<Expression> },
+        items: Vec<Expression>,
+    },
     InputFile {
         file_number: Expression,
-        variables: Vec<Expression> },
+        variables: Vec<Expression>,
+    },
     LineInput {
         file_number: Expression,
-        variable: String },
+        variable: String,
+    },
     StartFile {
         file_number: Expression,
         key_index: usize,
         key_value: Expression,
-        relation: FileKeyRelation },
+        relation: FileKeyRelation,
+    },
     InputRecordFile {
         file_number: Expression,
         variables: Vec<String>,
         key_index: Option<usize>,
-        key_value: Option<Expression> },
+        key_value: Option<Expression>,
+    },
     RewriteRecordFile {
         file_number: Expression,
         items: Vec<Expression>,
-        field_formats: Vec<Option<RecordFieldFormat>> },
+        field_formats: Vec<Option<RecordFieldFormat>>,
+    },
 
     // ── Module system (JS) ───────────────────────────────────────────────
     Export {
@@ -543,13 +616,15 @@ pub enum StmtKind {
         from: Option<String>,
         /// `true` for `export * from "m"` (all re-exported under source
         /// names). `false` for named re-exports or local exports.
-        star: bool },
+        star: bool,
+    },
 
     // ── Labeled statement (JS) ──────────────────────────────────────────
     /// `myLabel: for (...) {}` — wraps a statement with a label for break/continue
     Labeled {
         label: String,
-        body: Box<Statement> },
+        body: Box<Statement>,
+    },
 
     // ── Other ────────────────────────────────────────────────────────────
     Empty,
@@ -564,20 +639,24 @@ pub enum StmtKind {
     /// quirks (Lua's inverted boolean, PHP's string message) are normalized by
     /// the walker before they get here.
     Exit {
-        status: Option<Expression> },
+        status: Option<Expression>,
+    },
     ScopeDecl {
         kind: ScopeDeclKind,
-        names: Vec<String> },
+        names: Vec<String>,
+    },
     Delete(Vec<Expression>),
     Assert {
         test: Expression,
-        msg: Option<Expression> },
+        msg: Option<Expression>,
+    },
     Echo(Vec<Expression>),
 
     /// Python `match subject: case pattern: ...` — statement-level with full patterns
     MatchStatement {
         subject: Expression,
-        cases: Vec<MatchCase> },
+        cases: Vec<MatchCase>,
+    },
 
     // ── WASM module structure (linear memory / data segments) ────────────
     //
@@ -593,7 +672,8 @@ pub enum StmtKind {
         /// Minimum size in 64 KiB pages.
         min_pages: u64,
         /// Maximum size in pages; `None` = unbounded.
-        max_pages: Option<u64> },
+        max_pages: Option<u64>,
+    },
 
     /// `(table $id? min max? funcref)` — a reference-table declaration.
     /// Declaration order is the table index.
@@ -601,7 +681,8 @@ pub enum StmtKind {
         /// Minimum element count.
         min_size: u64,
         /// Maximum element count; `None` = unbounded.
-        max_size: Option<u64> },
+        max_size: Option<u64>,
+    },
 
     /// `(data (offset) "bytes")` (active) or `(data "bytes")` (passive). Active
     /// segments are copied into linear memory at instantiation; passive ones
@@ -613,7 +694,8 @@ pub enum StmtKind {
         /// `None` marks a passive segment.
         offset: Option<Expression>,
         /// Initializer bytes, with WAT string escapes already decoded.
-        bytes: Vec<u8> },
+        bytes: Vec<u8>,
+    },
 
     // ── WASM exception handling (canonical `try_table`) ──────────────────────
     // The WASM text format declares exception *tags* and matches catch clauses
@@ -629,7 +711,8 @@ pub enum StmtKind {
         /// Tag name (the `$id`), used to key the imported tag entity.
         name: String,
         /// Payload arity (number of `param` values the tag carries).
-        arity: u8 },
+        arity: u8,
+    },
 
     /// `throw $tag` — raise the WASM exception `$tag` with `args` as its
     /// payload (already popped off the stack machine in push order). Lowers to
@@ -638,7 +721,8 @@ pub enum StmtKind {
         /// Tag name to raise (resolves to the same entity as `WasmTagDecl`).
         tag: String,
         /// Payload values, bottom-to-top.
-        args: Vec<Expression> },
+        args: Vec<Expression>,
+    },
 
     /// A WASM exception-handling block — canonical `try_table`, or the legacy
     /// `try/catch/catch_all/delegate` sugar the wast walker folds into it.
@@ -648,14 +732,17 @@ pub enum StmtKind {
     /// handler), the body, a structural `end`, then the handlers.
     WasmTryTable {
         body: Vec<Statement>,
-        catches: Vec<WasmCatch> },
+        catches: Vec<WasmCatch>,
+    },
 
     /// `rethrow N` (legacy) — re-raise the exception caught by the `N`th
     /// enclosing catch, whose `exnref` the handler captured (`capture_ref`).
     /// Lowers to `THROW_REF` of that captured reference.
     WasmRethrow {
         /// The `exnref` local name captured by the target catch handler.
-        exnref_local: String } }
+        exnref_local: String,
+    },
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Class members (compiler_common::classes)
@@ -669,7 +756,8 @@ pub enum ClassMember {
         init: Option<Expression>,
         modifiers: Modifiers,
         with_events: bool,
-        array_bounds: Option<Vec<Expression>> },
+        array_bounds: Option<Vec<Expression>>,
+    },
 
     Method(Box<Statement>),
 
@@ -683,7 +771,8 @@ pub enum ClassMember {
         body: Vec<Statement>,
         base_args: Option<Vec<Expression>>,
         initializer_target: ConstructorInitializerTarget,
-        visibility: Visibility },
+        visibility: Visibility,
+    },
 
     /// __get_ / __set_ closures on the struct
     Property {
@@ -692,19 +781,22 @@ pub enum ClassMember {
         getter: Option<Vec<Statement>>,
         setter: Option<PropertySetter>,
         is_auto: bool,
-        modifiers: Modifiers },
+        modifiers: Modifiers,
+    },
 
     Event {
         name: String,
         type_hint: Option<String>,
         params: Vec<Param>,
-        visibility: Visibility },
+        visibility: Visibility,
+    },
 
     Const {
         name: String,
         type_hint: Option<String>,
         value: Expression,
-        visibility: Visibility },
+        visibility: Visibility,
+    },
 
     NestedType(Box<Statement>),
 
@@ -722,7 +814,8 @@ pub enum ClassMember {
     /// The walker records what the source said; `normalize_class` turns it into
     /// an `Augmentation`; the shared `class_augmentation` pass applies it once.
     /// See flexclassplan.md §4c-R.
-    Augment(AugmentDecl) }
+    Augment(AugmentDecl),
+}
 
 /// One augmentation clause as the source wrote it.
 #[derive(Debug, Clone, Default)]
@@ -735,7 +828,8 @@ pub struct AugmentDecl {
     pub via_field: Option<String>,
     /// Per-member adjustments (PHP `as` / `insteadof`). Empty for every other
     /// language's mechanism.
-    pub adjustments: Vec<AugmentAdjustment> }
+    pub adjustments: Vec<AugmentAdjustment>,
+}
 
 /// A per-member adjustment on an augmentation clause: PHP `A::run as protected
 /// go;` (rename and/or change visibility) and `A::run insteadof B;` (exclude).
@@ -752,7 +846,8 @@ pub struct AugmentAdjustment {
     /// Override the member's visibility (PHP `as protected run`).
     pub visibility: Option<Visibility>,
     /// Drop this member from THIS augmentation (PHP `insteadof`).
-    pub exclude: bool }
+    pub exclude: bool,
+}
 
 /// What kind of type a `ClassDecl` actually declares.
 ///
@@ -785,17 +880,20 @@ pub enum ClassKind {
     /// collapses: the shape is derived from `constructors[0].params`, which is
     /// the same computation in every language, and it belongs in normalization
     /// where the bindings can be `ProtocolSlot`s rather than spellings (§2a).
-    Record }
+    Record,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConstructorInitializerTarget {
     Base,
-    This }
+    This,
+}
 
 #[derive(Debug, Clone)]
 pub struct PropertySetter {
     pub param: Param,
-    pub body: Vec<Statement> }
+    pub body: Vec<Statement>,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Interface members
@@ -808,15 +906,19 @@ pub enum InterfaceMember {
         params: Vec<Param>,
         return_type: Option<String>,
         is_sub: bool,
-        signature_source: Option<String> },
+        signature_source: Option<String>,
+    },
     Property {
         name: String,
         type_hint: Option<String>,
         is_readonly: bool,
-        is_writeonly: bool },
+        is_writeonly: bool,
+    },
     Event {
         name: String,
-        type_hint: Option<String> } }
+        type_hint: Option<String>,
+    },
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Expressions
@@ -825,11 +927,13 @@ pub enum InterfaceMember {
 #[derive(Debug, Clone)]
 pub struct Expression {
     pub kind: ExprKind,
-    pub span: Span }
+    pub span: Span,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArrayIndexSemantics {
-    pub first_index: i64 }
+    pub first_index: i64,
+}
 
 impl ArrayIndexSemantics {
     pub const ZERO_BASED: Self = Self { first_index: 0 };
@@ -840,7 +944,8 @@ impl Expression {
     pub fn new(kind: ExprKind) -> Self {
         Self {
             kind,
-            span: Span::default() }
+            span: Span::default(),
+        }
     }
     pub fn with_span(kind: ExprKind, span: Span) -> Self {
         Self { kind, span }
@@ -871,18 +976,77 @@ pub enum PlaceExpr {
     Member {
         object: Box<Expression>,
         field: String,
-        null_safe: bool },
+        null_safe: bool,
+    },
     Index {
         object: Box<Expression>,
         index: Box<Expression>,
-        null_safe: bool },
-    Deref(Box<Expression>) }
+        null_safe: bool,
+    },
+    Deref(Box<Expression>),
+}
+
+impl PlaceExpr {
+    /// Does `expr` denote STORAGE? `Some` for a place, `None` for an rvalue.
+    ///
+    /// This is the whole of `referenceplan.md` §4's routing rule: a place takes
+    /// `RefOf` and aliases its storage; an rvalue takes `Unary{AddrOf}` and gets
+    /// a fresh cell. Both arms are legitimate — go's `&Foo{...}` has no prior
+    /// storage and must NOT resolve — so the converter is what keeps them apart,
+    /// and it belongs here rather than inside one language's walker.
+    ///
+    /// Lifted verbatim from go's private `go_expr_to_place`, which had been
+    /// proving the design in the one language that could reach it while c and
+    /// pascal routed places through the rvalue node for want of a copy.
+    ///
+    /// The four arms ARE the closed set of `PlaceExpr` — nothing left over.
+    pub fn from_expr(expr: &Expression) -> Option<PlaceExpr> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(PlaceExpr::Ident(name.clone())),
+            ExprKind::Member {
+                object,
+                field,
+                null_safe,
+            } => Some(PlaceExpr::Member {
+                object: object.clone(),
+                field: field.clone(),
+                null_safe: *null_safe,
+            }),
+            ExprKind::Index {
+                object,
+                index,
+                null_safe,
+            } => Some(PlaceExpr::Index {
+                object: object.clone(),
+                index: index.clone(),
+                null_safe: *null_safe,
+            }),
+            // A dereference is itself a place: `*p = v` and `&(*p)` are both
+            // legal, and `&*p` is just `p`.
+            ExprKind::RefLoad(expr) => Some(PlaceExpr::Deref(expr.clone())),
+            ExprKind::Unary {
+                op: UnaryOp::Deref,
+                expr,
+            } => Some(PlaceExpr::Deref(expr.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl TryFrom<&Expression> for PlaceExpr {
+    type Error = ();
+
+    fn try_from(expr: &Expression) -> Result<Self, Self::Error> {
+        PlaceExpr::from_expr(expr).ok_or(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZipMode {
     First,
     Shortest,
-    Longest }
+    Longest,
+}
 
 #[derive(Debug, Clone)]
 pub enum ExprKind {
@@ -895,42 +1059,50 @@ pub enum ExprKind {
     Binary {
         op: BinOp,
         left: Box<Expression>,
-        right: Box<Expression> },
+        right: Box<Expression>,
+    },
     Unary {
         op: UnaryOp,
-        expr: Box<Expression> },
+        expr: Box<Expression>,
+    },
     RefOf(Box<PlaceExpr>),
     RefLoad(Box<Expression>),
     Ternary {
         cond: Box<Expression>,
         then: Box<Expression>,
-        else_: Box<Expression> },
+        else_: Box<Expression>,
+    },
 
     // ── Access (struct_get / struct_set) ─────────────────────────────────
     Member {
         object: Box<Expression>,
         field: String,
-        null_safe: bool },
+        null_safe: bool,
+    },
     Index {
         object: Box<Expression>,
         index: Box<Expression>,
-        null_safe: bool },
+        null_safe: bool,
+    },
 
     // ── Calls (call opcode) ─────────────────────────────────────────────
     Call {
         callee: Box<Expression>,
         args: Vec<Argument>,
-        optional: bool },
+        optional: bool,
+    },
 
     // ── Object creation (compiler_common::classes) ──────────────────────
     New {
         class: Box<Expression>,
-        args: Vec<Argument> },
+        args: Vec<Argument>,
+    },
 
     // ── Assignment as expression ─────────────────────────────────────────
     Assign {
         target: Box<Expression>,
-        value: Box<Expression> },
+        value: Box<Expression>,
+    },
 
     // ── Functions as values (ref_func) ──────────────────────────────────
     Lambda {
@@ -938,7 +1110,8 @@ pub enum ExprKind {
         body: LambdaBody,
         is_async: bool,
         /// PHP: `function() use ($x, $y) { }` — explicitly captured variables
-        captures: Vec<String> },
+        captures: Vec<String>,
+    },
 
     // ── Collections (compiler_common::collections, dict) ────────────────
     Array(Vec<ArrayElement>),
@@ -952,7 +1125,8 @@ pub enum ExprKind {
     /// See `vybe_compiler::primitives::tuples`.
     NamedTuple {
         fields: Vec<(Option<String>, Expression)>,
-        type_name: Option<String> },
+        type_name: Option<String>,
+    },
     /// Python `{1, 2, 3}` — unordered unique collection
     Set(Vec<Expression>),
     /// A property-bag literal: string keys, JS object semantics.
@@ -982,7 +1156,8 @@ pub enum ExprKind {
     Zip {
         iterables: Vec<Expression>,
         mode: ZipMode,
-        strict: bool },
+        strict: bool,
+    },
 
     // ── String interpolation ─────────────────────────────────────────────
     Interpolation(Vec<InterpolPart>),
@@ -990,17 +1165,20 @@ pub enum ExprKind {
     // ── Type operations ──────────────────────────────────────────────────
     IsType {
         expr: Box<Expression>,
-        type_name: String },
+        type_name: String,
+    },
     Cast {
         expr: Box<Expression>,
-        type_name: String },
+        type_name: String,
+    },
     TypeOf(Box<Expression>),
     DefaultOf(String),
 
     // ── Null handling (compiler_common::expressions) ─────────────────────
     NullCoalesce {
         left: Box<Expression>,
-        right: Box<Expression> },
+        right: Box<Expression>,
+    },
 
     // ── Spread / rest ────────────────────────────────────────────────────
     Spread(Box<Expression>),
@@ -1022,24 +1200,43 @@ pub enum ExprKind {
     Yield(Option<Box<Expression>>),
     YieldFrom(Box<Expression>),
 
+    // ── Callable references ──────────────────────────────────────────────
+    /// A reference to existing callable code (for example VB `AddressOf F`).
+    /// This is the narrow bare-function spelling. Receiver-aware method
+    /// groups and delegates use `CallableRef` below.
+    /// This is not storage address-of; `UnaryOp::AddrOf` owns that axis.
+    FuncRef(String),
+    /// A first-class callable reference with optional receiver policy.
+    /// This preserves source intent for method groups, delegates, Kotlin/Java
+    /// method refs and similar constructs without collapsing them into
+    /// lambda bodies or proxy interception.
+    CallableRef {
+        target: Box<Expression>,
+        receiver: Option<Box<Expression>>,
+        binding: CallableBinding,
+        adapter: Option<CallableAdapter>,
+    },
     // ── VB / .NET ────────────────────────────────────────────────────────
-    AddressOf(String),
     SuperCall {
         method: Option<String>,
-        args: Vec<Argument> },
+        args: Vec<Argument>,
+    },
 
     // ── Python ───────────────────────────────────────────────────────────
     Comprehension {
         kind: ComprehensionKind,
         element: Box<Expression>,
-        generators: Vec<ComprehensionGen> },
+        generators: Vec<ComprehensionGen>,
+    },
     Slice {
         lower: Option<Box<Expression>>,
         upper: Option<Box<Expression>>,
-        step: Option<Box<Expression>> },
+        step: Option<Box<Expression>>,
+    },
     Walrus {
         target: Box<Expression>,
-        value: Box<Expression> },
+        value: Box<Expression>,
+    },
 
     // ── JS ───────────────────────────────────────────────────────────────
     Void(Box<Expression>),
@@ -1055,25 +1252,35 @@ pub enum ExprKind {
         /// this today (`new class implements I {}`); other languages leave it
         /// empty, matching the previous hardcoded `&[]`.
         interfaces: Vec<String>,
-        members: Vec<ClassMember> },
+        members: Vec<ClassMember>,
+    },
     /// `function(...) { }` as an expression: `let f = function() { ... }`
     FunctionExpr(Box<Statement>), // always StmtKind::FunctionDecl
+    /// Object-operation interception boundary such as JS `new Proxy(target, handler)`.
+    Proxy {
+        target: Box<Expression>,
+        handler: Box<Expression>,
+    },
 
     // ── Range ────────────────────────────────────────────────────────────
     Range {
         start: Box<Expression>,
         end: Box<Expression>,
-        inclusive: bool },
+        inclusive: bool,
+    },
 
     // ── PHP ──────────────────────────────────────────────────────────────
     StaticAccess {
         class: Box<Expression>,
-        member: Box<Expression> },
+        member: Box<Expression>,
+    },
 
     // ── Match expression (PHP/Python) ────────────────────────────────────
     Match {
         subject: Box<Expression>,
-        arms: Vec<MatchArm> } }
+        arms: Vec<MatchArm>,
+    },
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Supporting types
@@ -1098,7 +1305,30 @@ pub enum Literal {
     /// resolve, which `builtin_slots.rs` records as the reason `Bytes` is
     /// unbound today. Deliberately NOT `Utf8Str`/`Utf16Str` — encoding is a
     /// property of a conversion, not of a literal.
-    Bytes(Vec<u8>) }
+    Bytes(Vec<u8>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableBinding {
+    /// A bare function or static callable reference. No receiver is bound.
+    Static,
+    /// A callable whose receiver is already bound.
+    BoundReceiver,
+    /// A method reference where the receiver is supplied by the eventual call.
+    UnboundReceiver,
+}
+
+#[derive(Debug, Clone)]
+pub enum CallableAdapter {
+    /// Invoke this callable reference by compiling the supplied expression-body
+    /// adapter. This keeps source intent as `CallableRef` while preserving
+    /// language-specific arity/receiver/helper semantics that are not yet a
+    /// direct callable value.
+    Expr {
+        params: Vec<Param>,
+        body: Box<Expression>,
+    },
+}
 
 // ── Variables ───────────────────────────────────────────────────────────────
 
@@ -1108,7 +1338,8 @@ pub struct VarDeclarator {
     pub type_hint: Option<TypeHint>,
     pub init: Option<Expression>,
     pub array_bounds: Option<Vec<Expression>>,
-    pub with_events: bool }
+    pub with_events: bool,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VarDeclKind {
@@ -1116,26 +1347,30 @@ pub enum VarDeclKind {
     Let,
     Const,
     Var,
-    Static }
+    Static,
+}
 
 #[derive(Debug, Clone)]
 pub enum BindingPattern {
     Ident(String),
     Object(Vec<ObjectPatternProp>),
-    Array(Vec<ArrayPatternElem>) }
+    Array(Vec<ArrayPatternElem>),
+}
 
 #[derive(Debug, Clone)]
 pub struct ObjectPatternProp {
     pub key: String,
     pub value: Option<BindingPattern>,
     pub default: Option<Expression>,
-    pub is_rest: bool }
+    pub is_rest: bool,
+}
 
 #[derive(Debug, Clone)]
 pub enum ArrayPatternElem {
     Pattern(BindingPattern, Option<Expression>),
     Rest(String),
-    Hole }
+    Hole,
+}
 
 // ── Declared types ──────────────────────────────────────────────────────────
 
@@ -1255,7 +1490,8 @@ pub struct Param {
     pub is_rest: bool,
     pub is_kwargs: bool,
     pub is_optional: bool,
-    pub is_nullable: bool }
+    pub is_nullable: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PassBy {
@@ -1284,7 +1520,8 @@ pub enum PassBy {
     /// `&$o->p` give a `(base, key)` carray — see `primitives/references.rs`.
     Alias,
     Out,
-    Const }
+    Const,
+}
 
 // ── Arguments ───────────────────────────────────────────────────────────────
 
@@ -1293,7 +1530,8 @@ pub struct Argument {
     pub value: Expression,
     pub name: Option<String>,
     pub by_ref: bool,
-    pub spread: bool }
+    pub spread: bool,
+}
 
 impl Argument {
     pub fn positional(value: Expression) -> Self {
@@ -1301,7 +1539,8 @@ impl Argument {
             value,
             name: None,
             by_ref: false,
-            spread: false }
+            spread: false,
+        }
     }
 }
 
@@ -1310,7 +1549,8 @@ impl Argument {
 #[derive(Debug, Clone)]
 pub enum LambdaBody {
     Expr(Box<Expression>),
-    Block(Vec<Statement>) }
+    Block(Vec<Statement>),
+}
 
 // ── Array/Object literals ───────────────────────────────────────────────────
 
@@ -1321,30 +1561,37 @@ pub struct ArrayElement {
     pub value: Expression,
     pub spread: bool,
     /// PHP: `&$var` — by-reference element
-    pub by_ref: bool }
+    pub by_ref: bool,
+}
 
 #[derive(Debug, Clone)]
 pub enum ObjectProperty {
     KeyValue {
         key: Expression,
-        value: Expression },
+        value: Expression,
+    },
     Shorthand(String),
     Spread(Expression),
     Method {
         key: String,
-        value: Box<Statement> },
+        value: Box<Statement>,
+    },
     Accessor {
         kind: AccessorKind,
         key: String,
-        value: Box<Statement> },
+        value: Box<Statement>,
+    },
     Computed {
         key: Expression,
-        value: Expression } }
+        value: Expression,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AccessorKind {
     Get,
-    Set }
+    Set,
+}
 
 // ── Interpolation ───────────────────────────────────────────────────────────
 
@@ -1352,20 +1599,23 @@ pub enum AccessorKind {
 pub enum InterpolPart {
     Text(String),
     Expr(Expression),
-    Formatted(Expression, String) }
+    Formatted(Expression, String),
+}
 
 // ── Switch / Case ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct SwitchCase {
     pub conditions: Vec<CaseCondition>,
-    pub body: Vec<Statement> }
+    pub body: Vec<Statement>,
+}
 
 #[derive(Debug, Clone)]
 pub enum CaseCondition {
     Value(Expression),
     Range { from: Expression, to: Expression },
-    Comparison { op: ComparisonOp, expr: Expression } }
+    Comparison { op: ComparisonOp, expr: Expression },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ComparisonOp {
@@ -1374,7 +1624,8 @@ pub enum ComparisonOp {
     Lt,
     LtEq,
     Gt,
-    GtEq }
+    GtEq,
+}
 
 // ── Catch ───────────────────────────────────────────────────────────────────
 
@@ -1385,7 +1636,8 @@ pub struct CatchClause {
     /// Dart: `catch (e, stackTrace)` — second variable for stack trace
     pub stack_var: Option<String>,
     pub body: Vec<Statement>,
-    pub when_clause: Option<Expression> }
+    pub when_clause: Option<Expression>,
+}
 
 // ── WASM catch clause (tag-identity, for `StmtKind::WasmTryTable`) ────────────
 
@@ -1406,7 +1658,8 @@ pub struct WasmCatch {
     /// Local the captured `exnref` is bound to when `capture_ref` is set.
     pub exnref_bind: Option<String>,
     /// Handler statements, run with the payload bound.
-    pub body: Vec<Statement> }
+    pub body: Vec<Statement>,
+}
 
 // ── Match (PHP expression-level) ─────────────────────────────────────────────
 
@@ -1415,7 +1668,8 @@ pub struct WasmCatch {
 pub struct MatchArm {
     /// None = default arm
     pub conditions: Option<Vec<Expression>>,
-    pub body: Expression }
+    pub body: Expression,
+}
 
 // ── Match (Python statement-level with patterns) ─────────────────────────────
 
@@ -1423,7 +1677,8 @@ pub struct MatchArm {
 pub struct MatchCase {
     pub pattern: Pattern,
     pub guard: Option<Expression>,
-    pub body: Vec<Statement> }
+    pub body: Vec<Statement>,
+}
 
 #[derive(Debug, Clone)]
 pub enum Pattern {
@@ -1439,24 +1694,28 @@ pub enum Pattern {
     Class {
         cls: Expression,
         patterns: Vec<Pattern>,
-        kw_patterns: Vec<(String, Pattern)> },
+        kw_patterns: Vec<(String, Pattern)>,
+    },
     /// `case [first, *rest]:`
     Star(Option<String>),
     /// `case pattern as name:`
     As {
         pattern: Option<Box<Pattern>>,
-        name: Option<String> },
+        name: Option<String>,
+    },
     /// `case a | b | c:`
     Or(Vec<Pattern>),
     /// `case _:`
-    Wildcard }
+    Wildcard,
+}
 
 // ── With items ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct WithItem {
     pub expr: Expression,
-    pub var: Option<String> }
+    pub var: Option<String>,
+}
 
 // ── Comprehension ───────────────────────────────────────────────────────────
 
@@ -1465,14 +1724,16 @@ pub enum ComprehensionKind {
     List,
     Set,
     Dict,
-    Generator }
+    Generator,
+}
 
 #[derive(Debug, Clone)]
 pub struct ComprehensionGen {
     pub target: Expression,
     pub iter: Expression,
     pub conditions: Vec<Expression>,
-    pub is_async: bool }
+    pub is_async: bool,
+}
 
 /// True when a statement list contains `yield` / `yield from` in the current
 /// function scope. Nested functions, lambdas, and class expressions are scope
@@ -1502,7 +1763,8 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             expr_contains_yield_outside_nested_scopes(cond)
                 || statements_contain_yield_outside_nested_scopes(then_body)
                 || elifs.iter().any(|(cond, body)| {
@@ -1516,7 +1778,8 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             expr_contains_yield_outside_nested_scopes(cond)
                 || statements_contain_yield_outside_nested_scopes(body)
                 || else_body
@@ -1531,7 +1794,8 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             init.as_ref()
                 .is_some_and(|stmt| stmt_contains_yield_outside_nested_scopes(stmt))
                 || cond
@@ -1557,7 +1821,8 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             expr_contains_yield_outside_nested_scopes(expr)
                 || cases
                     .iter()
@@ -1570,7 +1835,8 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             statements_contain_yield_outside_nested_scopes(body)
                 || catches
                     .iter()
@@ -1585,7 +1851,7 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
         StmtKind::With { body, .. }
         | StmtKind::Using { body, .. }
         | StmtKind::Lock { body, .. } => statements_contain_yield_outside_nested_scopes(body),
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             targets
                 .iter()
                 .any(expr_contains_yield_outside_nested_scopes)
@@ -1626,7 +1892,8 @@ fn stmt_contains_yield_outside_nested_scopes(stmt: &Statement) -> bool {
                     .iter()
                     .any(|catch| statements_contain_yield_outside_nested_scopes(&catch.body))
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
@@ -1640,7 +1907,8 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
                 expr_contains_yield_outside_nested_scopes(object)
                     || expr_contains_yield_outside_nested_scopes(index)
             }
-            PlaceExpr::Deref(expr) => expr_contains_yield_outside_nested_scopes(expr) },
+            PlaceExpr::Deref(expr) => expr_contains_yield_outside_nested_scopes(expr),
+        },
         ExprKind::Unary { expr, .. }
         | ExprKind::RefLoad(expr)
         | ExprKind::IsType { expr, .. }
@@ -1662,10 +1930,12 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Walrus {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Range {
             start: left,
             end: right,
@@ -1673,7 +1943,8 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
         }
         | ExprKind::StaticAccess {
             class: left,
-            member: right }
+            member: right,
+        }
         | ExprKind::Index {
             object: left,
             index: right,
@@ -1688,6 +1959,22 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
                 || expr_contains_yield_outside_nested_scopes(else_)
         }
         ExprKind::Member { object, .. } => expr_contains_yield_outside_nested_scopes(object),
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            expr_contains_yield_outside_nested_scopes(target)
+                || receiver
+                    .as_ref()
+                    .map_or(false, |expr| expr_contains_yield_outside_nested_scopes(expr))
+                || adapter.as_ref().map_or(false, |adapter| match adapter {
+                    CallableAdapter::Expr { body, .. } => {
+                        expr_contains_yield_outside_nested_scopes(body)
+                    }
+                })
+        }
         ExprKind::Call { callee, args, .. } => {
             expr_contains_yield_outside_nested_scopes(callee)
                 || args
@@ -1715,9 +2002,7 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
         | ExprKind::Sequence(exprs)
         | ExprKind::Zip {
             iterables: exprs, ..
-        } => {
-            exprs.iter().any(expr_contains_yield_outside_nested_scopes)
-        }
+        } => exprs.iter().any(expr_contains_yield_outside_nested_scopes),
         ExprKind::NamedTuple { fields, .. } => fields
             .iter()
             .any(|(_, expr)| expr_contains_yield_outside_nested_scopes(expr)),
@@ -1729,12 +2014,14 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
             ObjectProperty::Spread(expr) => expr_contains_yield_outside_nested_scopes(expr),
             ObjectProperty::Shorthand(_)
             | ObjectProperty::Method { .. }
-            | ObjectProperty::Accessor { .. } => false }),
+            | ObjectProperty::Accessor { .. } => false,
+        }),
         ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
             InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => {
                 expr_contains_yield_outside_nested_scopes(expr)
             }
-            InterpolPart::Text(_) => false }),
+            InterpolPart::Text(_) => false,
+        }),
         ExprKind::Match { subject, arms } => {
             expr_contains_yield_outside_nested_scopes(subject)
                 || arms.iter().any(|arm| {
@@ -1763,7 +2050,8 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
             expr.as_ref()
                 .is_some_and(|expr| expr_contains_yield_outside_nested_scopes(expr))
         }),
-        _ => false }
+        _ => false,
+    }
 }
 
 // ── Destructuring ───────────────────────────────────────────────────────────
@@ -1771,7 +2059,8 @@ fn expr_contains_yield_outside_nested_scopes(expr: &Expression) -> bool {
 #[derive(Debug, Clone)]
 pub enum DestructurePattern {
     Object(Vec<ObjectPatternProp>),
-    Array(Vec<ArrayPatternElem>) }
+    Array(Vec<ArrayPatternElem>),
+}
 
 // ── Break/Continue targets ──────────────────────────────────────────────────
 
@@ -1782,7 +2071,8 @@ pub enum BreakTarget {
     Kind(ExitKind),
     Value(Expression),
     /// PHP: `break 2;` — skip N levels
-    Level(u32) }
+    Level(u32),
+}
 
 #[derive(Debug, Clone)]
 pub enum ContinueTarget {
@@ -1790,7 +2080,8 @@ pub enum ContinueTarget {
     Label(String),
     Kind(ContinueKind),
     /// PHP: `continue 2;` — skip N levels
-    Level(u32) }
+    Level(u32),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExitKind {
@@ -1801,13 +2092,15 @@ pub enum ExitKind {
     While,
     Select,
     Try,
-    Property }
+    Property,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ContinueKind {
     Do,
     For,
-    While }
+    While,
+}
 
 // ── Misc enums ──────────────────────────────────────────────────────────────
 
@@ -1831,7 +2124,8 @@ pub enum ScopeDeclKind {
     /// PHP `global $x;`, Python `global x`.
     Global,
     /// Re-open these names to the enclosing function scope. Python `nonlocal`.
-    Nonlocal }
+    Nonlocal,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileMode {
@@ -1839,7 +2133,8 @@ pub enum FileMode {
     Output,
     Append,
     Binary,
-    Random }
+    Random,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileKeyRelation {
@@ -1847,12 +2142,14 @@ pub enum FileKeyRelation {
     Greater,
     GreaterOrEqual,
     Less,
-    LessOrEqual }
+    LessOrEqual,
+}
 
 #[derive(Debug, Clone)]
 pub struct ExportName {
     pub name: String,
-    pub alias: Option<String> }
+    pub alias: Option<String>,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Operators
@@ -1896,7 +2193,8 @@ pub enum BinOp {
     FloorDiv,
     Like,
     Is,
-    IsNot }
+    IsNot,
+}
 
 /// The async model — one set of concepts behind seventeen spellings.
 ///
@@ -1935,15 +2233,18 @@ pub enum AsyncOp {
     Continue {
         source: Box<Expression>,
         on_fulfilled: Option<Box<Expression>>,
-        on_rejected: Option<Box<Expression>> },
+        on_rejected: Option<Box<Expression>>,
+    },
     /// §27.2.5.3 finally — runs on settle, passes the outcome through.
     Cleanup {
         source: Box<Expression>,
-        on_settled: Box<Expression> },
+        on_settled: Box<Expression>,
+    },
     /// §27.2.4.1-4.5: combine many async values into one.
     Join {
         mode: JoinMode,
-        sources: Vec<Expression> },
+        sources: Vec<Expression>,
+    },
     /// Run a callable as scheduled work; the result is an async value.
     Spawn(Box<Expression>),
     /// An async value that settles after a duration (milliseconds) — one
@@ -1969,7 +2270,8 @@ pub enum AsyncOp {
     /// Synchronously drive the loop until `source` settles; yield its value
     /// (throw its rejection). The sync↔async boundary: `GetAwaiter().GetResult()`,
     /// `asyncio.run`. Lowers to the JSPI suspend at an async-capable boundary.
-    BlockOn(Box<Expression>) }
+    BlockOn(Box<Expression>),
+}
 
 impl AsyncOp {
     /// Every child expression, in evaluation order — for the structural
@@ -1985,7 +2287,11 @@ impl AsyncOp {
             | AsyncOp::BlockOn(e) => {
                 vec![e]
             }
-            AsyncOp::Continue { source, on_fulfilled, on_rejected } => {
+            AsyncOp::Continue {
+                source,
+                on_fulfilled,
+                on_rejected,
+            } => {
                 let mut v: Vec<&Expression> = vec![source];
                 v.extend(on_fulfilled.iter().map(|b| &**b));
                 v.extend(on_rejected.iter().map(|b| &**b));
@@ -1993,7 +2299,8 @@ impl AsyncOp {
             }
             AsyncOp::Cleanup { source, on_settled } => vec![source, on_settled],
             AsyncOp::Yield => Vec::new(),
-            AsyncOp::Join { sources, .. } => sources.iter().collect() }
+            AsyncOp::Join { sources, .. } => sources.iter().collect(),
+        }
     }
 
     /// Mutable [`AsyncOp::children`], for walker rewrite passes.
@@ -2007,7 +2314,11 @@ impl AsyncOp {
             | AsyncOp::BlockOn(e) => {
                 vec![e]
             }
-            AsyncOp::Continue { source, on_fulfilled, on_rejected } => {
+            AsyncOp::Continue {
+                source,
+                on_fulfilled,
+                on_rejected,
+            } => {
                 let mut v: Vec<&mut Expression> = vec![source];
                 v.extend(on_fulfilled.iter_mut().map(|b| &mut **b));
                 v.extend(on_rejected.iter_mut().map(|b| &mut **b));
@@ -2015,7 +2326,8 @@ impl AsyncOp {
             }
             AsyncOp::Cleanup { source, on_settled } => vec![source, on_settled],
             AsyncOp::Yield => Vec::new(),
-            AsyncOp::Join { sources, .. } => sources.iter_mut().collect() }
+            AsyncOp::Join { sources, .. } => sources.iter_mut().collect(),
+        }
     }
 }
 
@@ -2028,7 +2340,8 @@ pub enum JoinMode {
     /// First SETTLED wins with its value (§27.2.4.5 race).
     Race,
     /// First FULFILLED wins; all-rejected → AggregateError (§27.2.4.3 any).
-    Any }
+    Any,
+}
 
 /// The channel (CSP) vocabulary — one model behind every language's spelling.
 ///
@@ -2058,10 +2371,12 @@ pub enum ChanOp {
     /// channel so closed-receive can produce it far from the declaration.
     New {
         capacity: Option<Box<Expression>>,
-        zero: Box<Expression> },
+        zero: Box<Expression>,
+    },
     Send {
         channel: Box<Expression>,
-        value: Box<Expression> },
+        value: Box<Expression>,
+    },
     /// Receive the value alone (`<-ch`).
     Recv(Box<Expression>),
     /// Receive `(value, ok)` — `ok == false` iff the channel is closed AND
@@ -2075,7 +2390,8 @@ pub enum ChanOp {
     /// Go spells it `select { case ch <- v: ... default: ... }`.
     TrySend {
         channel: Box<Expression>,
-        value: Box<Expression> },
+        value: Box<Expression>,
+    },
     /// Non-suspending receive of `(value, ok)` — `ok == false` when nothing
     /// is buffered (empty OR closed-and-drained; the value half is then the
     /// channel's zero). .NET `Reader.TryRead(out v)`, Kotlin `tryReceive`,
@@ -2099,11 +2415,13 @@ pub enum ChanOp {
     /// ChannelClosedException, Rust `recv()` → RecvError.
     RecvOrFail {
         channel: Box<Expression>,
-        error: Box<Expression> },
+        error: Box<Expression>,
+    },
     /// Block until the channel is READABLE (buffered value present) or
     /// definitively done; yields the bool "a read will succeed". .NET
     /// `WaitToReadAsync`.
-    WaitReadable(Box<Expression>) }
+    WaitReadable(Box<Expression>),
+}
 
 impl ChanOp {
     pub fn children(&self) -> Vec<&Expression> {
@@ -2120,9 +2438,17 @@ impl ChanOp {
                 vec![channel, value]
             }
             ChanOp::RecvOrFail { channel, error } => vec![channel, error],
-            ChanOp::Recv(e) | ChanOp::RecvOk(e) | ChanOp::Len(e) | ChanOp::Cap(e)
-            | ChanOp::Close(e) | ChanOp::TryRecv(e) | ChanOp::TryPeek(e)
-            | ChanOp::Drained(e) | ChanOp::Closed(e) | ChanOp::WaitReadable(e) => vec![e] }
+            ChanOp::Recv(e)
+            | ChanOp::RecvOk(e)
+            | ChanOp::Len(e)
+            | ChanOp::Cap(e)
+            | ChanOp::Close(e)
+            | ChanOp::TryRecv(e)
+            | ChanOp::TryPeek(e)
+            | ChanOp::Drained(e)
+            | ChanOp::Closed(e)
+            | ChanOp::WaitReadable(e) => vec![e],
+        }
     }
 
     pub fn children_mut(&mut self) -> Vec<&mut Expression> {
@@ -2139,9 +2465,17 @@ impl ChanOp {
                 vec![channel, value]
             }
             ChanOp::RecvOrFail { channel, error } => vec![channel, error],
-            ChanOp::Recv(e) | ChanOp::RecvOk(e) | ChanOp::Len(e) | ChanOp::Cap(e)
-            | ChanOp::Close(e) | ChanOp::TryRecv(e) | ChanOp::TryPeek(e)
-            | ChanOp::Drained(e) | ChanOp::Closed(e) | ChanOp::WaitReadable(e) => vec![e] }
+            ChanOp::Recv(e)
+            | ChanOp::RecvOk(e)
+            | ChanOp::Len(e)
+            | ChanOp::Cap(e)
+            | ChanOp::Close(e)
+            | ChanOp::TryRecv(e)
+            | ChanOp::TryPeek(e)
+            | ChanOp::Drained(e)
+            | ChanOp::Closed(e)
+            | ChanOp::WaitReadable(e) => vec![e],
+        }
     }
 }
 
@@ -2153,7 +2487,8 @@ impl ChanOp {
 #[derive(Debug, Clone)]
 pub struct SelectArm {
     pub comm: ChanOp,
-    pub body: Vec<Statement> }
+    pub body: Vec<Statement>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
@@ -2169,7 +2504,8 @@ pub enum UnaryOp {
     Void,
     Delete,
     Deref,
-    AddrOf }
+    AddrOf,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CompoundOp {
@@ -2189,7 +2525,8 @@ pub enum CompoundOp {
     UShr,
     And,
     Or,
-    NullCoalesce }
+    NullCoalesce,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Modifiers
@@ -2229,8 +2566,8 @@ pub enum ProtocolSlot {
     /// Distinct from [`ValueOf`](ProtocolSlot::ValueOf): a class can define
     /// both, and `if (obj)` must reach this one.
     Bool,
-    Int,    // Python __int__
-    Float,  // Python __float__
+    Int,   // Python __int__
+    Float, // Python __float__
     /// Coerce to a CHARACTER — C# `(char)n`, Pascal `Chr(n)`. The mirror of
     /// [`Int`](ProtocolSlot::Int) on a char, which reads a code point out;
     /// this one puts one back. Named by `builtinslotplan.md` as the
@@ -2399,7 +2736,8 @@ pub enum ProtocolSlot {
     IsAlnum,
     IsSpace,
     IsUpper,
-    IsLower }
+    IsLower,
+}
 
 /// The reserved property holding a class's protocol slot table.
 ///
@@ -2661,7 +2999,8 @@ impl ProtocolSlot {
             IsUpper => "is_upper",
             IsLower => "is_lower",
             Char => "char",
-            IsEmpty => "is_empty" }
+            IsEmpty => "is_empty",
+        }
     }
 
     /// The slot a profile's `slot = "..."` names, or `None` if unrecognised.
@@ -2775,7 +3114,8 @@ impl ProtocolSlot {
             "is_lower" => IsLower,
             "char" => Char,
             "is_empty" => IsEmpty,
-            _ => return None })
+            _ => return None,
+        })
     }
 
     pub fn slot_id(self) -> u16 {
@@ -2888,7 +3228,8 @@ impl ProtocolSlot {
             Char => 101,
             // Appended 2026-08-07 — emptiness, its own question (see the
             // variant's doc). Ids continue from 101; existing ones unmoved.
-            IsEmpty => 102 }
+            IsEmpty => 102,
+        }
     }
 }
 
@@ -2957,7 +3298,8 @@ pub struct Modifiers {
     /// `add` or a PHP `tostring` is an ordinary member unless its language
     /// says otherwise.
     pub protocol_slot: Option<ProtocolSlot>,
-    pub decorators: Vec<Expression> }
+    pub decorators: Vec<Expression>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ClassModifiers {
@@ -2983,7 +3325,8 @@ pub struct ClassModifiers {
     ///
     /// The two declaration nodes converging is the real endgame; see
     /// `recordprimitiveplan.md`.
-    pub semantics: ValueSemantics }
+    pub semantics: ValueSemantics,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Visibility {
@@ -2991,7 +3334,8 @@ pub enum Visibility {
     Public,
     Private,
     Protected,
-    Internal }
+    Internal,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Records
@@ -3019,7 +3363,8 @@ pub enum ValueStorage {
     /// `b = a` produces an independent value — a Pascal `record`, a C/Go
     /// `struct`, a C# `struct`, a VB `Structure`. Bites at THREE sites:
     /// assignment, argument passing and return.
-    Value }
+    Value,
+}
 
 /// Does `==` compare fields, or identity?
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -3029,7 +3374,8 @@ pub enum ValueEquality {
     Identity,
     /// Field-wise. The instance stamp `__value_eq` is this policy's runtime
     /// channel, already read by the language equality paths.
-    Structural }
+    Structural,
+}
 
 /// Storage layout. Only meaningful where bytes are observable — C, COBOL
 /// groups, Pascal `packed record`.
@@ -3038,7 +3384,10 @@ pub enum FieldLayout {
     #[default]
     Auto,
     Packed,
-    Explicit { align: u32 } }
+    Explicit {
+        align: u32,
+    },
+}
 
 /// Overlapping storage: a Pascal variant part, a C `union`, a COBOL
 /// `REDEFINES`. **One feature, currently implemented three times and two of
@@ -3055,13 +3404,15 @@ pub struct VariantPart {
     /// `None` is a plain overlap — a C `union`, a COBOL `REDEFINES`.
     pub tag: Option<String>,
     /// Each arm is a set of members sharing the same region.
-    pub arms: Vec<VariantArm> }
+    pub arms: Vec<VariantArm>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct VariantArm {
     /// Tag values selecting this arm; empty for an untagged overlap.
     pub labels: Vec<Expression>,
-    pub members: Vec<ClassMember> }
+    pub members: Vec<ClassMember>,
+}
 
 /// The declared semantics of a record. Defaults reproduce a plain reference
 /// aggregate, which is what every `StructDecl` was before this existed.
@@ -3070,7 +3421,75 @@ pub struct ValueSemantics {
     pub storage: ValueStorage,
     pub equality: ValueEquality,
     pub layout: FieldLayout,
-    pub variant: Option<VariantPart> }
+    pub variant: Option<VariantPart>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Sets
+// ════════════════════════════════════════════════════════════════════════════
+//
+// One runtime storage, multiple language contracts. The backing store is the
+// shared Set primitive, but languages disagree about the public surface:
+// ECMA `add` returns the receiver, .NET/Kotlin `Add/add` returns changed?,
+// Python `add` returns None, Python `remove` throws on a missing value while
+// `discard` does not, and Python's algebra methods accept many operands.
+//
+// These are semantics, not host functions. A walker/profile chooses one mode
+// and the shared set primitive lowers it. This mirrors record/enum
+// normalization: frontends state policy, primitives own behavior.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SetMutationResult {
+    /// ECMA: return the receiver.
+    #[default]
+    Receiver,
+    /// Kotlin/.NET: return whether membership changed.
+    ChangedBool,
+    /// Python mutators: return None/null.
+    Void,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SetMissingDelete {
+    /// `delete`/`discard`: missing is fine.
+    #[default]
+    Ignore,
+    /// `remove`: missing is an error.
+    ThrowKeyError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SetAlgebraArity {
+    /// Pascal/ECMA operators: one right operand.
+    #[default]
+    Binary,
+    /// Python methods: receiver plus zero or more operands.
+    Variadic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetSemantics {
+    /// Contract for adding an element.
+    pub mutation_result: SetMutationResult,
+    /// Contract for deleting/removing an element when no error is raised.
+    pub delete_result: SetMutationResult,
+    pub missing_delete: SetMissingDelete,
+    pub algebra_arity: SetAlgebraArity,
+    /// Convert raw predicate results to a language-visible bool object.
+    pub predicate_bool_object: bool,
+}
+
+impl Default for SetSemantics {
+    fn default() -> Self {
+        Self {
+            mutation_result: SetMutationResult::Receiver,
+            delete_result: SetMutationResult::ChangedBool,
+            missing_delete: SetMissingDelete::Ignore,
+            algebra_arity: SetAlgebraArity::Binary,
+            predicate_bool_object: false,
+        }
+    }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Directives — declared policy over CODE
@@ -3104,7 +3523,62 @@ pub struct Directives {
     /// Distinct from `ValueSemantics::storage`, which is about a declared
     /// aggregate. This is about the builtin type, which has no declaration to
     /// hang policy on and no constructor to stamp.
-    pub array_storage: Option<ValueStorage> }
+    pub array_storage: Option<ValueStorage>,
+
+    /// When an assignment's VALUE is a reference — [`ExprKind::RefOf`] or
+    /// `Unary{AddrOf}` — does the target BIND to that reference, or STORE it as
+    /// an ordinary pointer value?
+    ///
+    /// This is Axis B vs Axis A of `referenceplan.md` §3, and it is the one
+    /// distinction the AST could not state. php `$b = &$a` BINDS: `$b = 42`
+    /// afterwards writes `$a`'s storage. c/go/pascal `p = &v` STORES: `p = &w`
+    /// rebinds `p` and leaves `v` alone. Same node shape, opposite meanings.
+    ///
+    /// It belongs here rather than on the node because it is uniform within a
+    /// language — checked across every walker that builds a reference: only php
+    /// aliases on assignment, and no language does both. `ExprKind::Assign`
+    /// carries just a target and a value, so without this the shared compiler
+    /// had nothing to read and the two meanings collapsed into one path.
+    ///
+    /// Only [`PassBy::Alias`] is meaningful; `None` and everything else are the
+    /// STORE behaviour, which is what every language but php wants.
+    pub reference_binding: Option<PassBy>,
+
+    /// Declared contract for builtin sets in this region. The storage remains
+    /// the common Set primitive; this records the source-language surface.
+    pub set_semantics: Option<SetSemantics>,
+
+    /// How a method's RECEIVER reaches its body in this region.
+    ///
+    /// Where `this` is ambient (ECMA §10.2.1.1 — JS, Dart, Lua's `:` sugar
+    /// aside) the callee reads it from the call's own binding and its declared
+    /// parameters are untouched. Where the receiver is an explicit leading
+    /// parameter — Pascal's `Self`, C#/VB's `this`, Python's `self` — it must be
+    /// PASSED, and anything that constructs or binds a callable has to supply
+    /// it.
+    ///
+    /// It belongs here for the same reason [`Self::reference_binding`] does: it
+    /// is uniform within a language and no single node can state it. A handler
+    /// value carries no record of how its receiver arrives, so
+    /// `ecma:function.bind` at an `addEventListener` site, a lambda capture and
+    /// a delegate construction each had to know — and each read a profile flag,
+    /// which the program itself could never see.
+    ///
+    /// `None` means the receiver is an explicit parameter, which is what all but
+    /// a handful of languages want.
+    pub receiver_binding: Option<ReceiverBinding>,
+}
+
+/// How a method's receiver reaches its body — see
+/// [`Directives::receiver_binding`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReceiverBinding {
+    /// An explicit leading parameter: Pascal `Self`, Python `self`, C# `this`.
+    #[default]
+    ExplicitParameter,
+    /// Ambient, read from the call's own `this` binding: JS, Dart.
+    Ambient,
+}
 
 impl Directives {
     /// Nothing stated.
@@ -3117,6 +3591,15 @@ impl Directives {
     pub fn overlay(&mut self, other: &Directives) {
         if other.array_storage.is_some() {
             self.array_storage = other.array_storage;
+        }
+        if other.reference_binding.is_some() {
+            self.reference_binding = other.reference_binding;
+        }
+        if other.set_semantics.is_some() {
+            self.set_semantics = other.set_semantics;
+        }
+        if other.receiver_binding.is_some() {
+            self.receiver_binding = other.receiver_binding;
         }
     }
 }
@@ -3132,7 +3615,8 @@ pub enum DirectiveScope {
     /// Until the end of the module, surviving every intervening block end.
     /// Pascal's `{$R+}`/`{$R-}` and a C `#pragma` are positional like this —
     /// switched on halfway down a procedure, they stay on afterwards.
-    Module }
+    Module,
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Enum members
@@ -3142,7 +3626,8 @@ pub enum DirectiveScope {
 pub struct EnumMember {
     pub name: String,
     pub value: Option<Expression>,
-    pub constructor_args: Vec<Expression> }
+    pub constructor_args: Vec<Expression>,
+}
 
 pub fn body_has_yield(stmts: &[Statement]) -> bool {
     stmts.iter().any(statement_has_yield)
@@ -3167,7 +3652,8 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             expr_has_yield(cond)
                 || body_has_yield(then_body)
                 || elifs
@@ -3181,7 +3667,8 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             init.as_ref()
                 .map_or(false, |stmt| statement_has_yield(stmt))
                 || cond.as_ref().map_or(false, expr_has_yield)
@@ -3203,7 +3690,8 @@ fn statement_has_yield(stmt: &Statement) -> bool {
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             expr_has_yield(cond)
                 || body_has_yield(body)
                 || else_body
@@ -3214,7 +3702,8 @@ fn statement_has_yield(stmt: &Statement) -> bool {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             expr_has_yield(expr)
                 || cases.iter().any(|case| {
                     case.conditions.iter().any(case_condition_has_yield)
@@ -3226,7 +3715,8 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             body_has_yield(body)
                 || catches.iter().any(|catch| {
                     catch.when_clause.as_ref().map_or(false, expr_has_yield)
@@ -3247,7 +3737,7 @@ fn statement_has_yield(stmt: &Statement) -> bool {
             expr.as_ref().map_or(false, expr_has_yield)
                 || cause.as_ref().map_or(false, expr_has_yield)
         }
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             targets.iter().any(expr_has_yield) || expr_has_yield(value)
         }
         StmtKind::CompoundAssign { target, value, .. } => {
@@ -3303,7 +3793,8 @@ fn statement_has_yield(stmt: &Statement) -> bool {
                     case.guard.as_ref().map_or(false, expr_has_yield) || body_has_yield(&case.body)
                 })
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 impl Expression {
@@ -3349,9 +3840,19 @@ impl Expression {
             }
             ExprKind::Binary { left, right, .. }
             | ExprKind::NullCoalesce { left, right }
-            | ExprKind::Assign { target: left, value: right }
-            | ExprKind::Walrus { target: left, value: right }
-            | ExprKind::Range { start: left, end: right, .. } => {
+            | ExprKind::Assign {
+                target: left,
+                value: right,
+            }
+            | ExprKind::Walrus {
+                target: left,
+                value: right,
+            }
+            | ExprKind::Range {
+                start: left,
+                end: right,
+                ..
+            } => {
                 left.walk_exprs_mut(f);
                 right.walk_exprs_mut(f);
             }
@@ -3365,6 +3866,22 @@ impl Expression {
                 else_.walk_exprs_mut(f);
             }
             ExprKind::Member { object, .. } => object.walk_exprs_mut(f),
+            ExprKind::CallableRef {
+                target,
+                receiver,
+                adapter,
+                ..
+            } => {
+                target.walk_exprs_mut(f);
+                if let Some(receiver) = receiver {
+                    receiver.walk_exprs_mut(f);
+                }
+                if let Some(adapter) = adapter {
+                    match adapter {
+                        CallableAdapter::Expr { body, .. } => body.walk_exprs_mut(f),
+                    }
+                }
+            }
             ExprKind::Index { object, index, .. } => {
                 object.walk_exprs_mut(f);
                 index.walk_exprs_mut(f);
@@ -3380,6 +3897,10 @@ impl Expression {
                 for arg in args {
                     arg.value.walk_exprs_mut(f);
                 }
+            }
+            ExprKind::Proxy { target, handler } => {
+                target.walk_exprs_mut(f);
+                handler.walk_exprs_mut(f);
             }
             ExprKind::SuperCall { args, .. } => {
                 for arg in args {
@@ -3397,7 +3918,9 @@ impl Expression {
             ExprKind::Tuple(items)
             | ExprKind::Set(items)
             | ExprKind::Sequence(items)
-            | ExprKind::Zip { iterables: items, .. } => {
+            | ExprKind::Zip {
+                iterables: items, ..
+            } => {
                 for item in items {
                     item.walk_exprs_mut(f);
                 }
@@ -3441,7 +3964,11 @@ impl Expression {
                     arm.body.walk_exprs_mut(f);
                 }
             }
-            ExprKind::Comprehension { element, generators, .. } => {
+            ExprKind::Comprehension {
+                element,
+                generators,
+                ..
+            } => {
                 element.walk_exprs_mut(f);
                 for g in generators {
                     g.target.walk_exprs_mut(f);
@@ -3504,7 +4031,9 @@ impl Statement {
                     body(default, f);
                 }
             }
-            StmtKind::FunctionDecl { body: b, params, .. } => {
+            StmtKind::FunctionDecl {
+                body: b, params, ..
+            } => {
                 for param in params {
                     if let Some(default) = &mut param.default {
                         default.walk_exprs_mut(f);
@@ -3548,7 +4077,12 @@ impl Statement {
                     }
                 }
             }
-            StmtKind::If { cond, then_body, elifs, else_body } => {
+            StmtKind::If {
+                cond,
+                then_body,
+                elifs,
+                else_body,
+            } => {
                 cond.walk_exprs_mut(f);
                 body(then_body, f);
                 for (c, b) in elifs {
@@ -3559,7 +4093,12 @@ impl Statement {
                     body(b, f);
                 }
             }
-            StmtKind::For { init, cond, update, body: b } => {
+            StmtKind::For {
+                init,
+                cond,
+                update,
+                body: b,
+            } => {
                 if let Some(stmt) = init {
                     stmt.walk_exprs_mut(f);
                 }
@@ -3570,14 +4109,23 @@ impl Statement {
                 }
                 body(b, f);
             }
-            StmtKind::ForIn { iter, body: b, else_body, .. } => {
+            StmtKind::ForIn {
+                iter,
+                body: b,
+                else_body,
+                ..
+            } => {
                 iter.walk_exprs_mut(f);
                 body(b, f);
                 if let Some(eb) = else_body {
                     body(eb, f);
                 }
             }
-            StmtKind::While { cond, body: b, else_body } => {
+            StmtKind::While {
+                cond,
+                body: b,
+                else_body,
+            } => {
                 cond.walk_exprs_mut(f);
                 body(b, f);
                 if let Some(eb) = else_body {
@@ -3588,7 +4136,11 @@ impl Statement {
                 body(b, f);
                 cond.walk_exprs_mut(f);
             }
-            StmtKind::Switch { expr, cases, default } => {
+            StmtKind::Switch {
+                expr,
+                cases,
+                default,
+            } => {
                 expr.walk_exprs_mut(f);
                 for case in cases {
                     body(&mut case.body, f);
@@ -3597,7 +4149,12 @@ impl Statement {
                     body(b, f);
                 }
             }
-            StmtKind::Try { body: b, catches, else_body, finally } => {
+            StmtKind::Try {
+                body: b,
+                catches,
+                else_body,
+                finally,
+            } => {
                 body(b, f);
                 for catch in catches {
                     if let Some(when) = &mut catch.when_clause {
@@ -3617,7 +4174,9 @@ impl Statement {
                 }
                 body(b, f);
             }
-            StmtKind::Using { resource, body: b, .. } => {
+            StmtKind::Using {
+                resource, body: b, ..
+            } => {
                 resource.walk_exprs_mut(f);
                 body(b, f);
             }
@@ -3675,10 +4234,12 @@ fn expr_has_yield(expr: &Expression) -> bool {
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Walrus {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Range {
             start: left,
             end: right,
@@ -3689,6 +4250,18 @@ fn expr_has_yield(expr: &Expression) -> bool {
             expr_has_yield(cond) || expr_has_yield(then) || expr_has_yield(else_)
         }
         ExprKind::Member { object, .. } => expr_has_yield(object),
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            expr_has_yield(target)
+                || receiver.as_ref().map_or(false, |expr| expr_has_yield(expr))
+                || adapter.as_ref().map_or(false, |adapter| match adapter {
+                    CallableAdapter::Expr { body, .. } => expr_has_yield(body),
+                })
+        }
         ExprKind::Index { object, index, .. } => expr_has_yield(object) || expr_has_yield(index),
         ExprKind::Call { callee, args, .. } => {
             expr_has_yield(callee) || args.iter().any(|arg| expr_has_yield(&arg.value))
@@ -3705,9 +4278,7 @@ fn expr_has_yield(expr: &Expression) -> bool {
         | ExprKind::Sequence(items)
         | ExprKind::Zip {
             iterables: items, ..
-        } => {
-            items.iter().any(expr_has_yield)
-        }
+        } => items.iter().any(expr_has_yield),
         ExprKind::NamedTuple { fields, .. } => {
             fields.iter().any(|(_, value)| expr_has_yield(value))
         }
@@ -3716,10 +4287,12 @@ fn expr_has_yield(expr: &Expression) -> bool {
                 expr_has_yield(key) || expr_has_yield(value)
             }
             ObjectProperty::Spread(expr) => expr_has_yield(expr),
-            _ => false }),
+            _ => false,
+        }),
         ExprKind::Interpolation(parts) => parts.iter().any(|part| match part {
             InterpolPart::Expr(expr) | InterpolPart::Formatted(expr, _) => expr_has_yield(expr),
-            InterpolPart::Text(_) => false }),
+            InterpolPart::Text(_) => false,
+        }),
         ExprKind::Match { subject, arms } => {
             expr_has_yield(subject)
                 || arms.iter().any(|arm| {
@@ -3746,13 +4319,15 @@ fn expr_has_yield(expr: &Expression) -> bool {
                 || upper.as_ref().map_or(false, |expr| expr_has_yield(expr))
                 || step.as_ref().map_or(false, |expr| expr_has_yield(expr))
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn case_condition_has_yield(condition: &CaseCondition) -> bool {
     match condition {
         CaseCondition::Value(expr) | CaseCondition::Comparison { expr, .. } => expr_has_yield(expr),
-        CaseCondition::Range { from, to } => expr_has_yield(from) || expr_has_yield(to) }
+        CaseCondition::Range { from, to } => expr_has_yield(from) || expr_has_yield(to),
+    }
 }
 
 // ── Rest-parameter arity collection ──────────────────────────────────────────
@@ -3813,7 +4388,8 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
             cond,
             then_body,
             elifs,
-            else_body } => {
+            else_body,
+        } => {
             collect_rest_in_expr(cond, out);
             collect_rest_param_arities(then_body, out);
             for (econd, ebody) in elifs {
@@ -3828,7 +4404,8 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
             init,
             cond,
             update,
-            body } => {
+            body,
+        } => {
             if let Some(init) = init {
                 collect_rest_in_stmt(init, out);
             }
@@ -3855,7 +4432,8 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
         StmtKind::While {
             cond,
             body,
-            else_body } => {
+            else_body,
+        } => {
             collect_rest_in_expr(cond, out);
             collect_rest_param_arities(body, out);
             if let Some(eb) = else_body {
@@ -3869,7 +4447,8 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
         StmtKind::Switch {
             expr,
             cases,
-            default } => {
+            default,
+        } => {
             collect_rest_in_expr(expr, out);
             for case in cases {
                 collect_rest_param_arities(&case.body, out);
@@ -3882,7 +4461,8 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
             body,
             catches,
             else_body,
-            finally } => {
+            finally,
+        } => {
             collect_rest_param_arities(body, out);
             for catch in catches {
                 collect_rest_param_arities(&catch.body, out);
@@ -3923,7 +4503,7 @@ fn collect_rest_in_stmt(stmt: &Statement, out: &mut Vec<u8>) {
         }
         StmtKind::Expr(expr) => collect_rest_in_expr(expr, out),
         StmtKind::Block(body) => collect_rest_param_arities(body, out),
-        StmtKind::Assign { targets, value , ..} => {
+        StmtKind::Assign { targets, value, .. } => {
             for t in targets {
                 collect_rest_in_expr(t, out);
             }
@@ -3989,7 +4569,8 @@ fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
             push_rest_arity(params, out);
             match body {
                 LambdaBody::Expr(e) => collect_rest_in_expr(e, out),
-                LambdaBody::Block(stmts) => collect_rest_param_arities(stmts, out) }
+                LambdaBody::Block(stmts) => collect_rest_param_arities(stmts, out),
+            }
         }
         ExprKind::FunctionExpr(stmt) => collect_rest_in_stmt(stmt, out),
         ExprKind::ClassExpr { members, .. } => {
@@ -4017,10 +4598,12 @@ fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
         | ExprKind::NullCoalesce { left, right }
         | ExprKind::Assign {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Walrus {
             target: left,
-            value: right }
+            value: right,
+        }
         | ExprKind::Range {
             start: left,
             end: right,
@@ -4054,6 +4637,22 @@ fn collect_rest_in_expr(expr: &Expression, out: &mut Vec<u8>) {
             collect_rest_in_expr(else_, out);
         }
         ExprKind::Member { object, .. } => collect_rest_in_expr(object, out),
+        ExprKind::CallableRef {
+            target,
+            receiver,
+            adapter,
+            ..
+        } => {
+            collect_rest_in_expr(target, out);
+            if let Some(receiver) = receiver {
+                collect_rest_in_expr(receiver, out);
+            }
+            if let Some(adapter) = adapter {
+                match adapter {
+                    CallableAdapter::Expr { body, .. } => collect_rest_in_expr(body, out),
+                }
+            }
+        }
         ExprKind::Index { object, index, .. } => {
             collect_rest_in_expr(object, out);
             collect_rest_in_expr(index, out);
@@ -4149,10 +4748,12 @@ pub fn normalize_array_index_operand(
             ExprKind::Slice {
                 lower: lower.map(|expr| Box::new(normalize_array_subscript(*expr, semantics))),
                 upper,
-                step },
+                step,
+            },
             index.span,
         ),
-        other => normalize_array_subscript(Expression::with_span(other, index.span), semantics) }
+        other => normalize_array_subscript(Expression::with_span(other, index.span), semantics),
+    }
 }
 
 fn normalize_array_subscript(index: Expression, semantics: ArrayIndexSemantics) -> Expression {
@@ -4165,7 +4766,8 @@ fn normalize_array_subscript(index: Expression, semantics: ArrayIndexSemantics) 
         ExprKind::Binary {
             left: Box::new(index),
             op: BinOp::Sub,
-            right: Box::new(Expression::int(semantics.first_index)) },
+            right: Box::new(Expression::int(semantics.first_index)),
+        },
         span,
     )
 }

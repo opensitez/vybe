@@ -47,12 +47,12 @@ fn memory_i32_store_load() {
     chunk.emit_f64_const(100.0, 0);
     chunk.emit_op(Op::I32_LOAD, 0);
 
-
     let mut vm = VM::new();
     let result = vm.run(vec![chunk]).unwrap();
     match result {
         Value::I32(42) => {}
-        _ => panic!("Expected I32(42), got {:?}", result) }
+        _ => panic!("Expected I32(42), got {:?}", result),
+    }
 }
 
 #[test]
@@ -73,7 +73,8 @@ fn memory_f64_store_load() {
     let result = vm.run(vec![chunk]).unwrap();
     match result {
         Value::F64(v) if (v - std::f64::consts::PI).abs() < 1e-10 => {}
-        _ => panic!("Expected PI") }
+        _ => panic!("Expected PI"),
+    }
 }
 
 #[test]
@@ -95,7 +96,8 @@ fn memory_byte_store_load() {
     let result = vm.run(vec![chunk]).unwrap();
     match result {
         Value::I32(255) => {}
-        _ => panic!("Expected I32(255), got {:?}", result) }
+        _ => panic!("Expected I32(255), got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -118,7 +120,8 @@ fn pack_unpack() {
     let result = vm.run(vec![chunk]).unwrap();
     match result {
         Value::F64(v) if v == 30.0 => {}
-        _ => panic!("Expected F64(30)") }
+        _ => panic!("Expected F64(30)"),
+    }
 }
 
 // ============================================================
@@ -165,12 +168,14 @@ fn call_indirect_basic() {
         name: Some("add".into()),
         arity: 2,
         chunk_index: 1,
-        upvalues: vec![] };
+        upvalues: vec![],
+    };
     let func_val = Value::Object(Arc::new(std::sync::Mutex::new(Object {
         properties: indexmap::IndexMap::new(),
         kind: ObjectKind::Function(func),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
     vm.func_table.push(func_val);
 
     vm.run(vec![script, add_chunk]).unwrap();

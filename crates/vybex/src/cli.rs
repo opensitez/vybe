@@ -24,9 +24,9 @@
 //! Language is determined automatically.
 
 use std::path::{Path, PathBuf};
+use vybe_compiler::ast::{ExprKind, Literal, Module, StmtKind};
 use vybe_runtime::VM;
 use vybe_runtime::chunk::Chunk;
-use vybe_compiler::ast::{ExprKind, Literal, Module, StmtKind};
 
 #[derive(Default)]
 struct AstSummary {
@@ -35,7 +35,8 @@ struct AstSummary {
     top_level_classes: usize,
     top_level_echoes: usize,
     string_bytes: usize,
-    inline_html_echoes: usize }
+    inline_html_echoes: usize,
+}
 
 fn summarize_module(module: &Module) -> AstSummary {
     let mut summary = AstSummary::default();
@@ -102,7 +103,8 @@ fn print_ast_for_named(module: &Module, name: &str) -> usize {
             | StmtKind::EnumDecl { name, .. }
             | StmtKind::StructDecl { name, .. }
             | StmtKind::NamespaceDecl { name, .. } => name.as_str(),
-            _ => continue };
+            _ => continue,
+        };
         if decl_name.eq_ignore_ascii_case(name) {
             matched += 1;
             println!("{:#?}", stmt);
@@ -152,7 +154,8 @@ fn print_ast_outline(module: &Module) {
             StmtKind::Echo(_) => "Echo",
             StmtKind::Try { .. } => "Try",
             StmtKind::Empty => "Empty",
-            _ => "Other" };
+            _ => "Other",
+        };
         println!("[{index}] {label}");
     }
 }
@@ -192,7 +195,10 @@ fn print_chunk_summary(chunks: &[Chunk], filter: Option<&str>) {
 /// Every plugin registers into `vm` in a single loop. Non-GUI (drawing-only) —
 /// installs `vybe:gui` no-op stubs so compiled control/form code doesn't hit
 /// unresolved imports.
-pub fn register_plugins(vm: &mut vybe_runtime::VM, caps: &vybe_runtime::capabilities::Capabilities) {
+pub fn register_plugins(
+    vm: &mut vybe_runtime::VM,
+    caps: &vybe_runtime::capabilities::Capabilities,
+) {
     vybe_runtime::init_all_registered(vm, caps);
     if vm
         .host_registry
@@ -212,7 +218,8 @@ pub fn register_plugins_with_gui(
 ) -> std::sync::Arc<std::sync::Mutex<vybe_platform_vybe::gui_state::GuiState>> {
     let vybe = vybe_platform_vybe::Plugin::with_gui();
     vybe_runtime::init_all_registered(vm, caps);
-    vybe.gui_state().expect("with_gui() always installs a GuiState")
+    vybe.gui_state()
+        .expect("with_gui() always installs a GuiState")
 }
 
 pub fn run() {
@@ -247,6 +254,9 @@ pub fn run() {
     // [BIND] [ROOT] instead of a single script path.
     let mut serve = false;
     let mut serve_no_sandbox = false;
+    let mut serve_cold = false;
+    let mut serve_no_cache = false;
+    let mut serve_pool: usize = 0;
     let mut serve_bind: Option<String> = None;
     let mut serve_positional: Vec<String> = Vec::new();
 
@@ -320,6 +330,15 @@ pub fn run() {
                 serve_bind = Some(bind.clone());
             }
             "--no-sandbox" => serve_no_sandbox = true,
+            "--cold" => serve_cold = true,
+            "--no-cache" => serve_no_cache = true,
+            "--pool" => {
+                let Some(n) = iter.next().and_then(|v| v.parse::<usize>().ok()) else {
+                    eprintln!("--pool requires a positive count");
+                    std::process::exit(1);
+                };
+                serve_pool = n;
+            }
             "--chunk" => {
                 let Some(name) = iter.next() else {
                     eprintln!("Missing value for --chunk");
@@ -343,6 +362,9 @@ pub fn run() {
     if serve {
         let mut config = crate::server::ServeConfig::default();
         config.no_sandbox = serve_no_sandbox || !sandbox;
+        config.cold = serve_cold;
+        config.pool = serve_pool;
+        config.no_cache = serve_no_cache;
         // Positional parsing: first token that looks like an addr is bind;
         // first token that looks like a path is root. Order-insensitive.
         for p in &serve_positional {
@@ -431,7 +453,9 @@ pub fn run() {
         std::process::exit(1);
     }
 
-    if eval_source.is_some() && !dynamic_compile_caps.has(vybe_runtime::capabilities::Capability::DynamicCompile) {
+    if eval_source.is_some()
+        && !dynamic_compile_caps.has(vybe_runtime::capabilities::Capability::DynamicCompile)
+    {
         eprintln!(
             "Dynamic compilation is disabled in the current mode (missing Capability::DynamicCompile)"
         );
@@ -469,7 +493,10 @@ pub fn run() {
     } else {
         // The entry file (first positional) supplies the source path used for
         // diagnostics and for `.wasm` dispatch; the rest link alongside it.
-        let entry = file_paths.first().expect("file path already checked").clone();
+        let entry = file_paths
+            .first()
+            .expect("file path already checked")
+            .clone();
         source_path = entry.clone();
         let path = entry.as_path();
 
@@ -493,7 +520,9 @@ pub fn run() {
         match vybe_compiler::projects::load_program(&file_paths) {
             Ok(p) => {
                 secondary_units = p.units;
-                secondary_units.pop().expect("a program has at least one unit")
+                secondary_units
+                    .pop()
+                    .expect("a program has at least one unit")
             }
             Err(e) => {
                 eprintln!("{e}");
@@ -505,11 +534,11 @@ pub fn run() {
     let mut bundle = bundle;
     if let Some(spec) = entry_override.as_ref() {
         bundle.entry_point = match spec.split_once('.') {
-            Some((class, method)) => vybe_compiler::bundle::EntryPoint::Method(
-                class.to_string(),
-                method.to_string(),
-            ),
-            None => vybe_compiler::bundle::EntryPoint::Function(spec.clone()) };
+            Some((class, method)) => {
+                vybe_compiler::bundle::EntryPoint::Method(class.to_string(), method.to_string())
+            }
+            None => vybe_compiler::bundle::EntryPoint::Function(spec.clone()),
+        };
     }
     eprintln!(
         "[vybex] Project '{}', sources={}, entry={:?}",
@@ -600,7 +629,8 @@ pub fn run() {
                     eprintln!("Compile error: {e}");
                     std::process::exit(1);
                 }
-            } }
+            },
+        }
     };
 
     // ── --dump: disassemble and exit ────────────────────────────────────────
@@ -637,7 +667,13 @@ pub fn run() {
         let eval_language = bundle.language;
         let eval_caps = dynamic_compile_caps.clone();
         vm.set_eval_hook(Box::new(move |live, expr, locals| {
-            crate::dynamic::debug_eval_expression(live, expr, locals, eval_language, eval_caps.clone())
+            crate::dynamic::debug_eval_expression(
+                live,
+                expr,
+                locals,
+                eval_language,
+                eval_caps.clone(),
+            )
         }));
 
         // Install the hot-reload recompiler: re-read + recompile the source in a
@@ -651,24 +687,40 @@ pub fn run() {
             recompile_for_reload(&reload_path, reload_caps.clone())
         }));
 
-        // Install the event simulator: look up the control's handler in the live
-        // GUI state and invoke it through the VM, so the debugger can fire a
-        // click / window-close without an OS window. The lock is released before
-        // invoking (the handler re-enters host fns that lock the same GuiState).
-        // Args are built by handler ARITY — the same framework-agnostic rule the
-        // real window uses (gui_launch::invoke_callback): 0→[], 1→[me], 2→[me,
-        // sender], _→[me, sender, null], where `me` is the form and `sender` is
-        // the control name. So this fits Dart's 0-arg closures AND .NET/VB
-        // `(sender, e)`-style handlers with no language special-casing.
+        // Install the event simulator, so the debugger can fire a click or a
+        // window-close with no OS window.
+        //
+        // `OnClick := h` IS `addEventListener("click", h)` for every frontend,
+        // so the wiring is on the ELEMENT and a listener is invoked the way the
+        // document invokes one: with an `Event` and nothing else. Its receiver
+        // is already bound into the handler by `primitives/gui.rs`, which is
+        // why no form object is looked up here — the same call the window makes
+        // (`gui_launch::dispatch_document_events`), so the two cannot drift.
+        //
+        // `GuiState` is the fallback, and only for what is NOT a DOM event: a
+        // form's `Load`, and a designer form's handlers. That path keeps the
+        // arity rule it always had (0→[], 1→[me], 2→[me, sender]).
         let fire_gui = gui.clone();
         vm.set_event_fire_hook(Box::new(move |vm, control, event| {
-            // The receiver (`me`) comes from the live GuiState's `form_object`,
-            // which is populated during construction — the `__f` global is only
-            // set later by `launch_gui`, so at a debug pause it's still null and a
-            // C#/VB instance handler would get a null receiver. Fall back to `__f`.
+            // A DOM type is lowercase where the debugger's word is `Click`;
+            // `listeners_for` folds the case, so they are the same event.
+            if let Some(node) = crate::gui_document::node_by_id(control) {
+                if let Some(cb) = crate::gui_document::listeners_for(node, event)
+                    .into_iter()
+                    .next()
+                {
+                    let evt = crate::gui_document::event_object(event, node);
+                    return Ok(vm.invoke_callback(&cb, &[evt]));
+                }
+            }
             let (handler, form_object) = {
-                let g = fire_gui.lock().map_err(|_| "gui state unavailable".to_string())?;
-                (g.get_event_handler(control, event).cloned(), g.form_object.clone())
+                let g = fire_gui
+                    .lock()
+                    .map_err(|_| "gui state unavailable".to_string())?;
+                (
+                    g.get_event_handler(control, event).cloned(),
+                    g.form_object.clone(),
+                )
             };
             let Some(cb) = handler else {
                 return Err(format!(
@@ -683,7 +735,8 @@ pub fn run() {
                 0 => vec![],
                 1 => vec![me],
                 2 => vec![me, sender],
-                _ => vec![me, sender, vybe_runtime::Value::Null] };
+                _ => vec![me, sender, vybe_runtime::Value::Null],
+            };
             Ok(vm.invoke_callback(&cb, &args))
         }));
         if let Some(port) = dap_port {
@@ -877,7 +930,8 @@ fn filter_chunks<'a>(chunks: &'a [Chunk], chunk_filter: Option<&str>) -> Vec<&'a
                 chunks.iter().filter(|chunk| chunk.name == filter).collect()
             }
         }
-        None => chunks.iter().collect() }
+        None => chunks.iter().collect(),
+    }
 }
 
 fn print_usage() {
@@ -896,9 +950,11 @@ fn print_usage() {
     eprintln!("      --eval CODE   Compile source from a string");
     eprintln!("      --lang NAME   Language for --eval (js, php, python, vb, ...)");
     eprintln!("      --virtual-path PATH  Source path used for relative imports in --eval");
-    eprintln!("  -s, --sandbox     Restricted mode (safe capabilities only)
+    eprintln!(
+        "  -s, --sandbox     Restricted mode (safe capabilities only)
       --worker      Warm mode: boot once, run a program per stdin line
-                    (reset between each — no relaunch, no re-registration)");
+                    (reset between each — no relaunch, no re-registration)"
+    );
     eprintln!("  -p, --portable    Minimal WASI runtime (no Vybe host)");
     eprintln!("  -t, --trace       Enable bytecode trace output");
     eprintln!("  -g, --debug       Step debugger: pause on entry, REPL on stdin (h for help)");
@@ -909,6 +965,9 @@ fn print_usage() {
     eprintln!("      --bind ADDR   With --serve: bind to ADDR instead of 127.0.0.1:8080");
     eprintln!("                    BIND defaults to 127.0.0.1:8080, ROOT to current dir");
     eprintln!("      --no-sandbox  With --serve: keep full host access (default)");
+    eprintln!("      --pool N      With --serve: warm VM workers (default: one per core)");
+    eprintln!("      --cold        With --serve: fresh VM per request instead of the warm pool");
+    eprintln!("      --no-cache    With --serve: recompile on every request");
     eprintln!("  -h, --help        Show this help");
     eprintln!();
     eprintln!("Supported: {}", ext_list.join(", "));
@@ -934,5 +993,3 @@ fn looks_like_addr(s: &str) -> bool {
     }
     false
 }
-
-

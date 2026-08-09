@@ -46,7 +46,7 @@ fn ref_func(chunk: &mut Chunk, func_idx: usize, line: u32) {
 }
 
 fn call_ref(chunk: &mut Chunk, argc: u8, line: u32) {
-    chunk.emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(chunk, argc, line);
 }
 
 fn add_call(chunk: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
@@ -66,7 +66,8 @@ fn loop_start(chunk: &mut Chunk, line: u32) -> LoopState {
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None }
+        body_block_patch: None,
+    }
 }
 
 /// Emit `if !(i < n) break;` for a numeric counter loop condition.

@@ -80,9 +80,7 @@ pub fn open(target: &str, features: &str) -> WindowId {
     let width = f.get("width").copied().unwrap_or(800.0);
     let height = f.get("height").copied().unwrap_or(600.0);
     // The viewport IS the window size — set once, read back from there.
-    dom::with_document(document_id, |d| {
-        d.set_viewport(width as f32, height as f32)
-    });
+    dom::with_document(document_id, |d| d.set_viewport(width as f32, height as f32));
 
     let mut ctx = contexts().lock().unwrap();
     ctx.next_id += 1;
@@ -95,7 +93,8 @@ pub fn open(target: &str, features: &str) -> WindowId {
             name: target.to_string(),
             screen_x: f.get("left").copied().unwrap_or(0.0),
             screen_y: f.get("top").copied().unwrap_or(0.0),
-            closed: false },
+            closed: false,
+        },
     );
     ctx.order.push(id);
     id

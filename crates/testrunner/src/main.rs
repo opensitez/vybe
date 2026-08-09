@@ -17,8 +17,8 @@ mod model;
 mod pool;
 mod report;
 mod run;
-mod style;
 mod rustlit;
+mod style;
 mod suites;
 
 use anyhow::{Context, Result};
@@ -84,8 +84,10 @@ fn positionals(args: &[String]) -> Vec<&String> {
             continue;
         }
         if arg.starts_with("--") || arg == "-j" {
-            skip_next =
-                !matches!(arg.as_str(), "--verbose" | "--cold" | "--progress" | "--json" | "--save");
+            skip_next = !matches!(
+                arg.as_str(),
+                "--verbose" | "--cold" | "--progress" | "--json" | "--save"
+            );
             continue;
         }
         out.push(arg);
@@ -114,8 +116,7 @@ fn cmd_extract(args: &[String]) -> Result<()> {
         let ext = emit::extension(&lang)
             .with_context(|| format!("no source extension known for `{lang}`"))?;
 
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {input}"))?;
+        let text = std::fs::read_to_string(path).with_context(|| format!("reading {input}"))?;
         // BOTH shapes, merged. A module can carry a macro batch AND its own
         // `#[test] fn`s — `test_bcmath.rs` has a 12-entry `php_cases!` block
         // beside 34 test functions, and treating the two as mutually exclusive
@@ -265,7 +266,8 @@ fn cmd_extract(args: &[String]) -> Result<()> {
                     let e = emit::lua::emit(case, input, &slug, &harness);
                     (e.text, e.pairing)
                 }
-                other => anyhow::bail!("no emitter for `{other}` yet") };
+                other => anyhow::bail!("no emitter for `{other}` yet"),
+            };
             if let emit::go::Pairing::Unpairable(reason) = &pairing {
                 unpairable.push((slug.clone(), reason.clone()));
             }
@@ -299,7 +301,10 @@ fn cmd_extract(args: &[String]) -> Result<()> {
         );
     }
     if unpairable.is_empty() {
-        println!("{} case(s) paired 1:1 into assertions", total - compile_only);
+        println!(
+            "{} case(s) paired 1:1 into assertions",
+            total - compile_only
+        );
     } else {
         println!("{} case(s) could NOT be paired:", unpairable.len());
         for (slug, reason) in &unpairable {
@@ -357,13 +362,18 @@ fn cmd_dashboard(args: &[String]) -> Result<()> {
     if !args.iter().any(|a| a == "--watch") {
         return render_dashboard(args);
     }
-    let secs: u64 = flag(args, "--interval").and_then(|v| v.parse().ok()).unwrap_or(2);
+    let secs: u64 = flag(args, "--interval")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
     loop {
         // Home + erase-below, not erase-all: the screen is overwritten in place
         // so a redraw does not flash.
         print!("\x1b[H\x1b[J");
         render_dashboard(args)?;
-        println!("\n{}", style::grey(&format!("refreshing every {secs}s — ^C to stop")));
+        println!(
+            "\n{}",
+            style::grey(&format!("refreshing every {secs}s — ^C to stop"))
+        );
         use std::io::Write;
         let _ = std::io::stdout().flush();
         std::thread::sleep(std::time::Duration::from_secs(secs));
@@ -373,7 +383,9 @@ fn cmd_dashboard(args: &[String]) -> Result<()> {
 fn render_dashboard(args: &[String]) -> Result<()> {
     let results_dir = PathBuf::from(flag(args, "--results").unwrap_or("results/testrunner"));
     let saved_dir = results_dir.join("saved");
-    let sort_by = flag(args, "--sort").unwrap_or("percent").to_ascii_lowercase();
+    let sort_by = flag(args, "--sort")
+        .unwrap_or("percent")
+        .to_ascii_lowercase();
     let desc = args.iter().any(|a| a == "--desc");
 
     #[derive(Default)]
@@ -388,7 +400,8 @@ fn render_dashboard(args: &[String]) -> Result<()> {
         /// The owning process is gone but the log never finished.
         interrupted: bool,
         /// Seconds since the newest of this suite's logs was written.
-        age: Option<u64> }
+        age: Option<u64>,
+    }
     let mut rows: std::collections::BTreeMap<String, Row> = Default::default();
 
     let mut logs: Vec<PathBuf> = std::fs::read_dir(&saved_dir)
@@ -414,7 +427,13 @@ fn render_dashboard(args: &[String]) -> Result<()> {
         let finished = text.lines().any(|l| l.starts_with("test result:"));
         let announced: usize = text
             .lines()
-            .find_map(|l| l.strip_prefix("running ")?.split_whitespace().next()?.parse().ok())
+            .find_map(|l| {
+                l.strip_prefix("running ")?
+                    .split_whitespace()
+                    .next()?
+                    .parse()
+                    .ok()
+            })
             .unwrap_or(0);
         // Ask the owning process, if a sidecar names one.
         let owner_pid: Option<u32> = std::fs::read_to_string(run_marker(log))
@@ -438,15 +457,20 @@ fn render_dashboard(args: &[String]) -> Result<()> {
             seen_langs.insert(named);
         }
         for line in text.lines() {
-            let Some(rest) = line.strip_prefix("test ") else { continue };
-            let Some((slug, verdict)) = rest.rsplit_once(" ... ") else { continue };
+            let Some(rest) = line.strip_prefix("test ") else {
+                continue;
+            };
+            let Some((slug, verdict)) = rest.rsplit_once(" ... ") else {
+                continue;
+            };
             let lang = slug.split('/').next().unwrap_or(slug).to_string();
             let row = rows.entry(lang.clone()).or_default();
             match verdict {
                 "ok" => row.ok += 1,
                 "TIMEOUT" => row.timeout += 1,
                 "FAILED" => row.failed += 1,
-                _ => continue }
+                _ => continue,
+            }
             seen_langs.insert(lang);
         }
         for lang in seen_langs {
@@ -466,13 +490,18 @@ fn render_dashboard(args: &[String]) -> Result<()> {
             }
             row.age = match (row.age, age) {
                 (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b) };
+                (a, b) => a.or(b),
+            };
         }
     }
 
     let pct = |r: &Row| -> f64 {
         let total = r.ok + r.failed + r.timeout;
-        if total == 0 { 0.0 } else { 100.0 * r.ok as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            100.0 * r.ok as f64 / total as f64
+        }
     };
 
     let mut ordered: Vec<(&String, &Row)> = rows.iter().collect();
@@ -482,8 +511,13 @@ fn render_dashboard(args: &[String]) -> Result<()> {
             "ok" | "pass" => a.1.ok.cmp(&b.1.ok),
             "fail" | "failed" => a.1.failed.cmp(&b.1.failed),
             "timeout" => a.1.timeout.cmp(&b.1.timeout),
-            "total" => (a.1.ok + a.1.failed + a.1.timeout).cmp(&(b.1.ok + b.1.failed + b.1.timeout)),
-            _ => pct(a.1).partial_cmp(&pct(b.1)).unwrap_or(std::cmp::Ordering::Equal) };
+            "total" => {
+                (a.1.ok + a.1.failed + a.1.timeout).cmp(&(b.1.ok + b.1.failed + b.1.timeout))
+            }
+            _ => pct(a.1)
+                .partial_cmp(&pct(b.1))
+                .unwrap_or(std::cmp::Ordering::Equal),
+        };
         if desc { o.reverse() } else { o }
     });
 
@@ -514,11 +548,35 @@ fn render_dashboard(args: &[String]) -> Result<()> {
         };
     }
     let head = |t: &str, w: usize| style::bold(&format!("{t:>w$}"));
-    // 50 = the width of the columns through `done`; `updated` is free text.
-    let rule = style::grey(&"─".repeat(50));
+    // A suite that was extracted but never saved still gets a row, so its name
+    // is read BEFORE the header — the name column has to be wide enough for
+    // every row the table will print, not just the measured ones.
+    let extracted: std::collections::BTreeSet<String> = std::fs::read_dir("tests")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    // The name column is as wide as the widest name it carries. A fixed 8 fit
+    // every suite until `powershell` (10) — an over-long name does not truncate,
+    // it pushes the rest of ITS row right, so one suite knocked every later
+    // column out of line. The `.max(7)` keeps the table identical to before
+    // whenever nothing is wider than the old fit.
+    let name_w = rows
+        .keys()
+        .chain(extracted.iter())
+        .map(|s| s.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(7)
+        + 1;
+    // The columns through `done` are 42 wide plus the name; `updated` is free
+    // text and is not ruled.
+    let rule = style::grey(&"─".repeat(42 + name_w));
     row!(
         " ",
-        style::bold("suite   "),
+        style::bold(&format!("{:<name_w$}", "suite")),
         head("%ok", 6),
         head("ok", 6),
         head("fail", 6),
@@ -534,8 +592,9 @@ fn render_dashboard(args: &[String]) -> Result<()> {
     // A suite whose saver exists but has produced no verdict yet has nothing to
     // rank, so it sorts below the ones that do — with the never-saved rows,
     // which look the same because they mean the same thing: no data.
-    let (measured, queued): (Vec<_>, Vec<_>) =
-        ordered.iter().partition(|(_, r)| r.ok + r.failed + r.timeout > 0);
+    let (measured, queued): (Vec<_>, Vec<_>) = ordered
+        .iter()
+        .partition(|(_, r)| r.ok + r.failed + r.timeout > 0);
     for (lang, r) in &measured {
         let total = r.ok + r.failed + r.timeout;
         // A finished log never announced an expectation, and it does not need
@@ -559,14 +618,22 @@ fn render_dashboard(args: &[String]) -> Result<()> {
         let score: fn(&str) -> String = match pct(r) {
             p if p >= 90.0 => style::green,
             p if p >= 80.0 => style::orange,
-            _ => style::grey };
+            _ => style::grey,
+        };
         let done = format!(
             "{:>5}",
-            format!("{:.0}%", if want == 0 { 0.0 } else { 100.0 * total as f64 / want as f64 })
+            format!(
+                "{:.0}%",
+                if want == 0 {
+                    0.0
+                } else {
+                    100.0 * total as f64 / want as f64
+                }
+            )
         );
         row!(
             paint(icon),
-            style::bold(&paint(&format!("{lang:<8}"))),
+            style::bold(&paint(&format!("{lang:<name_w$}"))),
             score(&format!("{:>6}", format!("{:.1}%", pct(r)))),
             format!("{:>6}", r.ok),
             format!("{:>6}", r.failed),
@@ -574,7 +641,11 @@ fn render_dashboard(args: &[String]) -> Result<()> {
             format!("{total:>7}"),
             // A partial row is the one whose `done` matters, so it is the one
             // that gets the colour.
-            if total == want { style::grey(&done) } else { paint(&done) },
+            if total == want {
+                style::grey(&done)
+            } else {
+                paint(&done)
+            },
             style::grey(&r.age.map(human_age).unwrap_or_else(|| "-".into()))
         );
         t_ok += r.ok;
@@ -587,7 +658,7 @@ fn render_dashboard(args: &[String]) -> Result<()> {
     for (lang, _) in &queued {
         row!(
             style::grey("·"),
-            style::grey(&format!("{lang:<8}")),
+            style::grey(&format!("{lang:<name_w$}")),
             dash(6),
             dash(6),
             dash(6),
@@ -601,18 +672,12 @@ fn render_dashboard(args: &[String]) -> Result<()> {
     // A suite that was extracted but never saved gets a ROW, not a sentence
     // trailing the table. `run_lang_tests.py` calls this state `queued` and
     // draws it grey with a `·`; here it means "no data", and a dashboard that
-    // showed only what was measured would hide what was not.
-    let extracted: std::collections::BTreeSet<String> = std::fs::read_dir("tests")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
+    // showed only what was measured would hide what was not. (`extracted` is
+    // read above the header — it feeds the name column's width.)
     for lang in extracted.iter().filter(|l| !rows.contains_key(*l)) {
         row!(
             style::grey("·"),
-            style::grey(&format!("{lang:<8}")),
+            style::grey(&format!("{lang:<name_w$}")),
             dash(6),
             dash(6),
             dash(6),
@@ -626,21 +691,32 @@ fn render_dashboard(args: &[String]) -> Result<()> {
     }
 
     let grand = t_ok + t_fail + t_to;
-    let overall = if grand == 0 { 0.0 } else { 100.0 * t_ok as f64 / grand as f64 };
+    let overall = if grand == 0 {
+        0.0
+    } else {
+        100.0 * t_ok as f64 / grand as f64
+    };
     let live = ordered.iter().filter(|(_, r)| r.running).count();
     let stale = ordered.iter().filter(|(_, r)| r.interrupted).count();
     let bold_at = |t: String, w: usize| style::bold(&format!("{t:>w$}"));
     println!("{rule}");
     row!(
         " ",
-        style::bold("TOTAL   "),
+        style::bold(&format!("{:<name_w$}", "TOTAL")),
         bold_at(format!("{overall:.1}%"), 6),
         bold_at(t_ok.to_string(), 6),
         bold_at(t_fail.to_string(), 6),
         bold_at(t_to.to_string(), 4),
         bold_at(grand.to_string(), 7),
         bold_at(
-            format!("{:.0}%", if t_want == 0 { 0.0 } else { 100.0 * grand as f64 / t_want as f64 }),
+            format!(
+                "{:.0}%",
+                if t_want == 0 {
+                    0.0
+                } else {
+                    100.0 * grand as f64 / t_want as f64
+                }
+            ),
             5
         ),
         ""
@@ -649,7 +725,10 @@ fn render_dashboard(args: &[String]) -> Result<()> {
     // running, or one whose process died mid-log, makes its own percentage a
     // partial population, and that is a sentence, not a column.
     if live > 0 {
-        println!("{}", style::green(&format!("▶ {live} suite(s) still running")));
+        println!(
+            "{}",
+            style::green(&format!("▶ {live} suite(s) still running"))
+        );
     }
     if stale > 0 {
         println!(
@@ -674,7 +753,10 @@ fn cmd_summary(args: &[String]) -> Result<()> {
     let results_dir = PathBuf::from(flag(args, "--results").unwrap_or("results/testrunner"));
     let saved_dir = results_dir.join("saved");
     let targets = positionals(args);
-    anyhow::ensure!(!targets.is_empty(), "no target given (e.g. `testrunner summary php`)");
+    anyhow::ensure!(
+        !targets.is_empty(),
+        "no target given (e.g. `testrunner summary php`)"
+    );
 
     for target in targets {
         let logs = resolve_saved(&saved_dir, target);
@@ -732,12 +814,10 @@ fn resolve_saved(saved_dir: &Path, target: &str) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| {
-                        n.starts_with(&format!("{dotted}."))
-                            || n.starts_with(&format!("tests.{dotted}."))
-                    })
+                && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.starts_with(&format!("{dotted}."))
+                        || n.starts_with(&format!("tests.{dotted}."))
+                })
         })
         .collect();
     matches.sort();
@@ -760,8 +840,12 @@ fn print_saved_summary(target: &str, paths: &[PathBuf]) -> Result<()> {
     for line in text.lines() {
         // `test <slug> ... <verdict>` and nothing else. The `test result:`
         // summary line and the `---- slug ----` headers must not be counted.
-        let Some(rest) = line.strip_prefix("test ") else { continue };
-        let Some((slug, verdict)) = rest.rsplit_once(" ... ") else { continue };
+        let Some(rest) = line.strip_prefix("test ") else {
+            continue;
+        };
+        let Some((slug, verdict)) = rest.rsplit_once(" ... ") else {
+            continue;
+        };
         let (fails, tos) = match verdict {
             "ok" => {
                 passed += 1;
@@ -779,13 +863,15 @@ fn print_saved_summary(target: &str, paths: &[PathBuf]) -> Result<()> {
                 failed += 1;
                 (1, 0)
             }
-            _ => continue };
+            _ => continue,
+        };
         // The slug is `lang/category/name`; group by `lang/category`, which is
         // the unit you re-run and the unit a fix lands in.
         let mut parts = slug.split('/');
         let category = match (parts.next(), parts.next(), parts.next()) {
             (Some(lang), Some(cat), Some(_)) => format!("{lang}/{cat}"),
-            _ => slug.to_string() };
+            _ => slug.to_string(),
+        };
         let entry = by_category.entry(category).or_default();
         entry.0 += fails;
         entry.1 += tos;
@@ -830,7 +916,11 @@ fn print_saved_summary(target: &str, paths: &[PathBuf]) -> Result<()> {
     println!(
         "   {passed} passed, {bad} not passing ({:.1}%) of {total}{}",
         100.0 * bad as f64 / total as f64,
-        if timed_out > 0 { format!(" — {timed_out} timed out") } else { String::new() },
+        if timed_out > 0 {
+            format!(" — {timed_out} timed out")
+        } else {
+            String::new()
+        },
     );
     Ok(())
 }
@@ -844,6 +934,31 @@ fn print_saved_summary(target: &str, paths: &[PathBuf]) -> Result<()> {
 /// the Generics.Collections prelude, 27–56s each under `target/debug/vybex` and
 /// ~5s under release. Zero of them time out on the release binary. A verdict
 /// that flips with the profile is worse than a slow run, so name the binary.
+/// When this run started, and when the binary it drives was built.
+///
+/// A saved log is otherwise undatable from the inside. Its mtime tells you when
+/// the run FINISHED, and nothing at all tells you which `vybex` produced it —
+/// so a log written minutes before a rebuild is indistinguishable from one
+/// written after, and gets read as evidence for code it never executed.
+/// `testrunner` deliberately links nothing from Vybe (see `Cargo.toml`), so it
+/// is not even rebuilt when the compiler changes and its own mtime says
+/// nothing. The binary's mtime is the honest answer to "is this result current".
+fn provenance(vybex: &std::path::Path) -> String {
+    let built = std::fs::metadata(vybex)
+        .and_then(|m| m.modified())
+        .map(|t| {
+            chrono::DateTime::<chrono::Local>::from(t)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|_| "unknown".into());
+    format!(
+        "started {} · {} built {built}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        vybex.display(),
+    )
+}
+
 fn warn_if_debug_binary(vybex: &std::path::Path) {
     let looks_debug = vybex.components().any(|c| c.as_os_str() == "debug");
     let release = std::path::Path::new("target/release/vybex");
@@ -861,8 +976,8 @@ fn warn_if_debug_binary(vybex: &std::path::Path) {
 fn cmd_run(args: &[String]) -> Result<()> {
     let vybex = PathBuf::from(flag(args, "--vybex").unwrap_or("target/debug/vybex"));
     warn_if_debug_binary(&vybex);
-    let runtime: Option<Vec<String>> = flag(args, "--runtime")
-        .map(|cmd| cmd.split_whitespace().map(str::to_string).collect());
+    let runtime: Option<Vec<String>> =
+        flag(args, "--runtime").map(|cmd| cmd.split_whitespace().map(str::to_string).collect());
     let verbose = args.iter().any(|a| a == "--verbose");
     // Warm workers are the default; `--cold` forces one fresh process per test,
     // which is the only way to prove a reset is not leaking state between them.
@@ -881,7 +996,9 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // script to parse the way it parses `<lang>.tests.txt` today.
     let save = args.iter().any(|a| a == "--save");
     // 60s, matching the point at which cargo declares a test worth mentioning.
-    let timeout: u64 = flag(args, "--timeout").and_then(|n| n.parse().ok()).unwrap_or(60);
+    let timeout: u64 = flag(args, "--timeout")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(60);
     let results_dir = PathBuf::from(flag(args, "--results").unwrap_or("results/testrunner"));
     // How many SUITES are in flight at once — `run_lang_tests.py`'s `jobs`, not
     // `-j`, which is worker threads. Several suites given at once used to be
@@ -890,10 +1007,15 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // say "running" about all of them. The cost is a drain-down at each wave
     // boundary, where one hung test holds the pool open for up to the full
     // timeout; raise the number to trade per-suite reporting back for it.
-    let suites_at_once: usize =
-        flag(args, "--suites").and_then(|n| n.parse().ok()).unwrap_or(3).max(1);
+    let suites_at_once: usize = flag(args, "--suites")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(3)
+        .max(1);
     if let Some(jobs) = flag(args, "-j").and_then(|n| n.parse().ok()) {
-        rayon::ThreadPoolBuilder::new().num_threads(jobs).build_global().ok();
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build_global()
+            .ok();
     }
 
     let root = PathBuf::from(flag(args, "--tests").unwrap_or("tests"));
@@ -902,7 +1024,10 @@ fn cmd_run(args: &[String]) -> Result<()> {
     let mut roots = Vec::new();
     for target in &targets {
         let resolved = suites::resolve(target, &root).with_context(|| {
-            format!("no such suite or path: `{target}` (looked for it and for {}/{target})", root.display())
+            format!(
+                "no such suite or path: `{target}` (looked for it and for {}/{target})",
+                root.display()
+            )
         })?;
         roots.push(resolved);
     }
@@ -928,10 +1053,15 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // 10-core box: 10→97, 12→99, 16→92, 20→88 tests/s.
     let threads = flag(args, "-j")
         .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get() + 2).unwrap_or(8));
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get() + 2)
+                .unwrap_or(8)
+        });
     let under = match &runtime {
         Some(cmd) => cmd.join(" "),
-        None => vybex.display().to_string() };
+        None => vybex.display().to_string(),
+    };
     let waves: Vec<(Vec<usize>, Vec<PathBuf>)> = (0..roots.len())
         .collect::<Vec<_>>()
         .chunks(suites_at_once)
@@ -973,7 +1103,11 @@ fn cmd_run(args: &[String]) -> Result<()> {
         } else {
             String::new()
         },
-        if runtime.is_some() || cold { "cold" } else { "warm" },
+        if runtime.is_some() || cold {
+            "cold"
+        } else {
+            "warm"
+        },
     );
 
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
@@ -983,8 +1117,10 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // The live table and the cargo-style per-test lines cannot share a stream:
     // the table redraws in place. Exactly one of them is on.
     let table = suites::Table::new(&counts, progress);
+    let provenance = provenance(&vybex);
     if !progress {
         println!("\nrunning {} tests", files.len());
+        println!("{provenance}");
     }
 
     let started = std::time::Instant::now();
@@ -1008,8 +1144,8 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // is still filling.
     let savers: Vec<(PathBuf, std::sync::Mutex<Option<std::fs::File>>)> = if save {
         let mut out = Vec::new();
-        for target in targets.iter() {
-            let path = saved_log_path(&results_dir, target);
+        for root in roots.iter() {
+            let path = saved_log_path(&results_dir, root);
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
@@ -1026,11 +1162,16 @@ fn cmd_run(args: &[String]) -> Result<()> {
     // Opened before the wave rather than at its end, and flushed per line, so
     // `tail -f` and a mid-run `grep` both see it fill.
     let open_saver = |i: usize| -> Result<()> {
-        let Some((path, slot)) = savers.get(i) else { return Ok(()) };
+        let Some((path, slot)) = savers.get(i) else {
+            return Ok(());
+        };
         let count = owner.values().filter(|&&o| o == i).count();
         let mut file =
             std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
         writeln!(file, "running {count} tests")?;
+        // Second line, so a saved log carries its own date and the identity of
+        // the binary that produced it — see [`provenance`].
+        writeln!(file, "{provenance}")?;
         file.flush()?;
         // A sidecar naming the PID that owns this log. mtime cannot tell a live
         // run from an abandoned one — a stalled worker writes nothing for the
@@ -1080,14 +1221,24 @@ fn cmd_run(args: &[String]) -> Result<()> {
         match &runtime {
             // A foreign runtime has no warm mode — one process per test is all
             // `go run` / `python3` / `node` offer.
-            Some(cmd) => run::run_each(files, threads, |file, mode| {
-                run::run_foreign(&cmd[0], &cmd[1..], file, mode, timeout, &|secs| {
-                    announce(file, secs)
-                })
-            }, &note),
-            None if cold => run::run_each(files, threads, |file, mode| {
-                run::run_case(&vybex, file, mode, timeout, &|secs| announce(file, secs))
-            }, &note),
+            Some(cmd) => run::run_each(
+                files,
+                threads,
+                |file, mode| {
+                    run::run_foreign(&cmd[0], &cmd[1..], file, mode, timeout, &|secs| {
+                        announce(file, secs)
+                    })
+                },
+                &note,
+            ),
+            None if cold => run::run_each(
+                files,
+                threads,
+                |file, mode| {
+                    run::run_case(&vybex, file, mode, timeout, &|secs| announce(file, secs))
+                },
+                &note,
+            ),
             None => pool::run_all(
                 &vybex,
                 files,
@@ -1095,7 +1246,8 @@ fn cmd_run(args: &[String]) -> Result<()> {
                 std::time::Duration::from_secs(timeout),
                 &note,
                 &announce,
-            ) }
+            ),
+        }
     };
     // One wave at a time, each wave being up to `--suites` targets run across
     // the full worker pool. With a single target there is one wave and this is
@@ -1115,13 +1267,17 @@ fn cmd_run(args: &[String]) -> Result<()> {
         // completed; deferring it left a finished suite reading "running" for
         // as long as the remaining waves took.
         for &i in group {
-            let Some((path, file)) = savers.get(i) else { continue };
+            let Some((path, file)) = savers.get(i) else {
+                continue;
+            };
             let mut sub = model::TestReport::new(under.clone());
             for exec in done.iter().filter(|e| owner.get(&e.path) == Some(&i)) {
                 sub.add_execution(exec.clone());
             }
             let mut slot = file.lock().unwrap();
-            let Some(handle) = slot.as_mut() else { continue };
+            let Some(handle) = slot.as_mut() else {
+                continue;
+            };
             for line in report::cargo_tail(&sub, wave_started.elapsed().as_secs_f64(), false) {
                 writeln!(handle, "{line}")?;
             }
@@ -1206,7 +1362,11 @@ fn cmd_run(args: &[String]) -> Result<()> {
         }
     }
 
-    if report.failed == 0 && report.errors == 0 { Ok(()) } else { std::process::exit(1) }
+    if report.failed == 0 && report.errors == 0 {
+        Ok(())
+    } else {
+        std::process::exit(1)
+    }
 }
 
 /// Shorten a case name to `max` characters, keeping it unique within its
@@ -1243,9 +1403,30 @@ fn short_unique_name(
 /// `<lang>.tests.txt` stats scripts already read. **One file per target** —
 /// `run tests/go tests/js --save` writes `tests.go.txt` and `tests.js.txt`,
 /// not one merged log, because each is compared against its own suite.
-fn saved_log_path(results_dir: &Path, target: &str) -> PathBuf {
-    let name = target.trim_matches('/').replace('/', ".");
-    let name = if name.is_empty() { "run".to_string() } else { name };
+/// The log for a suite, named after the RESOLVED suite path rather than the
+/// spelling the caller typed.
+///
+/// `run go` and `run tests/go` are the same suite. Naming the log after the
+/// argument gave them `go.txt` and `tests.go.txt` — two complete logs of the
+/// same tests. Nothing downstream could tell them apart, because the dashboard
+/// groups rows by the LANGUAGE in each slug (deliberately, so
+/// `run tests/go/a tests/go/b` sums to one row). So the duplicate did not read
+/// as a duplicate: it doubled ok/fail/total for that suite, and when one of the
+/// pair was unfinished its announcement became the denominator for BOTH —
+/// `done` at 191%.
+fn saved_log_path(results_dir: &Path, resolved: &Path) -> PathBuf {
+    // Relative to the working directory when possible, so an absolute target
+    // does not spell its whole path into the filename.
+    let rel = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| resolved.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        .unwrap_or_else(|| resolved.to_path_buf());
+    let name = rel.to_string_lossy().trim_matches('/').replace('/', ".");
+    let name = if name.is_empty() {
+        "run".to_string()
+    } else {
+        name
+    };
     results_dir.join("saved").join(format!("{name}.txt"))
 }
 
@@ -1254,13 +1435,18 @@ fn saved_log_path(results_dir: &Path, target: &str) -> PathBuf {
 /// component that is not the `tests` root.
 fn lang_from_log(log: &Path) -> Option<String> {
     let stem = log.file_stem()?.to_str()?;
-    stem.split('.').find(|p| !p.is_empty() && *p != "tests").map(str::to_string)
+    stem.split('.')
+        .find(|p| !p.is_empty() && *p != "tests")
+        .map(str::to_string)
 }
 
 /// `12s` / `4m` / `2h` — a raw second count is unreadable in a `watch` pane.
 /// `tests.php.txt` → `.tests.php.txt.run`, the sidecar holding the owning PID.
 fn run_marker(log: &Path) -> PathBuf {
-    let name = log.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = log
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     log.with_file_name(format!(".{name}.run"))
 }
 
@@ -1280,7 +1466,8 @@ fn human_age(secs: u64) -> String {
     match secs {
         0..=99 => format!("{secs}s ago"),
         100..=5399 => format!("{}m ago", secs / 60),
-        _ => format!("{}h ago", secs / 3600) }
+        _ => format!("{}h ago", secs / 3600),
+    }
 }
 
 fn collect(roots: &[PathBuf]) -> Vec<PathBuf> {

@@ -96,15 +96,13 @@ impl Compiler {
                 ("Contains", 1) => {
                     self.compile_expr(object)?;
                     self.compile_collection_key(object, &args[0].value)?;
-                    let idx = self.import("ecma:set", "has");
-                    self.emit_host_call(idx, 2);
+                    common::sets::emit_has(&mut self.chunks, self.current, line);
                     return Ok(true);
                 }
                 ("Remove", 1) => {
                     self.compile_expr(object)?;
                     self.compile_collection_key(object, &args[0].value)?;
-                    let idx = self.import("ecma:set", "delete");
-                    self.emit_host_call(idx, 2);
+                    common::sets::emit_delete(&mut self.chunks, self.current, line);
                     return Ok(true);
                 }
                 _ => {}

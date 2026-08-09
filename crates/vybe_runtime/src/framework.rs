@@ -22,8 +22,8 @@
 //! and is the natural dylib entry point tomorrow: a loadable module exports a
 //! `Plugin` factory, the host `dlopen`s it, and calls the same `init`.
 
-use crate::registry::{LanguageHooks, LanguageDef};
 use crate::capabilities::{Capabilities, Capability};
+use crate::registry::{LanguageDef, LanguageHooks};
 use crate::{HostContext, TypeDef, VM, Value};
 
 /// A capability provider. Its [`init`](Plugin::init) registers everything the
@@ -54,6 +54,24 @@ pub trait Plugin: Sync {
     /// constructor↔prototype links here, since it resolves host fns other
     /// plugins registered by registry index. Default: no-op.
     fn finalize(&self, _fw: &mut Framework<'_>) {}
+
+    /// Drop everything this plugin holds on behalf of the program that just
+    /// ran. Called by [`crate::VM::reset_to`], for every plugin, on every
+    /// reset.
+    ///
+    /// `init`/`finalize` build BOOT state — host functions, prototypes,
+    /// registry indices — which must survive. This is the other half: the
+    /// per-program state a plugin accumulates while a script runs. Pending
+    /// timer and animation callbacks, DOM listeners and documents, cached
+    /// constructor objects, connection handles. All of it belongs to one
+    /// tenant, and a reused VM must not hand any of it to the next.
+    ///
+    /// Takes `&self`, not the VM: this is process-global state a plugin owns
+    /// directly, which is exactly why the VM's own reset could never reach it.
+    ///
+    /// Default no-op, because a plugin that only registers host functions has
+    /// nothing to drop. A plugin that stores a `Value` anywhere does.
+    fn reset(&self) {}
 }
 
 /// The single registration surface handed to every plugin's `init`.
@@ -139,7 +157,9 @@ impl<'a> Framework<'a> {
     /// The type id already registered under `name`, if any — for parent links
     /// or for attaching methods to a pre-existing type (e.g. `Object` = id 0).
     pub fn type_id(&self, name: &str) -> Option<usize> {
-        self.vm.as_deref().and_then(|vm| vm.type_registry.get_id(name))
+        self.vm
+            .as_deref()
+            .and_then(|vm| vm.type_registry.get_id(name))
     }
 
     /// The host-fn registry index for `module`::`name`, for building a type's
@@ -168,7 +188,8 @@ impl<'a> Framework<'a> {
     /// `module`::`name`. No-op when either the type or the host fn is absent.
     /// The registrar-level form of `get_id` + `set_constructor`.
     pub fn set_constructor(&mut self, type_name: &str, module: &str, name: &str) {
-        if let (Some(tid), Some(idx)) = (self.type_id(type_name), self.host_fn_index(module, name)) {
+        if let (Some(tid), Some(idx)) = (self.type_id(type_name), self.host_fn_index(module, name))
+        {
             if let Some(vm) = self.vm.as_deref_mut() {
                 vm.type_registry
                     .set_constructor(tid, crate::Method::HostFn(idx));
@@ -246,6 +267,18 @@ pub fn init_all_registered(vm: &mut VM, caps: &Capabilities) {
 pub fn init_registered_plugins(vm: &mut VM, caps: &Capabilities) {
     for p in plugins() {
         run_phase(vm, caps, p, false);
+    }
+}
+
+/// Reset phase for every REGISTERED plugin — see [`Plugin::reset`].
+///
+/// Runs for EVERY plugin regardless of capability: a plugin whose capability
+/// was granted for an earlier program still holds that program's state, and
+/// skipping it because the current policy is narrower would leave exactly the
+/// state this exists to drop.
+pub fn reset_all_registered() {
+    for p in plugins() {
+        p.reset();
     }
 }
 

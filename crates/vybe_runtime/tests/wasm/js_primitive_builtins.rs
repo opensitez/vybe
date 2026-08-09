@@ -23,7 +23,10 @@ fn push_arg(chunk: &mut Chunk, v: Value) -> Option<(String, Value)> {
         Value::String(s) => chunk.emit_string_const(&s, 0),
         Value::Null => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0),
         other => {
-            let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+            let name = format!(
+                "__test_arg_{}",
+                TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+            );
             let ci = chunk.intern_string_constant(&name);
             chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             return Some((name, other));

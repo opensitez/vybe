@@ -9,9 +9,9 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use vybe_ast::{ClassMember, ClassModifiers, Module, Span};
-use vybe_ast::class_normalize::NormalClass;
 use crate::Chunk;
+use vybe_ast::class_normalize::NormalClass;
+use vybe_ast::{ClassMember, ClassModifiers, Module, Span};
 
 /// Parse source → common AST.
 pub type ParseFn = fn(&str) -> Result<Module, String>;
@@ -211,13 +211,8 @@ pub fn platform_component_descriptors() -> Vec<crate::component_model::Component
 
 /// The numeric-format helper builder, if a platform provides one.
 pub fn platform_numeric_format_helper() -> Option<fn(&mut Chunk) -> Chunk> {
-    all_platforms()
-        .iter()
-        .find_map(|p| p.numeric_format_helper)
+    all_platforms().iter().find_map(|p| p.numeric_format_helper)
 }
-
-
-
 
 /// Decode a binary module through whichever platform can read it.
 pub fn platform_read_binary_module(data: &[u8]) -> Option<Result<Vec<Chunk>, String>> {

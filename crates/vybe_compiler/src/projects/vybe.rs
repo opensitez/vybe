@@ -96,13 +96,19 @@ pub fn load_program(path: &Path) -> Result<Program, String> {
         if rel_path.ends_with(".wasm") {
             let data = std::fs::read(&full_path)
                 .map_err(|e| format!("Cannot read WASM '{}': {}", rel_path, e))?;
-            wasm_files.push(WasmFile { path: full_path, data });
+            wasm_files.push(WasmFile {
+                path: full_path,
+                data,
+            });
             continue;
         }
         let code = std::fs::read_to_string(&full_path)
             .map_err(|e| format!("Cannot read '{}': {}", rel_path, e))?;
         let lang = language_of(rel_path)?;
-        let source = SourceFile { path: full_path, code };
+        let source = SourceFile {
+            path: full_path,
+            code,
+        };
         match grouped.iter_mut().find(|(n, _)| *n == lang.name) {
             Some((_, sources)) => sources.push(source),
             None => grouped.push((lang.name.to_string(), vec![source])),
@@ -142,7 +148,11 @@ pub(super) fn build_program(
             sources,
             // Pre-compiled WASM links onto the entry unit; it is
             // language-neutral and appending it twice would duplicate chunks.
-            wasm_files: if is_entry { wasm_files.clone() } else { Vec::new() },
+            wasm_files: if is_entry {
+                wasm_files.clone()
+            } else {
+                Vec::new()
+            },
             entry_point: EntryPoint::Auto,
         };
         if is_entry {

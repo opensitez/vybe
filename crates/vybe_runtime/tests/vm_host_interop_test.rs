@@ -1496,7 +1496,10 @@ fn call_value_on_undefined_errors() {
     let mut main = Chunk::new("main");
     main.local_count = 1;
     {
-        let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+        let name = format!(
+            "__test_arg_{}",
+            TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
         vm.globals.insert(name.clone(), Value::Undefined);
         let ci = main.intern_string_constant(&name);
         main.emit_op_u16(Op::GLOBAL_GET, ci, 0);

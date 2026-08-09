@@ -284,7 +284,8 @@ impl VM {
         };
         let mut current = match val {
             Value::Object(o) => o.lock().unwrap().properties.get("__proto__").cloned(),
-            _ => return false };
+            _ => return false,
+        };
         // Bounded walk — a corrupt cyclic chain must not spin forever.
         for _ in 0..1024 {
             let Some(Value::Object(proto)) = current else {
@@ -302,7 +303,8 @@ impl VM {
     pub(crate) fn ref_test(&self, val: &Value, ht: crate::opcode::heaptype::HeapType) -> bool {
         match ht {
             crate::opcode::heaptype::HeapType::Abstract(a) => self.test_abstract(val, a),
-            crate::opcode::heaptype::HeapType::Concrete(idx) => self.test_concrete(val, idx) }
+            crate::opcode::heaptype::HeapType::Concrete(idx) => self.test_concrete(val, idx),
+        }
     }
 
     /// `ref.test` against an ABSTRACT heap type (GC proposal §6.2).
@@ -315,9 +317,7 @@ impl VM {
         use crate::value::ObjectKind;
         // Which branch of the internal hierarchy an object sits in. The three
         // are disjoint, which is what makes `struct` "neither array nor func".
-        let is_array = |val: &Value| {
-            matches!(val, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Array(_)))
-        };
+        let is_array = |val: &Value| matches!(val, Value::Object(o) if matches!(o.lock().unwrap().kind, ObjectKind::Array(_)));
         let is_func = |val: &Value| {
             matches!(val, Value::Object(o) if matches!(
                 o.lock().unwrap().kind,
@@ -331,7 +331,9 @@ impl VM {
             // `extern`: external references (all JS values are externref here).
             HT_EXTERN => !val.is_null_ref(),
             // `eq`: the types `ref.eq` is allowed on — i31 + struct + array.
-            HT_EQ => matches!(val, Value::I32(_)) || (matches!(val, Value::Object(_)) && !is_func(val)),
+            HT_EQ => {
+                matches!(val, Value::I32(_)) || (matches!(val, Value::Object(_)) && !is_func(val))
+            }
             // `i31`: unboxed 31-bit integers.
             HT_I31 => matches!(val, Value::I32(_)),
             // `func`: top of the function hierarchy.
@@ -340,7 +342,8 @@ impl VM {
             HT_STRUCT => matches!(val, Value::Object(_)) && !is_array(val) && !is_func(val),
             // `array`: top of the array hierarchy.
             HT_ARRAY => is_array(val),
-            _ => false }
+            _ => false,
+        }
     }
 
     /// `ref.test` against a CONCRETE type — a module type index, resolved the
@@ -357,7 +360,8 @@ impl VM {
                 let type_id = o.lock().unwrap().type_id;
                 type_id > 0 && self.type_registry.is_subtype(type_id, target)
             }
-            _ => false }
+            _ => false,
+        }
     }
 
     /// The name a module declared for a concrete heap type, for diagnostics
@@ -377,9 +381,11 @@ impl VM {
                 HT_NONE => "none",
                 HT_NOFUNC => "nofunc",
                 HT_NOEXTERN => "noextern",
-                _ => "?" }
+                _ => "?",
+            }
             .to_string(),
-            HeapType::Concrete(index) => self.declared_type_name(index).unwrap_or_default() }
+            HeapType::Concrete(index) => self.declared_type_name(index).unwrap_or_default(),
+        }
     }
 
     /// The name the module's type section gives a concrete type index.
@@ -420,7 +426,8 @@ impl VM {
             crate::opcode::heaptype::HeapType::Abstract(_) => false,
             crate::opcode::heaptype::HeapType::Concrete(index) => self
                 .declared_type_name(index)
-                .is_some_and(|name| self.test_type(val, &name)) }
+                .is_some_and(|name| self.test_type(val, &name)),
+        }
     }
 
     /// Type test **by name** — a LANGUAGE operation, not a WASM one.
@@ -516,7 +523,8 @@ impl VM {
                 }
             }
             Value::Null | Value::TypedNull(_) | Value::Undefined => false,
-            Value::Symbol(_) | Value::BigInt(_) => target_name.eq_ignore_ascii_case(val.type_tag()) }
+            Value::Symbol(_) | Value::BigInt(_) => target_name.eq_ignore_ascii_case(val.type_tag()),
+        }
     }
 
     // -- Execute --

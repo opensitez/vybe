@@ -35,14 +35,20 @@ impl Compiler {
                 self.emit_host_call(idx, 1);
             }
             // §27.2.5.4 — receiver-first host convention: then(p, ok, err).
-            AsyncOp::Continue { source, on_fulfilled, on_rejected } => {
+            AsyncOp::Continue {
+                source,
+                on_fulfilled,
+                on_rejected,
+            } => {
                 self.compile_expr(source)?;
                 match on_fulfilled {
                     Some(f) => self.compile_expr(f)?,
-                    None => inst!(self, core_wasm::undefined) }
+                    None => inst!(self, core_wasm::undefined),
+                }
                 match on_rejected {
                     Some(f) => self.compile_expr(f)?,
-                    None => inst!(self, core_wasm::undefined) }
+                    None => inst!(self, core_wasm::undefined),
+                }
                 let idx = self.import("ecma:promise", "then");
                 self.emit_host_call(idx, 3);
             }
@@ -68,7 +74,8 @@ impl Compiler {
                     JoinMode::All => "all",
                     JoinMode::AllSettled => "allSettled",
                     JoinMode::Race => "race",
-                    JoinMode::Any => "any" };
+                    JoinMode::Any => "any",
+                };
                 let idx = self.import("ecma:promise", name);
                 self.emit_host_call(idx, 1);
             }
@@ -120,10 +127,7 @@ impl Compiler {
             // at the BACK, behind every queued job. Distinct from await:
             // yield never continues synchronously.
             AsyncOp::Yield => {
-                let idx = self.import(
-                    crate::primitives::functions::JSPI_SUSPEND_MODULE,
-                    "yield",
-                );
+                let idx = self.import(crate::primitives::functions::JSPI_SUSPEND_MODULE, "yield");
                 self.emit_host_call(idx, 0);
             }
             // The sync↔async boundary. Same JSPI suspend `await` lowers to —

@@ -9,8 +9,8 @@
 //! Every function that the spec marks as `trap()` on bad input calls
 //! `ctx.throw_value(...)` so the VM raises a trap.
 
-use std::sync::Arc;
 use crate::{HostContext, VM, Value};
+use std::sync::Arc;
 
 /// Raise a WASM trap from a host builtin (spec `trap()`), matching the
 /// `wasm:js-string` convention.
@@ -62,7 +62,8 @@ fn register_number(vm: &mut VM) {
             Value::I32(match args.first() {
                 Some(Value::F64(_)) | Some(Value::F32(_)) | Some(Value::I32(_))
                 | Some(Value::I64(_)) => 1,
-                _ => 0 })
+                _ => 0,
+            })
         }),
     );
 
@@ -86,7 +87,8 @@ fn register_number(vm: &mut VM) {
                     }
                     if (n as i32) as f64 == n { 1 } else { 0 }
                 }
-                _ => 0 })
+                _ => 0,
+            })
         }),
     );
 
@@ -116,7 +118,8 @@ fn register_number(vm: &mut VM) {
                     }
                     if (n as u32) as f64 == n { 1 } else { 0 }
                 }
-                _ => 0 })
+                _ => 0,
+            })
         }),
     );
 
@@ -267,7 +270,8 @@ fn register_boolean(vm: &mut VM) {
                 Some(Value::I32(n)) => *n != 0,
                 Some(Value::F64(n)) => *n != 0.0,
                 Some(Value::Bool(b)) => *b,
-                _ => false };
+                _ => false,
+            };
             Value::Bool(v)
         }),
     );
@@ -331,7 +335,8 @@ fn register_symbol(vm: &mut VM) {
                     }
                 }
                 (Value::Null, Value::Null) => 1,
-                _ => 0 })
+                _ => 0,
+            })
         }),
     );
 }
@@ -361,7 +366,8 @@ fn register_bigint(vm: &mut VM) {
                 Some(Value::I32(v)) => Value::bigint_i64(*v as i64),
                 Some(Value::F64(v)) => Value::bigint_i64(*v as i64),
                 Some(Value::BigInt(v)) => Value::BigInt(v.clone()),
-                _ => Value::bigint_i64(0) },
+                _ => Value::bigint_i64(0),
+            },
         ),
     );
 }

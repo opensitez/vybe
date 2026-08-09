@@ -37,7 +37,8 @@ pub struct PercentOptions {
     /// Escape `~`. RFC 3986 lists it unreserved; php `urlencode` predates that.
     pub escape_tilde: bool,
     /// Left unescaped beyond the unreserved set — py `quote` defaults to `"/"`.
-    pub safe: &'static str }
+    pub safe: &'static str,
+}
 
 impl PercentOptions {
     /// php `urlencode`
@@ -45,28 +46,32 @@ impl PercentOptions {
         PercentOptions {
             space_as_plus: true,
             escape_tilde: true,
-            safe: "" }
+            safe: "",
+        }
     }
     /// php `rawurlencode` — RFC 3986
     pub const fn rfc3986() -> PercentOptions {
         PercentOptions {
             space_as_plus: false,
             escape_tilde: false,
-            safe: "" }
+            safe: "",
+        }
     }
     /// py `quote_plus`
     pub const fn form_rfc3986() -> PercentOptions {
         PercentOptions {
             space_as_plus: true,
             escape_tilde: false,
-            safe: "" }
+            safe: "",
+        }
     }
     /// py `quote` — path-safe
     pub const fn path() -> PercentOptions {
         PercentOptions {
             space_as_plus: false,
             escape_tilde: false,
-            safe: "/" }
+            safe: "/",
+        }
     }
 }
 
@@ -216,7 +221,8 @@ pub enum UrlField {
     Netloc,
     Path,
     Query,
-    Fragment }
+    Fragment,
+}
 
 /// Per-language parse rules over ONE parser.
 ///
@@ -236,20 +242,30 @@ pub enum UrlField {
 pub struct ParseOptions {
     pub mode: ParseMode,
     /// Lowercase the scheme — python `urlsplit` does, php `parse_url` does not.
-    pub lowercase_scheme: bool }
+    pub lowercase_scheme: bool,
+}
 
 impl ParseOptions {
     /// python `urlsplit` / `urlparse`.
     pub const fn python() -> ParseOptions {
-        ParseOptions { mode: ParseMode::Syntactic, lowercase_scheme: true }
+        ParseOptions {
+            mode: ParseMode::Syntactic,
+            lowercase_scheme: true,
+        }
     }
     /// php `parse_url` — preserves everything it captures.
     pub const fn php() -> ParseOptions {
-        ParseOptions { mode: ParseMode::Syntactic, lowercase_scheme: false }
+        ParseOptions {
+            mode: ParseMode::Syntactic,
+            lowercase_scheme: false,
+        }
     }
     /// js `new URL(...)` — WHATWG normalization does the lowering itself.
     pub const fn whatwg() -> ParseOptions {
-        ParseOptions { mode: ParseMode::Whatwg, lowercase_scheme: false }
+        ParseOptions {
+            mode: ParseMode::Whatwg,
+            lowercase_scheme: false,
+        }
     }
 }
 
@@ -259,7 +275,8 @@ pub enum ParseMode {
     /// php `parse_url`, python `urlsplit` — split only, change nothing.
     Syntactic,
     /// js `new URL(...)` — WHATWG normalization.
-    Whatwg }
+    Whatwg,
+}
 
 /// The WHATWG property backing a component, and whether a prefix/suffix
 /// character has to come off. `None` means the component is composite and is
@@ -274,7 +291,8 @@ fn whatwg_property(field: UrlField) -> Option<(&'static str, Trim)> {
         UrlField::Path => Some(("pathname", Trim::None)),
         UrlField::Query => Some(("search", Trim::LeadingChar)),
         UrlField::Fragment => Some(("hash", Trim::LeadingChar)),
-        UrlField::Netloc => None }
+        UrlField::Netloc => None,
+    }
 }
 
 enum Trim {
@@ -283,7 +301,8 @@ enum Trim {
     /// `substring(1)` of `""` is `""`, so no guard is needed.
     LeadingChar,
     /// Drop the `:` that WHATWG's `protocol` carries.
-    TrailingColon }
+    TrailingColon,
+}
 
 /// Read one canonical component from a parsed URL in `url_slot`.
 /// Stack: `-> [string]`.
@@ -367,7 +386,8 @@ fn emit_netloc(chunks: &mut [Chunk], current: usize, url_slot: u16, line: u32) {
 pub fn emit_parse(chunks: &mut [Chunk], current: usize, opts: ParseOptions, line: u32) {
     match opts.mode {
         ParseMode::Whatwg => call_import(chunks, current, "web:url", "new", 1, line),
-        ParseMode::Syntactic => emit_parse_syntactic(chunks, current, opts, line) }
+        ParseMode::Syntactic => emit_parse_syntactic(chunks, current, opts, line),
+    }
 }
 
 fn lget_at(chunks: &mut [Chunk], current: usize, slot: u16, line: u32) {

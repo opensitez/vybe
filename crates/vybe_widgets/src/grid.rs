@@ -14,7 +14,8 @@ pub struct DataGrid {
     pub colors: WidgetColors,
     pub id: WidgetId,
     pub name: String,
-    rect: LayoutRect }
+    rect: LayoutRect,
+}
 
 impl DataGrid {
     pub fn new(cols: &[&str]) -> Self {
@@ -28,7 +29,8 @@ impl DataGrid {
             colors: WidgetColors::default(),
             id: WidgetId::next(),
             name: String::new(),
-            rect: LayoutRect::zero() }
+            rect: LayoutRect::zero(),
+        }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {

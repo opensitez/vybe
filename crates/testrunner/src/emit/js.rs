@@ -13,12 +13,13 @@
 //! JS needs no reflow — the sources are already multi-line `r#"…"#` blocks, so
 //! they are copied verbatim.
 
-use crate::extract::Case;
 use crate::emit::go::Pairing;
+use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 /// Does the SOURCE open with a `"use strict"` directive?
 ///
@@ -56,14 +57,18 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     let Some(expected) = case.expected.as_ref() else {
         header.push_str("// vybe-test-mode: compile\n\n");
-        return Emitted { text: header + case.source.trim(), pairing: Pairing::Direct };
+        return Emitted {
+            text: header + case.source.trim(),
+            pairing: Pairing::Direct,
+        };
     };
 
     let logs = find_logs(&case.source);
     if let Some(reason) = unpairable(&case.source, &logs) {
         return Emitted {
             text: header + harness + "\n\n" + case.source.trim() + "\n",
-            pairing: Pairing::Unpairable(reason) };
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let mut body = case.source.clone();
@@ -84,7 +89,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: header + harness + "\n\n" + body.trim() + "\n",
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// Under collection the only thing that defeats the check is output that never
@@ -161,13 +167,15 @@ fn close_paren(bytes: &[u8], from: usize) -> Option<usize> {
 fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
     let quote = match bytes.get(at)? {
         c @ (b'"' | b'\'' | b'`') => *c,
-        _ => return None };
+        _ => return None,
+    };
     let mut i = at + 1;
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => i += 2,
             c if c == quote => return Some(i + 1),
-            _ => i += 1 }
+            _ => i += 1,
+        }
     }
     Some(bytes.len())
 }
@@ -183,8 +191,10 @@ fn has_word(src: &str, word: &str) -> bool {
         if src.is_char_boundary(i) && src[i..].starts_with(word) {
             let before = if i == 0 { b' ' } else { bytes[i - 1] };
             let after = bytes.get(i + word.len()).copied().unwrap_or(b' ');
-            if !before.is_ascii_alphanumeric() && before != b'_'
-                && !after.is_ascii_alphanumeric() && after != b'_'
+            if !before.is_ascii_alphanumeric()
+                && before != b'_'
+                && !after.is_ascii_alphanumeric()
+                && after != b'_'
             {
                 return true;
             }
@@ -204,7 +214,8 @@ fn js_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('"');
     out

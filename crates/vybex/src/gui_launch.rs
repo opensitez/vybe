@@ -32,14 +32,16 @@ use vybe_widgets::{
     WidgetCommand,
     WidgetEvent,
     fill_background,
-    run_app };
+    run_app,
+};
 
 #[cfg(feature = "gui_forms")]
 use vybe_widgets::{
     BindingNavigator, Button, Checkbox, ContextMenu, DataGrid, DateTimePicker, FlowLayoutPanel,
     Form as WidgetForm, GroupBox, Label, ListBox, ListView, MaskedTextBox, MenuStrip,
     MonthCalendar, NumericUpDown, Panel, PictureBox, ProgressBar, Radio, ScrollBar, Select, Slider,
-    SplitContainer, StatusStrip, TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView };
+    SplitContainer, StatusStrip, TableLayoutPanel, Tabs, TextInput, ToolStrip, TreeView,
+};
 
 // ── Data binding types ─────────────────────────────────────────────────
 
@@ -48,24 +50,28 @@ struct DataBindingEntry {
     control_name: String,
     property: String,
     source_name: String,
-    column: String }
+    column: String,
+}
 
 #[derive(Clone, Debug)]
 struct BindingSourceInfo {
     name: String,
     data_adapter_name: String,
-    data_member: String }
+    data_member: String,
+}
 
 #[derive(Clone, Debug)]
 struct NavigatorInfo {
     navigator_name: String,
-    binding_source_name: String }
+    binding_source_name: String,
+}
 
 #[allow(dead_code)]
 struct DataStore {
     columns: Vec<String>,
     rows: Vec<std::collections::HashMap<String, String>>,
-    position: i32 }
+    position: i32,
+}
 
 // ── Control type → Widget mapping (designer forms only) ────────────────
 
@@ -250,15 +256,12 @@ struct FormApp {
     initialised: bool,
     /// Last time each GUI timer fired, keyed by control name — used by `on_tick`
     /// to decide when a timer's interval has elapsed.
-    timer_last_fire: std::collections::HashMap<String, std::time::Instant> }
+    timer_last_fire: std::collections::HashMap<String, std::time::Instant>,
+}
 
 impl Application for FormApp {
     fn on_init(&mut self, width: f32, height: f32, _scale: f32) {
-        self.gui
-            .lock()
-            .unwrap()
-            .form
-            .set_rect(LayoutRect::new(0.0, 0.0, width, height));
+        Self::lay_out(&self.gui, width, height);
         if !self.initialised {
             self.initialised = true;
             self.fire_load_event();
@@ -267,11 +270,7 @@ impl Application for FormApp {
     }
 
     fn on_resize(&mut self, width: f32, height: f32) {
-        self.gui
-            .lock()
-            .unwrap()
-            .form
-            .set_rect(LayoutRect::new(0.0, 0.0, width, height));
+        Self::lay_out(&self.gui, width, height);
     }
 
     fn render(&mut self, pixmap: &mut Pixmap, scale: f32) {
@@ -294,22 +293,25 @@ impl Application for FormApp {
         // the same queue a browser host fills from the real DOM. SDL's
         // vocabulary is applied later, by SDL's own adapter, not here.
         {
-            use vybe_widgets::ui_events::{queue, UiEvent};
             use vybe_widgets::layout::{MouseButton, MouseEventKind};
+            use vybe_widgets::ui_events::{UiEvent, queue};
             // DOM `button`: 0 left, 1 middle, 2 right.
             let dom_button = |b: &MouseButton| match b {
                 MouseButton::Left => 0i32,
                 MouseButton::Middle => 1,
-                MouseButton::Right => 2 };
+                MouseButton::Right => 2,
+            };
             // DOM `buttons` mask: 1 left, 2 right, 4 middle.
             let dom_mask = |b: &MouseButton| match b {
                 MouseButton::Left => 1i32,
                 MouseButton::Right => 2,
-                MouseButton::Middle => 4 };
+                MouseButton::Middle => 4,
+            };
             let (kind, button, buttons) = match &event.kind {
                 MouseEventKind::Press(b) => ("mousedown", dom_button(b), dom_mask(b)),
                 MouseEventKind::Release(b) => ("mouseup", dom_button(b), 0),
-                MouseEventKind::Move | MouseEventKind::Scroll(_) => ("mousemove", 0, 0) };
+                MouseEventKind::Move | MouseEventKind::Scroll(_) => ("mousemove", 0, 0),
+            };
             queue().push(UiEvent {
                 kind: kind.to_string(),
                 client_x: event.x as i32,
@@ -319,15 +321,18 @@ impl Application for FormApp {
                 ..UiEvent::default()
             });
         }
-        self.gui.lock().unwrap().form.handle_mouse(&event);
+        if crate::gui_document::with_live(|d| d.form_mut().handle_mouse(&event)).is_none() {
+            self.gui.lock().unwrap().form.handle_mouse(&event);
+        }
         self.process_widget_events();
+        self.dispatch_document_events();
         true
     }
 
     fn handle_key(&mut self, event: KeyEvent) -> bool {
         // Both edges as `keydown`/`keyup`, in W3C shape.
         {
-            use vybe_widgets::ui_events::{queue, UiEvent};
+            use vybe_widgets::ui_events::{UiEvent, queue};
             let pressed = event.state == vybe_widgets::winit::event::ElementState::Pressed;
             let (key, code, key_code) = dom_key_fields(&event.key_without_modifiers);
             queue().push(UiEvent {
@@ -346,14 +351,17 @@ impl Application for FormApp {
                 return false;
             }
         }
-        self.gui.lock().unwrap().form.handle_key(&event);
+        if crate::gui_document::with_live(|d| d.form_mut().handle_key(&event)).is_none() {
+            self.gui.lock().unwrap().form.handle_key(&event);
+        }
         self.process_widget_events();
+        self.dispatch_document_events();
         true
     }
 
     fn handle_scroll(&mut self, delta: f32, x: f32, y: f32) -> bool {
         {
-            use vybe_widgets::ui_events::{queue, UiEvent};
+            use vybe_widgets::ui_events::{UiEvent, queue};
             // DOM `deltaY` is positive DOWN — the opposite of a scroll delta
             // that reports "up" as positive.
             queue().push(UiEvent {
@@ -364,7 +372,13 @@ impl Application for FormApp {
                 ..UiEvent::default()
             });
         }
-        self.gui.lock().unwrap().form.handle_scroll(delta, x, y)
+        let handled =
+            match crate::gui_document::with_live(|d| d.form_mut().handle_scroll(delta, x, y)) {
+                Some(handled) => handled,
+                None => self.gui.lock().unwrap().form.handle_scroll(delta, x, y),
+            };
+        self.dispatch_document_events();
+        handled
     }
 
     fn cursor_icon(&self) -> vybe_widgets::CursorIcon {
@@ -396,9 +410,15 @@ impl Application for FormApp {
                 let mut vm = self.vm.borrow_mut();
                 let _ = match fn_arity(&cb) {
                     0 => vm.invoke(&cb, &[]),
-                    _ => vm.invoke(&cb, &[stamp.clone()]) };
+                    _ => vm.invoke(&cb, &[stamp.clone()]),
+                };
             }
         }
+
+        // Anything the document queued that input handling did not already
+        // drain — a widget that reports on a later frame, or an event raised
+        // by a timer/animation callback rather than by a click.
+        self.dispatch_document_events();
 
         let now = std::time::Instant::now();
         let due: Vec<vybe_runtime::Value> = {
@@ -430,7 +450,8 @@ impl Application for FormApp {
             let _ = match fn_arity(&handler) {
                 0 => vm.invoke(&handler, &[]),
                 1 => vm.invoke(&handler, &[me.clone()]),
-                _ => vm.invoke(&handler, &[me.clone(), vybe_runtime::Value::Null]) };
+                _ => vm.invoke(&handler, &[me.clone(), vybe_runtime::Value::Null]),
+            };
         }
     }
 }
@@ -442,6 +463,47 @@ impl FormApp {
         std::env::var("VYBE_GUI_TRACE")
             .map(|value| !matches!(value.as_str(), "" | "0" | "false" | "False"))
             .unwrap_or(false)
+    }
+
+    /// Give the tree the window's size. The document's viewport IS the body's
+    /// containing block, so a document that never gets one lays every control
+    /// out against its 800×600 default instead of the window.
+    ///
+    /// Both forms are sized, not one: `GuiState.form` is still the tree for a
+    /// designer form, and neither is authoritative for every program.
+    fn lay_out(gui: &Arc<Mutex<GuiState>>, width: f32, height: f32) {
+        crate::gui_document::with_live(|d| d.set_viewport(width, height));
+        gui.lock()
+            .unwrap()
+            .form
+            .set_rect(LayoutRect::new(0.0, 0.0, width, height));
+    }
+
+    /// Turn what the user did in the document into VM calls.
+    ///
+    /// `web:dom` listeners are where EVERY frontend's event wiring ends up —
+    /// `primitives/gui.rs` lowers VCL's `OnClick := h`, WinForms' `Click += h`
+    /// and Flutter's `onPressed: h` to the same `addEventListener` — so this
+    /// single drain serves all of them and none of it is framework-specific.
+    ///
+    /// A listener is called with the Event and nothing else, which is what a
+    /// document does and the only thing it CAN do — the receiver is already
+    /// bound into the handler by `primitives/gui.rs`, so there is no form
+    /// object to look up and no arity table to keep in step with four
+    /// frontends.
+    fn dispatch_document_events(&mut self) {
+        for dispatch in crate::gui_document::drain() {
+            if Self::gui_trace_enabled() {
+                eprintln!(
+                    "[gui] document dispatch kind={} sender={}",
+                    dispatch.kind, dispatch.sender
+                );
+            }
+            let mut vm = self.vm.borrow_mut();
+            if let Err(e) = vm.invoke(&dispatch.callback, &[dispatch.event]) {
+                eprintln!("Event handler error: {e}");
+            }
+        }
     }
 
     fn fire_load_event(&mut self) {
@@ -465,7 +527,8 @@ impl FormApp {
                 _ => vm.invoke(
                     &cb,
                     &[me, vybe_runtime::Value::Null, vybe_runtime::Value::Null],
-                ) };
+                ),
+            };
             if let Err(e) = result {
                 eprintln!("[LOAD] Error: {e}");
             }
@@ -527,7 +590,8 @@ impl FormApp {
             1 => vm.invoke(cb, &[value]),
             // .NET/VB `(sender, e)` — unchanged.
             2 => vm.invoke(cb, &[me, sender]),
-            _ => vm.invoke(cb, &[me, sender, value]) };
+            _ => vm.invoke(cb, &[me, sender, value]),
+        };
         if let Err(e) = result {
             eprintln!("Event handler error: {e}");
         }
@@ -557,7 +621,8 @@ impl FormApp {
             0 => vm.invoke(cb, &[]),
             1 => vm.invoke(cb, &[me]),
             2 => vm.invoke(cb, &[me, sender]),
-            _ => vm.invoke(cb, &[me, sender, vybe_runtime::Value::Null]) };
+            _ => vm.invoke(cb, &[me, sender, vybe_runtime::Value::Null]),
+        };
         if Self::gui_trace_enabled() {
             eprintln!(
                 "[gui] callback elapsed={:.1}ms control={}",
@@ -656,10 +721,7 @@ impl FormApp {
                     self.fire_value_event(name, vybe_runtime::Value::Bool(*v));
                 }
                 WidgetEvent::TextChanged(name, s) => {
-                    self.fire_value_event(
-                        name,
-                        vybe_runtime::Value::String(Arc::from(s.as_str())),
-                    );
+                    self.fire_value_event(name, vybe_runtime::Value::String(Arc::from(s.as_str())));
                 }
                 WidgetEvent::SliderChanged(name, v) => {
                     self.fire_value_event(name, vybe_runtime::Value::F64(*v as f64));
@@ -717,7 +779,8 @@ impl FormApp {
                     let store = DataStore {
                         columns: columns.clone(),
                         rows: rows.clone(),
-                        position: if rows.is_empty() { -1 } else { 0 } };
+                        position: if rows.is_empty() { -1 } else { 0 },
+                    };
                     self.data_store.insert(bs_info.name.to_lowercase(), store);
                     self.sync_bound_controls(&bs_info.name);
                 }
@@ -728,7 +791,8 @@ impl FormApp {
                         DataStore {
                             columns: Vec::new(),
                             rows: Vec::new(),
-                            position: -1 },
+                            position: -1,
+                        },
                     );
                 }
             }
@@ -744,8 +808,7 @@ impl FormApp {
                 fo.properties.get(&bs_name.to_lowercase())
             {
                 let bs = bs_obj.lock().unwrap();
-                if let Some(vybe_runtime::Value::Object(da_obj)) = bs.properties.get("datasource")
-                {
+                if let Some(vybe_runtime::Value::Object(da_obj)) = bs.properties.get("datasource") {
                     let da = da_obj.lock().unwrap();
                     if let Some(v) = da.properties.get("connectionstring") {
                         return format!("{}", v);
@@ -768,7 +831,8 @@ impl FormApp {
         let bs_lower = bs_name.to_lowercase();
         let store = match self.data_store.get(&bs_lower) {
             Some(s) => s,
-            None => return };
+            None => return,
+        };
         if store.position < 0 || store.position as usize >= store.rows.len() {
             return;
         }
@@ -827,7 +891,8 @@ impl FormApp {
         let new_pos = {
             let store = match self.data_store.get(&bs_lower) {
                 Some(s) => s,
-                None => return };
+                None => return,
+            };
             let count = store.rows.len() as i32;
             if count == 0 {
                 return;
@@ -837,7 +902,8 @@ impl FormApp {
                 "prev" => (store.position - 1).max(0),
                 "next" => (store.position + 1).min(count - 1),
                 "last" => count - 1,
-                _ => store.position }
+                _ => store.position,
+            }
         };
         if let Some(store) = self.data_store.get_mut(&bs_lower) {
             store.position = new_pos;
@@ -853,8 +919,10 @@ pub(crate) fn fn_arity(val: &vybe_runtime::Value) -> usize {
     match val {
         vybe_runtime::Value::Object(obj) => match &obj.lock().unwrap().kind {
             vybe_runtime::value::ObjectKind::Function(f) => f.arity as usize,
-            _ => 0 },
-        _ => 0 }
+            _ => 0,
+        },
+        _ => 0,
+    }
 }
 
 // ── Dialog registration ────────────────────────────────────────────────
@@ -880,7 +948,8 @@ fn dom_key_fields(key: &vybe_widgets::winit::keyboard::Key) -> (String, String, 
                 '-' => "Minus".to_string(),
                 '=' => "Equal".to_string(),
                 ' ' => "Space".to_string(),
-                _ => String::new() };
+                _ => String::new(),
+            };
             // `keyCode` is the uppercase code point for letters, the digit
             // for digits — the browser's legacy convention.
             let key_code = if lower.is_ascii_alphabetic() {
@@ -924,9 +993,11 @@ fn dom_key_fields(key: &vybe_widgets::winit::keyboard::Key) -> (String, String, 
                 NamedKey::Control => f("Control", "ControlLeft", 17),
                 NamedKey::Shift => f("Shift", "ShiftLeft", 16),
                 NamedKey::Alt => f("Alt", "AltLeft", 18),
-                _ => (String::new(), String::new(), 0) }
+                _ => (String::new(), String::new(), 0),
+            }
         }
-        _ => (String::new(), String::new(), 0) }
+        _ => (String::new(), String::new(), 0),
+    }
 }
 
 fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
@@ -1013,7 +1084,8 @@ fn register_dialog_fns(vm: &mut vybe_runtime::VM) {
                     }
                 }
                 "ColorDialog" | "FontDialog" => Value::I32(1),
-                _ => Value::I32(0) }
+                _ => Value::I32(0),
+            }
         }),
     );
 
@@ -1070,7 +1142,8 @@ fn extract_binding_info(
                 binding_sources.push(BindingSourceInfo {
                     name: ctrl.name.clone(),
                     data_adapter_name: data_source,
-                    data_member });
+                    data_member,
+                });
             }
         }
 
@@ -1083,7 +1156,8 @@ fn extract_binding_info(
             if !bs.is_empty() {
                 navigators.push(NavigatorInfo {
                     navigator_name: ctrl.name.clone(),
-                    binding_source_name: bs });
+                    binding_source_name: bs,
+                });
             }
         }
 
@@ -1103,7 +1177,8 @@ fn extract_binding_info(
                                     control_name: ctrl.name.clone(),
                                     property: prop.to_string(),
                                     source_name: bs_name.clone(),
-                                    column: column.to_string() });
+                                    column: column.to_string(),
+                                });
                             }
                         }
                     }
@@ -1189,7 +1264,8 @@ pub fn launch_vybewidget_form(
         navigators,
         data_store: std::collections::HashMap::new(),
         initialised: false,
-        timer_last_fire: std::collections::HashMap::new() };
+        timer_last_fire: std::collections::HashMap::new(),
+    };
 
     run_app(&form.text, form.width as u32, form.height as u32, 1.0, app);
 }
@@ -1198,9 +1274,13 @@ pub fn launch_vybewidget_form(
 pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
     register_dialog_fns(&mut vm);
 
+    // The document's viewport is where a form's `Width`/`Height` land — they
+    // are CSS on the body. `GuiState`'s pair is the fallback for a form built
+    // without a document.
     let (title, width, height) = {
         let g = gui.lock().unwrap();
-        ("Form1".to_string(), g.width, g.height)
+        let (width, height) = crate::gui_document::viewport().unwrap_or((g.width, g.height));
+        ("Form1".to_string(), width, height)
     };
 
     if let Some(form_obj) = gui.lock().unwrap().form_object.clone() {
@@ -1217,7 +1297,8 @@ pub fn launch_gui(mut vm: vybe_runtime::VM, gui: Arc<Mutex<GuiState>>) {
         navigators: Vec::new(),
         data_store: std::collections::HashMap::new(),
         initialised: false,
-        timer_last_fire: std::collections::HashMap::new() };
+        timer_last_fire: std::collections::HashMap::new(),
+    };
 
     run_app(&title, width, height, 1.0, app);
 }
@@ -1241,9 +1322,11 @@ pub fn capture_gui(
         vm.globals.insert("__f".into(), form_obj);
     }
 
+    // Same size question as `launch_gui`, same answer — a capture must be the
+    // frame the window would show.
     let (width, height) = {
         let g = gui.lock().unwrap();
-        (g.width, g.height)
+        crate::gui_document::viewport().unwrap_or((g.width, g.height))
     };
 
     let mut app = FormApp {
@@ -1256,7 +1339,8 @@ pub fn capture_gui(
         navigators: Vec::new(),
         data_store: std::collections::HashMap::new(),
         initialised: false,
-        timer_last_fire: std::collections::HashMap::new() };
+        timer_last_fire: std::collections::HashMap::new(),
+    };
 
     // Lays the form out and fires Load + data bindings, exactly as the window
     // path does — without this, controls have no rect and the frame is blank.
@@ -1288,13 +1372,13 @@ pub fn launch_vm_form(
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use vybe_runtime::value::ObjectKind;
-    use vybe_runtime::{HostContext, VM, Value};
     use vybe_compiler::primitives::Compiler;
     use vybe_compiler::profile::parse_profile;
     use vybe_compiler::projects;
-    use vybe_platform_vybe::gui_state::GuiState;
     use vybe_language_vb as vb;
+    use vybe_platform_vybe::gui_state::GuiState;
+    use vybe_runtime::value::ObjectKind;
+    use vybe_runtime::{HostContext, VM, Value};
     use vybe_widgets::layout::{MouseButton, MouseEvent, MouseEventKind};
 
     fn run_vb_gui(src: &str) -> (VM, Arc<Mutex<GuiState>>) {
@@ -1305,13 +1389,16 @@ mod tests {
             .expect("VB compile failed");
 
         let mut vm = VM::new();
-        let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        let gui = crate::cli::register_plugins_with_gui(
+            &mut vm,
+            &vybe_runtime::capabilities::Capabilities::all(),
+        );
         vm.register_host_fn(
             "web:console",
             "log",
             Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
         );
-        
+
         vm.run(chunks).expect("VB run failed");
         (vm, gui)
     }
@@ -1321,13 +1408,16 @@ mod tests {
         let chunks = bundle.compile().expect("project compile failed");
 
         let mut vm = VM::new();
-        let gui = crate::cli::register_plugins_with_gui(&mut vm, &vybe_runtime::capabilities::Capabilities::all());
+        let gui = crate::cli::register_plugins_with_gui(
+            &mut vm,
+            &vybe_runtime::capabilities::Capabilities::all(),
+        );
         vm.register_host_fn(
             "web:console",
             "log",
             Box::new(|_ctx: &mut HostContext, _args: &[Value]| Value::Null),
         );
-        
+
         vm.run(chunks).expect("project run failed");
         (vm, gui)
     }
@@ -1346,9 +1436,11 @@ mod tests {
                             .map(|value| format!("{}", value).to_lowercase())
                             .unwrap_or_else(|| field_name.to_string())
                     }
-                    _ => field_name.to_string() }
+                    _ => field_name.to_string(),
+                }
             }
-            _ => field_name.to_string() }
+            _ => field_name.to_string(),
+        }
     }
 
     fn collection_count(value: &Value) -> usize {
@@ -1357,9 +1449,11 @@ mod tests {
                 let obj = obj.lock().unwrap();
                 match &obj.kind {
                     ObjectKind::Array(items) => items.len(),
-                    _ => 0 }
+                    _ => 0,
+                }
             }
-            _ => 0 }
+            _ => 0,
+        }
     }
 
     fn collection_contains(collection: &Value, needle: &Value) -> bool {
@@ -1368,9 +1462,11 @@ mod tests {
                 let obj = obj.lock().unwrap();
                 match &obj.kind {
                     ObjectKind::Array(items) => items.iter().any(|item| item.eq(needle)),
-                    _ => false }
+                    _ => false,
+                }
             }
-            _ => false }
+            _ => false,
+        }
     }
 
     #[test]
@@ -1396,7 +1492,8 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
-            timer_last_fire: std::collections::HashMap::new() };
+            timer_last_fire: std::collections::HashMap::new(),
+        };
 
         app.on_init(300.0, 400.0, 1.0);
 
@@ -1406,14 +1503,16 @@ mod tests {
             kind: MouseEventKind::Press(MouseButton::Left),
             cmd: false,
             shift: false,
-            alt: false };
+            alt: false,
+        };
         let release = MouseEvent {
             x: 20.0,
             y: 70.0,
             kind: MouseEventKind::Release(MouseButton::Left),
             cmd: false,
             shift: false,
-            alt: false };
+            alt: false,
+        };
 
         assert!(app.handle_mouse(press));
         assert!(app.handle_mouse(release));
@@ -1433,7 +1532,8 @@ mod tests {
                 .send_command(&display_name, &WidgetCommand::GetText)
             {
                 CommandValue::Text(text) => text,
-                other => panic!("Expected txtdisplay widget text, got {:?}", other) }
+                other => panic!("Expected txtdisplay widget text, got {:?}", other),
+            }
         };
 
         assert_eq!(display_text, "7");
@@ -1459,7 +1559,8 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
-            timer_last_fire: std::collections::HashMap::new() };
+            timer_last_fire: std::collections::HashMap::new(),
+        };
 
         app.on_init(340.0, 280.0, 1.0);
 
@@ -1481,7 +1582,8 @@ mod tests {
                 .send_command(&txtcalc_name, &WidgetCommand::GetText)
             {
                 CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other) }
+                other => panic!("Expected txtcalc widget text, got {:?}", other),
+            }
         };
 
         assert_eq!(text, "85");
@@ -1507,7 +1609,8 @@ mod tests {
             navigators: Vec::new(),
             data_store: std::collections::HashMap::new(),
             initialised: false,
-            timer_last_fire: std::collections::HashMap::new() };
+            timer_last_fire: std::collections::HashMap::new(),
+        };
 
         app.on_init(340.0, 280.0, 1.0);
 
@@ -1527,7 +1630,8 @@ mod tests {
                 .send_command(&txtcalc_name, &WidgetCommand::GetText)
             {
                 CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other) }
+                other => panic!("Expected txtcalc widget text, got {:?}", other),
+            }
         };
 
         assert_eq!(initial_text, "");
@@ -1541,7 +1645,8 @@ mod tests {
                 .send_command(&txtcalc_name, &WidgetCommand::GetText)
             {
                 CommandValue::Text(text) => text,
-                other => panic!("Expected txtcalc widget text, got {:?}", other) }
+                other => panic!("Expected txtcalc widget text, got {:?}", other),
+            }
         };
 
         assert_eq!(updated_text, "8");
@@ -1608,7 +1713,8 @@ End Module
                     form.properties.get("bs1").cloned().expect("bs1 field"),
                 )
             }
-            _ => panic!("expected form object") };
+            _ => panic!("expected form object"),
+        };
 
         assert!(collection_count(&controls) > 0);
         assert!(collection_count(&components) > 0);

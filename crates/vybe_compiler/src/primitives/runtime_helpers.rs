@@ -73,7 +73,9 @@ fn emit_str_concat(imports: &mut Chunk, chunk: &mut Chunk, line: u32) {
 
 fn emit_const_index(chunk: &mut Chunk, idx: u16, line: u32) {
     match chunk.constants[idx as usize].clone() {
-        Value::Null | Value::TypedNull(_) => chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line),
+        Value::Null | Value::TypedNull(_) => {
+            chunk.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line)
+        }
         Value::Undefined => crate::primitives::expressions::emit_undefined(chunk, line),
         Value::Bool(value) => chunk.emit_bool_const(value, line),
         Value::I32(value) => chunk.emit_i32_const(value, line),
@@ -147,7 +149,8 @@ pub(crate) fn build_polyfill_batch(
         // recovering the inner data is safe.
         let mut guard = match cache.lock() {
             Ok(g) => g,
-            Err(p) => p.into_inner() };
+            Err(p) => p.into_inner(),
+        };
         if let Some(cached) = guard.get(&key) {
             cached.clone()
         } else {
@@ -333,25 +336,82 @@ pub fn build_runtime_helpers(imports: &mut Chunk) -> RuntimeHelpers {
     chunks.push(build_sorted(imports));
     exports.push("__stdlib_sorted");
     for (build, name) in [
-        (crate::primitives::channels::build_chan_send as fn(&mut Chunk) -> Chunk, "__stdlib_chan_send"),
-        (crate::primitives::channels::build_chan_recv, "__stdlib_chan_recv"),
-        (crate::primitives::channels::build_chan_recv_ok, "__stdlib_chan_recv_ok"),
-        (crate::primitives::channels::build_chan_len, "__stdlib_chan_len"),
-        (crate::primitives::channels::build_chan_cap, "__stdlib_chan_cap"),
-        (crate::primitives::channels::build_chan_close, "__stdlib_chan_close"),
-        (crate::primitives::channels::build_chan_ready_recv, "__stdlib_chan_ready_recv"),
-        (crate::primitives::channels::build_chan_ready_send, "__stdlib_chan_ready_send"),
-        (crate::primitives::channels::build_chan_wait_slice, "__stdlib_chan_wait_slice"),
-        (crate::primitives::channels::build_chan_try_send, "__stdlib_chan_try_send"),
-        (crate::primitives::channels::build_chan_try_recv, "__stdlib_chan_try_recv"),
-        (crate::primitives::channels::build_chan_try_peek, "__stdlib_chan_try_peek"),
-        (crate::primitives::channels::build_chan_drained, "__stdlib_chan_drained"),
-        (crate::primitives::channels::build_chan_closed, "__stdlib_chan_closed"),
-        (crate::primitives::channels::build_chan_recv_or_throw, "__stdlib_chan_recv_or_throw"),
-        (crate::primitives::channels::build_chan_wait_readable, "__stdlib_chan_wait_readable"),
-        (crate::primitives::channels::build_futex_alloc16, "__stdlib_futex_alloc16"),
-        (crate::primitives::channels::build_task_new, "__stdlib_task_new"),
-        (crate::primitives::channels::build_task_wait, "__stdlib_task_wait"),
+        (
+            crate::primitives::channels::build_chan_send as fn(&mut Chunk) -> Chunk,
+            "__stdlib_chan_send",
+        ),
+        (
+            crate::primitives::channels::build_chan_recv,
+            "__stdlib_chan_recv",
+        ),
+        (
+            crate::primitives::channels::build_chan_recv_ok,
+            "__stdlib_chan_recv_ok",
+        ),
+        (
+            crate::primitives::channels::build_chan_len,
+            "__stdlib_chan_len",
+        ),
+        (
+            crate::primitives::channels::build_chan_cap,
+            "__stdlib_chan_cap",
+        ),
+        (
+            crate::primitives::channels::build_chan_close,
+            "__stdlib_chan_close",
+        ),
+        (
+            crate::primitives::channels::build_chan_ready_recv,
+            "__stdlib_chan_ready_recv",
+        ),
+        (
+            crate::primitives::channels::build_chan_ready_send,
+            "__stdlib_chan_ready_send",
+        ),
+        (
+            crate::primitives::channels::build_chan_wait_slice,
+            "__stdlib_chan_wait_slice",
+        ),
+        (
+            crate::primitives::channels::build_chan_try_send,
+            "__stdlib_chan_try_send",
+        ),
+        (
+            crate::primitives::channels::build_chan_try_recv,
+            "__stdlib_chan_try_recv",
+        ),
+        (
+            crate::primitives::channels::build_chan_try_peek,
+            "__stdlib_chan_try_peek",
+        ),
+        (
+            crate::primitives::channels::build_chan_drained,
+            "__stdlib_chan_drained",
+        ),
+        (
+            crate::primitives::channels::build_chan_closed,
+            "__stdlib_chan_closed",
+        ),
+        (
+            crate::primitives::channels::build_chan_recv_or_throw,
+            "__stdlib_chan_recv_or_throw",
+        ),
+        (
+            crate::primitives::channels::build_chan_wait_readable,
+            "__stdlib_chan_wait_readable",
+        ),
+        (
+            crate::primitives::channels::build_futex_alloc16,
+            "__stdlib_futex_alloc16",
+        ),
+        (
+            crate::primitives::channels::build_task_new,
+            "__stdlib_task_new",
+        ),
+        (
+            crate::primitives::channels::build_task_wait,
+            "__stdlib_task_wait",
+        ),
     ] {
         chunks.push(build(imports));
         exports.push(name);
@@ -699,13 +759,15 @@ fn build_runtime_helper_export(imports: &mut Chunk, name: &str) -> Option<Chunk>
         "__stdlib_regex_replace_pat_first" => build_regex_replace_pat_first(imports),
         "__stdlib_regex_split_pat_first" => build_regex_split_pat_first(imports),
         "__stdlib_regex_match_all_pat_first" => build_regex_match_all_pat_first(imports),
-        _ => return None };
+        _ => return None,
+    };
     Some(chunk)
 }
 
 pub struct RuntimeHelpers {
     pub chunks: Vec<Chunk>,
-    pub exports: Vec<&'static str> }
+    pub exports: Vec<&'static str>,
+}
 
 impl RuntimeHelpers {
     pub fn get(&self, name: &str) -> Option<usize> {
@@ -716,7 +778,8 @@ impl RuntimeHelpers {
 pub fn rest_fixed_arity(name: &str) -> Option<u8> {
     match name {
         "sprintf" => Some(1),
-        _ => None }
+        _ => None,
+    }
 }
 
 // ── sorted(array) → array (insertion sort — O(n²) but works) ──
@@ -1019,7 +1082,7 @@ fn build_sort_with_comparator(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     crate::primitives::collections::emit_get_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op_u8_u8(Op::CALL_REF, 2, 1, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 2, 0);
     // result > 0 → swap needed
     core_wasm::i32_const(&mut c, 0, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
@@ -1321,7 +1384,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
     crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
-    c.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 0, 0);
     crate::primitives::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, it, 0);
 
@@ -1414,7 +1477,7 @@ fn build_iter_drain(imports: &mut Chunk) -> Chunk {
     crate::primitives::globals::emit_write(&mut c, "__js_this", 0);
 
     c.emit_op_u16(Op::LOCAL_GET, method, 0);
-    c.emit_op_u8_u8(Op::CALL_REF, 0, 1, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 0, 0);
     crate::primitives::functions::emit_await_into(imports, &mut c, 0);
     c.emit_op_u16(Op::LOCAL_SET, step, 0);
 
@@ -1873,12 +1936,12 @@ fn build_minmax(imports: &mut Chunk) -> Chunk {
     // min = __vybe_min(arr); max = __vybe_max(arr); return [min, max]
     crate::primitives::globals::emit_read(&mut c, "__vybe_min", 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, min_g, 0);
 
     crate::primitives::globals::emit_read(&mut c, "__vybe_max", 0);
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
-    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, max_g, 0);
 
     crate::primitives::collections::emit_array_new_into(imports, &mut c, 0, 0);
@@ -2069,7 +2132,7 @@ fn build_pyiter(imports: &mut Chunk) -> Chunk {
 
     crate::primitives::globals::emit_read(&mut c, "__vybe_iter_drain", 0);
     c.emit_op_u16(Op::LOCAL_GET, v, 0);
-    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, drained, 0);
 
     let drained_array = c.emit_block(0);
@@ -4472,7 +4535,7 @@ fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     // keyVal = keyFn(key)
     c.emit_op_u16(Op::LOCAL_GET, key_fn, 0);
     c.emit_op_u16(Op::LOCAL_GET, key, 0);
-    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 1, 0);
     c.emit_op_u16(Op::LOCAL_SET, key_val, 0);
 
     // j = i - 1
@@ -4495,7 +4558,7 @@ fn build_sort_by_key(imports: &mut Chunk) -> Chunk {
     c.emit_op_u16(Op::LOCAL_GET, arr, 0);
     c.emit_op_u16(Op::LOCAL_GET, j, 0);
     crate::primitives::collections::emit_get_into(imports, &mut c, 0);
-    c.emit_op_u8_u8(Op::CALL_REF, 1, 1, 0);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut c, 1, 0);
     c.emit_op_u16(Op::LOCAL_GET, key_val, 0);
     crate::primitives::ops::emit_dyn_gt_into(imports, &mut c, 0);
     crate::primitives::ops::emit_dyn_not_into(imports, &mut c, 0);

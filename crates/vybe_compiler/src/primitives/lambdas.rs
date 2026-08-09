@@ -148,14 +148,14 @@ impl Compiler {
         for capture in captures {
             let (by_ref, capture_name) = Self::split_explicit_capture(capture);
             if !by_ref {
-                if self.profile.ambient_this_binding && capture_name == "__js_this" {
+                if self.ambient_this() && capture_name == "__js_this" {
                     self.compile_expr(&Expression::new(ExprKind::This))?;
                 } else {
                     self.emit_var_get(capture_name);
                 }
             }
         }
-        self.emit_u8_u8(Op::CALL_REF, capture_bindings.len() as u8, 1);
+        self.emit_direct_callable_invoke(capture_bindings.len() as u8);
         Ok(())
     }
 
@@ -172,7 +172,8 @@ impl Compiler {
         let is_arrow = is_arrow
             && match body {
                 LambdaBody::Block(stmts) => Self::wrapped_generator_kind(stmts).is_none(),
-                _ => true };
+                _ => true,
+            };
         let has_rest = params.last().map_or(false, |p| p.is_rest);
         if has_rest {
             self.rest_fixed_arities
@@ -187,7 +188,7 @@ impl Compiler {
         // existing upvalue resolution is the capture; otherwise snapshot
         // the current globals into enclosing locals the arrow body's
         // upvalue resolution will find by name.
-        if self.profile.ambient_this_binding && is_arrow {
+        if self.ambient_this() && is_arrow {
             let self_kw = self.profile.self_keyword.clone();
             let scope_idx = self.scopes.len() - 1;
             let this_reachable = self.scope().resolve(&self_kw).is_some()
@@ -220,7 +221,8 @@ impl Compiler {
         // A closure resolves names the way the body containing it does — a PHP
         // closure sees no more of the module than the function it sits in.
         let enclosing = self.scope().resolution;
-        self.scopes.push(Scope::new_function_like(enclosing, !self.case_sensitive));
+        self.scopes
+            .push(Scope::new_function_like(enclosing, !self.case_sensitive));
         let saved = self.current;
         self.current = ci;
         // Runtime TRY_END counts are per-FRAME: a nested chunk must not
@@ -282,7 +284,7 @@ impl Compiler {
         self.bind_alias_params(params);
         // Snapshot __js_this as a local BEFORE shared env creation so inner
         // arrows can capture it via the shared env / upvalue chain.
-        if self.profile.ambient_this_binding && self.scopes.len() > 1 {
+        if self.ambient_this() && self.scopes.len() > 1 {
             let parent_has_this = self.scopes.len() > 2
                 && self.scopes[self.scopes.len() - 2]
                     .resolve("__js_this")
@@ -290,7 +292,8 @@ impl Compiler {
             if !parent_has_this {
                 let body_has_this = match body {
                     LambdaBody::Block(stmts) => crate::primitives::body_contains_this(stmts),
-                    LambdaBody::Expr(expr) => crate::primitives::expr_contains_this(expr) };
+                    LambdaBody::Expr(expr) => crate::primitives::expr_contains_this(expr),
+                };
                 if body_has_this {
                     self.emit_global_read("__js_this");
                     let this_local = self.define_local("__js_this");
@@ -546,7 +549,8 @@ impl Compiler {
                     LambdaBody::Block(stmts) => {
                         Self::wrapped_generator_kind(stmts).unwrap_or((is_async, is_generator))
                     }
-                    _ => (is_async, is_generator) };
+                    _ => (is_async, is_generator),
+                };
                 let line = self.line;
                 crate::primitives::prototypes::emit_stamp_function_kind_proto(
                     self.chunk(),
@@ -679,6 +683,7 @@ impl Compiler {
                 self.emit_host_call(idx, args.len() as u8);
                 Ok(true)
             }
-            _ => Ok(false) }
+            _ => Ok(false),
+        }
     }
 }

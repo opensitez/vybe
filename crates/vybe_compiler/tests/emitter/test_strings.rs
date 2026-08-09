@@ -19,8 +19,7 @@ fn emit_concat_zero_parts() {
         chunk
             .global_imports
             .iter()
-            .any(|i| i.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE
-                && i.name.is_empty()),
+            .any(|i| i.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE && i.name.is_empty()),
         "0 parts should push the empty string"
     );
 }
@@ -60,8 +59,7 @@ fn emit_literal_part_adds_constant() {
         chunk
             .global_imports
             .iter()
-            .any(|i| i.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE
-                && i.name == "hello"),
+            .any(|i| i.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE && i.name == "hello"),
         "should declare the 'hello' string constant as an imported global"
     );
 }

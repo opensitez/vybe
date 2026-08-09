@@ -778,7 +778,8 @@ impl Compiler {
                             Some(t) => common::expressions::RichFallback::Target(t),
                             None => common::expressions::RichFallback::Op(
                                 crate::primitives::ops::emit_dyn_eq,
-                            ) },
+                            ),
+                        },
                         line,
                     );
                     if self.profile.materialize_bool_results {
@@ -798,11 +799,7 @@ impl Compiler {
                         let left_slot = self.define_local("__veq_lhs");
                         self.emit_u16(Op::LOCAL_SET, right_slot);
                         self.emit_u16(Op::LOCAL_SET, left_slot);
-                        crate::primitives::records::emit_is_value_eq(
-                            self.chunk(),
-                            left_slot,
-                            line,
-                        );
+                        crate::primitives::records::emit_is_value_eq(self.chunk(), left_slot, line);
                         crate::primitives::records::emit_is_value_eq(
                             self.chunk(),
                             right_slot,
@@ -868,7 +865,8 @@ impl Compiler {
                             Some(t) => common::expressions::RichFallback::Target(t),
                             None => common::expressions::RichFallback::Op(
                                 crate::primitives::ops::emit_dyn_eq,
-                            ) },
+                            ),
+                        },
                         line,
                     );
                     crate::primitives::ops::emit_dyn_not(self.chunk(), line);
@@ -1243,9 +1241,8 @@ impl Compiler {
                 if self.uses_proxy {
                     self.emit_u16(Op::LOCAL_GET, t_y);
                     self.emit_u16(Op::LOCAL_GET, t_x);
-                    vybe_runtime::registry::hooks(&self.profile.name)
-                        .proxy_has
-                        .unwrap()(&mut self.chunks, self.current, l);
+                    self.emit_proxy_has()
+                        .expect("proxy has hook must exist when proxy lowering is enabled");
                     return;
                 }
 
@@ -1363,7 +1360,8 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, t_ctor); // [val]
                     self.emit_u16(Op::LOCAL_GET, t_ctor);
                     let name_key = self.str_const("name");
-                    self.chunk().emit_struct_field_op(Op::STRUCT_GET, 0, name_key, l); // [val, ctor_name]
+                    self.chunk()
+                        .emit_struct_field_op(Op::STRUCT_GET, 0, name_key, l); // [val, ctor_name]
                     common::reflection::emit_instanceof(&mut self.chunks, self.current, l);
                 }
             }
@@ -1483,7 +1481,7 @@ impl Compiler {
 
     pub(super) fn is_csharp_delegate_handler_expr(&self, expr: &Expression) -> bool {
         match &expr.kind {
-            ExprKind::Lambda { .. } | ExprKind::AddressOf(_) => true,
+            ExprKind::Lambda { .. } | ExprKind::FuncRef(_) | ExprKind::CallableRef { .. } => true,
             ExprKind::Ident(name) => {
                 if self
                     .lookup_var_type_hint(name)
@@ -1491,8 +1489,7 @@ impl Compiler {
                 {
                     return true;
                 }
-                if self.scope().resolve(name).is_some()
-                {
+                if self.scope().resolve(name).is_some() {
                     return false;
                 }
                 let cname = self.canon(name);
@@ -1507,7 +1504,8 @@ impl Compiler {
             ExprKind::New { args, .. } if args.len() == 1 => {
                 self.is_csharp_delegate_handler_expr(&args[0].value)
             }
-            _ => false }
+            _ => false,
+        }
     }
 
     pub(super) fn assign_target_matches_expr(
@@ -1535,7 +1533,8 @@ impl Compiler {
                 self.assign_target_matches_expr(to, eo)
             }
             (ExprKind::This, ExprKind::This) => true,
-            _ => false }
+            _ => false,
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════

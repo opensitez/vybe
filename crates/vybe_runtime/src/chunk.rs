@@ -34,7 +34,8 @@ pub const HOST_GLOBALS_MODULE: &str = "env";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Import {
     pub module: String,
-    pub name: String }
+    pub name: String,
+}
 
 /// A spec EH tag declaration (exception-handling proposal tag section):
 /// `(tag $t (param ...))`. Identity is the DECLARATION — two entries are
@@ -49,7 +50,8 @@ pub struct TagDecl {
     /// tag entity by name at instantiation (same name ⇒ same entity —
     /// this is how `vybe:exception` is shared across chunks/modules).
     /// `false` for local declarations, which are always fresh entities.
-    pub imported: bool }
+    pub imported: bool,
+}
 
 /// Property descriptor per ECMA-262 §6.2.4 — represented using WASM Annotations proposal.
 /// Format: (@ecma262 descriptor field_name writable enumerable configurable)
@@ -63,7 +65,8 @@ pub struct PropertyDescriptor {
     /// Can the property appear in for-in loops and Object.keys / Object.getOwnPropertyNames.
     pub enumerable: bool,
     /// Can the property be deleted (§7.3.7 DeletePropertyOrThrow).
-    pub configurable: bool }
+    pub configurable: bool,
+}
 
 impl PropertyDescriptor {
     /// All attributes true (standard object property).
@@ -71,7 +74,8 @@ impl PropertyDescriptor {
         PropertyDescriptor {
             writable: true,
             enumerable: true,
-            configurable: true }
+            configurable: true,
+        }
     }
 
     /// Read-only non-enumerable non-configurable (built-in method/property).
@@ -79,7 +83,8 @@ impl PropertyDescriptor {
         PropertyDescriptor {
             writable: false,
             enumerable: false,
-            configurable: false }
+            configurable: false,
+        }
     }
 
     /// Non-enumerable but writable and configurable (error.message).
@@ -87,7 +92,8 @@ impl PropertyDescriptor {
         PropertyDescriptor {
             writable: true,
             enumerable: false,
-            configurable: true }
+            configurable: true,
+        }
     }
 }
 
@@ -106,7 +112,8 @@ pub enum CompositeKind {
     /// on null ref or out-of-bounds index (WASM GC proposal §array).
     Array,
     /// `(func …)` — a function signature type.
-    Func }
+    Func,
+}
 
 /// A compile-time type definition — WASM GC type section entry.
 /// Describes a class/struct with named fields and vtable methods.
@@ -143,7 +150,8 @@ pub struct TypeEntry {
     pub constructor_chunk: Option<usize>,
     /// Field property descriptors (WASM Annotations proposal @ecma262 namespace).
     /// Maps field_name → descriptor. Fields without entries default to PropertyDescriptor::standard().
-    pub field_descriptors: std::collections::HashMap<String, PropertyDescriptor> }
+    pub field_descriptors: std::collections::HashMap<String, PropertyDescriptor>,
+}
 
 /// A constant initialization expression (Extended Const Expressions proposal).
 /// Evaluated at module instantiation time, before code execution.
@@ -159,7 +167,8 @@ pub enum ConstExpr {
     Mul(Box<ConstExpr>, Box<ConstExpr>),
     /// Create a function reference from a chunk index.
     /// Evaluated at load time — produces a callable Function object.
-    RefFunc(usize) }
+    RefFunc(usize),
+}
 
 /// A global variable initializer — evaluated at link/load time.
 #[derive(Debug, Clone)]
@@ -167,7 +176,8 @@ pub struct GlobalInit {
     /// Global name (stored in VM.globals).
     pub name: String,
     /// Initialization expression (evaluated before code runs).
-    pub init: ConstExpr }
+    pub init: ConstExpr,
+}
 
 /// A continuation tag — defines the type contract for typed continuations.
 #[derive(Debug, Clone)]
@@ -177,19 +187,22 @@ pub struct ContinuationTag {
     /// Expected yield value type name (empty = any).
     pub yield_type: String,
     /// Expected resume value type name (empty = any).
-    pub resume_type: String }
+    pub resume_type: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct ActiveDataSegment {
     pub memory_index: u32,
     pub offset: u64,
-    pub data_index: u32 }
+    pub data_index: u32,
+}
 
 #[derive(Debug, Clone)]
 pub struct ActiveElementSegment {
     pub table_index: u32,
     pub offset: u64,
-    pub elem_index: u32 }
+    pub elem_index: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StackSwitchHandler {
@@ -198,7 +211,8 @@ pub struct StackSwitchHandler {
     pub tag_index: u32,
     /// For decoded standard Wasm this is the structural label index.
     /// Direct bytecode VM tests use a resolved bytecode instruction offset.
-    pub label_index: u32 }
+    pub label_index: u32,
+}
 
 /// A compiled chunk of bytecode — one per function/script.
 #[derive(Debug, Clone)]
@@ -213,7 +227,7 @@ pub struct Chunk {
     /// whole pool on every call, and since every global access and every
     /// string constant now routes through it, that was quadratic in the
     /// number of constants.
-    string_constants: std::collections::HashMap<String, u16>,
+    string_constants: std::collections::HashMap<String, u16, FxBuildHasher>,
     pub lines: Vec<u32>,
     pub name: String,
     pub arity: u8,
@@ -348,14 +362,90 @@ pub struct Chunk {
     /// the function object's `__capture_N` properties at call time.
     pub capture_count: u8,
     /// First local slot for captured variables.
-    pub capture_base: u16 }
+    pub capture_base: u16,
+}
+
+/// FxHash — the hash rustc uses for its own interning tables.
+///
+/// [`Chunk::string_constants`] is keyed by the program's string literals, and
+/// under the std default (SipHash-1-3) hashing them was the single largest cost
+/// in a warm compile job — measured at ~13% of profiled time, dominated by
+/// `reserve_rehash` re-hashing every key each time the map grew.
+///
+/// SipHash is a keyed cryptographic hash whose purpose is to stop an attacker
+/// choosing keys that collide. That protects maps fed untrusted input at run
+/// time; this one is fed the literals of the program being compiled, in the
+/// compiler's own intern table, and a collision costs a comparison rather than
+/// anything a caller can observe. Pre-sizing was the obvious alternative and is
+/// the wrong one: there is a `Chunk` per FUNCTION, so a capacity big enough for
+/// the ~1,455 constants of a large module would be paid thousands of times over.
+///
+/// Written out rather than pulled in: `rustc-hash` is 30 lines and this crate
+/// carries no third-party hashing dependency.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher {
+    hash: u64,
+}
+
+impl FxHasher {
+    const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.hash = (self.hash.rotate_left(5) ^ word).wrapping_mul(Self::SEED);
+    }
+}
+
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            self.add(u64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut buf = [0u8; 8];
+            buf[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(buf));
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, n: u8) {
+        self.add(n as u64);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
+/// `BuildHasher` for [`FxHasher`]. Unseeded by design — the seed exists to
+/// randomize collisions per process, which is the property being traded away.
+#[derive(Default, Clone, Copy)]
+pub struct FxBuildHasher;
+
+impl std::hash::BuildHasher for FxBuildHasher {
+    type Hasher = FxHasher;
+    #[inline]
+    fn build_hasher(&self) -> FxHasher {
+        FxHasher::default()
+    }
+}
 
 impl Chunk {
     pub fn new(name: impl Into<String>) -> Self {
         Chunk {
             code: Vec::new(),
             constants: Vec::new(),
-            string_constants: std::collections::HashMap::new(),
+            string_constants: std::collections::HashMap::default(),
             lines: Vec::new(),
             name: name.into(),
             arity: 0,
@@ -391,14 +481,16 @@ impl Chunk {
             is_generator: false,
             capture_count: 0,
             capture_base: 0,
-            scratch_high_water: 0 }
+            scratch_high_water: 0,
+        }
     }
 
     /// Add an import and return its index (used by CallHost operand).
     pub fn add_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
         let import = Import {
             module: module.into(),
-            name: name.into() };
+            name: name.into(),
+        };
         // Deduplicate — return existing index if already imported
         for (i, existing) in self.imports.iter().enumerate() {
             if *existing == import {
@@ -413,7 +505,10 @@ impl Chunk {
     /// import space. Deduplicated on `(module, name)` — two references to the
     /// same import are the same global, as in WASM.
     pub fn add_global_import(&mut self, module: impl Into<String>, name: impl Into<String>) -> u16 {
-        let import = Import { module: module.into(), name: name.into() };
+        let import = Import {
+            module: module.into(),
+            name: name.into(),
+        };
         for (i, existing) in self.global_imports.iter().enumerate() {
             if *existing == import {
                 return i as u16;
@@ -445,7 +540,8 @@ impl Chunk {
         self.tags.push(TagDecl {
             debug_name: debug_name.into(),
             arity,
-            imported: false });
+            imported: false,
+        });
         (self.tags.len() - 1) as u16
     }
 
@@ -462,7 +558,8 @@ impl Chunk {
         self.tags.push(TagDecl {
             debug_name: name,
             arity,
-            imported: true });
+            imported: true,
+        });
         (self.tags.len() - 1) as u16
     }
 
@@ -485,7 +582,8 @@ impl Chunk {
     pub fn add_global_init(&mut self, name: impl Into<String>, init: ConstExpr) {
         self.global_inits.push(GlobalInit {
             name: name.into(),
-            init });
+            init,
+        });
     }
 
     /// Add a continuation tag and return its index.
@@ -498,7 +596,8 @@ impl Chunk {
         let tag = ContinuationTag {
             name: name.into(),
             yield_type: yield_type.into(),
-            resume_type: resume_type.into() };
+            resume_type: resume_type.into(),
+        };
         self.continuation_tags.push(tag);
         (self.continuation_tags.len() - 1) as u16
     }

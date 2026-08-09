@@ -122,8 +122,6 @@ impl DockPanel {
 }
 
 impl PanelWidget for DockPanel {
-    
-
     /// The document tree's children — what `find_widget_mut` / `take_widget`
     /// walk, so a node stays reachable by name however deeply it is nested.
     fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
@@ -137,9 +135,13 @@ impl PanelWidget for DockPanel {
     }
 
     fn find_rect(&self, name: &str) -> Option<LayoutRect> {
-        if self.name() == name { return Some(self.rect()); }
+        if self.name() == name {
+            return Some(self.rect());
+        }
         for child in &self.children {
-            if let Some(r) = child.widget.find_rect(name) { return Some(r); }
+            if let Some(r) = child.widget.find_rect(name) {
+                return Some(r);
+            }
         }
         None
     }

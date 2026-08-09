@@ -8,6 +8,7 @@
 //! live in each language's own stdlib on top of the `vybe:http` host
 //! module — this file does NOT know PHP from Python.
 
+pub mod compile_cache;
 pub mod config;
 pub mod directory;
 pub mod errors;
@@ -18,6 +19,7 @@ pub mod request_context;
 pub mod response_stream;
 pub mod script;
 pub mod static_files;
+pub mod vm_pool;
 
 pub use config::ServeConfig;
 
@@ -78,6 +80,32 @@ async fn run(config: ServeConfig) -> Result<(), Box<dyn std::error::Error + Send
     };
     let shared = std::sync::Arc::new(config_with_shutdown);
 
+    // The compile cache is INDEPENDENT of the pool: `--cold` controls the VM,
+    // `--no-cache` controls the cache. Sharing one flag between them would mean
+    // neither could be measured on its own — and `--cold` exists to be exactly
+    // that control.
+    let cache =
+        (!shared.no_cache).then(|| std::sync::Arc::new(compile_cache::CompileCache::new()));
+
+    // Warm VM pool. Booted BEFORE the accept loop so the first request lands on
+    // a ready VM rather than racing the boot it was supposed to avoid.
+    let pool = if shared.cold {
+        eprintln!("[vybex] --cold: building a fresh VM per request");
+        None
+    } else {
+        let size = if shared.pool > 0 {
+            shared.pool
+        } else {
+            std::thread::available_parallelism().map_or(4, |n| n.get())
+        };
+        eprintln!("[vybex] warming {size} VM workers");
+        Some(std::sync::Arc::new(vm_pool::VmPool::new(
+            size,
+            script::caps_for(shared.no_sandbox),
+            cache.clone(),
+        )))
+    };
+
     // Graceful shutdown: drain in-flight on Ctrl+C.
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
     let mut shutdown_signal = Box::pin(tokio::signal::ctrl_c());
@@ -90,7 +118,12 @@ async fn run(config: ServeConfig) -> Result<(), Box<dyn std::error::Error + Send
                     Err(e) => { eprintln!("[vybex] accept error: {e}"); continue; }
                 };
                 let io = hyper_util::rt::TokioIo::new(stream);
-                let svc = hyper_service::make_service(std::sync::Arc::clone(&shared), remote);
+                let svc = hyper_service::make_service(
+                    std::sync::Arc::clone(&shared),
+                    remote,
+                    pool.clone(),
+                    cache.clone(),
+                );
                 let builder = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
                 let conn = builder.serve_connection(io, svc);
                 let fut = graceful.watch(conn.into_owned());

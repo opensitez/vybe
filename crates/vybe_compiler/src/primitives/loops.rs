@@ -36,7 +36,8 @@ pub struct LoopState {
     /// If set, there's an inner body block for continue-to-increment pattern.
     /// continue = `br 0` (body block), break = `br 2` (outer block)
     /// If None, continue = `br 0` (loop), break = `br 1` (outer block)
-    pub body_block_patch: Option<usize> }
+    pub body_block_patch: Option<usize>,
+}
 
 impl LoopState {
     /// Depth for `continue` (restart loop or skip to increment)
@@ -75,7 +76,8 @@ pub fn emit_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> LoopS
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: None }
+        body_block_patch: None,
+    }
 }
 
 /// After condition is on stack: convert to bool, branch out of block if false.
@@ -110,7 +112,8 @@ pub fn emit_do_loop_start(chunks: &mut [Chunk], current: usize, line: u32) -> Lo
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: Some(body_block_patch) }
+        body_block_patch: Some(body_block_patch),
+    }
 }
 
 /// Close the do-loop's body block. Call after the body and BEFORE compiling the
@@ -191,7 +194,8 @@ pub fn emit_for_in_start(
     LoopState {
         block_patch,
         loop_patch,
-        body_block_patch: Some(body_block_patch) }
+        body_block_patch: Some(body_block_patch),
+    }
 }
 
 /// Emit the end of a for-in loop: increment index, continue loop, close block+loop.
@@ -254,7 +258,7 @@ pub fn emit_map(
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
     crate::primitives::collections::emit_push(chunks, current, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -288,7 +292,7 @@ pub fn emit_filter(
     // if fn(element): result.push(element)
     chunks[current].emit_op_u16(Op::LOCAL_GET, fn_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, elem_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     // Use structured if for the conditional push
     let if_block = chunks[current].emit_block(line);
@@ -327,7 +331,7 @@ pub fn emit_foreach(
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 2, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
     emit_for_in_end(chunks, current, idx_slot, state, line);
@@ -376,7 +380,7 @@ pub fn emit_reduce(
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 3, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 3, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, acc_slot, line);
 
     // i += 1
@@ -431,7 +435,7 @@ pub fn emit_any_every(
     chunks[current].emit_op_u16(Op::LOCAL_GET, arr_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, idx_slot, line);
     crate::primitives::collections::emit_get(chunks, current, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
     crate::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
     // Structure from emit_for_in_start: block $exit { loop $loop { cond, block $body {
     // From here: depth 0=$body, 1=$loop, 2=$exit

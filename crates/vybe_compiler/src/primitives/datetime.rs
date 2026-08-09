@@ -26,7 +26,8 @@
 //! a language check — see that type for why each knob exists.
 
 use vybe_ast::datetime::{
-    DateTimePolicy, EpochPrecision, MonthIndexing, MonthOverflow, WeekdayBase };
+    DateTimePolicy, EpochPrecision, MonthIndexing, MonthOverflow, WeekdayBase,
+};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
 
@@ -43,7 +44,8 @@ pub fn emit_epoch_to_millis(chunk: &mut Chunk, precision: EpochPrecision, line: 
         EpochPrecision::Seconds => 1_000.0,
         EpochPrecision::Millis => return,
         EpochPrecision::Micros => 0.001,
-        EpochPrecision::Nanos => 0.000_001 };
+        EpochPrecision::Nanos => 0.000_001,
+    };
     chunk.emit_f64_const(factor, line);
     chunk.emit_op(Op::F64_MUL, line);
 }
@@ -56,7 +58,8 @@ pub fn emit_millis_to_epoch(chunk: &mut Chunk, precision: EpochPrecision, line: 
         EpochPrecision::Seconds => 0.001,
         EpochPrecision::Millis => return,
         EpochPrecision::Micros => 1_000.0,
-        EpochPrecision::Nanos => 1_000_000.0 };
+        EpochPrecision::Nanos => 1_000_000.0,
+    };
     chunk.emit_f64_const(factor, line);
     chunk.emit_op(Op::F64_MUL, line);
 }
@@ -290,7 +293,8 @@ pub fn push_const(chunk: &mut Chunk, value: Value, line: u32) {
                 chunk.emit(b, line);
             }
         }
-        other => panic!("push_const: no WASM-compliant encoding for {:?}", other) }
+        other => panic!("push_const: no WASM-compliant encoding for {:?}", other),
+    }
 }
 
 // ── Arithmetic ─────────────────────────────────────────────────────────────

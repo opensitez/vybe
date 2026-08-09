@@ -10,7 +10,8 @@ use super::*;
 fn expr_const_u8(expr: Option<&Expression>) -> u8 {
     match expr.map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Int(n))) => *n as u8,
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 /// Compile-time `u16` from a literal instruction argument (a GC type index).
@@ -19,7 +20,8 @@ fn expr_const_u8(expr: Option<&Expression>) -> u8 {
 fn expr_const_u16(expr: Option<&Expression>) -> u16 {
     match expr.map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Int(n))) => *n as u16,
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 /// The textual form of a WASM type reference operand — a symbolic id (`$t` →
@@ -29,7 +31,8 @@ fn wasm_type_ref_name(expr: &Expression) -> String {
     match &expr.kind {
         ExprKind::Ident(n) => n.clone(),
         ExprKind::Lit(Literal::Int(i)) => i.to_string(),
-        _ => String::new() }
+        _ => String::new(),
+    }
 }
 
 /// A string literal argument's value (empty when not a string literal). Used
@@ -37,7 +40,8 @@ fn wasm_type_ref_name(expr: &Expression) -> String {
 fn expr_str_lit(expr: Option<&Expression>) -> String {
     match expr.map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Str(s))) => s.to_string(),
-        _ => String::new() }
+        _ => String::new(),
+    }
 }
 
 /// The named heap type a `ref.test`/`ref.cast` operand refers to, plus whether
@@ -93,18 +97,21 @@ fn encode_v128_const(args: &[&Expression]) -> [u8; 16] {
     let mut bytes = [0u8; 16];
     let shape = match args.first().map(|e| &e.kind) {
         Some(ExprKind::Lit(Literal::Str(s))) => s.as_str(),
-        _ => "i32x4" };
+        _ => "i32x4",
+    };
     let vals = &args[1..];
     let int_at = |i: usize| -> i64 {
         match vals.get(i).map(|e| &e.kind) {
             Some(ExprKind::Lit(Literal::Int(n))) => *n,
-            _ => 0 }
+            _ => 0,
+        }
     };
     let float_at = |i: usize| -> f64 {
         match vals.get(i).map(|e| &e.kind) {
             Some(ExprKind::Lit(Literal::Float(f))) => *f,
             Some(ExprKind::Lit(Literal::Int(n))) => *n as f64,
-            _ => 0.0 }
+            _ => 0.0,
+        }
     };
     match shape {
         "i8x16" => {
@@ -272,7 +279,7 @@ impl Compiler {
                 self.emit_global_read(helper);
                 self.emit_var_get(var_name);
                 self.compile_expr(args[1])?;
-                self.emit_u8_u8(Op::CALL_REF, 2, 1);
+                self.emit_direct_callable_invoke(2);
                 self.emit(Op::DROP);
                 self.emit_null();
                 return Ok(true);
@@ -670,9 +677,7 @@ impl Compiler {
                         // other member read (the dotted form normalizes to
                         // __len__ and would otherwise bypass §10.5.8).
                         self.emit_const(Value::String(Arc::from("length")));
-                        vybe_runtime::registry::hooks(&self.profile.name)
-                            .proxy_get
-                            .unwrap()(&mut self.chunks, self.current, line);
+                        self.emit_proxy_get()?;
                     } else {
                         let length_key = self.str_const("length");
                         self.emit_struct_field_op(Op::STRUCT_GET, 0, length_key);
@@ -804,7 +809,8 @@ impl Compiler {
         // is opt-in per method rather than applied blindly.
         let builtin = match (builtin, args.first()) {
             (Some(def), Some(receiver)) => Some(self.apply_builtin_slot_binding(receiver, def)),
-            (other, _) => other };
+            (other, _) => other,
+        };
 
         // Census AFTER the substitution, matching the value-method site. It
         // reports the EFFECTIVE emit — the one actually compiled — so the two
@@ -1185,7 +1191,8 @@ impl Compiler {
                                     ObjectProperty::KeyValue { value, .. } => {
                                         self.compile_expr(&value)?
                                     }
-                                    _ => self.emit_null() }
+                                    _ => self.emit_null(),
+                                }
                             }
                             let l = self.line;
                             self.chunk().emit_struct_new(tidx, count, l);
@@ -1354,7 +1361,8 @@ impl Compiler {
             (false, false) => Op::REF_TEST,
             (false, true) => Op::REF_TEST_NULL,
             (true, false) => Op::REF_CAST,
-            (true, true) => Op::REF_CAST_NULL };
+            (true, true) => Op::REF_CAST_NULL,
+        };
         self.emit_ref_type_test(op, &type_name, l);
         Ok(())
     }
@@ -1403,12 +1411,122 @@ impl Compiler {
             self.emit_gui_property_set(&role, line);
             return;
         }
+        if name == common::gui::APPEND_CHILD_EMIT {
+            self.emit_gui_append_child(line);
+            return;
+        }
+        // `gui.ctrl.<verb>` — a control METHOD, declared by role exactly as a
+        // property is, so `Show`/`Hide`/`Focus` become DOM operations here and
+        // nowhere else.
+        if let Some(verb) = name.strip_prefix(common::gui::CTRL_METHOD_EMIT) {
+            let verb = verb.to_string();
+            self.emit_gui_control_method(&verb, line);
+            return;
+        }
         if name == "control_flow.exit" {
             self.line = line;
             // The emitter signature is infallible; an exit that cannot be
             // lowered would be a compiler bug, not a program error.
             let _ = self.emit_exit_from_stack(argc);
             return;
+        }
+        if let Some(op) = name.strip_prefix("sets.") {
+            let semantics = self.directives().set_semantics.unwrap_or_default();
+            match op {
+                "add_mode" => {
+                    common::sets::emit_add_mode(&mut self.chunks, self.current, semantics, line)
+                }
+                "delete_mode" => {
+                    common::sets::emit_delete_mode(&mut self.chunks, self.current, semantics, line)
+                }
+                "discard_mode" => {
+                    common::sets::emit_discard_mode(&mut self.chunks, self.current, semantics, line)
+                }
+                "clear_mode" => {
+                    common::sets::emit_clear_mode(&mut self.chunks, self.current, semantics, line)
+                }
+                "union_mode" => common::sets::emit_union_mode(
+                    &mut self.chunks,
+                    self.current,
+                    argc,
+                    semantics,
+                    line,
+                ),
+                "union_with_mode" => common::sets::emit_union_with_mode(
+                    &mut self.chunks,
+                    self.current,
+                    semantics,
+                    line,
+                ),
+                "intersection_mode" => common::sets::emit_intersection_mode(
+                    &mut self.chunks,
+                    self.current,
+                    argc,
+                    semantics,
+                    line,
+                ),
+                "intersect_with_mode" => common::sets::emit_intersect_with_mode(
+                    &mut self.chunks,
+                    self.current,
+                    semantics,
+                    line,
+                ),
+                "difference_mode" => common::sets::emit_difference_mode(
+                    &mut self.chunks,
+                    self.current,
+                    argc,
+                    semantics,
+                    line,
+                ),
+                "except_with_mode" => common::sets::emit_except_with_mode(
+                    &mut self.chunks,
+                    self.current,
+                    semantics,
+                    line,
+                ),
+                "symmetric_except_with_mode" => common::sets::emit_symmetric_except_with_mode(
+                    &mut self.chunks,
+                    self.current,
+                    semantics,
+                    line,
+                ),
+                "subset_mode" => {
+                    common::sets::emit_subset_mode(&mut self.chunks, self.current, semantics, line)
+                }
+                "superset_mode" => common::sets::emit_superset_mode(
+                    &mut self.chunks,
+                    self.current,
+                    semantics,
+                    line,
+                ),
+                "disjoint_mode" => common::sets::emit_disjoint_mode(
+                    &mut self.chunks,
+                    self.current,
+                    semantics,
+                    line,
+                ),
+                _ => {}
+            }
+            if matches!(
+                op,
+                "add_mode"
+                    | "delete_mode"
+                    | "discard_mode"
+                    | "clear_mode"
+                    | "union_mode"
+                    | "union_with_mode"
+                    | "intersection_mode"
+                    | "intersect_with_mode"
+                    | "difference_mode"
+                    | "except_with_mode"
+                    | "symmetric_except_with_mode"
+                    | "subset_mode"
+                    | "superset_mode"
+                    | "disjoint_mode"
+            ) {
+                self.sync_scope_slots_with_chunk();
+                return;
+            }
         }
         // First try the import-needing dispatch (sleep, etc.). It needs a
         // closure into the compiler to resolve imports against chunk[0].
@@ -1957,7 +2075,7 @@ impl Compiler {
                 // RFC 4180 defaults for callers that name no dialect.
                 if args.len() < 2 {
                     self.chunks[self.current].emit_string_const(",", line);
-                } 
+                }
                 if args.len() < 3 {
                     self.chunks[self.current].emit_string_const("\"", line);
                 }
@@ -2871,6 +2989,12 @@ impl Compiler {
                     {
                         let line = self.line;
                         crate::primitives::ops::emit_dyn_not(self.chunk(), line);
+                        // `emit_dyn_not` leaves an i32 — WASM comparisons have
+                        // no other result type. The other two exits of this arm
+                        // yield a real `Bool`, and `defined()` is a value, not
+                        // just a condition: `var_dump(defined('X'))` printed
+                        // `1`/`0` where PHP prints `bool(true)`/`bool(false)`.
+                        crate::primitives::ops::emit_i32_to_bool(self.chunk(), line);
                     };
                 } else {
                     if let Some(arg) = args.first() {
@@ -2909,19 +3033,64 @@ impl Compiler {
                     let builtin_exists = self.profile.lookup_builtin(name).is_some()
                         || crate::primitives::imports::resolve_common_import(name).is_some();
                     if builtin_exists {
+                        // A builtin's existence IS a compile-time fact — it is a
+                        // property of the language, not of the running program.
                         self.emit_const(Value::Bool(true));
                     } else {
-                        // The name is a literal, so it normalizes at COMPILE
-                        // time — no emitted comparison at all.
+                        // Whether a USER function exists is a RUNTIME question,
+                        // and answering it from `defined_functions` — the set of
+                        // declarations the compiler SAW — broke the single most
+                        // common PHP idiom there is:
+                        //
+                        //   if (!function_exists('f')) { function f() {…} }
+                        //
+                        // `defined_functions` contains `f` because the compiler
+                        // saw the declaration, so the guard folded to `false`,
+                        // the body never ran, and the call to `f()` then died
+                        // with "undefined is not callable". Same for a
+                        // declaration under `if (false)`, which reported `true`
+                        // for a function that never comes into being.
+                        //
+                        // The runtime is already exactly right: a top-level
+                        // declaration is hoisted and callable before its line,
+                        // while one inside a never-taken branch is genuinely
+                        // undefined. So read the global and test definedness —
+                        // the same primitive `class_exists` answers through
+                        // (`symbol_exists` → `emit_symbol_kind_test`), which is
+                        // why THAT one already saw classes defined by a runtime
+                        // include while this one could not.
+                        //
+                        // Read the SAME global the call path reads. A declared
+                        // function has two globals: the plain name, which module
+                        // installation publishes for every chunk up front, and
+                        // the `__vybe_func$` callable alias, which is assigned
+                        // only where the declaration actually EXECUTES. Testing
+                        // the plain one reports every declaration the compiler
+                        // emitted a chunk for, including one in a branch that
+                        // never runs — so it answered `true` for a function
+                        // whose call then failed with "undefined is not
+                        // callable". Consulting the alias makes existence agree
+                        // with callability by construction.
+                        //
+                        // Ask for the alias by NAME, not by "has the emitter
+                        // walked past the declaration yet" — see
+                        // `source_function_callable_alias_name`. A name that was
+                        // never declared has no such global and reads
+                        // undefined, which is the right answer. A profile with
+                        // no alias convention falls back to the plain global.
                         let needle = crate::primitives::namespaces::normalize_source_path(
                             &name.to_ascii_lowercase(),
                         );
-                        let exists = self.defined_functions.iter().any(|function_name| {
-                            crate::primitives::namespaces::normalize_source_path(
-                                &function_name.to_ascii_lowercase(),
-                            ) == needle
-                        });
-                        self.emit_const(Value::Bool(exists));
+                        let global = self
+                            .source_function_callable_alias_name(name)
+                            .unwrap_or(needle);
+                        let line = self.line;
+                        crate::primitives::globals::emit_read(self.chunk(), &global, line);
+                        crate::primitives::dynamic_symbols::emit_symbol_kind_test(
+                            self.chunk(),
+                            Some(crate::primitives::reflection::ReflectKind::Function),
+                            line,
+                        );
                     }
                 } else {
                     if let Some(arg) = args.first() {
@@ -2942,48 +3111,15 @@ impl Compiler {
                         };
                         self.chunk().emit_if_value(line);
 
-                        self.emit_u16(Op::LOCAL_GET, name_slot);
-                        fn_call!(self, "ecma:string", "toLowerCase", 1);
-                        {
-                            let line = self.line;
-                            crate::primitives::namespaces::emit_normalize_source_path(
-                                self.chunk(),
-                                line,
-                            );
-                        }
-                        let lowered_slot = self.define_local("__php_function_exists_lowered");
-                        self.emit_u16(Op::LOCAL_SET, lowered_slot);
+                        // A runtime name is answered the same way a literal one
+                        // is — resolve it to the callable the CALL path would
+                        // reach and test that, rather than answering `true`
+                        // because the compiler saw a matching declaration
+                        // somewhere. Matching by name alone reported
+                        // `if (false) { function f() {…} }` as existing, which
+                        // is the very bug the literal arm was fixed for.
+                        self.emit_source_function_exists_by_runtime_name(name_slot);
 
-                        let mut known_functions: Vec<String> =
-                            self.defined_functions.iter().cloned().collect();
-                        known_functions.sort();
-                        let exists_slot = self.define_local("__php_function_exists_result");
-                        self.emit_const(Value::Bool(false));
-                        self.emit_u16(Op::LOCAL_SET, exists_slot);
-                        for function_name in known_functions {
-                            let canonical = crate::primitives::namespaces::normalize_source_path(
-                                &function_name.to_ascii_lowercase(),
-                            );
-                            let rooted =
-                                crate::primitives::namespaces::rooted_lookup_key(&canonical);
-                            for spelling in [canonical, rooted] {
-                                self.emit_u16(Op::LOCAL_GET, lowered_slot);
-                                self.emit_const(Value::String(Arc::from(spelling)));
-                                {
-                                    let line = self.line;
-                                    crate::primitives::ops::emit_dyn_eq(self.chunk(), line);
-                                };
-                                {
-                                    let line = self.line;
-                                    crate::primitives::ops::emit_dyn_to_bool(self.chunk(), line);
-                                };
-                                self.chunk().emit_if(line);
-                                self.emit_const(Value::Bool(true));
-                                self.emit_u16(Op::LOCAL_SET, exists_slot);
-                                self.chunk().emit_end(line);
-                            }
-                        }
-                        self.emit_u16(Op::LOCAL_GET, exists_slot);
                         self.chunk().emit_else(line);
                         self.emit_const(Value::Bool(false));
                         self.chunk().emit_end(line);
@@ -3067,7 +3203,8 @@ impl Compiler {
                 //                             agree with it).
                 let (prefix, yields_name) = match n.starts_with("symbol_require:") {
                     true => ("symbol_require:", true),
-                    false => ("symbol_resolve_or_throw:", false) };
+                    false => ("symbol_resolve_or_throw:", false),
+                };
                 let exception_name = &n[prefix.len()..];
                 if let Some(Expression {
                     kind: ExprKind::Lit(Literal::Str(name)),
@@ -3401,7 +3538,7 @@ impl Compiler {
                     self.emit_u16(Op::LOCAL_SET, arr_slot);
                     self.emit_global_read("__vybe_sort_in_place");
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
-                    self.emit_u8_u8(Op::CALL_REF, 1, 1);
+                    self.emit_direct_callable_invoke(1);
                     self.emit(Op::DROP);
                     self.emit_u16(Op::LOCAL_GET, arr_slot);
                     common::collections::emit_reverse(&mut self.chunks, self.current, line);

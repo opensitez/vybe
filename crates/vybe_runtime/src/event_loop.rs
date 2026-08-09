@@ -44,19 +44,22 @@ fn close_upvalues_in_value(val: &Value, stack: &[Value]) {
 pub enum FuturePhase {
     Pending,
     Resolved,
-    Rejected }
+    Rejected,
+}
 
 /// Registered state for a single future<T>.
 #[derive(Debug)]
 pub struct FutureRecord {
     pub phase: FuturePhase,
-    pub value: Option<Value> }
+    pub value: Option<Value>,
+}
 
 /// Registered state for a single stream<T>.
 #[derive(Debug)]
 pub struct StreamRecord {
     pub buffer: VecDeque<Value>,
-    pub closed: bool }
+    pub closed: bool,
+}
 
 /// A task in the event loop.
 #[derive(Debug)]
@@ -65,7 +68,8 @@ pub enum Task {
     ResumeFiber(Fiber),
     /// A callback with its argument. The host decides what an entry MEANS
     /// (an ECMA job, a settled reaction); the VM only orders them.
-    Callback { callback: Value, value: Value } }
+    Callback { callback: Value, value: Value },
+}
 
 /// The event loop — manages pending async work.
 #[derive(Debug)]
@@ -88,7 +92,8 @@ pub struct EventLoop {
     pub stream_buffers: HashMap<u64, StreamRecord>,
     /// Fibers suspended waiting for data in a specific stream.
     pub stream_waiting_fibers: Vec<(u64, Fiber)>, // (stream_id, fiber)
-    next_stream_id: u64 }
+    next_stream_id: u64,
+}
 
 impl EventLoop {
     pub fn new() -> Self {
@@ -101,7 +106,8 @@ impl EventLoop {
             next_future_id: 1,
             stream_buffers: HashMap::new(),
             stream_waiting_fibers: Vec::new(),
-            next_stream_id: 1 }
+            next_stream_id: 1,
+        }
     }
 
     /// Generate a unique promise ID.
@@ -113,8 +119,7 @@ impl EventLoop {
 
     /// Enqueue on tier 0. Named for the tier, not for what the host puts there.
     pub fn queue_immediate(&mut self, callback: Value, value: Value) {
-        self.immediate
-            .push_back(Task::Callback { callback, value });
+        self.immediate.push_back(Task::Callback { callback, value });
     }
 
     /// Suspend a fiber — it will resume when the promise with the given ID resolves.
@@ -168,7 +173,8 @@ impl EventLoop {
             id,
             FutureRecord {
                 phase: FuturePhase::Pending,
-                value: None },
+                value: None,
+            },
         );
         id
     }
@@ -226,7 +232,8 @@ impl EventLoop {
             id,
             StreamRecord {
                 buffer: VecDeque::new(),
-                closed: false },
+                closed: false,
+            },
         );
         id
     }

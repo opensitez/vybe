@@ -7,7 +7,8 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetCommand,
-    WidgetEvent, WidgetId };
+    WidgetEvent, WidgetId,
+};
 use super::stack_panel::Orientation;
 use tiny_skia::*;
 
@@ -25,7 +26,8 @@ pub struct WrapPanel {
     pub id: WidgetId,
     pub name: String,
     rect: LayoutRect,
-    children: Vec<Box<dyn PanelWidget>> }
+    children: Vec<Box<dyn PanelWidget>>,
+}
 
 impl WrapPanel {
     pub fn new(orientation: Orientation) -> Self {
@@ -42,7 +44,8 @@ impl WrapPanel {
             id: WidgetId::next(),
             name: String::new(),
             rect: LayoutRect::zero(),
-            children: Vec::new() }
+            children: Vec::new(),
+        }
     }
 
     pub fn horizontal() -> Self {
@@ -106,7 +109,8 @@ impl WrapPanel {
 
         match self.orientation {
             Orientation::Horizontal => self.layout_horizontal(),
-            Orientation::Vertical => self.layout_vertical() }
+            Orientation::Vertical => self.layout_vertical(),
+        }
     }
 
     fn layout_horizontal(&mut self) {
@@ -159,8 +163,6 @@ impl WrapPanel {
 }
 
 impl PanelWidget for WrapPanel {
-    
-
     /// The document tree's children — what `find_widget_mut` / `take_widget`
     /// walk, and what makes a node reachable by name however deeply nested.
     fn children_mut(&mut self) -> Vec<&mut Box<dyn PanelWidget>> {
@@ -173,9 +175,13 @@ impl PanelWidget for WrapPanel {
         Some(self.children.remove(i))
     }
     fn find_rect(&self, name: &str) -> Option<LayoutRect> {
-        if self.name() == name { return Some(self.rect()); }
+        if self.name() == name {
+            return Some(self.rect());
+        }
         for child in &self.children {
-            if let Some(r) = child.find_rect(name) { return Some(r); }
+            if let Some(r) = child.find_rect(name) {
+                return Some(r);
+            }
         }
         None
     }
@@ -268,6 +274,7 @@ impl PanelWidget for WrapPanel {
                 }
                 CommandValue::None
             }
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 }

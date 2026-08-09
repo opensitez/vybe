@@ -45,7 +45,10 @@ fn push(c: &mut Chunk, v: Value) {
         Value::String(s) => c.emit_string_const(&s, 0),
         Value::Null => c.emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, 0),
         other => {
-            let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+            let name = format!(
+                "__test_arg_{}",
+                TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+            );
             let ci = c.intern_string_constant(&name);
             c.emit_op_u16(Op::GLOBAL_GET, ci, 0);
             PENDING_GLOBALS.with(|p| p.borrow_mut().push((name, other)));

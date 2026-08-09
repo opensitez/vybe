@@ -15,7 +15,8 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("// vybe-test: {slug}\n// origin: {origin}\n");
@@ -35,19 +36,22 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
         };
         return Emitted {
             text: format!("{header}\n{body}{entry}"),
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     };
 
     let is_async = main_is_async(body);
     let Some(renamed) = rename_main(body) else {
         return Emitted {
             text: format!("{header}\n{body}\n"),
-            pairing: Pairing::Unpairable("no `main` to wrap".into()) };
+            pairing: Pairing::Unpairable("no `main` to wrap".into()),
+        };
     };
     if let Some(reason) = unpairable(body) {
         return Emitted {
             text: format!("{header}\n{body}\n"),
-            pairing: Pairing::Unpairable(reason) };
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let collected = rewrite_prints(&renamed);
@@ -63,7 +67,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     };
     Emitted {
         text: format!("{header}\n{harness}\n\n{collected}\n\n{wrapper}\n"),
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// Whether `main` returns a Future — either declared `async` or with a
@@ -175,7 +180,8 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
         b'"' => (b'"', at),
         b'\'' => (b'\'', at),
         b'r' if matches!(bytes.get(at + 1), Some(b'"') | Some(b'\'')) => (bytes[at + 1], at + 1),
-        _ => return None };
+        _ => return None,
+    };
     let triple = bytes.get(i + 1) == Some(&quote) && bytes.get(i + 2) == Some(&quote);
     i += if triple { 3 } else { 1 };
     while i < bytes.len() {
@@ -184,7 +190,9 @@ fn skip_literal(bytes: &[u8], at: usize) -> Option<usize> {
             continue;
         }
         if triple {
-            if bytes[i] == quote && bytes.get(i + 1) == Some(&quote) && bytes.get(i + 2) == Some(&quote)
+            if bytes[i] == quote
+                && bytes.get(i + 1) == Some(&quote)
+                && bytes.get(i + 2) == Some(&quote)
             {
                 return Some(i + 3);
             }
@@ -208,7 +216,8 @@ fn dart_string(text: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            _ => out.push(ch) }
+            _ => out.push(ch),
+        }
     }
     out.push('\'');
     out

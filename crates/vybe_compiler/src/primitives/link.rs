@@ -41,9 +41,11 @@ fn platform_base_spec_from_ctor_spec(
                 crate::primitives::namespaces::FieldGui::Event(name) => {
                     PlatformFieldGui::Event(name)
                 }
-                crate::primitives::namespaces::FieldGui::Caption => PlatformFieldGui::Caption })
+                crate::primitives::namespaces::FieldGui::Caption => PlatformFieldGui::Caption,
+            })
             .collect(),
-        value_equality: spec.value_equality }
+        value_equality: spec.value_equality,
+    }
 }
 
 impl Compiler {
@@ -76,7 +78,8 @@ impl Compiler {
             .map(|(local, (module, func))| HostImportNamed {
                 local: local.clone(),
                 module: module.clone(),
-                func: func.clone() })
+                func: func.clone(),
+            })
             .collect();
         named.sort_by(|a, b| a.local.cmp(&b.local));
         let mut wildcard: Vec<HostWildcardImport> = self
@@ -84,7 +87,8 @@ impl Compiler {
             .iter()
             .map(|(alias, module)| HostWildcardImport {
                 alias: alias.clone(),
-                module: module.clone() })
+                module: module.clone(),
+            })
             .collect();
         wildcard.sort_by(|a, b| a.alias.cmp(&b.alias));
         HostImportMetadata { named, wildcard }
@@ -244,7 +248,8 @@ impl Compiler {
                 Some(prefix) if !prefix.is_empty() && !member.contains('.') => {
                     format!("{prefix}.{member}")
                 }
-                _ => member }
+                _ => member,
+            }
         }
 
         for stmt in body {
@@ -256,7 +261,8 @@ impl Compiler {
                             format!("{prefix}.{member}")
                         }
                         Some(prefix) if !prefix.is_empty() => prefix.to_string(),
-                        _ => member };
+                        _ => member,
+                    };
                     let namespace = if qualified.is_empty() {
                         None
                     } else {
@@ -268,7 +274,10 @@ impl Compiler {
                     let member = namespace_member_name(self, name, namespace);
                     self.defined_globals.insert(member.clone());
                     self.defined_classes.insert(member.clone());
-                    if let StmtKind::StructDecl { members, semantics, .. } = &stmt.kind {
+                    if let StmtKind::StructDecl {
+                        members, semantics, ..
+                    } = &stmt.kind
+                    {
                         self.predeclare_struct_surface(&member, members);
                         // Normalize structs in the DECLARATION pass too, not
                         // only classes. Without this a struct never enters
@@ -313,6 +322,18 @@ impl Compiler {
                                     }
                                     _ => {}
                                 }
+                            }
+                            // An index role carried by an ACCESSOR pair rather
+                            // than a slot-bound method. The class emitter binds
+                            // a `__get_`-prefixed method as an accessor, so it
+                            // never reaches the slot alias — which is why the
+                            // index sites need this asked separately from
+                            // `classes_with_indexer`.
+                            if nc.instance_methods.iter().any(|m| {
+                                m.canonical_name == "__get___index__"
+                                    || m.canonical_name == "__set___index__"
+                            }) {
+                                self.program_has_index_accessor = true;
                             }
                             match self.normalized_classes.get_mut(&member) {
                                 Some(existing) => existing.merge_partial(nc),
@@ -371,6 +392,18 @@ impl Compiler {
                                     }
                                     _ => {}
                                 }
+                            }
+                            // An index role carried by an ACCESSOR pair rather
+                            // than a slot-bound method. The class emitter binds
+                            // a `__get_`-prefixed method as an accessor, so it
+                            // never reaches the slot alias — which is why the
+                            // index sites need this asked separately from
+                            // `classes_with_indexer`.
+                            if nc.instance_methods.iter().any(|m| {
+                                m.canonical_name == "__get___index__"
+                                    || m.canonical_name == "__set___index__"
+                            }) {
+                                self.program_has_index_accessor = true;
                             }
                             self.normalized_classes.insert(member.clone(), nc);
                         }
@@ -439,7 +472,10 @@ impl Compiler {
                             self.function_param_types
                                 .entry(function_name.clone())
                                 .or_insert_with(|| {
-                                    params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect()
+                                    params
+                                        .iter()
+                                        .map(|param| param.type_hint.as_deref().map(str::to_string))
+                                        .collect()
                                 });
                             self.function_min_arity
                                 .entry(function_name.clone())
@@ -492,7 +528,12 @@ impl Compiler {
                 .or_insert_with(|| params.iter().map(|param| param.pass_by).collect());
             self.function_param_types
                 .entry(cname.clone())
-                .or_insert_with(|| params.iter().map(|param| param.type_hint.as_deref().map(str::to_string)).collect());
+                .or_insert_with(|| {
+                    params
+                        .iter()
+                        .map(|param| param.type_hint.as_deref().map(str::to_string))
+                        .collect()
+                });
             self.function_min_arity
                 .entry(cname.clone())
                 .or_insert_with(|| {
@@ -665,7 +706,8 @@ impl Compiler {
             .filter(|key| key.ends_with(&dotted));
         match (matches.next(), matches.next()) {
             (Some(key), None) => Some(key.clone()),
-            _ => None }
+            _ => None,
+        }
     }
 
     /// Classes ordered so that every augmenting type is folded before the
@@ -694,7 +736,8 @@ impl Compiler {
                     // prevent.
                     match self.resolve_augmentation_source(&aug.from) {
                         Some(key) => placed.contains(&key),
-                        None => true }
+                        None => true,
+                    }
                 });
                 if ready {
                     ordered.push(name.clone());
@@ -870,7 +913,8 @@ impl Compiler {
                 instance_method_overloads: HashMap::new(),
                 static_method_overloads: HashMap::new(),
                 nested_types: Vec::new(),
-                statics: Vec::new() });
+                statics: Vec::new(),
+            });
     }
 
     pub(super) fn predeclare_struct_surface(&mut self, name: &str, members: &[ClassMember]) {
@@ -911,7 +955,8 @@ impl Compiler {
                                 field_name,
                                 FieldType {
                                     hint: Self::normalize_type_hint(type_hint),
-                                    value_type: None },
+                                    value_type: None,
+                                },
                             );
                         }
                     }
@@ -963,7 +1008,8 @@ impl Compiler {
                 instance_method_overloads: HashMap::new(),
                 static_method_overloads: HashMap::new(),
                 nested_types: Vec::new(),
-                statics: Vec::new() });
+                statics: Vec::new(),
+            });
     }
 
     pub(super) fn register_module_static_container(
@@ -1033,7 +1079,8 @@ impl Compiler {
                         | StmtKind::EnumDecl { name, .. }
                         | StmtKind::InterfaceDecl { name, .. }
                         | StmtKind::ModuleDecl { name, .. } => Some(self.canon(name)),
-                        _ => None } {
+                        _ => None,
+                    } {
                         module_nested_types.push(type_name);
                     }
                     if let StmtKind::InterfaceDecl { name, members, .. } = &stmt.kind {
@@ -1062,7 +1109,8 @@ impl Compiler {
                 instance_method_overloads: HashMap::new(),
                 static_method_overloads: HashMap::new(),
                 nested_types: module_nested_types,
-                statics: Vec::new() },
+                statics: Vec::new(),
+            },
         );
     }
 
@@ -1094,7 +1142,8 @@ impl Compiler {
                 crate::profile::EsmDefault::Named {
                     local,
                     module: m,
-                    name } => {
+                    name,
+                } => {
                     let key = self.canon(local);
                     self.host_import_bindings
                         .insert(key, (m.clone(), name.clone()));
@@ -1107,7 +1156,8 @@ impl Compiler {
                     module: m,
                     name,
                     target_module,
-                    target_name } => {
+                    target_name,
+                } => {
                     // Mount-with-rename (namespaceplan.md): the profile
                     // declares module `m`'s export surface, so a user
                     // `from m import name` / `import { name } from "m"`
@@ -1139,7 +1189,8 @@ impl Compiler {
                 }
                 crate::profile::EsmDefault::PackageRoot {
                     prefix,
-                    module_root } => {
+                    module_root,
+                } => {
                     // Component Model package names are lowercase by
                     // spec; store + look up in lowercase regardless of
                     // the language's case sensitivity.
@@ -1169,7 +1220,8 @@ impl Compiler {
             match &imp.kind {
                 crate::ast::ImportKind::Simple {
                     path,
-                    alias: Some(alias) } => {
+                    alias: Some(alias),
+                } => {
                     self.source_type_aliases
                         .insert(self.canon(alias), path.clone());
                     // ESM §16.2: `import X as j` rebinds X's module namespace
@@ -1318,7 +1370,8 @@ impl Compiler {
                 let type_name = match &args[1].value.kind {
                     ExprKind::Lit(Literal::Str(type_name)) => Some(type_name.clone()),
                     ExprKind::Cast { type_name, .. } => Some(type_name.clone()),
-                    _ => None };
+                    _ => None,
+                };
                 if let Some(type_name) = type_name {
                     self.source_type_aliases.insert(self.canon(name), type_name);
                 }
@@ -1342,12 +1395,14 @@ impl Compiler {
         if let Some(target) = self.source_type_aliases.get(&key) {
             return match tail {
                 Some(tail) if !tail.is_empty() => format!("{}{}.{}", target, suffix, tail),
-                _ => format!("{}{}", target, suffix) };
+                _ => format!("{}{}", target, suffix),
+            };
         }
 
         let lookup_name = match tail {
             Some(tail) if !tail.is_empty() => format!("{alias_head}.{tail}"),
-            _ => alias_head.to_string() };
+            _ => alias_head.to_string(),
+        };
         if let Some(target) = self.resolve_source_namespace_type(&lookup_name) {
             return format!("{target}{suffix}");
         }

@@ -36,7 +36,25 @@ impl VMError {
         self.call_stack = stack;
         self
     }
+
+    /// Is this a WASM TRAP (as opposed to a language-level exception that
+    /// found no handler)? The distinction decides who may catch it:
+    ///   * WASM 3.0 core — a trap is NOT catchable by `try_table`, not even
+    ///     by `catch_all`.
+    ///   * WebAssembly JS Interface — a trap crossing into host code IS
+    ///     catchable there, surfacing as a `WebAssembly.RuntimeError`.
+    ///
+    /// `TRAP_PREFIX` is the single classifier, and it is not a new convention:
+    /// every trap site in the VM already spells its message this way. Keep new
+    /// trap messages prefixed or they become uncatchable at the host boundary.
+    pub fn is_trap(&self) -> bool {
+        self.message.starts_with(TRAP_PREFIX)
+    }
 }
+
+/// The canonical prefix every VM trap message carries. Sole input to
+/// [`VMError::is_trap`].
+pub const TRAP_PREFIX: &str = "trap: ";
 
 impl fmt::Display for VMError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -14,8 +14,8 @@
 //! every write through [`emit_write_or_buffer`] makes capture correct by
 //! construction for every writer in every language, present and future.
 
-use vybe_runtime::opcode::Op;
 use vybe_runtime::Chunk;
+use vybe_runtime::opcode::Op;
 
 /// Emit print/log. Stack: [arg1, ..., argN] → []
 /// Routes to `web:console.log` — WHATWG `log(...data)`, variadic by spec
@@ -315,7 +315,8 @@ pub fn emit_ob_start(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) 
         chunks[current].emit_string_const(field, line);
         match slot {
             Some(s) => chunks[current].emit_op_u16(Op::LOCAL_GET, s, line),
-            None => chunks[current].emit_string_const("", line) }
+            None => chunks[current].emit_string_const("", line),
+        }
         super::collections::emit_set(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     }
@@ -380,7 +381,8 @@ pub type LengthEmit = fn(&mut [Chunk], usize, u32);
 fn emit_buffer_len(chunks: &mut [Chunk], current: usize, len: Option<LengthEmit>, line: u32) {
     match len {
         Some(emit) => emit(chunks, current, line),
-        None => super::collections::emit_len(chunks, current, line) }
+        None => super::collections::emit_len(chunks, current, line),
+    }
 }
 
 /// Size of the innermost buffer, or `false`. Stack: [] → [num|false].
@@ -453,7 +455,7 @@ fn emit_ob_pop_and_flush(chunks: &mut [Chunk], current: usize, line: u32) {
     // buffer — matching the single-parameter handlers languages actually write.
     chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
     emit_write_or_buffer(chunks, current, line);
     chunks[current].emit_end(line);
 
@@ -505,7 +507,7 @@ pub fn emit_ob_flush(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, contents_slot, line);
-        chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
         emit_write_or_buffer(chunks, current, line);
         chunks[current].emit_end(line);
 
@@ -607,7 +609,8 @@ fn emit_ob_status_record(
                 super::collections::emit_get(chunks, current, line);
                 emit_buffer_len(chunks, current, len, line);
             }
-            _ => chunks[current].emit_f64_const(0.0, line) }
+            _ => chunks[current].emit_f64_const(0.0, line),
+        }
         super::collections::emit_set(chunks, current, line);
         chunks[current].emit_op(Op::DROP, line);
     }
@@ -778,7 +781,7 @@ pub fn emit_ob_get_clean(chunks: &mut [Chunk], current: usize, line: u32) {
         chunks[current].emit_else(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, handler_slot, line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, raw_slot, line);
-        chunks[current].emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], 1, line);
         chunks[current].emit_op_u16(Op::LOCAL_SET, out_slot, line);
         chunks[current].emit_end(line);
         chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);

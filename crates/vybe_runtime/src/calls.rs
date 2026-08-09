@@ -75,7 +75,8 @@ fn read_typed_array_element(ta: &TypedArrayState, index: usize) -> Value {
         return match ta.elem {
             TypedElemKind::F32 | TypedElemKind::F64 => Value::F64(0.0),
             TypedElemKind::BigI64 | TypedElemKind::BigU64 => Value::bigint_i64(0),
-            _ => Value::I32(0) };
+            _ => Value::I32(0),
+        };
     }
     match ta.elem {
         TypedElemKind::I8 => Value::I32(buf[abs] as i8 as i32),
@@ -136,6 +137,21 @@ fn make_stack_overflow_error() -> Value {
     Value::Object(crate::heap::alloc(obj))
 }
 
+/// The exception object a TRAP surfaces as once it crosses into host code.
+/// `WebAssembly.RuntimeError` is what the WebAssembly JS Interface names for
+/// exactly this, and the shape mirrors `make_stack_overflow_error` above —
+/// which already surfaces a VM-level condition as a catchable ECMA error.
+fn make_runtime_error(message: &str) -> Value {
+    let mut obj = Object::new();
+    let name = Value::String(Arc::from("RuntimeError"));
+    obj.properties.insert("name".into(), name.clone());
+    obj.properties.insert("__type".into(), name.clone());
+    obj.properties.insert("__exception_type".into(), name);
+    obj.properties
+        .insert("message".into(), Value::String(Arc::from(message)));
+    Value::Object(crate::heap::alloc(obj))
+}
+
 impl VM {
     /// Legacy raise — every value-shaped throw (host `throw_value`, RETHROW,
     /// VM-internal errors) is a `throw` of the host `vybe:exception` tag
@@ -167,16 +183,52 @@ impl VM {
         payload: Vec<Value>,
         skip_handlers: usize,
     ) -> Result<(), VMError> {
+        self.raise_exception_inner(tag_entity, payload, skip_handlers, false)
+    }
+
+    /// As [`raise_exception`], but for a TRAP — which two specs together say
+    /// only HOST-level code may catch:
+    ///   * WASM 3.0 core: a trap is not catchable by `try_table`. Not by
+    ///     `catch $tag`, and NOT by `catch_all` either.
+    ///   * WebAssembly JS Interface: a trap reaching host code surfaces there
+    ///     as a catchable `WebAssembly.RuntimeError`.
+    /// Composed: a trap passes through every `try_table` clause and stops at
+    /// the first host-level handler. Nothing distinguishes the two layers by
+    /// opcode — both compile to `TRY_TABLE` — but the TAG already does: a
+    /// host `try/catch` is `emit_try_start`'s single `vybe:exception`
+    /// (entity 0) `catch` clause, while a wast `try_table` carries a
+    /// `wast:tag:*` entity or a `catch_all` kind.
+    pub(crate) fn raise_trap(&mut self, message: &str) -> Result<(), VMError> {
+        let err = make_runtime_error(message);
+        self.raise_exception_inner(0, vec![err], 0, true)
+    }
+
+    fn raise_exception_inner(
+        &mut self,
+        tag_entity: usize,
+        payload: Vec<Value>,
+        skip_handlers: usize,
+        is_trap: bool,
+    ) -> Result<(), VMError> {
         use crate::vm::{
-            CATCH_KIND_CATCH, CATCH_KIND_CATCH_ALL, CATCH_KIND_CATCH_ALL_REF, CATCH_KIND_CATCH_REF };
+            CATCH_KIND_CATCH, CATCH_KIND_CATCH_ALL, CATCH_KIND_CATCH_ALL_REF, CATCH_KIND_CATCH_REF,
+        };
         let mut matched_idx = None;
         let search_len = self.exception_handlers.len().saturating_sub(skip_handlers);
         for i in (0..search_len).rev() {
             let handler = &self.exception_handlers[i];
-            let matches = match handler.kind {
-                CATCH_KIND_CATCH_ALL | CATCH_KIND_CATCH_ALL_REF => true,
-                CATCH_KIND_CATCH | CATCH_KIND_CATCH_REF => handler.tag_entity == tag_entity,
-                _ => false };
+            let matches = if is_trap {
+                // HOST-level clauses only — see `raise_trap`. `catch_all` is a
+                // `try_table` clause and must let the trap through.
+                matches!(handler.kind, CATCH_KIND_CATCH | CATCH_KIND_CATCH_REF)
+                    && handler.tag_entity == 0
+            } else {
+                match handler.kind {
+                    CATCH_KIND_CATCH_ALL | CATCH_KIND_CATCH_ALL_REF => true,
+                    CATCH_KIND_CATCH | CATCH_KIND_CATCH_REF => handler.tag_entity == tag_entity,
+                    _ => false,
+                }
+            };
             if matches {
                 matched_idx = Some(i);
                 break;
@@ -389,7 +441,8 @@ impl VM {
                                     Vec::new()
                                 }
                             }
-                            _ => Vec::new() };
+                            _ => Vec::new(),
+                        };
                         drop(o);
                         let mut args: Vec<Value> = Vec::with_capacity(bound.len() + argc);
                         args.extend(bound);
@@ -534,17 +587,20 @@ impl VM {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Function(func.clone()),
                 type_id: 0,
-                fields: Vec::new() };
+                fields: Vec::new(),
+            };
             let entry = Value::Object(crate::heap::alloc(fn_obj));
             let state = ContinuationState {
                 entry,
                 saved: std::sync::Mutex::new(None),
-                state: std::sync::Mutex::new(ContinuationPhase::Ready) };
+                state: std::sync::Mutex::new(ContinuationPhase::Ready),
+            };
             let mut cont = Object {
                 properties: indexmap::IndexMap::new(),
                 kind: ObjectKind::Continuation(state),
                 type_id: 0,
-                fields: Vec::new() };
+                fields: Vec::new(),
+            };
             let entry_is_async = self.chunks[chunk_index].is_async;
             attach_continuation_protocols(&mut cont.properties, &self.globals, entry_is_async);
             if !args.is_empty() {
@@ -553,7 +609,8 @@ impl VM {
                     properties: indexmap::IndexMap::new(),
                     kind: ObjectKind::Array(args),
                     type_id: 0,
-                    fields: Vec::new() };
+                    fields: Vec::new(),
+                };
                 cont.properties.insert(
                     "__bound_args".into(),
                     Value::Object(crate::heap::alloc(bound)),
@@ -602,7 +659,8 @@ impl VM {
                 crate::value::UpvalueLocation::Open(si) => {
                     self.stack.get(*si).cloned().unwrap_or(Value::Null)
                 }
-                crate::value::UpvalueLocation::Closed(v) => v.clone() };
+                crate::value::UpvalueLocation::Closed(v) => v.clone(),
+            };
             let slot = base + capture_base + i;
             if slot < self.stack.len() {
                 self.stack[slot] = val;
@@ -615,7 +673,8 @@ impl VM {
             ip: 0,
             base,
             label_base: self.label_stack.len(),
-            upvalues });
+            upvalues,
+        });
         Ok(())
     }
 
@@ -707,7 +766,8 @@ impl VM {
                     .map(|v| format!("{}", v).to_lowercase())
                     .unwrap_or_else(|| match &ob.kind {
                         ObjectKind::Array(_) => "list".into(),
-                        _ => String::new() });
+                        _ => String::new(),
+                    });
                 drop(ob);
 
                 if !inferred_type.is_empty() {
@@ -790,14 +850,16 @@ impl VM {
                     name: Some(chunk.name.clone()),
                     arity: chunk.arity,
                     chunk_index: *idx,
-                    upvalues: Vec::new() };
+                    upvalues: Vec::new(),
+                };
                 let mut properties = indexmap::IndexMap::new();
                 properties.insert(RECEIVER_MARKER.into(), Value::Bool(true));
                 let obj = Object {
                     properties,
                     kind: ObjectKind::Function(func),
                     type_id: 0,
-                    fields: Vec::new() };
+                    fields: Vec::new(),
+                };
                 Value::Object(crate::heap::alloc(obj))
             }
         }

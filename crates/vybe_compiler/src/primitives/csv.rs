@@ -217,16 +217,21 @@ pub fn emit_parse_line(chunks: &mut [Chunk], current: usize, line: u32) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FormatOptions {
     /// Also enclose a field containing a space — fpc `CommaText`.
-    pub quote_whitespace: bool }
+    pub quote_whitespace: bool,
+}
 
 impl FormatOptions {
     /// php `fputcsv`, python `QUOTE_MINIMAL`.
     pub const fn minimal() -> FormatOptions {
-        FormatOptions { quote_whitespace: false }
+        FormatOptions {
+            quote_whitespace: false,
+        }
     }
     /// fpc `TStringList.CommaText` / `DelimitedText`.
     pub const fn quote_whitespace() -> FormatOptions {
-        FormatOptions { quote_whitespace: true }
+        FormatOptions {
+            quote_whitespace: true,
+        }
     }
 }
 

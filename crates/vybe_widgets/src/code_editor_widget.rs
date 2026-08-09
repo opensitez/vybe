@@ -4,7 +4,8 @@
 use arboard::Clipboard;
 use cosmic_text::{
     Action, Attrs, AttrsList, Buffer, Color, Cursor, Edit, Family, FontSystem, Metrics, Selection,
-    Shaping, SwashCache };
+    Shaping, SwashCache,
+};
 use std::collections::HashMap;
 use tiny_skia::{ColorU8, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
 use winit::event::MouseButton;
@@ -12,7 +13,8 @@ use winit::event::MouseButton;
 use crate::language::LanguageDef;
 use crate::layout::{
     KeyEvent, LayoutRect, MouseEvent, MouseEventKind, PanelWidget, RenderContext, WidgetEvent,
-    WidgetId };
+    WidgetId,
+};
 use crate::text_editor::TextEditor;
 pub use crate::text_editor::TokenKind;
 use winit::window::CursorIcon;
@@ -56,7 +58,8 @@ pub struct Theme {
     pub minimap_bg: Color,
     pub gutter_divider: Color,
     pub active_tab_text: Color,
-    pub inactive_tab_text: Color }
+    pub inactive_tab_text: Color,
+}
 
 impl Theme {
     pub fn silicon_green() -> Self {
@@ -86,7 +89,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x0d, 0x20, 0x16),
             gutter_divider: Color::rgb(0x00, 0xff, 0x9f),
             active_tab_text: Color::rgb(0x00, 0xff, 0x9f),
-            inactive_tab_text: Color::rgb(0x00, 0x8f, 0x5f) }
+            inactive_tab_text: Color::rgb(0x00, 0x8f, 0x5f),
+        }
     }
 
     pub fn cloud_blue() -> Self {
@@ -116,7 +120,8 @@ impl Theme {
             minimap_bg: Color::rgb(0xe0, 0xf2, 0xfe),
             gutter_divider: Color::rgb(0x03, 0x69, 0xa1),
             active_tab_text: Color::rgb(0x03, 0x69, 0xa1),
-            inactive_tab_text: Color::rgb(0x0c, 0x4a, 0x6e) }
+            inactive_tab_text: Color::rgb(0x0c, 0x4a, 0x6e),
+        }
     }
 
     pub fn coffee_cream() -> Self {
@@ -146,7 +151,8 @@ impl Theme {
             minimap_bg: Color::rgb(0xf5, 0xf5, 0xf4),
             gutter_divider: Color::rgb(0x78, 0x35, 0x0f),
             active_tab_text: Color::rgb(0x78, 0x35, 0x0f),
-            inactive_tab_text: Color::rgb(0x44, 0x40, 0x3c) }
+            inactive_tab_text: Color::rgb(0x44, 0x40, 0x3c),
+        }
     }
 
     pub fn sakura_pink() -> Self {
@@ -176,7 +182,8 @@ impl Theme {
             minimap_bg: Color::rgb(0xff, 0xf1, 0xf2),
             gutter_divider: Color::rgb(0xbe, 0x12, 0x3c),
             active_tab_text: Color::rgb(0x9d, 0x17, 0x4d),
-            inactive_tab_text: Color::rgb(0x88, 0x13, 0x37) }
+            inactive_tab_text: Color::rgb(0x88, 0x13, 0x37),
+        }
     }
 
     pub fn one_dark() -> Self {
@@ -206,7 +213,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x1a, 0x1a, 0x20),
             gutter_divider: Color::rgb(0x3b, 0x40, 0x48),
             active_tab_text: Color::rgb(0xff, 0xff, 0xff),
-            inactive_tab_text: Color::rgb(0xab, 0xb2, 0xbf) }
+            inactive_tab_text: Color::rgb(0xab, 0xb2, 0xbf),
+        }
     }
 
     pub fn monokai() -> Self {
@@ -236,7 +244,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x16, 0x16, 0x16),
             gutter_divider: Color::rgb(0x49, 0x48, 0x3e),
             active_tab_text: Color::rgb(0xff, 0xff, 0xff),
-            inactive_tab_text: Color::rgb(0xf8, 0xf8, 0xf2) }
+            inactive_tab_text: Color::rgb(0xf8, 0xf8, 0xf2),
+        }
     }
 
     pub fn frost_light() -> Self {
@@ -266,7 +275,8 @@ impl Theme {
             minimap_bg: Color::rgb(0xf8, 0xfa, 0xfc),
             gutter_divider: Color::rgb(0x3b, 0x82, 0xf6),
             active_tab_text: Color::rgb(0x1e, 0x29, 0x3b),
-            inactive_tab_text: Color::rgb(0x64, 0x74, 0x8b) }
+            inactive_tab_text: Color::rgb(0x64, 0x74, 0x8b),
+        }
     }
 
     pub fn solarized_light() -> Self {
@@ -296,7 +306,8 @@ impl Theme {
             minimap_bg: Color::rgb(0xee, 0xe8, 0xd5),
             gutter_divider: Color::rgb(0x93, 0xa1, 0xa1),
             active_tab_text: Color::rgb(0x58, 0x6e, 0x75),
-            inactive_tab_text: Color::rgb(0x93, 0xa1, 0xa1) }
+            inactive_tab_text: Color::rgb(0x93, 0xa1, 0xa1),
+        }
     }
 
     pub fn midnight() -> Self {
@@ -326,7 +337,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x00, 0x00, 0x00),
             gutter_divider: Color::rgb(0x33, 0x33, 0x33),
             active_tab_text: Color::rgb(0xff, 0xff, 0xff),
-            inactive_tab_text: Color::rgb(0x88, 0x88, 0x88) }
+            inactive_tab_text: Color::rgb(0x88, 0x88, 0x88),
+        }
     }
 
     pub fn aura() -> Self {
@@ -356,7 +368,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x10, 0x10, 0x10),
             gutter_divider: Color::rgb(0x3d, 0x37, 0x5e),
             active_tab_text: Color::rgb(0xed, 0xe0, 0xeb),
-            inactive_tab_text: Color::rgb(0xde, 0xde, 0xde) }
+            inactive_tab_text: Color::rgb(0xde, 0xde, 0xde),
+        }
     }
 
     pub fn veridian() -> Self {
@@ -386,7 +399,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x08, 0x16, 0x14),
             gutter_divider: Color::rgb(0x00, 0xf5, 0xb1),
             active_tab_text: Color::rgb(0x00, 0xf5, 0xb1),
-            inactive_tab_text: Color::rgb(0x20, 0x60, 0x55) }
+            inactive_tab_text: Color::rgb(0x20, 0x60, 0x55),
+        }
     }
 
     pub fn rose() -> Self {
@@ -416,7 +430,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x14, 0x0c, 0x0d),
             gutter_divider: Color::rgb(0xe0, 0x60, 0x70),
             active_tab_text: Color::rgb(0xe0, 0x60, 0x70),
-            inactive_tab_text: Color::rgb(0x70, 0x30, 0x38) }
+            inactive_tab_text: Color::rgb(0x70, 0x30, 0x38),
+        }
     }
 
     pub fn cyber() -> Self {
@@ -446,7 +461,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x00, 0x00, 0x00),
             gutter_divider: Color::rgb(0x00, 0xff, 0xff),
             active_tab_text: Color::rgb(0x00, 0xff, 0xff),
-            inactive_tab_text: Color::rgb(0x00, 0x80, 0x80) }
+            inactive_tab_text: Color::rgb(0x00, 0x80, 0x80),
+        }
     }
 
     pub fn titanium() -> Self {
@@ -476,7 +492,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x16, 0x16, 0x1a),
             gutter_divider: Color::rgb(0xd0, 0xd0, 0xe0),
             active_tab_text: Color::rgb(0xd0, 0xd0, 0xe0),
-            inactive_tab_text: Color::rgb(0x60, 0x60, 0x70) }
+            inactive_tab_text: Color::rgb(0x60, 0x60, 0x70),
+        }
     }
 
     pub fn indigo_night() -> Self {
@@ -506,7 +523,8 @@ impl Theme {
             minimap_bg: Color::rgb(0x0d, 0x11, 0x17),
             gutter_divider: Color::rgb(0x58, 0xa6, 0xff),
             active_tab_text: Color::rgb(0x58, 0xa6, 0xff),
-            inactive_tab_text: Color::rgb(0x1f, 0x40, 0x60) }
+            inactive_tab_text: Color::rgb(0x1f, 0x40, 0x60),
+        }
     }
 
     pub fn dark() -> Self {
@@ -517,7 +535,8 @@ impl Theme {
 pub struct CachedGlyph {
     pub pixmap: Pixmap,
     pub left: i32,
-    pub top: i32 }
+    pub top: i32,
+}
 
 pub fn apply_highlighting(
     editor: &mut cosmic_text::Editor<'static>,
@@ -565,7 +584,8 @@ pub fn apply_highlighting(
                                 }
                             }
                         }
-                        _ => theme.text };
+                        _ => theme.text,
+                    };
                     let start = token.start.saturating_sub(byte_offset);
                     let end = token.end.saturating_sub(byte_offset);
                     list.add_span(start..end, &attrs.clone().color(color));
@@ -625,7 +645,8 @@ pub struct CodeEditorWidget {
     pub layout_rect: LayoutRect,
     pub clipboard: Option<Clipboard>,
     /// Pending events (for drain_events)
-    pub pending_events: Vec<WidgetEvent> }
+    pub pending_events: Vec<WidgetEvent>,
+}
 
 impl CodeEditorWidget {
     pub fn new(mut my_editor: TextEditor, font_system: &mut FontSystem) -> Self {
@@ -638,7 +659,8 @@ impl CodeEditorWidget {
             operators: std::collections::HashSet::new(),
             ignore_case: false,
             comments: None,
-            brackets: Vec::new() });
+            brackets: Vec::new(),
+        });
         let theme = Theme::dark();
         my_editor.retokenize_all(&lang_def);
         let mut buffer = Buffer::new(font_system, metrics);
@@ -682,7 +704,8 @@ impl CodeEditorWidget {
             hover_pos: (0.0, 0.0),
             layout_rect: LayoutRect::zero(),
             clipboard: Clipboard::new().ok(),
-            pending_events: Vec::new() };
+            pending_events: Vec::new(),
+        };
         widget.update_digit_cache(font_system);
         widget
     }
@@ -727,7 +750,8 @@ impl CodeEditorWidget {
                         self.digit_cache.push(CachedGlyph {
                             pixmap: p,
                             left: img.placement.left,
-                            top: img.placement.top });
+                            top: img.placement.top,
+                        });
                         break;
                     }
                 }
@@ -736,7 +760,8 @@ impl CodeEditorWidget {
                 self.digit_cache.push(CachedGlyph {
                     pixmap: Pixmap::new(1, 1).unwrap(),
                     left: 0,
-                    top: 0 });
+                    top: 0,
+                });
             }
         }
     }
@@ -877,7 +902,8 @@ impl CodeEditorWidget {
     pub fn toggle_comment(&mut self, fs: &mut FontSystem) {
         let prefix = match &self.lang_def.comments {
             Some(c) => c.line_comment.as_deref().unwrap_or("//"),
-            None => "//" };
+            None => "//",
+        };
         let (start, end) = self
             .editor
             .selection_bounds()
@@ -1382,12 +1408,14 @@ impl CodeEditorWidget {
                                 CachedGlyph {
                                     pixmap: p,
                                     left: im.placement.left,
-                                    top: im.placement.top }
+                                    top: im.placement.top,
+                                }
                             } else {
                                 CachedGlyph {
                                     pixmap: Pixmap::new(1, 1).unwrap(),
                                     left: 0,
-                                    top: 0 }
+                                    top: 0,
+                                }
                             }
                         });
                     pixmap.draw_pixmap(
@@ -1526,7 +1554,8 @@ impl CodeEditorWidget {
                             TokenKind::String => self.theme.string,
                             TokenKind::LineComment | TokenKind::BlockComment => self.theme.comment,
                             TokenKind::Number => self.theme.number,
-                            _ => self.theme.guide };
+                            _ => self.theme.guide,
+                        };
                         let mut tp = Paint::default();
                         tp.set_color_rgba8(tc.r(), tc.g(), tc.b(), 0xaa);
                         let w =
@@ -2054,7 +2083,8 @@ impl CodeEditorWidget {
                             fs,
                             Action::Drag {
                                 x: 999999,
-                                y: ly as i32 },
+                                y: ly as i32,
+                            },
                         );
                     }
                     4 => {
@@ -2274,7 +2304,8 @@ impl CodeEditorWidget {
             CM::BufferStart => Motion::BufferStart,
             CM::BufferEnd => Motion::BufferEnd,
             CM::LeftWord => Motion::LeftWord,
-            CM::RightWord => Motion::RightWord };
+            CM::RightWord => Motion::RightWord,
+        };
         self.editor.action(fs, Action::Motion(m));
     }
 

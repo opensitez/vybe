@@ -33,5 +33,6 @@ fn main() {
     }
     let dest = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("linked_plugins.rs");
     let mut f = std::fs::File::create(dest).expect("create linked_plugins.rs");
-    f.write_all(out.as_bytes()).expect("write linked_plugins.rs");
+    f.write_all(out.as_bytes())
+        .expect("write linked_plugins.rs");
 }

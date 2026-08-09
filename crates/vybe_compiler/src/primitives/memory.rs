@@ -12,7 +12,8 @@ use crate::primitives::pointers::{CELL_KIND, REF_KIND_KEY, REF_VALUE_KEY};
 fn prop(key: &str, value: Expression) -> ObjectProperty {
     ObjectProperty::KeyValue {
         key: Expression::string(key),
-        value }
+        value,
+    }
 }
 
 fn elem(value: Expression) -> ArrayElement {
@@ -20,7 +21,8 @@ fn elem(value: Expression) -> ArrayElement {
         value,
         spread: false,
         key: None,
-        by_ref: false }
+        by_ref: false,
+    }
 }
 
 pub fn heap_cell(value: Expression) -> Expression {
@@ -63,14 +65,17 @@ pub fn heap_zeroed_array(count: usize) -> Expression {
 pub fn heap_zeroed_array_sized(count: Expression) -> Expression {
     let allocation = Expression::new(ExprKind::New {
         class: Box::new(Expression::new(ExprKind::Ident("Array".to_string()))),
-        args: vec![Argument::positional(count)] });
+        args: vec![Argument::positional(count)],
+    });
     Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(allocation),
             field: "fill".to_string(),
-            null_safe: false })),
+            null_safe: false,
+        })),
         args: vec![Argument::positional(Expression::int(0))],
-        optional: false })
+        optional: false,
+    })
 }
 
 /// A zero-filled BYTE buffer with a runtime length — `new Uint8Array(n)`.
@@ -83,7 +88,8 @@ pub fn heap_zeroed_array_sized(count: Expression) -> Expression {
 pub fn heap_zeroed_bytes_sized(count: Expression) -> Expression {
     Expression::new(ExprKind::New {
         class: Box::new(Expression::new(ExprKind::Ident("Uint8Array".to_string()))),
-        args: vec![Argument::positional(count)] })
+        args: vec![Argument::positional(count)],
+    })
 }
 
 /// The element count of an allocation built by [`heap_zeroed_array_sized`].
@@ -94,9 +100,7 @@ pub fn heap_zeroed_bytes_sized(count: Expression) -> Expression {
 pub fn heap_allocation_count(expr: &Expression) -> Option<&Expression> {
     match &expr.kind {
         // `heap_zeroed_bytes_sized` — `new Uint8Array(n)`.
-        ExprKind::New { class, args }
-            if matches!(&class.kind, ExprKind::Ident(name) if name == "Uint8Array") =>
-        {
+        ExprKind::New { class, args } if matches!(&class.kind, ExprKind::Ident(name) if name == "Uint8Array") => {
             args.first().map(|a| &a.value)
         }
         // `heap_zeroed_array_sized` — `new Array(n).fill(0)`.
@@ -115,7 +119,8 @@ pub fn heap_allocation_count(expr: &Expression) -> Option<&Expression> {
             }
             args.first().map(|a| &a.value)
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Reinterpret a byte-sized allocation as `bytes / element_size` elements.
@@ -136,7 +141,8 @@ pub fn rescale_heap_allocation(expr: Expression, element_size: i64) -> Expressio
     let divided = Expression::new(ExprKind::Binary {
         op: vybe_ast::BinOp::IDiv,
         left: Box::new(bytes.clone()),
-        right: Box::new(Expression::int(element_size)) });
+        right: Box::new(Expression::int(element_size)),
+    });
     heap_zeroed_array_sized(divided)
 }
 
@@ -174,8 +180,10 @@ pub fn is_heap_allocation(expr: &Expression) -> bool {
                 matches!(&object.kind, ExprKind::New { class, .. }
                     if matches!(&class.kind, ExprKind::Ident(name) if name == "Array"))
             }
-            _ => false },
-        _ => false }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 pub fn free_value() -> Expression {

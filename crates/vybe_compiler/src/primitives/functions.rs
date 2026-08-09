@@ -142,6 +142,122 @@ impl Compiler {
         self.source_function_callable_global_name_for_canon(&canon_name)
     }
 
+    /// The alias global a source-declared function's callable is assigned to,
+    /// WITHOUT asking whether the declaration has been walked past yet.
+    ///
+    /// `defined_functions` holds only the declarations the emitter has already
+    /// reached, so gating on it makes the alias name depend on WHERE in the
+    /// file it is asked for. The call path can live with that — a call above a
+    /// declaration compiles against the plain global, which module installation
+    /// publishes up front, and that is exactly how a hoisted forward call
+    /// works. A question ABOUT the declaration cannot: `function_exists('f')`
+    /// above the declaration and the identical call below it compiled against
+    /// two different globals and answered differently (measured: `true` then
+    /// `false` for the same never-declared `f`).
+    ///
+    /// The alias name is a pure function of the canonical name, so compute it
+    /// as one. `None` means the profile has no alias convention at all.
+    /// The separator is normalized on top of `canon`: a declaration in
+    /// `namespace Local` publishes `__vybe_func$Local.active`, but the name as
+    /// WRITTEN in `function_exists('Local\active')` keeps its backslash through
+    /// `canon`, so the question read `__vybe_func$Local\active` and answered
+    /// false for a function that exists (measured in `-d`: `global.set
+    /// __vybe_func$Local.active` against `global.get __vybe_func$Local\active`).
+    /// Case is left alone — the alias is published in the declaration's own
+    /// case, and the runtime-name path folds case on the needle instead.
+    pub(crate) fn source_function_callable_alias_name(&self, name: &str) -> Option<String> {
+        self.profile.source_function_callable_aliases.then(|| {
+            let canon_name = self.canon(name);
+            format!(
+                "__vybe_func${}",
+                crate::primitives::namespaces::normalize_source_path(&canon_name)
+            )
+        })
+    }
+
+    /// Whether a source-declared function exists, asked with a name that is
+    /// only known at RUNTIME — the dynamic counterpart of the literal
+    /// `function_exists('f')` arm. Stack: `[] -> [bool]`, name read from
+    /// `name_slot` (the caller has already established it is a string).
+    ///
+    /// Same corpus and same comparison chain as
+    /// [`Self::emit_source_function_callable_name_resolution`], the call path
+    /// behind `$f = 'greet'; $f();` — existence has to agree with callability,
+    /// so both answer from the same place. Only the payload differs: the call
+    /// path swaps the string for the callable, this one resolves to the
+    /// callable and then asks the runtime whether it is actually there.
+    ///
+    /// Answering `true` on a name MATCH alone — what this used to do — is the
+    /// same bug the literal arm had. A match means the compiler SAW a
+    /// declaration, not that the declaration ran, so
+    /// `if (false) { function f() {…} }` reported `f` as existing.
+    ///
+    /// The miss sentinel is NULL, not the name string.
+    /// `emit_symbol_kind_test` falls back to plain definedness when the
+    /// `__kind` stamp is absent, so leaving the unmatched name on the stack
+    /// would answer `true` for every string.
+    pub(crate) fn emit_source_function_exists_by_runtime_name(&mut self, name_slot: u16) {
+        let resolved_slot = self.define_local("__function_exists_resolved");
+        self.emit_null();
+        self.emit_u16(Op::LOCAL_SET, resolved_slot);
+
+        let mut known_functions: Vec<String> = self.defined_functions.iter().cloned().collect();
+        known_functions.sort();
+
+        if self.profile.source_function_callable_aliases && !known_functions.is_empty() {
+            self.emit_u16(Op::LOCAL_GET, name_slot);
+            let line = self.line;
+            crate::primitives::common::strings::emit_to_lower(self.chunk(), line);
+            // Normalize the NEEDLE once and compare against the canonical
+            // corpus — the same trade the call path makes.
+            crate::primitives::namespaces::emit_normalize_source_path(self.chunk(), line);
+            let needle_slot = self.define_local("__function_exists_needle");
+            self.emit_u16(Op::LOCAL_SET, needle_slot);
+
+            let matched_slot = self.define_local("__function_exists_matched");
+            self.emit_const(Value::I32(0));
+            self.emit_u16(Op::LOCAL_SET, matched_slot);
+
+            for function_name in known_functions {
+                let canonical = crate::primitives::namespaces::normalize_source_path(
+                    &function_name.to_ascii_lowercase(),
+                );
+                let rooted = crate::primitives::namespaces::rooted_lookup_key(&canonical);
+                for lowered_name in [canonical, rooted] {
+                    self.emit_u16(Op::LOCAL_GET, matched_slot);
+                    self.emit(Op::I32_EQZ);
+                    let line = self.line;
+                    self.chunk().emit_if(line);
+                    self.emit_raw_string_slot_eq_literal(needle_slot, lowered_name.as_str());
+                    let line = self.line;
+                    self.chunk().emit_if(line);
+
+                    if let Some(callable_global) =
+                        self.source_function_callable_global_name_for_canon(&function_name)
+                    {
+                        self.emit_global_read(&callable_global);
+                        self.emit_u16(Op::LOCAL_SET, resolved_slot);
+                        self.emit_const(Value::I32(1));
+                        self.emit_u16(Op::LOCAL_SET, matched_slot);
+                    }
+                    self.chunk().emit_end(line);
+                    self.chunk().emit_end(line);
+                }
+            }
+        }
+
+        // ONE kind test, after the chain — it allocates locals and emits an
+        // `ecma:reflect` read, so per-candidate would scale the emitted code
+        // with the function count for no extra answer.
+        self.emit_u16(Op::LOCAL_GET, resolved_slot);
+        let line = self.line;
+        crate::primitives::dynamic_symbols::emit_symbol_kind_test(
+            self.chunk(),
+            Some(crate::primitives::reflection::ReflectKind::Function),
+            line,
+        );
+    }
+
     pub(crate) fn emit_source_function_callable_name_resolution(&mut self, callee_slot: u16) {
         if !self.profile.source_function_callable_aliases {
             return;

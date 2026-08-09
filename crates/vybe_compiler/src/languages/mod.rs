@@ -42,30 +42,54 @@ pub fn find_by_name(name: &str) -> Option<Language> {
     all().into_iter().find(|l| l.name == name)
 }
 
-/// Find a language by file extension. Reads [info].extensions from each profile.
-pub fn find_by_extension(ext: &str) -> Option<Language> {
-    let ext_lower = ext.to_lowercase();
-    for lang in all() {
-        if let Some(extensions) = read_extensions((lang.profile_source)()) {
-            if extensions.iter().any(|e| e == &ext_lower) {
-                return Some(lang);
+/// `extension → language name`, derived from every registered profile's
+/// `[info].extensions` and then REUSED.
+///
+/// What a `.kt` file resolves to does not change between programs, but this
+/// used to be re-derived on every lookup: walk all registered languages,
+/// `toml::from_str` each COMPLETE profile (the largest is 1,243 lines), read
+/// one array from it. Under the warm worker that landed once per job and cost
+/// **36% of the time to run a one-line program** — measured with `sample`, the
+/// single largest item in the profile.
+///
+/// Ordered, so the "Supported: …" error message and first-declarer-wins are
+/// both stable rather than hash-order.
+///
+/// Rebuilt when the registered-language COUNT changes rather than built once by
+/// a bare `OnceLock`: languages register through the plugin registry, and one
+/// registering after the first lookup would otherwise stay invisible for the
+/// life of the process.
+fn with_extension_map<R>(f: impl FnOnce(&std::collections::BTreeMap<String, String>) -> R) -> R {
+    use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+    static MAP: OnceLock<Mutex<(usize, BTreeMap<String, String>)>> = OnceLock::new();
+    let cell = MAP.get_or_init(|| Mutex::new((usize::MAX, BTreeMap::new())));
+    let langs = all();
+    let mut guard = cell.lock().unwrap();
+    if guard.0 != langs.len() {
+        let mut map = BTreeMap::new();
+        for lang in &langs {
+            for ext in read_extensions((lang.profile_source)()).unwrap_or_default() {
+                // First declarer wins — the same precedence the linear scan
+                // had, which stopped at the first language claiming the
+                // extension.
+                map.entry(ext).or_insert_with(|| lang.name.to_string());
             }
         }
+        *guard = (langs.len(), map);
     }
-    None
+    f(&guard.1)
+}
+
+/// Find a language by file extension. Reads [info].extensions from each profile.
+pub fn find_by_extension(ext: &str) -> Option<Language> {
+    let name = with_extension_map(|m| m.get(&ext.to_lowercase()).cloned())?;
+    find_by_name(&name)
 }
 
 /// List all supported extensions (for usage message).
 pub fn supported_extensions() -> Vec<String> {
-    let mut exts = Vec::new();
-    for lang in all() {
-        if let Some(extensions) = read_extensions((lang.profile_source)()) {
-            for e in extensions {
-                exts.push(e);
-            }
-        }
-    }
-    exts
+    with_extension_map(|m| m.keys().cloned().collect())
 }
 
 /// Read the extensions array from a profile's [info] section.

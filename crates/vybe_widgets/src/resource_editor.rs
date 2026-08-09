@@ -2,7 +2,8 @@
 //! (strings, images, icons, audio, files). Matches Visual Studio's resource editor.
 
 use crate::layout::{
-    KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetEvent, WidgetId };
+    KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, WidgetEvent, WidgetId,
+};
 use cosmic_text::{Color as CosmicColor, FontSystem, SwashCache};
 use tiny_skia::{Paint, PathBuilder, Pixmap, Stroke, Transform};
 use winit::window::CursorIcon;
@@ -20,7 +21,8 @@ pub enum ResourceTab {
     Icons,
     Audio,
     Files,
-    Other }
+    Other,
+}
 
 impl ResourceTab {
     pub fn all() -> &'static [ResourceTab] {
@@ -41,7 +43,8 @@ impl ResourceTab {
             ResourceTab::Icons => "Icons",
             ResourceTab::Audio => "Audio",
             ResourceTab::Files => "Files",
-            ResourceTab::Other => "Other" }
+            ResourceTab::Other => "Other",
+        }
     }
 
     pub fn file_extensions(&self) -> &'static [&'static str] {
@@ -50,7 +53,8 @@ impl ResourceTab {
             ResourceTab::Icons => &["ico"],
             ResourceTab::Audio => &["wav", "mp3", "ogg", "flac", "aiff"],
             ResourceTab::Files => &["*"],
-            _ => &[] }
+            _ => &[],
+        }
     }
 
     pub fn is_file_based(&self) -> bool {
@@ -69,7 +73,8 @@ pub struct ResourceEntry {
     pub comment: String,
     pub tab: ResourceTab,
     /// Original file name for file-based resources
-    pub file_name: Option<String> }
+    pub file_name: Option<String>,
+}
 
 /// Event returned from click handling.
 #[derive(Debug, Clone)]
@@ -88,7 +93,8 @@ pub enum ResourceEditorEvent {
     /// Editing committed (row, col, new_value) — IDE should sync to project
     EditCommitted(usize, usize, String),
     /// Add string resource with name/value/comment — IDE should create ResourceItem
-    AddStringResource(String, String, String) }
+    AddStringResource(String, String, String),
+}
 
 pub struct ResourceEditor {
     pub id: WidgetId,
@@ -112,7 +118,8 @@ pub struct ResourceEditor {
     pub dirty: bool,
     // Layout (PanelWidget)
     pub layout_rect: LayoutRect,
-    pub pending_events: Vec<WidgetEvent> }
+    pub pending_events: Vec<WidgetEvent>,
+}
 
 impl ResourceEditor {
     pub fn new() -> Self {
@@ -130,7 +137,8 @@ impl ResourceEditor {
             add_cursor: 0,
             dirty: false,
             layout_rect: LayoutRect::zero(),
-            pending_events: Vec::new() }
+            pending_events: Vec::new(),
+        }
     }
 
     pub fn filtered_indices(&self) -> Vec<usize> {
@@ -846,7 +854,8 @@ impl ResourceEditor {
                         0 => self.entries[entry_idx].name.clone(),
                         1 => self.entries[entry_idx].value.clone(),
                         2 => self.entries[entry_idx].comment.clone(),
-                        _ => String::new() };
+                        _ => String::new(),
+                    };
                     let cursor = text.len();
                     self.editing = Some((entry_idx, col, text, cursor));
                     return ResourceEditorEvent::EditCell(entry_idx, col);
@@ -892,7 +901,8 @@ impl ResourceEditor {
                         0 => &self.add_fields.0,
                         1 => &self.add_fields.1,
                         2 => &self.add_fields.2,
-                        _ => &self.add_fields.0 };
+                        _ => &self.add_fields.0,
+                    };
                     self.add_cursor = text.len();
                     self.add_editing = Some(col);
                 }
@@ -992,7 +1002,8 @@ impl ResourceEditor {
                 0 => &mut self.add_fields.0,
                 1 => &mut self.add_fields.1,
                 2 => &mut self.add_fields.2,
-                _ => return };
+                _ => return,
+            };
             if ch == '\x08' {
                 if self.add_cursor > 0 {
                     text.remove(self.add_cursor - 1);
@@ -1047,7 +1058,8 @@ impl ResourceEditor {
                         0 => self.entries[row].name.clone(),
                         1 => self.entries[row].value.clone(),
                         2 => self.entries[row].comment.clone(),
-                        _ => String::new() };
+                        _ => String::new(),
+                    };
                     let cursor = text.len();
                     self.editing = Some((row, actual_col, text, cursor));
                 }
@@ -1063,7 +1075,8 @@ impl ResourceEditor {
                     0 => &self.add_fields.0,
                     1 => &self.add_fields.1,
                     2 => &self.add_fields.2,
-                    _ => &self.add_fields.0 };
+                    _ => &self.add_fields.0,
+                };
                 self.add_cursor = text.len();
                 self.add_editing = Some(next);
             } else {
@@ -1105,7 +1118,8 @@ impl ResourceEditor {
                 0 => &self.add_fields.0,
                 1 => &self.add_fields.1,
                 2 => &self.add_fields.2,
-                _ => return };
+                _ => return,
+            };
             self.add_cursor = text.len();
         }
     }
@@ -1134,7 +1148,8 @@ impl ResourceEditor {
                 0 => self.add_fields.0.len(),
                 1 => self.add_fields.1.len(),
                 2 => self.add_fields.2.len(),
-                _ => 0 };
+                _ => 0,
+            };
             if self.add_cursor < len {
                 self.add_cursor += 1;
             }

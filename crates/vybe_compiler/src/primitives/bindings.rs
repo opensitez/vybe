@@ -5,6 +5,15 @@
 
 use super::*;
 
+/// Why a bare name is being loaded. The two uses resolve identically except
+/// under a closed scope, where the VARIABLE namespace stops chaining outward
+/// but the function namespace does not — see [`Compiler::emit_callee_get`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NameUse {
+    Variable,
+    Callee,
+}
+
 impl Compiler {
     /// An array literal assigned to a `set`-typed binding builds a SET.
     ///
@@ -22,8 +31,7 @@ impl Compiler {
         if !matches!(value.kind, ExprKind::Array(_)) {
             return;
         }
-        let idx = self.import("ecma:set", "fromIterable");
-        self.emit_host_call(idx, 1);
+        common::sets::emit_from_iterable(&mut self.chunks, self.current, self.line);
     }
 
     /// Whether `hint` names a `set` ACCORDING TO THE LANGUAGE — its
@@ -69,10 +77,30 @@ impl Compiler {
             {
                 self.expr_is_builtin_set(left) && self.expr_is_builtin_set(right)
             }
-            _ => false }
+            _ => false,
+        }
     }
 
     pub(crate) fn emit_var_get(&mut self, name: &str) {
+        self.emit_name_get(name, NameUse::Variable);
+    }
+
+    /// Load `name` as the TARGET OF A CALL rather than as a variable read.
+    ///
+    /// The two differ in exactly one place — the closed-scope rule below. A
+    /// closed scope (PHP's) nulls a name that is not one of its own locals,
+    /// because the VARIABLE namespace does not chain outward; that rule is what
+    /// makes `$nope` inside a function read NULL even when a top-level `$nope`
+    /// exists, and it must not change. A callee is not a variable read: the
+    /// rule already tries to exempt functions, which live in one flat namespace,
+    /// but it tests `defined_functions` — a COMPILE-TIME snapshot. A function
+    /// published by a runtime `include`/`require` (or `eval`) is not in that
+    /// snapshot, so its callee was nulled before it could ever be found.
+    pub(crate) fn emit_callee_get(&mut self, name: &str) {
+        self.emit_name_get(name, NameUse::Callee);
+    }
+
+    fn emit_name_get(&mut self, name: &str, use_site: NameUse) {
         // Shared env: locals captured by inner closures live in a shared
         // array so mutations are visible across all closures.
         if let Some(idx) = self.shared_env_index(name) {
@@ -234,7 +262,13 @@ impl Compiler {
         // `use const Lib\LEVEL;` imported names read the qualified global from
         // inside a closed scope too — fall through to the use-alias consult
         // below instead of the undeclared-null.
-        if !self.scope().is_open(&cname)
+        //
+        // A CALLEE falls through to the global read instead: reading the name
+        // is late-bound, so an undefined function is still null at runtime
+        // (unchanged), while one defined a moment ago by a runtime include
+        // now resolves. See [`Self::emit_callee_get`].
+        if use_site == NameUse::Variable
+            && !self.scope().is_open(&cname)
             && !self.defined_functions.contains(&cname)
             && !self.defined_classes.contains(&cname)
             && !cname.starts_with("__")
@@ -269,7 +303,9 @@ impl Compiler {
                 Some(q) => q,
                 None => match self.source_type_aliases.get(&cname) {
                     Some(target) => self.canon(target),
-                    None => self.resolve_source_namespace_value(&cname).unwrap_or(cname) } }
+                    None => self.resolve_source_namespace_value(&cname).unwrap_or(cname),
+                },
+            }
         } else {
             cname
         };
@@ -340,11 +376,7 @@ impl Compiler {
                 .replace("{}", name);
             let error_kind = self.profile.unresolved_reference_error.clone();
             self.emit_const(Value::String(Arc::from(message.as_str())));
-            crate::primitives::errors::emit_exception_new_finalize(
-                self.chunk(),
-                &error_kind,
-                line,
-            );
+            crate::primitives::errors::emit_exception_new_finalize(self.chunk(), &error_kind, line);
             crate::primitives::errors::emit_throw(self.chunk(), line);
             return;
         }
@@ -499,13 +531,43 @@ impl Compiler {
                         }
                         // Another directive — keep scanning the prologue.
                     }
-                    _ => break },
-                _ => break }
+                    _ => break,
+                },
+                _ => break,
+            }
         }
         false
     }
 
+    /// Store the value on the stack into `name`, writing THROUGH the reference
+    /// if the binding holds one.
     pub(super) fn emit_var_set(&mut self, name: &str) {
+        self.emit_var_store(name, true);
+    }
+
+    /// BIND `name` to the value on the stack — the value IS what the name now
+    /// denotes, even when that value is a reference.
+    ///
+    /// The difference from [`Self::emit_var_set`] is the whole of php's
+    /// `$b = &$a`. Storing THROUGH would ask `binding_uses_pointer_cell`, and
+    /// when the module-wide address-taken pre-pass says a wrap is still coming
+    /// for `$b` that answers `true` before any cell exists — so the store mints
+    /// a fresh cell and puts `$a`'s reference INSIDE it, orphaning the storage
+    /// the reference names. `$b` and `$c` then share the outer cell while `$a`
+    /// keeps the old value: the reference-chain defect.
+    ///
+    /// The mark comes AFTER the store, and the order is load-bearing: a first
+    /// assignment is what CREATES the binding, so marking ahead of it finds no
+    /// local to flag and records the fact on the module-wide global store
+    /// instead. The local is then born unmarked, its reads never deref, and the
+    /// interpolation gets a cell object where it wanted a number. The store
+    /// itself never consults the mark, so nothing needs it earlier.
+    pub(super) fn emit_var_bind_reference(&mut self, name: &str) {
+        self.emit_var_store(name, false);
+        self.mark_pointer_cell_binding(name);
+    }
+
+    fn emit_var_store(&mut self, name: &str, through_reference: bool) {
         // ECMA-262 §13.15.2 / §6.2.4.7: assigning to a `const` binding is a
         // runtime `TypeError` ("Assignment to constant variable."). The
         // binding is known to the compiler — a `const` local in scope, or a
@@ -542,7 +604,7 @@ impl Compiler {
         }
         // Local
         if let Some(slot) = self.scope().resolve(name) {
-            if self.binding_uses_pointer_cell(name) {
+            if through_reference && self.binding_uses_pointer_cell(name) {
                 let value_slot = self.define_local("__ref_cell_set_value");
                 self.emit_u16(Op::LOCAL_SET, value_slot);
                 // Same rule as the global arm below: the pre-pass may be
@@ -675,7 +737,7 @@ impl Compiler {
         if self.scopes.len() == 1 {
             self.defined_globals.insert(global_key.clone());
         }
-        if self.binding_uses_pointer_cell(name) {
+        if through_reference && self.binding_uses_pointer_cell(name) {
             let value_slot = self.define_local("__ref_global_set_value");
             self.emit_u16(Op::LOCAL_SET, value_slot);
             // The module-wide pre-pass answers `true` before any wrap has

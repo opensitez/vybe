@@ -165,7 +165,8 @@ impl Compiler {
                 instance_method_overloads: HashMap::new(),
                 static_method_overloads: HashMap::new(),
                 nested_types: Vec::new(),
-                statics: Vec::new() },
+                statics: Vec::new(),
+            },
         );
     }
 
@@ -191,7 +192,8 @@ impl Compiler {
     pub(crate) fn variable_name_body<'a>(&self, name: &'a str) -> &'a str {
         match self.variable_namespace {
             Some(ns) => (ns.body)(name),
-            None => name }
+            None => name,
+        }
     }
 
     /// True when `name` is spelled in the language's separate VARIABLE
@@ -265,7 +267,8 @@ impl Compiler {
             Some(type_hint) if Self::is_string_type_hint(type_hint) => {
                 self.emit_const(Value::String(Arc::from("")))
             }
-            _ => self.emit_null() }
+            _ => self.emit_null(),
+        }
     }
 
     /// Whether `type_hint` names a string.
@@ -468,7 +471,8 @@ impl Compiler {
             if let ExprKind::Binary {
                 op: BinOp::Add,
                 left,
-                right } = &expr.kind
+                right,
+            } = &expr.kind
             {
                 self.compile_expr_with_numeric_add_hint(left, true)?;
                 self.compile_expr_with_numeric_add_hint(right, true)?;

@@ -26,7 +26,8 @@ pub struct Local {
     /// that name → not a cell") could not tell a local that SHADOWS the name
     /// from one that IS it — so php's `global $g` read a promoted global raw.
     /// Resolution already knows the difference. Ask it.
-    pub holds_reference: bool }
+    pub holds_reference: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct UpvalueDesc {
@@ -34,7 +35,8 @@ pub struct UpvalueDesc {
     /// `Local.slot` — chunks routinely exceed 255 locals). Otherwise:
     /// the parent's upvalue-list position.
     pub index: u16,
-    pub is_local: bool }
+    pub is_local: bool,
+}
 
 /// What a name lookup that misses this scope's own locals does.
 ///
@@ -53,7 +55,8 @@ pub enum ScopeResolution {
     Chain,
     /// A miss resolves to nothing: reads are null, assignments create a local
     /// here. PHP function bodies.
-    Closed }
+    Closed,
+}
 
 #[derive(Debug)]
 pub struct Scope {
@@ -86,7 +89,8 @@ pub struct Scope {
     /// Debug accumulator: every `(slot, name)` ever defined in this function,
     /// NOT popped by `end_scope`. Copied into `Chunk.local_names` at finalize
     /// so the debugger can resolve variable names ↔ slots. Inspection only.
-    pub defined_names: Vec<(u16, String)> }
+    pub defined_names: Vec<(u16, String)>,
+}
 
 impl Scope {
     /// `fold_case` is required rather than defaulted: a scope that silently
@@ -102,7 +106,8 @@ impl Scope {
             fold_case,
             depth: 0,
             next_slot: 0,
-            defined_names: Vec::new() }
+            defined_names: Vec::new(),
+        }
     }
 
     pub fn new_function(fold_case: bool) -> Self {
@@ -168,7 +173,8 @@ impl Scope {
             is_captured: false,
             type_hint,
             is_const: false,
-            holds_reference: false });
+            holds_reference: false,
+        });
         self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
         slot
@@ -179,7 +185,11 @@ impl Scope {
     /// which are function-scoped (ECMA-262 §10.2.11) — the binding must
     /// outlive the block it was declared in. Without this, `end_scope`
     /// would pop the binding when the enclosing block exits.
-    pub fn define_at_function_scope(&mut self, name: &str, type_hint: Option<vybe_ast::TypeHint>) -> u16 {
+    pub fn define_at_function_scope(
+        &mut self,
+        name: &str,
+        type_hint: Option<vybe_ast::TypeHint>,
+    ) -> u16 {
         let slot = self.next_slot;
         self.locals.push(Local {
             name: name.to_string(),
@@ -188,7 +198,8 @@ impl Scope {
             is_captured: false,
             type_hint,
             is_const: false,
-            holds_reference: false });
+            holds_reference: false,
+        });
         self.defined_names.push((slot, name.to_string()));
         self.next_slot += 1;
         slot
@@ -276,7 +287,8 @@ impl Scope {
                 l.holds_reference = true;
                 true
             }
-            None => false }
+            None => false,
+        }
     }
 
     /// Case-EXACT, whatever the folding policy.

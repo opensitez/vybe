@@ -44,7 +44,8 @@ impl Timers {
     fn new() -> Self {
         Timers {
             entries: Mutex::new(Vec::new()),
-            next_id: AtomicU64::new(1) }
+            next_id: AtomicU64::new(1),
+        }
     }
 
     /// Schedule `delay_ms` from now; returns the cancellable id.
@@ -52,7 +53,8 @@ impl Timers {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.entries.lock().unwrap().push(Entry {
             id,
-            fire_at_ms: now_ms() + delay_ms.max(0.0) });
+            fire_at_ms: now_ms() + delay_ms.max(0.0),
+        });
         id
     }
 
@@ -64,7 +66,8 @@ impl Timers {
                 entries.remove(pos);
                 true
             }
-            None => false }
+            None => false,
+        }
     }
 
     /// Pop ONE due id — first-registered-due-first, matching a drain loop's
@@ -119,7 +122,8 @@ impl Frames {
         Frames {
             pending: Mutex::new(Vec::new()),
             next_frame_ms: Mutex::new(0.0),
-            next_id: AtomicU64::new(1) }
+            next_id: AtomicU64::new(1),
+        }
     }
 
     /// Register for the next frame; returns the cancellable id.
@@ -144,7 +148,8 @@ impl Frames {
                 pending.remove(pos);
                 true
             }
-            None => false }
+            None => false,
+        }
     }
 
     pub fn take_due(&self) -> Option<u64> {
@@ -187,6 +192,17 @@ impl Frames {
 pub fn timers() -> Arc<Timers> {
     static TIMERS: OnceLock<Arc<Timers>> = OnceLock::new();
     TIMERS.get_or_init(|| Arc::new(Timers::new())).clone()
+}
+
+/// Drop every scheduled timer and pending frame.
+///
+/// Both wheels are process-wide but their entries belong to whichever program
+/// scheduled them. A VM that serves more than one program (the warm worker,
+/// `--serve`) must not let one program's pending work fire during another's,
+/// so this is called from the owning plugin's `reset`.
+pub fn reset() {
+    timers().entries.lock().unwrap().clear();
+    frames().pending.lock().unwrap().clear();
 }
 
 /// The process-wide frame clock.

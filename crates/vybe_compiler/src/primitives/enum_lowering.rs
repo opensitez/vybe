@@ -32,7 +32,8 @@
 
 use vybe_ast::{
     Argument, ArrayElement, BinOp, ClassMember, ConstructorInitializerTarget, EnumMember, ExprKind,
-    Expression, Literal, Modifiers, Param, PassBy, Statement, StmtKind, Visibility };
+    Expression, Literal, Modifiers, Param, PassBy, Statement, StmtKind, Visibility,
+};
 
 /// The name the static initializer is published under.
 pub const STATIC_INIT: &str = "__static_init_block__";
@@ -47,6 +48,10 @@ pub const VALUE_FIELD: &str = "__value";
 /// The declaring type's name — identity across frontends, since a tree type has
 /// no rtt of its own.
 pub const TYPE_FIELD: &str = "__type";
+/// The integer-coercion method. Its NAME is private to this lowering — every
+/// language spells the coercion (`(int)e`, `Ord(e)`, `ordinal()`), never the
+/// method, so it is reached through the `Int` slot and not by this spelling.
+const INT_METHOD: &str = "__enum_to_int";
 
 /// How the source language SPELLS one piece of the implicit enum surface.
 ///
@@ -57,7 +62,8 @@ pub enum Spelling {
     /// A call: `x.name()`, `Color.values()`.
     Method,
     /// Data: `x.name`, `Color.values`.
-    Property }
+    Property,
+}
 
 /// The declared spellings of an enum's implicit surface.
 ///
@@ -69,17 +75,26 @@ pub struct Surface {
     /// `name` / `ordinal` on a constant.
     pub accessors: Spelling,
     /// `values` on the type.
-    pub values: Spelling }
+    pub values: Spelling,
+}
 
 impl Surface {
     /// Java: `c.name()`, `Color.values()`.
-    pub const JAVA: Self = Self { accessors: Spelling::Method, values: Spelling::Method };
+    pub const JAVA: Self = Self {
+        accessors: Spelling::Method,
+        values: Spelling::Method,
+    };
     /// Kotlin: `c.name`, `Color.values()`.
-    pub const KOTLIN: Self = Self { accessors: Spelling::Property, values: Spelling::Method };
+    pub const KOTLIN: Self = Self {
+        accessors: Spelling::Property,
+        values: Spelling::Method,
+    };
     /// Dart, PHP, Python, C#, and every language on the shared path:
     /// `c.name`, `Color.values`.
-    pub const PROPERTIES: Self =
-        Self { accessors: Spelling::Property, values: Spelling::Property };
+    pub const PROPERTIES: Self = Self {
+        accessors: Spelling::Property,
+        values: Spelling::Property,
+    };
 }
 
 fn param(name: &str) -> Param {
@@ -91,26 +106,47 @@ fn param(name: &str) -> Param {
         is_rest: false,
         is_kwargs: false,
         is_optional: false,
-        is_nullable: false }
+        is_nullable: false,
+    }
 }
 
 fn this_field(field: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::new(ExprKind::This)),
         field: field.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 fn assign(target: Expression, value: Expression) -> Statement {
     Statement::new(StmtKind::Assign {
         targets: vec![target],
         value,
-        by_ref: false })
+        by_ref: false,
+    })
 }
 
 fn method(name: &str, params: Vec<Param>, body: Vec<Statement>, is_static: bool) -> ClassMember {
+    method_filling(name, params, body, is_static, None)
+}
+
+/// A member that also fills a protocol ROLE.
+///
+/// Installing the member is not enough on its own: a role is resolved from the
+/// declared slot, never from the spelling, and these members are spelled in the
+/// lowering's own vocabulary (`toString`) rather than any language's. C# is the
+/// proof — its name table maps `ToString`, so the installed `toString` filled
+/// nothing and `WriteLine(c)` rendered `[object Color]`.
+fn method_filling(
+    name: &str,
+    params: Vec<Param>,
+    body: Vec<Statement>,
+    is_static: bool,
+    protocol_slot: Option<vybe_ast::ProtocolSlot>,
+) -> ClassMember {
     let mut modifiers = Modifiers::default();
     modifiers.is_static = is_static;
+    modifiers.protocol_slot = protocol_slot;
     ClassMember::Method(Box::new(Statement::new(StmtKind::FunctionDecl {
         name: name.to_string(),
         params,
@@ -120,7 +156,8 @@ fn method(name: &str, params: Vec<Param>, body: Vec<Statement>, is_static: bool)
         handles: vec![],
         is_async: false,
         is_generator: false,
-        is_sub: false })))
+        is_sub: false,
+    })))
 }
 
 fn declared_methods(members: &[ClassMember]) -> Vec<String> {
@@ -129,8 +166,10 @@ fn declared_methods(members: &[ClassMember]) -> Vec<String> {
         .filter_map(|m| match m {
             ClassMember::Method(stmt) => match &stmt.kind {
                 StmtKind::FunctionDecl { name, .. } => Some(name.clone()),
-                _ => None },
-            _ => None })
+                _ => None,
+            },
+            _ => None,
+        })
         .collect()
 }
 
@@ -139,7 +178,8 @@ fn constant_read(class_name: &str, member: &str) -> Expression {
     Expression::new(ExprKind::Member {
         object: Box::new(Expression::ident(class_name)),
         field: member.to_string(),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 /// The value each constant carries, and whether it is a compile-time integer.
@@ -164,7 +204,8 @@ pub fn member_values(members: &[EnumMember]) -> Vec<(Expression, Option<i64>)> {
             None => (
                 Expression::new(ExprKind::Lit(Literal::Int(next))),
                 Some(next),
-            ) };
+            ),
+        };
         out.push(entry);
         next += 1;
     }
@@ -197,10 +238,7 @@ fn install_constructor(class_name: &str, members: &mut Vec<ClassMember>, accesso
     // depend on an ordering that one reorder silently breaks.
     let mut stamps = vec![
         assign(this_field(NAME_FIELD), Expression::ident(NAME_FIELD)),
-        assign(
-            this_field(ORDINAL_FIELD),
-            Expression::ident(ORDINAL_FIELD),
-        ),
+        assign(this_field(ORDINAL_FIELD), Expression::ident(ORDINAL_FIELD)),
         assign(this_field(VALUE_FIELD), Expression::ident(VALUE_FIELD)),
         assign(this_field(TYPE_FIELD), Expression::string(class_name)),
     ];
@@ -238,7 +276,8 @@ fn install_constructor(class_name: &str, members: &mut Vec<ClassMember>, accesso
             body: stamps,
             base_args: None,
             initializer_target: ConstructorInitializerTarget::Base,
-            visibility: Visibility::Private });
+            visibility: Visibility::Private,
+        });
     }
 }
 
@@ -250,7 +289,8 @@ fn install_instance_methods(
 ) {
     let accessor_methods: &[(&str, &str)] = match accessors {
         Spelling::Method => &[("name", NAME_FIELD), ("ordinal", ORDINAL_FIELD)],
-        Spelling::Property => &[] };
+        Spelling::Property => &[],
+    };
     for (name, field) in accessor_methods
         .iter()
         .copied()
@@ -259,11 +299,32 @@ fn install_instance_methods(
         if declared.iter().any(|d| d == name) {
             continue;
         }
-        members.push(method(
+        // How an enum constant RENDERS is the `ToString` role, declared here
+        // once rather than left to each language's name table to recognise a
+        // spelling this lowering chose.
+        let slot = (name == "toString").then_some(vybe_ast::ProtocolSlot::ToString);
+        members.push(method_filling(
             name,
             vec![],
             vec![Statement::new(StmtKind::Return(Some(this_field(field))))],
             false,
+            slot,
+        ));
+    }
+    // The other half of the same table: coercing a constant to an integer —
+    // C# `(int)Color.Blue`, Pascal `Ord(c)`, Java `ordinal()` — is the `Int`
+    // role, and it reads the declared VALUE. Nameless on purpose: no language
+    // spells this method, they all spell the coercion, and the coercion
+    // resolves through the slot.
+    if !declared.iter().any(|d| d == INT_METHOD) {
+        members.push(method_filling(
+            INT_METHOD,
+            vec![],
+            vec![Statement::new(StmtKind::Return(Some(this_field(
+                VALUE_FIELD,
+            ))))],
+            false,
+            Some(vybe_ast::ProtocolSlot::Int),
         ));
     }
 }
@@ -277,8 +338,10 @@ fn install_statics(
     values_spelling: Spelling,
 ) {
     let declares_values = declared.iter().any(|d| d == "values")
-        || members.iter().any(|m| matches!(m,
-            ClassMember::Field { name, .. } if name == "values"));
+        || members.iter().any(|m| {
+            matches!(m,
+            ClassMember::Field { name, .. } if name == "values")
+        });
     if !declares_values {
         let array = Expression::new(ExprKind::Array(
             members_decl
@@ -287,7 +350,8 @@ fn install_statics(
                     key: None,
                     value: constant_read(class_name, &m.name),
                     spread: false,
-                    by_ref: false })
+                    by_ref: false,
+                })
                 .collect(),
         ));
         match values_spelling {
@@ -311,12 +375,14 @@ fn install_statics(
                     init: None,
                     modifiers,
                     with_events: false,
-                    array_bounds: None });
+                    array_bounds: None,
+                });
                 append_to_static_init(
                     members,
                     vec![assign(constant_read(class_name, "values"), array)],
                 );
-            } }
+            }
+        }
     }
 
     if declared.iter().any(|d| d == "valueOf") {
@@ -329,12 +395,14 @@ fn install_statics(
                 cond: Expression::new(ExprKind::Binary {
                     op: BinOp::Eq,
                     left: Box::new(Expression::ident("__s")),
-                    right: Box::new(Expression::string(&m.name)) }),
+                    right: Box::new(Expression::string(&m.name)),
+                }),
                 then_body: vec![Statement::new(StmtKind::Return(Some(constant_read(
                     class_name, &m.name,
                 ))))],
                 elifs: vec![],
-                else_body: None })
+                else_body: None,
+            })
         })
         .collect();
     // An unmatched name is null here, not a throw: the JVM frontends keep their
@@ -382,13 +450,15 @@ fn install_constants(
             init: None,
             modifiers,
             with_events: false,
-            array_bounds: None });
+            array_bounds: None,
+        });
 
         init.push(assign(
             constant_read(class_name, &member.name),
             Expression::new(ExprKind::New {
                 class: Box::new(Expression::ident(class_name)),
-                args }),
+                args,
+            }),
         ));
     }
     if init.is_empty() {
@@ -421,6 +491,8 @@ fn static_init_body(members: &mut [ClassMember]) -> Option<&mut Vec<Statement>> 
     members.iter_mut().find_map(|member| match member {
         ClassMember::Method(stmt) => match &mut stmt.kind {
             StmtKind::FunctionDecl { name, body, .. } if name == STATIC_INIT => Some(body),
-            _ => None },
-        _ => None })
+            _ => None,
+        },
+        _ => None,
+    })
 }

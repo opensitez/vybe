@@ -29,7 +29,8 @@ fn declare_type(chunk: &mut Chunk, name: &str) {
         is_interface: false,
         implements: Vec::new(),
         constructor_chunk: None,
-        field_descriptors: std::collections::HashMap::new() });
+        field_descriptors: std::collections::HashMap::new(),
+    });
 }
 
 const TYPE_ONE: vybe_runtime::opcode::heaptype::HeapType =
@@ -269,7 +270,10 @@ fn test_ref_test_opcode_with_type_string() {
     let mut chunk = Chunk::new("<test>");
     // Push a Button object (using __type property)
     let obj = make_typed_object("Button");
-    let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    let name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     vm.globals.insert(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
     chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
@@ -299,7 +303,10 @@ fn test_ref_test_opcode_with_type_id() {
     // Build chunk with a typed object (type_id set)
     let mut chunk = Chunk::new("<test>");
     let obj = make_typed_object_with_id(button_id, "Button");
-    let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    let name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     vm.globals.insert(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
     chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
@@ -331,7 +338,10 @@ fn test_ref_test_opcode_negative() {
     // A List is NOT a Button
     let mut chunk = Chunk::new("<test>");
     let obj = make_typed_object("List");
-    let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    let name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     vm.globals.insert(name.clone(), obj);
     let ci = chunk.intern_string_constant(&name);
     chunk.emit_op_u16(Op::GLOBAL_GET, ci, 0);
@@ -366,7 +376,10 @@ fn test_ref_test_with_js_types_array() {
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Dog")));
 
-    let name = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    let name = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     vm.globals.insert(
         name.clone(),
         Value::Object(Arc::new(std::sync::Mutex::new(obj))),

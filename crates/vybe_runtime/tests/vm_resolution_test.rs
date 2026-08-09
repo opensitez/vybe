@@ -25,7 +25,8 @@ fn import_resolution_basic() {
     chunk.local_count = 1;
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "test".into(),
-        name: "add".into() });
+        name: "add".into(),
+    });
     chunk.emit_f64_const(3.0, 0);
     chunk.emit_f64_const(4.0, 0);
     // spec `call`, raw-encoded: u16 import_idx + u8 argc
@@ -45,7 +46,8 @@ fn import_unresolved_errors_gracefully() {
     chunk.local_count = 1;
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "missing".into(),
-        name: "func".into() });
+        name: "func".into(),
+    });
 
     let result = vm.run(vec![chunk]);
     assert!(result.is_err());
@@ -74,10 +76,12 @@ fn import_multiple_modules_correct_dispatch() {
     chunk.local_count = 1;
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "math".into(),
-        name: "double".into() });
+        name: "double".into(),
+    });
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "str".into(),
-        name: "len".into() });
+        name: "len".into(),
+    });
 
     // Call str.len("hello") — should be import 1, not 0
     chunk.emit_string_const("hello", 0);
@@ -112,10 +116,12 @@ fn import_same_module_different_functions() {
     chunk.local_count = 1;
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "math".into(),
-        name: "add".into() });
+        name: "add".into(),
+    });
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "math".into(),
-        name: "mul".into() });
+        name: "mul".into(),
+    });
 
     // add(3, 4) = 7
     chunk.emit_f64_const(3.0, 0);
@@ -454,7 +460,8 @@ fn host_fn_registered_before_run() {
     chunk.local_count = 1;
     chunk.imports.push(vybe_runtime::chunk::Import {
         module: "b".into(),
-        name: "f3".into() });
+        name: "f3".into(),
+    });
     chunk.emit_op(Op::CALL, 0);
     chunk.emit(0, 0);
     chunk.emit(0, 0);

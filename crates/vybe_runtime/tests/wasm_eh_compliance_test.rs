@@ -166,7 +166,10 @@ fn catch_ignores_payload_stamps_tag_identity_only() {
     obj.properties
         .insert("message".into(), Value::String(Arc::from("stamped")));
     let payload = Value::Object(Arc::new(Mutex::new(obj)));
-    let payload_global = format!("__test_arg_{}", TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed));
+    let payload_global = format!(
+        "__test_arg_{}",
+        TEST_GLOBAL_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
 
     let outer = emit_try_table(&mut c, &[(KIND_CATCH, t_type_error)]);
     let inner = emit_try_table(&mut c, &[(KIND_CATCH, t_exception)]);

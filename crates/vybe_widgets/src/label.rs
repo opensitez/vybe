@@ -3,7 +3,8 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseEvent, PanelWidget, RenderContext, TextAlign,
-    WidgetCommand, WidgetId, command_color, command_number };
+    WidgetCommand, WidgetId, command_color, command_number,
+};
 use cosmic_text::Color as CosmicColor;
 use tiny_skia::*;
 
@@ -19,7 +20,8 @@ pub struct Label {
     pub font_size: f32,
     pub text_align: TextAlign,
     pub word_wrap: bool,
-    rect: LayoutRect }
+    rect: LayoutRect,
+}
 
 impl Label {
     pub fn new<S: Into<String>>(text: S) -> Self {
@@ -38,7 +40,8 @@ impl Label {
             font_size: 13.0,
             text_align: TextAlign::Left,
             word_wrap: false,
-            rect: LayoutRect::zero() }
+            rect: LayoutRect::zero(),
+        }
     }
 
     pub fn with_name<S: Into<String>>(mut self, name: S) -> Self {
@@ -269,7 +272,9 @@ impl PanelWidget for Label {
                     }
                     CommandValue::None
                 }
-                _ => CommandValue::None },
-            _ => CommandValue::None }
+                _ => CommandValue::None,
+            },
+            _ => CommandValue::None,
+        }
     }
 }

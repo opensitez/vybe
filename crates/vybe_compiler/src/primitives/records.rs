@@ -18,7 +18,6 @@
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
 
-
 use crate::primitives::{collections, loops, ops};
 
 /// Field-wise equality for two objects held in locals. Stack: `[] → [bool]`.
@@ -179,7 +178,8 @@ pub enum ViewKind {
     Int16,
     Int32,
     Uint32,
-    Float64 }
+    Float64,
+}
 
 impl ViewKind {
     pub fn width(self) -> u32 {
@@ -187,7 +187,8 @@ impl ViewKind {
             ViewKind::Int8 | ViewKind::Uint8 => 1,
             ViewKind::Int16 => 2,
             ViewKind::Int32 | ViewKind::Uint32 => 4,
-            ViewKind::Float64 => 8 }
+            ViewKind::Float64 => 8,
+        }
     }
 
     /// The `ecma:dataview` accessor pair. Named here rather than spelled at the
@@ -199,7 +200,8 @@ impl ViewKind {
             ViewKind::Int16 => ("getInt16", "setInt16"),
             ViewKind::Int32 => ("getInt32", "setInt32"),
             ViewKind::Uint32 => ("getUint32", "setUint32"),
-            ViewKind::Float64 => ("getFloat64", "setFloat64") }
+            ViewKind::Float64 => ("getFloat64", "setFloat64"),
+        }
     }
 }
 
@@ -221,7 +223,8 @@ pub fn view_for_hint(hint: &str) -> Option<ViewKind> {
             IntWidth::U8 => ViewKind::Uint8,
             IntWidth::I16 => ViewKind::Int16,
             IntWidth::I32 => ViewKind::Int32,
-            IntWidth::U32 => ViewKind::Uint32 });
+            IntWidth::U32 => ViewKind::Uint32,
+        });
     }
     match vybe_ast::builtin_types::classify(hint) {
         // A boolean occupies one byte in every language that has a variant
@@ -232,20 +235,23 @@ pub fn view_for_hint(hint: &str) -> Option<ViewKind> {
         // `Integer`, C `int`) still has a byte image; f64 is the platform's
         // number, so a non-narrowed numeric reads and writes as one.
         Some(BuiltinType::Int) | Some(BuiltinType::Double) => Some(ViewKind::Float64),
-        _ => None }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct VariantView {
     pub name: String,
     pub offset: u32,
-    pub kind: ViewKind }
+    pub kind: ViewKind,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct VariantLayout {
     pub views: Vec<VariantView>,
     /// Bytes in the shared region — the WIDEST arm, since all arms start at 0.
-    pub size: u32 }
+    pub size: u32,
+}
 
 /// Place every arm's fields at offsets within one shared region.
 ///
@@ -276,7 +282,8 @@ pub fn variant_layout(variant: &vybe_ast::VariantPart, packed: bool) -> VariantL
             views.push(VariantView {
                 name: name.clone(),
                 offset,
-                kind });
+                kind,
+            });
             offset += width;
         }
         size = size.max(offset);
@@ -403,5 +410,6 @@ pub fn may_be_value_instance(expr: &vybe_ast::Expression) -> bool {
                 | BinOp::And
                 | BinOp::Or
         ),
-        _ => true }
+        _ => true,
+    }
 }

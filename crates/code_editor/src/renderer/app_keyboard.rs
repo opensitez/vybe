@@ -109,10 +109,13 @@ impl App {
                         }
                         "n" => {
                             // New project
-                            self.project = vybe_platform_dotnet::winforms::designer::project::Project::new(
-                                "Project1".to_string(),
+                            self.project =
+                                vybe_platform_dotnet::winforms::designer::project::Project::new(
+                                    "Project1".to_string(),
+                                );
+                            let mut form = vybe_platform_dotnet::winforms::designer::Form::new(
+                                "Form1".to_string(),
                             );
-                            let mut form = vybe_platform_dotnet::winforms::designer::Form::new("Form1".to_string());
                             form.width = 640;
                             form.height = 480;
                             self.project.forms.push(
@@ -262,7 +265,8 @@ impl App {
         let key_str = match event.key_without_modifiers.clone() {
             Key::Character(c) => c.to_lowercase(),
             Key::Named(nk) => format!("{:?}", nk),
-            _ => String::new() };
+            _ => String::new(),
+        };
 
         for kb in &self.keybindings {
             if kb.key == key_str && kb.cmd == cmd && kb.shift == shift && kb.alt == alt {
@@ -305,7 +309,8 @@ impl App {
                         if let Some(path) = save_path {
                             let msg = match std::fs::write(&path, &text) {
                                 Ok(_) => format!("Saved: {}", path),
-                                Err(e) => format!("Save error: {}", e) };
+                                Err(e) => format!("Save error: {}", e),
+                            };
                             self.output_lines_buffer.push(msg);
                             self.output_panel
                                 .set_output_lines(&self.output_lines_buffer);
@@ -528,7 +533,8 @@ impl App {
             Key::Character(c) if cmd && shift && (c == "b" || c == "B") => {
                 self.build_config = match self.build_config {
                     super::BuildConfig::Debug => super::BuildConfig::Release,
-                    super::BuildConfig::Release => super::BuildConfig::Debug };
+                    super::BuildConfig::Release => super::BuildConfig::Debug,
+                };
             }
             // Fold/Unfold: Cmd+Shift+[ folds current, Cmd+Shift+] unfolds current
             Key::Character(c) if cmd && shift && c == "[" => {
@@ -861,7 +867,8 @@ impl App {
                                         ']' => Some(']'),
                                         '"' => Some('"'),
                                         '\'' => Some('\''),
-                                        _ => None } {
+                                        _ => None,
+                                    } {
                                         let (cli, cur) = w.cursor_pos();
                                         let line_text = w.line_text(cli);
                                         let next_ch = line_text[cur..].chars().next();
@@ -882,7 +889,8 @@ impl App {
                                             '[' => Some(']'),
                                             '"' => Some('"'),
                                             '\'' => Some('\''),
-                                            _ => None } {
+                                            _ => None,
+                                        } {
                                             w.action_insert(&mut self.font_system, cl);
                                             w.action_motion(
                                                 &mut self.font_system,
@@ -901,7 +909,8 @@ impl App {
                             // Check if previous char was also `:` (i.e., `::`)
                             let w2 = match &self.tabs[self.active_tab].content {
                                 TabContent::Code(cw) => cw,
-                                _ => unreachable!() };
+                                _ => unreachable!(),
+                            };
                             let (cli, cur) = w2.cursor_pos();
                             let text = w2.line_text(cli);
                             let is_double_colon = cur >= 2 && text.get(cur - 2..cur) == Some("::");

@@ -80,15 +80,13 @@ pub fn trace_enabled() -> bool {
             on
         }
         2 => true,
-        _ => false }
+        _ => false,
+    }
 }
 
 /// Turn canvas tracing on or off at runtime (the debugger's `trace canvas`).
 pub fn set_trace_enabled(on: bool) {
-    CANVAS_TRACE.store(
-        if on { 2 } else { 1 },
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    CANVAS_TRACE.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// HTML5-canvas-shaped immediate-mode drawing API.

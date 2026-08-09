@@ -57,7 +57,11 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
         let mode = if case.run_only {
             // A `.wast` script asserts through its own directives, so running it
             // IS the check — `must_fail` inverts the verdict.
-            if case.expect_failure { "run-fail" } else { "run" }
+            if case.expect_failure {
+                "run-fail"
+            } else {
+                "run"
+            }
         } else if case.expect_failure {
             "compile-fail"
         } else {
@@ -90,7 +94,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
             text: format!("{header}\n{body}\n"),
             pairing: Pairing::Unpairable(reason),
             extension: extension_for(&case.source),
-        } }
+        },
+    }
 }
 
 /// The four logging imports the wrapper declares, and the wasm type each takes.
@@ -154,7 +159,10 @@ fn numeric_checked(src: &str, expected: &[String]) -> Result<String, String> {
         if !used.contains(ty) {
             used.push(ty);
         }
-        out.replace_range(*start..*end, &format!("{ty}.const {literal} call $vybe_check_{ty}"));
+        out.replace_range(
+            *start..*end,
+            &format!("{ty}.const {literal} call $vybe_check_{ty}"),
+        );
     }
 
     // The check functions go after the LAST import: an import may not follow a
@@ -212,7 +220,10 @@ fn find_log_calls(src: &str) -> Vec<(usize, usize, &'static str)> {
 
 /// Is this expectation a NaN in any of the spellings the corpus uses?
 fn is_nan_text(want: &str) -> bool {
-    let t = want.trim().trim_start_matches(['-', '+']).to_ascii_lowercase();
+    let t = want
+        .trim()
+        .trim_start_matches(['-', '+'])
+        .to_ascii_lowercase();
     t == "nan" || t.starts_with("nan:")
 }
 
@@ -226,7 +237,8 @@ fn wasm_const(ty: &str, want: &str) -> Option<String> {
         _ => {
             want.parse::<f64>().ok()?;
             Some(want.to_string())
-        } }
+        }
+    }
 }
 
 fn after_last_import(src: &str) -> usize {
@@ -239,7 +251,11 @@ fn after_last_import(src: &str) -> usize {
         }
     }
     // No imports at all — straight after `(module`.
-    best.unwrap_or_else(|| src.find("(module").map(|o| o + "(module".len()).unwrap_or(0))
+    best.unwrap_or_else(|| {
+        src.find("(module")
+            .map(|o| o + "(module".len())
+            .unwrap_or(0)
+    })
 }
 
 fn wrap_module(src: &str) -> String {

@@ -601,7 +601,6 @@ pub struct LanguageProfile {
     /// when its reflection surface reads it.
     pub class_member_metadata: bool,
 
-
     /// Honour ALL declared bases (`NormalClass.bases`), computing a C3
     /// linearization and attaching every base's methods (multiple
     /// inheritance). Off by default: single-inheritance languages ignore
@@ -706,8 +705,6 @@ pub struct LanguageProfile {
     /// line with no separator.
     pub echo_concatenates_operands: bool,
 
-
-
     /// A `for` loop gives its loop variable a FRESH binding each iteration, so
     /// closures created in the body capture the per-iteration value (VB `For`,
     /// JS `let`-in-`for`). Languages where the loop variable is shared across
@@ -786,15 +783,6 @@ pub struct LanguageProfile {
     /// so they leave this `false`. Default `true` preserves the historical
     /// behaviour for the static languages.
     pub coerces_value_to_type_hint: bool,
-    /// ECMA-262 §9.1.2 / §10.2.1.1: the receiver (`this`) is bound *ambiently*
-    /// from the call context (Vybe carries it in the `__js_this` global the
-    /// call site sets) rather than being passed as an explicit first positional
-    /// parameter. When true, a method/constructor's arity excludes `this` and
-    /// the body reads it from the context. Languages that thread the receiver
-    /// as an explicit first parameter (`self`/`Me`/`$this` in slot 0) leave
-    /// this `false`.
-    pub ambient_this_binding: bool,
-
     /// namespaceplan.md migration switch: when true, this language's
     /// namespace-shaped entry points (host prefix chains, wildcard
     /// namespace member access, …) resolve through the common resolver
@@ -864,6 +852,29 @@ pub struct LanguageProfile {
     /// E.g. `Add(item)` for list (1 arg) vs `Add(key, value)` for dict (2 args).
     pub value_methods: HashMap<String, Vec<BuiltinDef>>,
 
+    /// Signatures materialised out of `pass_by = [...]` declarations on
+    /// `[builtins]`/`[value_methods]` rows — `referenceplan.md` §10j.1.
+    ///
+    /// A builtin has no source text to walk, so its declared argument modes used
+    /// to sit on `BuiltinDef` and be consulted from there. That made the fact a
+    /// PROFILE PROPERTY: invisible to reflection, and true only at the one call
+    /// site that remembered to look. It is now parsed into AST the moment it is
+    /// read, exactly as a walker turns source into AST — the profile row is
+    /// SOURCE TEXT and these nodes are the truth.
+    ///
+    /// The compiler wraps these in a `StmtKind::InterfaceDecl` and registers them
+    /// through the ordinary `register_interface_method_signatures` path, so a
+    /// builtin's argument modes land in the same `function_param_modes` registry
+    /// a source-declared callee's do. An interface is the right carrier because
+    /// it declares a signature and can never become a call target: it compiles to
+    /// a literal no-op, so `bindParam` still routes through `[value_methods]` to
+    /// its adapter. The declaration DESCRIBES the callee; it does not implement
+    /// it.
+    ///
+    /// Empty for every profile that declares no `pass_by`, which is all but php
+    /// today.
+    pub builtin_signatures: Vec<vybe_ast::InterfaceMember>,
+
     /// Namespace constants: property access that returns a value, NOT a function call.
     /// "Math.PI" → 3.14159..., "Number.MAX_SAFE_INTEGER" → 9007199254740991
     pub namespace_constants: HashMap<String, ConstantValue>,
@@ -906,14 +917,16 @@ pub struct LanguageProfile {
     /// table empty so their bare imports stay unrouted by this
     /// mechanism. Declared in profile TOML as a `[bare_module_aliases]`
     /// table: `"fs" = "node:fs"` etc.
-    pub bare_module_aliases: HashMap<String, String> }
+    pub bare_module_aliases: HashMap<String, String>,
+}
 
 /// One `[integer_cast_widths]` entry: the width a cast to this type spelling
 /// wraps to. `bits: None` truncates toward zero without wrapping.
 #[derive(Clone, Debug)]
 pub struct IntegerCastWidth {
     pub bits: Option<u32>,
-    pub signed: bool }
+    pub signed: bool,
+}
 
 /// One pre-declared ESM import in the ambient module scope — the
 /// profile's equivalent of a hand-written `import` statement. Three
@@ -925,7 +938,8 @@ pub enum EsmDefault {
     Named {
         local: String,
         module: String,
-        name: String },
+        name: String,
+    },
     /// `import * as alias from "module"`. Qualified access `alias.field`
     /// resolves to `(module, field)` at compile time.
     Namespace { alias: String, module: String },
@@ -948,7 +962,8 @@ pub enum EsmDefault {
         module: String,
         name: String,
         target_module: String,
-        target_name: String },
+        target_name: String,
+    },
     /// Namespace-tree mount (namespaceplan.md): a qualified chain whose
     /// first segment matches `prefix` resolves by walking the global
     /// namespace tree rooted at `path` — `System.Math.Sin` with
@@ -964,29 +979,27 @@ pub enum EsmDefault {
     /// (`Thread.Sleep` found at `dotnet.system.threading.thread.sleep`).
     /// Profile entries give the language's defaults; user `Imports X.Y`
     /// statements add more at link time (rebased through the tree-mounts).
-    TreeAmbient { path: String } }
+    TreeAmbient { path: String },
+}
 
 /// A compile-time constant value.
 #[derive(Debug, Clone)]
 pub enum ConstantValue {
     Bool(bool),
     Float(f64),
-    Str(String) }
+    Str(String),
+}
 
 /// String indexing style.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StringIndexing {
     ZeroBased,
-    OneBased }
+    OneBased,
+}
 
 /// Namespace resolution configuration.
 #[derive(Debug, Clone, Default)]
 pub struct NamespaceConfig {
-    /// Enable .NET runtime surface semantics that are not namespace lookup
-    /// decisions (collection dispatch, primitive aliases, WinForms inference).
-    /// Namespace lookup itself is driven by `uses_namespace_resolver()` and
-    /// the tree/default import data below.
-    pub use_dotnet: bool,
     /// Treat simple source imports (`Imports Demo.Core`, `using Demo.Core`)
     /// as namespace imports for user declarations too. This is generic source
     /// namespace behavior, separate from platform tree mounts like
@@ -994,9 +1007,9 @@ pub struct NamespaceConfig {
     pub source_imports_are_namespaces: bool,
     /// Additional imports beyond the defaults (e.g. "microsoft.visualbasic" for VB).
     pub extra_imports: Vec<String>,
-    /// Known namespace roots (used when use_dotnet is false).
+    /// Known namespace roots.
     pub roots: Vec<String>,
-    /// Default imports always available (used when use_dotnet is false).
+    /// Default imports always available.
     pub default_imports: Vec<String>,
     /// Known constants (property access, not function call).
     pub constants: Vec<String>,
@@ -1020,7 +1033,8 @@ pub struct NamespaceConfig {
     /// A PATH, not a language name: the question "should `xs.Add(v)` defer to
     /// runtime dispatch" is answered by where the declaring type lives, so a
     /// language opts in by naming the subtree. Empty means never defer.
-    pub runtime_collection_scope: Vec<String> }
+    pub runtime_collection_scope: Vec<String>,
+}
 
 /// How a function returns its value.
 #[derive(Debug, Clone, PartialEq)]
@@ -1030,7 +1044,8 @@ pub enum ReturnStyle {
     /// Explicit `return expr` statements. (Python, JS, C#, PHP, VB)
     Explicit,
     /// Last expression in body is the return value. (Ruby)
-    LastExpression }
+    LastExpression,
+}
 
 /// How a language forms reflection / runtime type-identity names. Owned by
 /// the profile so each language keeps its own type namespace — see
@@ -1046,7 +1061,8 @@ pub enum ReflectionTypeNaming {
     Native,
     /// .NET BCL scheme: qualify under `System.` and map primitives
     /// (`int`→`Int32`, `string`→`String`, …). C#/VB reflection expects this.
-    Dotnet }
+    Dotnet,
+}
 
 /// Definition of a builtin function's compilation.
 #[derive(Debug, Clone)]
@@ -1067,7 +1083,8 @@ pub struct BuiltinDef {
     ///
     /// `None` — the overwhelming default — means the method keeps its declared
     /// `emit` and no slot resolution is attempted.
-    pub slot: Option<vybe_ast::ProtocolSlot> }
+    pub slot: Option<vybe_ast::ProtocolSlot>,
+}
 
 /// What to emit for a builtin call.
 #[derive(Debug, Clone)]
@@ -1103,7 +1120,8 @@ pub enum BuiltinEmit {
     /// `arr.slice`) — runtime picks the right implementation based on the
     /// receiver. Args are compiled as `[receiver, arg1, ..., argN]` and
     /// the emitter splices in the method name.
-    Invoke(String) }
+    Invoke(String),
+}
 
 impl LanguageProfile {
     /// Whether this profile uses the shared namespace resolver.
@@ -1147,21 +1165,25 @@ impl LanguageProfile {
 
     /// Check if a name is a known namespace root.
     pub fn is_namespace_root(&self, name: &str) -> bool {
-        let key = if self.case_sensitive {
-            name.to_string()
-        } else {
-            name.to_lowercase()
-        };
+        // The case-sensitive arm allocated a `String` only to compare it and
+        // drop it, on every call. This runs per identifier during compilation
+        // and showed up in a warm-job profile; comparing borrowed is the same
+        // answer without the allocation. The case-insensitive arm still folds,
+        // because that genuinely needs an owned buffer.
+        if self.case_sensitive {
+            return self.namespaces.roots.iter().any(|r| r == name);
+        }
+        let key = name.to_lowercase();
         self.namespaces.roots.iter().any(|r| r == &key)
     }
 
     /// Check if a name is a known constant (property access, not call).
     pub fn is_namespace_constant(&self, name: &str) -> bool {
-        let key = if self.case_sensitive {
-            name.to_string()
-        } else {
-            name.to_lowercase()
-        };
+        // Same allocation removal as `is_namespace_root` directly above.
+        if self.case_sensitive {
+            return self.namespaces.constants.iter().any(|c| c == name);
+        }
+        let key = name.to_lowercase();
         self.namespaces.constants.iter().any(|c| c == &key)
     }
 
@@ -1276,7 +1298,8 @@ pub fn parse_emit_target(s: &str) -> Option<BuiltinEmit> {
         _ if s.starts_with("invoke:") => {
             Some(BuiltinEmit::Invoke(s["invoke:".len()..].to_string()))
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 pub fn parse_profile(src: &str) -> Result<LanguageProfile, String> {
@@ -1320,7 +1343,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
     {
         "result_slot" => ReturnStyle::ResultSlot,
         "last_expression" => ReturnStyle::LastExpression,
-        _ => ReturnStyle::Explicit };
+        _ => ReturnStyle::Explicit,
+    };
 
     let result_slot_name = compiler
         .get("result_slot_name")
@@ -1387,7 +1411,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .unwrap_or("zero_based")
     {
         "one_based" => StringIndexing::OneBased,
-        _ => StringIndexing::ZeroBased };
+        _ => StringIndexing::ZeroBased,
+    };
     let array_upper_bound_inclusive = compiler
         .get("array_upper_bound_inclusive")
         .and_then(|v| v.as_bool())
@@ -1464,7 +1489,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                 .get("bits")
                 .and_then(|v| v.as_integer())
                 .map(|b| b as u32);
-            let signed = spec.get("signed").and_then(|v| v.as_bool()).unwrap_or(false);
+            let signed = spec
+                .get("signed")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             integer_cast_widths.insert(spelling.clone(), IntegerCastWidth { bits, signed });
         }
     }
@@ -1620,7 +1648,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
     {
         Some("dotnet") => ReflectionTypeNaming::Dotnet,
         // Default (and explicit "native"): each language owns its type names.
-        _ => ReflectionTypeNaming::Native };
+        _ => ReflectionTypeNaming::Native,
+    };
     let supports_private_fields = compiler
         .get("supports_private_fields")
         .and_then(|v| v.as_bool())
@@ -1771,10 +1800,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .get("coerces_value_to_type_hint")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let ambient_this_binding = compiler
-        .get("ambient_this_binding")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let uses_common_resolver = compiler
         .get("uses_common_resolver")
         .and_then(|v| v.as_bool())
@@ -1892,7 +1917,11 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    fn parse_builtin_table(root: &Value, section: &str) -> HashMap<String, BuiltinDef> {
+    fn parse_builtin_table(
+        root: &Value,
+        section: &str,
+        signatures: &mut Vec<vybe_ast::InterfaceMember>,
+    ) -> HashMap<String, BuiltinDef> {
         let mut map = HashMap::new();
         if let Some(bt) = root.get(section).and_then(|v| v.as_table()) {
             for (name, val) in bt {
@@ -1905,6 +1934,9 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         .and_then(|v| v.as_integer())
                         .unwrap_or(255) as u8;
                     let slot = parse_slot(t);
+                    if let Some(member) = parse_builtin_signature(name, t, min_args, max_args) {
+                        signatures.push(member);
+                    }
                     if let Some(emit) = parse_emit(emit_str) {
                         map.insert(
                             name.clone(),
@@ -1912,7 +1944,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                                 emit,
                                 min_args,
                                 max_args,
-                                slot },
+                                slot,
+                            },
                         );
                     }
                 }
@@ -1932,6 +1965,85 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         t.get("slot")
             .and_then(|v| v.as_str())
             .and_then(vybe_ast::ProtocolSlot::from_key)
+    }
+
+    /// Parse a `pass_by = ["value", "alias"]` declaration off a builtin entry
+    /// into an AST signature — `referenceplan.md` §10j.1.
+    ///
+    /// This is the profile's walker: the row is source text, and what comes out
+    /// is an `InterfaceMember::Method` carrying real `Param`s, the same node a
+    /// callee written in source produces. Nothing downstream reads the profile
+    /// for this fact again.
+    ///
+    /// A trailing `...` on the last entry repeats it across the variadic tail,
+    /// expanded here to `max_args`, so the tail rule is applied once here rather
+    /// than at every consumer.
+    ///
+    /// An unrecognised mode falls back to `Value` rather than failing the
+    /// profile, for the same reason `parse_slot` returns `None`: a profile
+    /// written against a newer toolchain must still load. The failure mode is
+    /// the safe direction — an unknown mode passes by value, which is what every
+    /// row does today.
+    ///
+    /// `min_args` decides which params are optional, because
+    /// `register_interface_method_signatures` derives min-arity from
+    /// `default.is_none()`. Giving the optional tail a `null` default keeps the
+    /// registered arity equal to the row's own `min_args` instead of silently
+    /// making every declared position required.
+    fn parse_builtin_signature(
+        name: &str,
+        t: &toml::value::Table,
+        min_args: u8,
+        max_args: u8,
+    ) -> Option<vybe_ast::InterfaceMember> {
+        let entries = t.get("pass_by").and_then(|v| v.as_array())?;
+        let mut modes: Vec<vybe_ast::PassBy> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let Some(text) = entry.as_str() else { continue };
+            let repeats = text.ends_with("...");
+            let mode = match text.trim_end_matches("...") {
+                "ref" => vybe_ast::PassBy::Ref,
+                "alias" => vybe_ast::PassBy::Alias,
+                "out" => vybe_ast::PassBy::Out,
+                "const" => vybe_ast::PassBy::Const,
+                _ => vybe_ast::PassBy::Value,
+            };
+            if repeats {
+                // `max_args` is the declared ceiling, so filling to it covers
+                // every call the row can legally match.
+                modes.resize(max_args as usize, mode);
+                break;
+            }
+            modes.push(mode);
+        }
+        if modes.is_empty() {
+            return None;
+        }
+        let params = modes
+            .into_iter()
+            .enumerate()
+            .map(|(index, pass_by)| vybe_ast::Param {
+                name: format!("arg{index}"),
+                type_hint: None,
+                default: if (index as u8) < min_args {
+                    None
+                } else {
+                    Some(vybe_ast::Expression::null())
+                },
+                pass_by,
+                is_rest: false,
+                is_kwargs: false,
+                is_optional: (index as u8) >= min_args,
+                is_nullable: false,
+            })
+            .collect();
+        Some(vybe_ast::InterfaceMember::Method {
+            name: name.to_string(),
+            params,
+            return_type: None,
+            is_sub: false,
+            signature_source: None,
+        })
     }
 
     fn parse_emit(s: &str) -> Option<BuiltinEmit> {
@@ -1991,7 +2103,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     (true, true) => Match::Contains,
                     (true, false) => Match::Suffix,
                     (false, true) => Match::Prefix,
-                    (false, false) => Match::Exact };
+                    (false, false) => Match::Exact,
+                };
                 out.push(Spelling::owned(core, how, ty));
             }
         }
@@ -2078,7 +2191,10 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         map
     }
 
-    fn parse_value_methods_table(root: &Value) -> HashMap<String, Vec<BuiltinDef>> {
+    fn parse_value_methods_table(
+        root: &Value,
+        signatures: &mut Vec<vybe_ast::InterfaceMember>,
+    ) -> HashMap<String, Vec<BuiltinDef>> {
         let mut map: HashMap<String, Vec<BuiltinDef>> = HashMap::new();
         if let Some(bt) = root.get("value_methods").and_then(|v| v.as_table()) {
             for (name, val) in bt {
@@ -2094,12 +2210,18 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                                 .and_then(|v| v.as_integer())
                                 .unwrap_or(255) as u8;
                             let slot = parse_slot(t);
+                            if let Some(member) =
+                                parse_builtin_signature(name, t, min_args, max_args)
+                            {
+                                signatures.push(member);
+                            }
                             if let Some(emit) = parse_emit(emit_str) {
                                 map.entry(name.clone()).or_default().push(BuiltinDef {
                                     emit,
                                     min_args,
                                     max_args,
-                                    slot });
+                                    slot,
+                                });
                             }
                         }
                     }
@@ -2112,12 +2234,16 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         .and_then(|v| v.as_integer())
                         .unwrap_or(255) as u8;
                     let slot = parse_slot(t);
+                    if let Some(member) = parse_builtin_signature(name, t, min_args, max_args) {
+                        signatures.push(member);
+                    }
                     if let Some(emit) = parse_emit(emit_str) {
                         map.entry(name.clone()).or_default().push(BuiltinDef {
                             emit,
                             min_args,
                             max_args,
-                            slot });
+                            slot,
+                        });
                     }
                 }
             }
@@ -2125,8 +2251,11 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         map
     }
 
-    let mut builtins = parse_builtin_table(&root, "builtins");
-    let mut value_methods = parse_value_methods_table(&root);
+    // The profile's own walk: `pass_by` rows become AST signatures here and are
+    // never read back off the profile. See `LanguageProfile::builtin_signatures`.
+    let mut builtin_signatures: Vec<vybe_ast::InterfaceMember> = Vec::new();
+    let mut builtins = parse_builtin_table(&root, "builtins", &mut builtin_signatures);
+    let mut value_methods = parse_value_methods_table(&root, &mut builtin_signatures);
     let intrinsics = parse_string_table(&root, "intrinsics");
     let builtin_return_types: HashMap<String, String> =
         parse_string_table(&root, "builtin_return_types")
@@ -2142,10 +2271,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
 
     let namespaces = if let Some(ns) = root.get("namespaces") {
         NamespaceConfig {
-            use_dotnet: ns
-                .get("use_dotnet")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
             source_imports_are_namespaces: ns
                 .get("source_imports_are_namespaces")
                 .and_then(|v| v.as_bool())
@@ -2203,7 +2328,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         .filter_map(|v| v.as_str().map(|s| s.to_string()))
                         .collect()
                 })
-                .unwrap_or_default() }
+                .unwrap_or_default(),
+        }
     } else {
         NamespaceConfig::default()
     };
@@ -2298,7 +2424,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     esm_defaults.push(EsmDefault::Named {
                         local: local.to_string(),
                         module: module.to_string(),
-                        name: name.to_string() });
+                        name: name.to_string(),
+                    });
                 }
                 "namespace" => {
                     let Some(alias) = tbl.get("alias").and_then(|v| v.as_str()) else {
@@ -2309,7 +2436,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     };
                     esm_defaults.push(EsmDefault::Namespace {
                         alias: alias.to_string(),
-                        module: module.to_string() });
+                        module: module.to_string(),
+                    });
                 }
                 "package-root" | "package_root" => {
                     let Some(prefix) = tbl.get("prefix").and_then(|v| v.as_str()) else {
@@ -2320,7 +2448,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     };
                     esm_defaults.push(EsmDefault::PackageRoot {
                         prefix: prefix.to_string(),
-                        module_root: module_root.to_string() });
+                        module_root: module_root.to_string(),
+                    });
                 }
                 "module-export" | "module_export" => {
                     let (Some(module), Some(name), Some(target_module), Some(target_name)) = (
@@ -2335,7 +2464,8 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                         module: module.to_string(),
                         name: name.to_string(),
                         target_module: target_module.to_string(),
-                        target_name: target_name.to_string() });
+                        target_name: target_name.to_string(),
+                    });
                 }
                 "tree-mount" | "tree_mount" => {
                     let (Some(prefix), Some(path)) = (
@@ -2346,14 +2476,16 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
                     };
                     esm_defaults.push(EsmDefault::TreeMount {
                         prefix: prefix.to_string(),
-                        path: path.to_string() });
+                        path: path.to_string(),
+                    });
                 }
                 "tree-ambient" | "tree_ambient" => {
                     let Some(path) = tbl.get("path").and_then(|v| v.as_str()) else {
                         continue;
                     };
                     esm_defaults.push(EsmDefault::TreeAmbient {
-                        path: path.to_string() });
+                        path: path.to_string(),
+                    });
                 }
                 _ => {
                     eprintln!("Warning: unknown esm_default kind: {:?}", kind);
@@ -2376,6 +2508,7 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
 
     Ok(LanguageProfile {
         name,
+        builtin_signatures,
         function_return,
         result_slot_name,
         self_keyword,
@@ -2496,7 +2629,6 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         unresolved_reference_error,
         unresolved_reference_message,
         coerces_value_to_type_hint,
-        ambient_this_binding,
         uses_common_resolver,
         missing_arg_is_undefined,
         materialize_bool_results,
@@ -2520,20 +2652,19 @@ fn parse_profile_uncached(src: &str) -> Result<LanguageProfile, String> {
         builtin_return_types,
         datetime_field_functions,
         esm_defaults,
-        bare_module_aliases })
+        bare_module_aliases,
+    })
 }
 
 #[cfg(test)]
 mod builtin_slot_parse_tests {
     use super::*;
-    use vybe_ast::builtin_slots::BuiltinType;
     use vybe_ast::ProtocolSlot;
+    use vybe_ast::builtin_slots::BuiltinType;
 
     fn profile_with(section: &str) -> LanguageProfile {
-        parse_profile(&format!(
-            "[info]\nname = \"t\"\n\n[compiler]\n\n{section}"
-        ))
-        .expect("profile parses")
+        parse_profile(&format!("[info]\nname = \"t\"\n\n[compiler]\n\n{section}"))
+            .expect("profile parses")
     }
 
     /// The happy path: `[builtin_slots.<type>] <slot> = "<target>"` reaches the

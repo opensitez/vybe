@@ -8,7 +8,8 @@
 
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use super::rounded_rect_path;
 use cosmic_text::Color as CosmicColor;
 use tiny_skia::*;
@@ -19,7 +20,8 @@ pub struct PickedColor {
     pub r: u8,
     pub g: u8,
     pub b: u8,
-    pub a: u8 }
+    pub a: u8,
+}
 
 impl PickedColor {
     pub fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
@@ -48,7 +50,8 @@ impl Default for PickedColor {
             r: 255,
             g: 255,
             b: 255,
-            a: 255 }
+            a: 255,
+        }
     }
 }
 
@@ -60,7 +63,8 @@ pub enum ColorPickerEvent {
     /// User closed without picking.
     Closed,
     /// No interaction.
-    None }
+    None,
+}
 
 /// HSV color for internal calculations.
 #[derive(Clone, Copy, Debug)]
@@ -139,7 +143,8 @@ pub struct ColorPicker {
     /// Layout rect for PanelWidget.
     rect: LayoutRect,
     /// Pending events.
-    pending_events: Vec<WidgetEvent> }
+    pending_events: Vec<WidgetEvent>,
+}
 
 /// Layout constants (in logical pixels).
 const SV_SIZE: f32 = 150.0;
@@ -155,14 +160,16 @@ impl ColorPicker {
             hsv: Hsv {
                 h: 0.0,
                 s: 1.0,
-                v: 1.0 },
+                v: 1.0,
+            },
             color: PickedColor::default(),
             open: false,
             dragging_sv: false,
             dragging_hue: false,
             name: String::new(),
             rect: LayoutRect::zero(),
-            pending_events: Vec::new() }
+            pending_events: Vec::new(),
+        }
     }
 
     pub fn with_name(mut self, name: &str) -> Self {
@@ -303,7 +310,8 @@ impl ColorPicker {
                 let hsv = Hsv {
                     h: self.hsv.h,
                     s,
-                    v };
+                    v,
+                };
                 let (r, g, b) = hsv.to_rgb();
                 paint.set_color_rgba8(r, g, b, 255);
                 if let Some(r) = Rect::from_xywh(
@@ -694,7 +702,8 @@ impl PanelWidget for ColorPicker {
                 self.dragging_hue = false;
                 was_dragging
             }
-            _ => false }
+            _ => false,
+        }
     }
 
     fn handle_key(&mut self, _event: &KeyEvent) -> bool {
@@ -711,7 +720,8 @@ impl PanelWidget for ColorPicker {
             WidgetCommand::GetValue => {
                 CommandValue::Color(self.color.r, self.color.g, self.color.b, self.color.a)
             }
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

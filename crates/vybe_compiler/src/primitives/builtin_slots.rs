@@ -127,12 +127,36 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     // `[builtin_slots.string] is_*`. JVM consumers delegate to the same
     // emitters directly because their char model needs a non-string guard
     // first — the php-`strlen`-coerces-first split documented above.
-    b.insert(BuiltinType::String, ProtocolSlot::IsDigit, "common:str_is_digit");
-    b.insert(BuiltinType::String, ProtocolSlot::IsAlpha, "common:str_is_alpha");
-    b.insert(BuiltinType::String, ProtocolSlot::IsAlnum, "common:str_is_alnum");
-    b.insert(BuiltinType::String, ProtocolSlot::IsSpace, "common:str_is_space");
-    b.insert(BuiltinType::String, ProtocolSlot::IsUpper, "common:str_is_upper");
-    b.insert(BuiltinType::String, ProtocolSlot::IsLower, "common:str_is_lower");
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::IsDigit,
+        "common:str_is_digit",
+    );
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::IsAlpha,
+        "common:str_is_alpha",
+    );
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::IsAlnum,
+        "common:str_is_alnum",
+    );
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::IsSpace,
+        "common:str_is_space",
+    );
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::IsUpper,
+        "common:str_is_upper",
+    );
+    b.insert(
+        BuiltinType::String,
+        ProtocolSlot::IsLower,
+        "common:str_is_lower",
+    );
 
     // ── array ───────────────────────────────────────────────────────────
     b.insert(
@@ -184,7 +208,11 @@ pub fn platform_defaults() -> BuiltinSlotBindings {
     // spelling: §13.5.6 dispatches `~` on ToNumeric, and the BigInt leg of
     // both the static and the runtime dispatch resolves here (language
     // table first, this row second).
-    b.insert(BuiltinType::BigInt, ProtocolSlot::Not, "host:ecma:bigint:not");
+    b.insert(
+        BuiltinType::BigInt,
+        ProtocolSlot::Not,
+        "host:ecma:bigint:not",
+    );
 
     // ── bytes ───────────────────────────────────────────────────────────
     // Indexing a byte string yields the INTEGER byte in Python, Go and PHP 8
@@ -269,7 +297,8 @@ pub fn unbound_reason(ty: BuiltinType, slot: ProtocolSlot) -> Option<&'static st
             "A plain object's slots come from its class, and a user class always \
              wins over a built-in (§2d). Binding `object` would invert that."
         }
-        _ => return None })
+        _ => return None,
+    })
 }
 
 /// Why [`Compiler::builtin_type_of`] can never NAME this type, independent of
@@ -313,7 +342,8 @@ pub fn unresolvable_reason(ty: BuiltinType) -> Option<&'static str> {
              literal substring `dictionary`, so it catches .NET but not Dart's \
              `Map<String,int>` nor a Python dict."
         }
-        _ => return None })
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -675,7 +705,8 @@ impl Compiler {
             BuiltinType::String => None,
             ty => self
                 .builtin_type_slot_target(ty, ProtocolSlot::ToString)
-                .map(str::to_string) }
+                .map(str::to_string),
+        }
     }
 
     /// Render the value on TOS with the target [`to_string_target`] resolved,
@@ -685,7 +716,8 @@ impl Compiler {
     pub(crate) fn emit_to_string_slot(&mut self, target: Option<&str>, line: u32) {
         match target {
             Some(target) => self.emit_slot_target(target, 1, line, "to_string"),
-            None => crate::primitives::strings::emit_to_string(self.chunk(), line) }
+            None => crate::primitives::strings::emit_to_string(self.chunk(), line),
+        }
     }
 }
 

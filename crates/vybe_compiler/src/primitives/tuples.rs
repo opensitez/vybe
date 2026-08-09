@@ -220,7 +220,8 @@ pub fn emit_list_string_to_tuple(chunk: &mut Chunk, line: u32) {
 pub fn build_named_tuple(fields: Vec<(Option<String>, Expression)>) -> ExprKind {
     ExprKind::NamedTuple {
         fields,
-        type_name: None }
+        type_name: None,
+    }
 }
 
 /// Positional arity of a named-tuple literal (the field count), or `None` if
@@ -228,7 +229,8 @@ pub fn build_named_tuple(fields: Vec<(Option<String>, Expression)>) -> ExprKind 
 pub fn named_tuple_arity(expr: &Expression) -> Option<usize> {
     match &expr.kind {
         ExprKind::NamedTuple { fields, .. } => Some(fields.len()),
-        _ => None }
+        _ => None,
+    }
 }
 
 /// The positional read off a named-tuple value: `object[index]`. The canonical
@@ -238,7 +240,8 @@ pub fn positional_read(object: Expression, index: usize) -> Expression {
     Expression::new(ExprKind::Index {
         object: Box::new(object),
         index: Box::new(Expression::int(index as i64)),
-        null_safe: false })
+        null_safe: false,
+    })
 }
 
 // ── Named-tuple runtime metadata ────────────────────────────────────────

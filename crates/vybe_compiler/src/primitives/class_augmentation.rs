@@ -36,7 +36,8 @@ use std::collections::HashMap;
 
 use vybe_ast::class_normalize::{
     Augmentation, AugmentationAdjustment, AugmentationConflict, AugmentationMode,
-    AugmentationPosition, AugmentationSuper, NormalClass, NormalMethod };
+    AugmentationPosition, AugmentationSuper, NormalClass, NormalMethod,
+};
 
 /// A conflict the augmentation pass could not resolve on its own.
 #[derive(Debug, Clone)]
@@ -44,7 +45,8 @@ pub struct AugmentationError {
     pub class: String,
     pub member: String,
     pub sources: Vec<String>,
-    pub reason: &'static str }
+    pub reason: &'static str,
+}
 
 impl std::fmt::Display for AugmentationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -192,7 +194,8 @@ pub fn apply_augmentations(
                                     class: class.name.clone(),
                                     member: name.clone(),
                                     sources: previous.clone(),
-                                    reason: "supplied by more than one augmentation" });
+                                    reason: "supplied by more than one augmentation",
+                                });
                                 continue;
                             }
                             AugmentationConflict::RequireExplicit => {
@@ -201,7 +204,8 @@ pub fn apply_augmentations(
                                     class: class.name.clone(),
                                     member: name.clone(),
                                     sources: previous.clone(),
-                                    reason: "ambiguous; the class must resolve it explicitly" });
+                                    reason: "ambiguous; the class must resolve it explicitly",
+                                });
                                 continue;
                             }
                             // Neither candidate is promoted, and the clash
@@ -235,7 +239,8 @@ pub fn apply_augmentations(
                                     class: class.name.clone(),
                                     member: name.clone(),
                                     sources: previous.clone(),
-                                    reason: "promoted at equal depth from more than one field" });
+                                    reason: "promoted at equal depth from more than one field",
+                                });
                                 continue;
                             }
                             _ => {}
@@ -283,7 +288,8 @@ pub fn apply_augmentations(
                             explicit_self,
                             adjustment.as_ref(),
                         ),
-                        _ => contributed(method, &name, adjustment.as_ref()) };
+                        _ => contributed(method, &name, adjustment.as_ref()),
+                    };
                     let target = if is_static {
                         &mut class.static_methods
                     } else {
@@ -428,7 +434,8 @@ pub fn build_super_chain(
                 member: aug.from.clone(),
                 sources: vec![aug.from.clone()],
                 reason: "chain-order insertion BEFORE the class's own members is not implemented \
-                         (the class's own members would have to move into a link of their own)" });
+                         (the class's own members would have to move into a link of their own)",
+            });
             continue;
         }
 
@@ -584,14 +591,17 @@ fn promoted(
     let inner = Expression::new(ExprKind::Member {
         object: Box::new(receiver),
         field: via_field.to_string(),
-        null_safe: false });
+        null_safe: false,
+    });
     let call = Expression::new(ExprKind::Call {
         callee: Box::new(Expression::new(ExprKind::Member {
             object: Box::new(inner),
             field: method.source_name.clone(),
-            null_safe: false })),
+            null_safe: false,
+        })),
         args,
-        optional: false });
+        optional: false,
+    });
     out.body = vec![Statement::new(StmtKind::Return(Some(call)))];
     out
 }

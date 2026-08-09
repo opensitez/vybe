@@ -81,7 +81,8 @@ fn bind_with_slot_publishes_the_name_and_the_role() {
         .iter()
         .filter_map(|c| match c {
             Value::String(text) => Some(text.to_string()),
-            _ => None })
+            _ => None,
+        })
         .collect();
     assert!(constants.contains(&"__str__".to_string()));
     assert!(constants.contains(&protocol_slot_key(ProtocolSlot::ToString)));
@@ -96,7 +97,8 @@ fn an_ordinary_method_binds_under_one_name_only() {
         .iter()
         .filter_map(|c| match c {
             Value::String(text) => Some(text.to_string()),
-            _ => None })
+            _ => None,
+        })
         .collect();
     assert_eq!(names, vec!["doSomething".to_string()]);
 }
@@ -129,8 +131,7 @@ fn emit_new_typed_object_stamps_type() {
         chunk
             .global_imports
             .iter()
-            .any(|i| i.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE
-                && i.name == "Dog"),
+            .any(|i| i.module == vybe_runtime::chunk::STRING_CONSTANTS_MODULE && i.name == "Dog"),
         "the stamp must DECLARE its string constant"
     );
     let has_type = chunk
@@ -361,4 +362,3 @@ fn free_globals_are_declared_as_host_imports() {
         "only the read-never-written name is an import"
     );
 }
-

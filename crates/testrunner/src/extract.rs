@@ -29,7 +29,8 @@ pub struct Case {
     /// declarations as a local `let types = r#"…"#` rather than inline, so it
     /// has to be resolved from the enclosing test fn or the emitted file is
     /// missing every type it references.
-    pub prelude: Option<String> }
+    pub prelude: Option<String>,
+}
 
 #[derive(Clone, Copy)]
 enum Shape {
@@ -47,7 +48,8 @@ enum Shape {
     CFields,
     /// The same fields with no `expect:` — `c_compile_cases!`, whose whole
     /// assertion is `compile_ok`. Parsed identically, emitted as compile mode.
-    CFieldsCompile }
+    CFieldsCompile,
+}
 
 fn shape_of(macro_name: &str) -> Option<Shape> {
     Some(match macro_name {
@@ -181,12 +183,7 @@ fn matching_brace(src: &[u8], open: usize) -> anyhow::Result<usize> {
     anyhow::bail!("unbalanced braces starting at byte {open}")
 }
 
-fn parse_entries(
-    src: &[u8],
-    mut at: usize,
-    end: usize,
-    shape: Shape,
-) -> anyhow::Result<Vec<Case>> {
+fn parse_entries(src: &[u8], mut at: usize, end: usize, shape: Shape) -> anyhow::Result<Vec<Case>> {
     let mut cases = Vec::new();
     loop {
         at = rustlit::skip_trivia(src, at);
@@ -288,11 +285,13 @@ fn parse_entries(
                     // thing from one that was never meant to run.
                     expected: match shape {
                         Shape::CFieldsCompile => None,
-                        _ => Some(expected) },
+                        _ => Some(expected),
+                    },
                     expect_failure: false,
                     single_line: false,
                     run_only: false,
-                    prelude: Some(head) }
+                    prelude: Some(head),
+                }
             }
             Shape::Run => {
                 if src[at] != b'(' {
@@ -311,7 +310,15 @@ fn parse_entries(
                     anyhow::bail!("expected `)` closing run case `{name}`");
                 }
                 at += 1;
-                Case { name, source, expected: Some(expected), expect_failure: false, single_line: false , run_only: false, prelude: None }
+                Case {
+                    name,
+                    source,
+                    expected: Some(expected),
+                    expect_failure: false,
+                    single_line: false,
+                    run_only: false,
+                    prelude: None,
+                }
             }
             Shape::RunBraced => {
                 if src[at] != b'{' {
@@ -330,7 +337,15 @@ fn parse_entries(
                     anyhow::bail!("expected `}}` closing run case `{name}`");
                 }
                 at += 1;
-                Case { name, source, expected: Some(expected), expect_failure: false, single_line: false , run_only: false, prelude: None }
+                Case {
+                    name,
+                    source,
+                    expected: Some(expected),
+                    expect_failure: false,
+                    single_line: false,
+                    run_only: false,
+                    prelude: None,
+                }
             }
             Shape::Compile | Shape::CompileFail => {
                 let (source, next) = rustlit::scan(src, at)?;
@@ -341,8 +356,9 @@ fn parse_entries(
                     expected: None,
                     expect_failure: matches!(shape, Shape::CompileFail),
                     single_line: false,
-        run_only: false,
-        prelude: None }
+                    run_only: false,
+                    prelude: None,
+                }
             }
         };
         cases.push(case);
@@ -479,7 +495,8 @@ fn two_arg_call(name: &str, body: &str) -> Option<Case> {
             expect_failure: false,
             single_line: false,
             run_only: false,
-            prelude: None });
+            prelude: None,
+        });
     }
     None
 }
@@ -532,7 +549,8 @@ fn simd_wrapper_call(name: &str, body: &str) -> Option<Case> {
                 expect_failure: false,
                 single_line: false,
                 run_only: true,
-                prelude: None });
+                prelude: None,
+            });
         }
 
         // Single-result form: the expectation is a literal or a bare number.
@@ -562,7 +580,8 @@ fn simd_wrapper_call(name: &str, body: &str) -> Option<Case> {
             expect_failure: false,
             single_line: false,
             run_only: true,
-            prelude: None });
+            prelude: None,
+        });
     }
     None
 }
@@ -582,12 +601,18 @@ fn indexed_asserts(
     while let Some(o) = body[at..].find("assert_eq!(") {
         let args_start = at + o + "assert_eq!(".len();
         at = args_start;
-        let Some(args_end) = close_paren(bytes, args_start) else { break };
+        let Some(args_end) = close_paren(bytes, args_start) else {
+            break;
+        };
         let args = &body[args_start..args_end];
-        let Some(comma) = top_level_comma(args) else { continue };
+        let Some(comma) = top_level_comma(args) else {
+            continue;
+        };
         let (lhs, rhs) = (args[..comma].trim(), args[comma + 1..].trim());
 
-        let Some(open) = lhs.find('[') else { return None };
+        let Some(open) = lhs.find('[') else {
+            return None;
+        };
         let ident = lhs[..open].trim();
         // The closing bracket must come AFTER the opening one. Taking the
         // first `]` in the whole expression could land before `[` and panic
@@ -613,7 +638,10 @@ fn indexed_asserts(
         let (text, end) = rustlit::scan(inner.as_bytes(), 0).ok()?;
         (text, Some(end))
     } else {
-        let ident = inner.trim_end_matches(".as_str()").trim_start_matches('&').trim();
+        let ident = inner
+            .trim_end_matches(".as_str()")
+            .trim_start_matches('&')
+            .trim();
         (sources.iter().find(|(n, _)| n == ident)?.1.clone(), None)
     };
 
@@ -629,8 +657,14 @@ fn indexed_asserts(
             if starts_string_literal(arg.as_bytes(), 0) {
                 rustlit::scan(arg.as_bytes(), 0).ok().map(|(t, _)| t)
             } else {
-                let ident = arg.trim_end_matches(".as_str()").trim_start_matches('&').trim();
-                sources.iter().find(|(n, _)| n == ident).map(|(_, t)| t.clone())
+                let ident = arg
+                    .trim_end_matches(".as_str()")
+                    .trim_start_matches('&')
+                    .trim();
+                sources
+                    .iter()
+                    .find(|(n, _)| n == ident)
+                    .map(|(_, t)| t.clone())
             }
         });
 
@@ -641,7 +675,8 @@ fn indexed_asserts(
         expect_failure: false,
         single_line: false,
         run_only: false,
-        prelude })
+        prelude,
+    })
 }
 
 /// Whether a Rust string literal starts at `at`.
@@ -654,7 +689,8 @@ fn starts_string_literal(bytes: &[u8], at: usize) -> bool {
     match bytes.get(at) {
         Some(b'"') => true,
         Some(b'r') => matches!(bytes.get(at + 1), Some(b'"') | Some(b'#')),
-        _ => false }
+        _ => false,
+    }
 }
 
 /// Every `#[test] fn` in a module that asserts on a runner helper's output.
@@ -677,17 +713,24 @@ pub fn test_fns_in_file(text: &str) -> Vec<Case> {
             continue;
         }
 
-        let Some(name_at) = text[at..].find("fn ") else { break };
+        let Some(name_at) = text[at..].find("fn ") else {
+            break;
+        };
         let name_start = at + name_at + 3;
         let mut name_end = name_start;
-        while name_end < src.len() && (src[name_end].is_ascii_alphanumeric() || src[name_end] == b'_')
+        while name_end < src.len()
+            && (src[name_end].is_ascii_alphanumeric() || src[name_end] == b'_')
         {
             name_end += 1;
         }
         let name = text[name_start..name_end].to_string();
 
-        let Some(brace) = text[name_end..].find('{').map(|o| name_end + o) else { break };
-        let Ok(body_end) = matching_brace(src, brace) else { break };
+        let Some(brace) = text[name_end..].find('{').map(|o| name_end + o) else {
+            break;
+        };
+        let Ok(body_end) = matching_brace(src, brace) else {
+            break;
+        };
         let body = &text[brace..body_end];
         at = body_end;
 
@@ -722,7 +765,10 @@ fn wrapper_two_sources(text: &str, consts: &[(String, String)]) -> Option<(Strin
     }
     let args = t[open + 1..close].trim_start();
     let (first, end) = scan_source_arg(args, consts)?;
-    let rest = args[end..].trim_start().trim_start_matches(',').trim_start();
+    let rest = args[end..]
+        .trim_start()
+        .trim_start_matches(',')
+        .trim_start();
     let (second, _) = scan_source_arg(rest, consts)?;
     Some((first, second))
 }
@@ -769,8 +815,12 @@ fn const_fns(text: &str) -> Vec<(String, String)> {
         let name = text[at..end].to_string();
         // `fn d()` and nothing else — a parameter means the body is not a
         // constant.
-        let Some(rest) = text[end..].strip_prefix("()") else { continue };
-        let Some(brace) = rest.find('{') else { continue };
+        let Some(rest) = text[end..].strip_prefix("()") else {
+            continue;
+        };
+        let Some(brace) = rest.find('{') else {
+            continue;
+        };
         // A return type may sit between; `-> String` and `-> &'static str`
         // both appear, and neither changes what the body is.
         if rest[..brace].contains(';') {
@@ -781,7 +831,9 @@ fn const_fns(text: &str) -> Vec<(String, String)> {
         if !starts_string_literal(bytes, value_at) {
             continue;
         }
-        let Ok((value, after)) = rustlit::scan(bytes, value_at) else { continue };
+        let Ok((value, after)) = rustlit::scan(bytes, value_at) else {
+            continue;
+        };
         // The literal must BE the body: `{ "…" }`, not the first of several
         // statements.
         if bytes.get(rustlit::skip_trivia(bytes, after)) == Some(&b'}') {
@@ -895,7 +947,8 @@ fn wrap_in_print(expr: &str) -> String {
             let (stmts, last) = rest.split_at(split);
             format!("{prelude}{stmts}\nprint({})\n", &last[1..])
         }
-        None => format!("{prelude}print({rest})\n") }
+        None => format!("{prelude}print({rest})\n"),
+    }
 }
 
 fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Option<Case> {
@@ -986,7 +1039,8 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
                 expect_failure: helper.ends_with("_err"),
                 single_line: false,
                 run_only: false,
-                prelude: Some(first) });
+                prelude: Some(first),
+            });
         }
     }
 
@@ -1027,8 +1081,9 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
                         expected: None,
                         expect_failure: helper.ends_with("_err"),
                         single_line: false,
-        run_only: false,
-        prelude: None });
+                        run_only: false,
+                        prelude: None,
+                    });
                 }
             }
         }
@@ -1071,7 +1126,10 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
     // of cases that pass a bare literal extract at all.
     let unwrapped = inner.trim_start_matches('&').trim();
     if let Some(open) = unwrapped.find('(')
-        && unwrapped[..open].trim().chars().all(|c| c.is_alphanumeric() || c == '_')
+        && unwrapped[..open]
+            .trim()
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_')
         && !unwrapped[..open].trim().is_empty()
         && !unwrapped[..open].trim().starts_with("run_")
         && let Some(close) = unwrapped.rfind(')')
@@ -1083,7 +1141,10 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
         if starts_string_literal(args.as_bytes(), 0)
             && let Ok((first, end)) = rustlit::scan(args.as_bytes(), 0)
         {
-            let rest = args[end..].trim_start().trim_start_matches(',').trim_start();
+            let rest = args[end..]
+                .trim_start()
+                .trim_start_matches(',')
+                .trim_start();
             if starts_string_literal(rest.as_bytes(), 0)
                 && let Ok((second, _)) = rustlit::scan(rest.as_bytes(), 0)
             {
@@ -1095,7 +1156,8 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
                     expect_failure: false,
                     single_line: helper.ends_with("_one"),
                     run_only: false,
-                    prelude: Some(first) });
+                    prelude: Some(first),
+                });
             }
         }
     }
@@ -1104,7 +1166,10 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
         let (text, end) = rustlit::scan(inner.as_bytes(), 0).ok()?;
         (text, Some(end))
     } else {
-        let ident = inner.trim_end_matches(".as_str()").trim_start_matches('&').trim();
+        let ident = inner
+            .trim_end_matches(".as_str()")
+            .trim_start_matches('&')
+            .trim();
         (sources.iter().find(|(n, _)| n == ident)?.1.clone(), None)
     };
 
@@ -1120,8 +1185,14 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
             if starts_string_literal(arg.as_bytes(), 0) {
                 rustlit::scan(arg.as_bytes(), 0).ok().map(|(t, _)| t)
             } else {
-                let ident = arg.trim_end_matches(".as_str()").trim_start_matches('&').trim();
-                sources.iter().find(|(n, _)| n == ident).map(|(_, t)| t.clone())
+                let ident = arg
+                    .trim_end_matches(".as_str()")
+                    .trim_start_matches('&')
+                    .trim();
+                sources
+                    .iter()
+                    .find(|(n, _)| n == ident)
+                    .map(|(_, t)| t.clone())
             }
         });
 
@@ -1147,7 +1218,8 @@ fn case_from_body(name: String, body: &str, consts: &[(String, String)]) -> Opti
         // emitter refuses to pair it unless the program prints exactly once.
         single_line: helper.ends_with("_one"),
         run_only: false,
-        prelude })
+        prelude,
+    })
 }
 
 /// `vec!["a", "b"]`, `["a"]`, or a bare `"a"`.
@@ -1181,7 +1253,12 @@ fn parse_expected(expr: &str) -> Option<Vec<String>> {
     // nothing crashes`. No string literal can reach here, so splitting on `//`
     // is safe.
     if body.starts_with("Vec::")
-        && body.split("//").next().unwrap_or(body).trim_end().ends_with("new()")
+        && body
+            .split("//")
+            .next()
+            .unwrap_or(body)
+            .trim_end()
+            .ends_with("new()")
     {
         return Some(Vec::new());
     }
@@ -1282,7 +1359,8 @@ struct MacroRoles {
     /// `run_in_main(main_body, type_defs)`.
     prelude: Option<usize>,
     /// Index of the argument holding the expectation.
-    expected: Option<usize> }
+    expected: Option<usize>,
+}
 
 /// Read the ordered `$param` names out of a `macro_rules!` matcher.
 ///
@@ -1321,7 +1399,8 @@ fn macro_matcher_params(matcher: &str) -> Vec<String> {
                 push(&matcher[start..i], &mut params);
                 start = i + 1;
             }
-            _ => {} }
+            _ => {}
+        }
         i += 1;
     }
     if start < matcher.len() {
@@ -1344,7 +1423,8 @@ fn split_top_level(text: &str) -> Vec<&str> {
                     i = end;
                     continue;
                 }
-                Err(_) => return out };
+                Err(_) => return out,
+            };
         }
         match bytes[i] {
             b'(' | b'[' | b'{' => depth += 1,
@@ -1353,7 +1433,8 @@ fn split_top_level(text: &str) -> Vec<&str> {
                 out.push(&text[start..i]);
                 start = i + 1;
             }
-            _ => {} }
+            _ => {}
+        }
         i += 1;
     }
     if start <= text.len() {
@@ -1378,7 +1459,8 @@ fn macro_roles(text: &str, macro_name: &str) -> Option<MacroRoles> {
     let index_of = |name: &str| params.iter().position(|p| p == name);
 
     let body_start = text[close..].find("=>")? + close;
-    let body_end = matching_brace(text.as_bytes(), text[body_start..].find('{')? + body_start).ok()?;
+    let body_end =
+        matching_brace(text.as_bytes(), text[body_start..].find('{')? + body_start).ok()?;
     let body = &text[body_start..body_end];
 
     // The runner call: the first `…run…(` whose arguments are macro params.
@@ -1431,7 +1513,11 @@ fn macro_roles(text: &str, macro_name: &str) -> Option<MacroRoles> {
     // `expected` — every wrapper in the corpus spells it that way, and reading
     // the assert's shape instead would have to model `vec![…]`, `[…]`, `&[…]`
     // and repetition all over again for no extra reach.
-    Some(MacroRoles { source: source?, prelude, expected: index_of("expected") })
+    Some(MacroRoles {
+        source: source?,
+        prelude,
+        expected: index_of("expected"),
+    })
 }
 
 pub fn paren_macros_in_file(text: &str) -> Vec<Case> {
@@ -1459,8 +1545,18 @@ pub fn paren_macros_in_file(text: &str) -> Vec<Case> {
         // one manufactured a case named `out` whose source was `81`, giving 53
         // bogus parse failures.
         const NOT_CASES: [&str; 12] = [
-            "assert_eq", "assert_ne", "assert", "debug_assert", "debug_assert_eq",
-            "debug_assert_ne", "format", "panic", "print", "println", "write", "writeln",
+            "assert_eq",
+            "assert_ne",
+            "assert",
+            "debug_assert",
+            "debug_assert_eq",
+            "debug_assert_ne",
+            "format",
+            "panic",
+            "print",
+            "println",
+            "write",
+            "writeln",
         ];
         if NOT_CASES.contains(&&text[start..i]) {
             i += 1;
@@ -1511,7 +1607,8 @@ pub fn paren_macros_in_file(text: &str) -> Vec<Case> {
                     expect_failure: false,
                     single_line: false,
                     run_only: false,
-                    prelude: roles.prelude.and_then(literal) });
+                    prelude: roles.prelude.and_then(literal),
+                });
                 i = close;
                 continue;
             }
@@ -1546,13 +1643,22 @@ pub fn paren_macros_in_file(text: &str) -> Vec<Case> {
                 expected: None,
                 expect_failure: false,
                 single_line: false,
-        run_only: false,
-        prelude: None },
+                run_only: false,
+                prelude: None,
+            },
             Some(b',') => {
                 let expr_at = rustlit::skip_trivia(bytes, at + 1);
                 if bytes.get(expr_at) == Some(&b')') {
                     // Trailing comma, still compile-only.
-                    Case { name, source, expected: None, expect_failure: false, single_line: false, run_only: false, prelude: None }
+                    Case {
+                        name,
+                        source,
+                        expected: None,
+                        expect_failure: false,
+                        single_line: false,
+                        run_only: false,
+                        prelude: None,
+                    }
                 } else {
                     let Some(close) = close_paren(bytes, i + 2) else {
                         i += 1;
@@ -1565,7 +1671,15 @@ pub fn paren_macros_in_file(text: &str) -> Vec<Case> {
                     // `runtime_case!` compares against `run_python_one`, which
                     // JOINS every line with "\n" — one value, many lines.
                     let single = expected.len() == 1;
-                    Case { name, source, expected: Some(expected), expect_failure: false, single_line: single , run_only: false, prelude: None }
+                    Case {
+                        name,
+                        source,
+                        expected: Some(expected),
+                        expect_failure: false,
+                        single_line: single,
+                        run_only: false,
+                        prelude: None,
+                    }
                 }
             }
             _ => {

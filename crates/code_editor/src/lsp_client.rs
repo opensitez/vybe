@@ -9,7 +9,8 @@ pub struct SimpleCompletion {
     pub label: String,
     pub detail: Option<String>,
     pub insert_text: String,
-    pub kind: Option<CompletionItemKind> }
+    pub kind: Option<CompletionItemKind>,
+}
 
 pub enum LspEvent {
     Diagnostics(String, Vec<Diagnostic>),
@@ -17,7 +18,8 @@ pub enum LspEvent {
     #[allow(dead_code)]
     Hover(String, String),
     #[allow(dead_code)]
-    Definition(String, Position) }
+    Definition(String, Position),
+}
 
 #[allow(dead_code)]
 pub enum LspRequest {
@@ -29,11 +31,13 @@ pub enum LspRequest {
     #[allow(dead_code)]
     Hover(String, u32, u32),
     #[allow(dead_code)]
-    Definition(String, u32, u32) }
+    Definition(String, u32, u32),
+}
 
 pub struct LspClient {
     tx: Sender<LspRequest>,
-    pub rx: Receiver<LspEvent> }
+    pub rx: Receiver<LspEvent>,
+}
 
 impl LspClient {
     pub fn new() -> Self {
@@ -93,7 +97,8 @@ impl LspClient {
 
         Self {
             tx: req_tx,
-            rx: evt_rx }
+            rx: evt_rx,
+        }
     }
 
     pub fn send(&self, req: LspRequest) {
@@ -115,7 +120,8 @@ fn emit_diagnostics(result: &AnalysisResult, uri: &str, tx: &Sender<LspEvent>) {
             severity: Some(match d.severity {
                 vybe_compiler::lsp::DiagSeverity::Error => DiagnosticSeverity::ERROR,
                 vybe_compiler::lsp::DiagSeverity::Warning => DiagnosticSeverity::WARNING,
-                vybe_compiler::lsp::DiagSeverity::Info => DiagnosticSeverity::INFORMATION }),
+                vybe_compiler::lsp::DiagSeverity::Info => DiagnosticSeverity::INFORMATION,
+            }),
             source: Some("vybe".to_string()),
             message: d.message.clone(),
             ..Default::default()
@@ -166,7 +172,8 @@ fn build_completions(result: &AnalysisResult, prefix: &str) -> Vec<SimpleComplet
                 label: kw.to_string(),
                 detail: None,
                 insert_text: kw.to_string(),
-                kind: Some(CompletionItemKind::KEYWORD) });
+                kind: Some(CompletionItemKind::KEYWORD),
+            });
         }
     }
     items.sort_by(|a, b| a.label.cmp(&b.label));
@@ -190,7 +197,8 @@ fn collect_from_symbols(
                     Some(sym.detail.clone())
                 },
                 insert_text: sym.name.clone(),
-                kind: Some(kind_to_lsp(sym.kind)) });
+                kind: Some(kind_to_lsp(sym.kind)),
+            });
         }
         collect_from_symbols(&sym.children, prefix, out);
     }
@@ -211,5 +219,6 @@ fn kind_to_lsp(k: SymbolKind) -> CompletionItemKind {
         SymbolKind::EnumMember => CompletionItemKind::ENUM_MEMBER,
         SymbolKind::Struct => CompletionItemKind::STRUCT,
         SymbolKind::Event => CompletionItemKind::EVENT,
-        SymbolKind::Type => CompletionItemKind::TYPE_PARAMETER }
+        SymbolKind::Type => CompletionItemKind::TYPE_PARAMETER,
+    }
 }

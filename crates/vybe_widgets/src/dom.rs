@@ -32,8 +32,9 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::controls::make_widget;
 use crate::layout::{
-    find_widget_mut, take_widget, LayoutRect, PanelWidget, RenderContext, WidgetCommand,
-    WidgetEvent };
+    Dock, LayoutRect, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, find_widget_mut,
+    take_widget,
+};
 use crate::{CommandValue, Form};
 
 /// A node handle. `0` is the document itself — `document.body`, the form.
@@ -55,6 +56,15 @@ pub struct DomNode {
     pub attributes: HashMap<String, String>,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
+    /// Which edge of its container this element takes, when it is docked.
+    ///
+    /// `None` is the ordinary absolutely-positioned element, which keeps the
+    /// rect its `left`/`top`/`width`/`height` gave it. A docked element does
+    /// NOT own its position — the container computes it from the space left
+    /// over, which is why this lives here and not in the adapter that set it.
+    ///
+    /// This is what VCL's `Align` and WinForms' `Dock` both mean.
+    pub dock: Option<Dock>,
 }
 
 /// One DOM event, ready for dispatch: which node, and the spec's event name.
@@ -91,7 +101,8 @@ impl Document {
             nodes: HashMap::new(),
             order: Vec::new(),
             next_id: 0,
-            detached: HashMap::new() }
+            detached: HashMap::new(),
+        }
     }
 
     /// The name the widget tree knows a node by. Internal identity, generated
@@ -207,6 +218,18 @@ impl Document {
             .collect()
     }
 
+    /// Every element in the document, in tree order.
+    ///
+    /// `elements_with_id` answers only for controls the author NAMED, and a
+    /// control's `id` is optional — a VCL form that builds sixteen buttons in a
+    /// loop and never assigns `Name` has sixteen elements and no ids. A host
+    /// enumerating what was built (a debugger's control dump, a test's
+    /// inventory) has to see those too, or it reports an empty form while the
+    /// window plainly shows one.
+    pub fn elements(&self) -> Vec<NodeId> {
+        self.order.clone()
+    }
+
     /// `document.title` — the form's own title, read back from it.
     pub fn title(&self) -> String {
         self.form.title.clone()
@@ -227,7 +250,8 @@ impl Document {
             match self.nodes.get(&cur)?.parent {
                 None => return self.detached.contains_key(&cur).then_some(cur),
                 Some(DOCUMENT) => return None,
-                Some(parent) => cur = parent }
+                Some(parent) => cur = parent,
+            }
         }
     }
 
@@ -242,7 +266,8 @@ impl Document {
         let name = Self::widget_name(node);
         match self.detached_root(node) {
             Some(root) => take_widget(self.detached.get_mut(&root)?.as_mut(), &name),
-            None => take_widget(&mut self.form, &name) }
+            None => take_widget(&mut self.form, &name),
+        }
     }
 
     /// `parent.appendChild(child)`. Inserting is what makes an element render.
@@ -283,6 +308,11 @@ impl Document {
                 if let Some(n) = self.nodes.get_mut(&child) {
                     n.parent = Some(parent);
                 }
+                // Docking is a property of the child but a decision of the
+                // container, so joining a container re-runs it. Without this,
+                // setting the dock BEFORE the parent (the order a designer
+                // file emits) left the element with its default rect forever.
+                self.relayout_docked(parent);
                 true
             }
             // The parent is not a container. Put the control back where it
@@ -314,10 +344,79 @@ impl Document {
         let name = Self::widget_name(parent);
         let container = match self.detached_root(parent) {
             Some(root) => find_widget_mut(self.detached.get_mut(&root)?.as_mut(), &name),
-            None => find_widget_mut(&mut self.form, &name) };
+            None => find_widget_mut(&mut self.form, &name),
+        };
         match container {
             Some(c) => c.add_child(widget),
-            None => Some(widget) }
+            None => Some(widget),
+        }
+    }
+
+    /// Lay out `parent`'s docked children, in document order.
+    ///
+    /// Each docked child takes one edge off the space that is left, and `Fill`
+    /// takes all of it — the algorithm `DockPanel::relayout` already runs, here
+    /// applied to an ordinary container so that any element can dock, not only
+    /// a child of a dock panel. Undocked siblings are untouched: they keep the
+    /// rect their `left`/`top`/`width`/`height` gave them, so absolute
+    /// positioning and docking compose in one container.
+    fn relayout_docked(&mut self, parent: NodeId) {
+        // Document ORDER, which is what decides who takes an edge first —
+        // `self.order` is creation order and children are appended in it.
+        let docked: Vec<(NodeId, Dock)> = self
+            .order
+            .iter()
+            .copied()
+            .filter_map(|id| {
+                let n = self.nodes.get(&id)?;
+                (n.parent == Some(parent) || (parent == DOCUMENT && n.parent == Some(DOCUMENT)))
+                    .then_some((id, n.dock?))
+            })
+            .collect();
+        if docked.is_empty() {
+            return;
+        }
+        // Edges first, `Fill` last — whatever order the children were created
+        // in. The filling control takes what is LEFT, so a form that creates
+        // its client area before its status bar (the ordinary way to write it)
+        // must not starve the status bar of every pixel. VCL and WinForms both
+        // resolve the client region last for exactly this reason.
+        let docked: Vec<(NodeId, Dock)> = docked
+            .iter()
+            .filter(|(_, d)| *d != Dock::Fill)
+            .chain(docked.iter().filter(|(_, d)| *d == Dock::Fill))
+            .copied()
+            .collect();
+        let mut remaining = if parent == DOCUMENT {
+            self.form.rect()
+        } else {
+            match self.widget_mut(parent) {
+                Some(w) => w.rect(),
+                None => return,
+            }
+        };
+        for (child, dock) in docked {
+            // An edge dock keeps the child's own extent along the other axis;
+            // only `Fill` discards both. Read before the mutable borrow.
+            let own = match self.widget_mut(child) {
+                Some(w) => w.rect(),
+                None => continue,
+            };
+            let rect = match dock {
+                Dock::Left => remaining.take_left(own.w),
+                Dock::Right => remaining.take_right(own.w),
+                Dock::Top => remaining.take_top(own.h),
+                Dock::Bottom => remaining.take_bottom(own.h),
+                Dock::Fill => {
+                    let r = remaining;
+                    remaining = LayoutRect::zero();
+                    r
+                }
+            };
+            if let Some(w) = self.widget_mut(child) {
+                w.set_rect(rect);
+            }
+        }
     }
 
     fn is_ancestor(&self, ancestor: NodeId, of: NodeId) -> bool {
@@ -348,7 +447,12 @@ impl Document {
 
     /// `element.isConnected`.
     pub fn connected(&self, node: NodeId) -> bool {
-        node == DOCUMENT || self.nodes.get(&node).map(|n| n.parent.is_some()).unwrap_or(false)
+        node == DOCUMENT
+            || self
+                .nodes
+                .get(&node)
+                .map(|n| n.parent.is_some())
+                .unwrap_or(false)
     }
 
     // ── Commands: the one route to a control ────────────────────────────
@@ -373,7 +477,8 @@ impl Document {
         let name = Self::widget_name(node);
         match self.detached_root(node) {
             Some(root) => find_widget_mut(self.detached.get_mut(&root)?.as_mut(), &name),
-            None => find_widget_mut(&mut self.form, &name) }
+            None => find_widget_mut(&mut self.form, &name),
+        }
     }
 
     // ── Element: attributes ─────────────────────────────────────────────
@@ -389,7 +494,11 @@ impl Document {
             if name == "title" {
                 self.set_title(value);
             }
-            self.nodes.entry(DOCUMENT).or_default().attributes.insert(name, value.to_string());
+            self.nodes
+                .entry(DOCUMENT)
+                .or_default()
+                .attributes
+                .insert(name, value.to_string());
             return;
         }
         match name.as_str() {
@@ -480,9 +589,36 @@ impl Document {
                     <Form as PanelWidget>::set_rect(&mut self.form, r);
                     return;
                 }
-                let Some(w) = self.widget_mut(node) else { return };
+                let Some(w) = self.widget_mut(node) else {
+                    return;
+                };
                 let r = apply_axis(w.rect(), &property, px);
                 w.set_rect(r);
+            }
+            // Docking. The element stops owning its own rect: the container
+            // hands it one edge of whatever space is left, in child order,
+            // which is exactly the algorithm `DockPanel` already runs.
+            "dock" => {
+                let dock = match value.trim().to_ascii_lowercase().as_str() {
+                    "left" => Some(Dock::Left),
+                    "right" => Some(Dock::Right),
+                    "top" => Some(Dock::Top),
+                    "bottom" => Some(Dock::Bottom),
+                    "fill" => Some(Dock::Fill),
+                    // `none` is the ordinary absolutely-positioned element,
+                    // and so is anything unrecognised — an unknown keyword
+                    // must not silently swallow the element's geometry.
+                    _ => None,
+                };
+                let Some(n) = self.nodes.get_mut(&node) else {
+                    return;
+                };
+                if n.dock == dock {
+                    return;
+                }
+                n.dock = dock;
+                let parent = n.parent;
+                self.relayout_docked(parent.unwrap_or(DOCUMENT));
             }
             "display" => {
                 let visible = !value.eq_ignore_ascii_case("none");
@@ -500,7 +636,9 @@ impl Document {
             }
             "background-color" | "background" => {
                 if node == DOCUMENT {
-                    if let Some(rgba) = crate::layout::command_color(&CommandValue::Text(value.into())) {
+                    if let Some(rgba) =
+                        crate::layout::command_color(&CommandValue::Text(value.into()))
+                    {
                         self.form.background = rgba;
                     }
                     return;
@@ -514,10 +652,7 @@ impl Document {
                 let Some(px) = px else { return };
                 self.command(
                     node,
-                    &WidgetCommand::Custom(
-                        "SetFontSize".into(),
-                        CommandValue::Number(px as f64),
-                    ),
+                    &WidgetCommand::Custom("SetFontSize".into(), CommandValue::Number(px as f64)),
                 );
             }
             _ => {}
@@ -532,14 +667,16 @@ impl Document {
         } else {
             match self.widget_mut(node) {
                 Some(w) => w.rect(),
-                None => return String::new() }
+                None => return String::new(),
+            }
         };
         match property.as_str() {
             "left" => format!("{}px", rect.x),
             "top" => format!("{}px", rect.y),
             "width" => format!("{}px", rect.w),
             "height" => format!("{}px", rect.h),
-            _ => String::new() }
+            _ => String::new(),
+        }
     }
 
     // ── IDL properties ──────────────────────────────────────────────────
@@ -551,9 +688,7 @@ impl Document {
         let cmd = match self.value_kind(node) {
             ValueKind::Text => WidgetCommand::SetText(value.to_string()),
             ValueKind::Number => WidgetCommand::SetValue(value.trim().parse().unwrap_or(0.0)),
-            ValueKind::Index => {
-                WidgetCommand::SetSelectedIndex(value.trim().parse().unwrap_or(0))
-            }
+            ValueKind::Index => WidgetCommand::SetSelectedIndex(value.trim().parse().unwrap_or(0)),
             ValueKind::Checked => {
                 WidgetCommand::SetChecked(!value.eq_ignore_ascii_case("false") && !value.is_empty())
             }
@@ -573,7 +708,9 @@ impl Document {
             CommandValue::Color(r, g, b, _) => format!("#{:02x}{:02x}{:02x}", r, g, b),
             CommandValue::None => match self.command(node, &WidgetCommand::GetText) {
                 CommandValue::Text(s) => s,
-                _ => String::new() } }
+                _ => String::new(),
+            },
+        }
     }
 
     /// `input.checked` — a boolean, read from the control.
@@ -582,7 +719,10 @@ impl Document {
     }
 
     pub fn checked(&mut self, node: NodeId) -> bool {
-        matches!(self.command(node, &WidgetCommand::GetValue), CommandValue::Bool(true))
+        matches!(
+            self.command(node, &WidgetCommand::GetValue),
+            CommandValue::Bool(true)
+        )
     }
 
     /// `node.textContent` — the control's own text.
@@ -609,7 +749,8 @@ impl Document {
         }
         match self.command(node, &WidgetCommand::GetText) {
             CommandValue::Text(s) => s,
-            _ => String::new() }
+            _ => String::new(),
+        }
     }
 
     /// `element.focus()`.
@@ -679,7 +820,8 @@ impl Document {
                 | WidgetEvent::StatusBarClick(_)
                 | WidgetEvent::TreeItemOpened(_)
                 | WidgetEvent::MenuAction(_)
-                | WidgetEvent::SplitMoved(_, _) => continue };
+                | WidgetEvent::SplitMoved(_, _) => continue,
+            };
             let Some(node) = self.node_for_widget(&name) else {
                 continue;
             };
@@ -717,6 +859,20 @@ fn documents() -> &'static Mutex<Documents> {
     DOCS.get_or_init(|| Mutex::new(Documents::default()))
 }
 
+/// Close every open document.
+///
+/// Documents are guest-created trees held in a process-wide table, so without
+/// this the next program in a reused VM inherits the previous one's DOM — the
+/// defect `vybe_platform_web::html::reset_active_document` describes, at the
+/// storage layer rather than the "which document is active" layer.
+///
+/// `next_id` is NOT rewound: ids already handed out must never be reissued, or
+/// a stale id from the previous program would silently address a new
+/// document's node.
+pub fn reset() {
+    documents().lock().unwrap().docs.clear();
+}
+
 /// Open a document — the initial `about:blank` of a browsing context.
 pub fn new_document(title: &str) -> DocumentId {
     let mut docs = documents().lock().unwrap();
@@ -750,8 +906,10 @@ fn value_kind_of(tag: &str, input_type: &str) -> ValueKind {
         "input" => match input_type {
             "checkbox" | "radio" => ValueKind::Checked,
             "range" | "number" => ValueKind::Number,
-            _ => ValueKind::Text },
-        _ => ValueKind::Text }
+            _ => ValueKind::Text,
+        },
+        _ => ValueKind::Text,
+    }
 }
 
 /// `<tag type=…>` → the control kind. This is the DOM's half of the mapping;
@@ -769,7 +927,8 @@ fn control_kind(tag: &str, input_type: &str) -> &'static str {
             "image" => "picturebox",
             // `text`, `password`, `email`, `search`, `tel`, `url`, and the
             // spec's "missing value default" for anything unknown.
-            _ => "textbox" },
+            _ => "textbox",
+        },
         "button" => "button",
         "select" => "combobox",
         "datalist" => "listbox",
@@ -788,20 +947,26 @@ fn control_kind(tag: &str, input_type: &str) -> &'static str {
         "dialog" | "div" | "form" | "section" | "article" | "main" | "aside" | "header"
         | "footer" | "nav" | "li" => "flowlayoutpanel",
         // Anything else is text-bearing: `p`, `span`, `label`, `h1`…`h6`, `li`.
-        _ => "label" }
+        _ => "label",
+    }
 }
 
 /// A starting size, so a control that is appended before it is styled is
 /// visible rather than zero-sized. CSS overrides it.
 fn default_size(kind: &str) -> (f32, f32) {
     match kind {
-        "textbox" | "richtextbox" | "combobox" | "numericupdown" | "datetimepicker" => (160.0, 24.0),
+        "textbox" | "combobox" | "numericupdown" | "datetimepicker" => (160.0, 24.0),
+        // Tall, because it holds lines — the same call `RICHTEXTBOX_DEF` makes
+        // with its own (100, 96). One line high made an unstyled memo look
+        // like a text field.
+        "richtextbox" => (160.0, 96.0),
         "button" => (96.0, 28.0),
         "checkbox" | "radiobutton" => (140.0, 20.0),
         "trackbar" | "progressbar" => (160.0, 20.0),
         "listbox" | "listview" | "datagridview" | "treeview" => (200.0, 120.0),
         "panel" | "groupbox" | "flowlayoutpanel" | "canvas" | "picturebox" => (200.0, 150.0),
-        _ => (120.0, 20.0) }
+        _ => (120.0, 20.0),
+    }
 }
 
 /// `"12px"` / `"12"` / `"1.5em"` → pixels. Unitless and `px` are exact; `em`
@@ -827,7 +992,8 @@ fn apply_axis(r: LayoutRect, property: &str, px: f32) -> LayoutRect {
         "top" => LayoutRect::new(r.x, px, r.w, r.h),
         "width" => LayoutRect::new(r.x, r.y, px, r.h),
         "height" => LayoutRect::new(r.x, r.y, r.w, px),
-        _ => r }
+        _ => r,
+    }
 }
 
 /// JS number formatting for an IDL `value`: integers carry no `.0`.
@@ -843,7 +1009,8 @@ fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str() }
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
 }
 
 #[cfg(test)]
@@ -890,7 +1057,11 @@ mod tests {
         doc.set_attribute(b, "id", "ok");
         assert_eq!(doc.get_element_by_id("ok"), Some(b));
         assert_eq!(doc.get_attribute(b, "id").as_deref(), Some("ok"));
-        assert_eq!(doc.get_attribute(b, "class"), None, "absent attribute is null");
+        assert_eq!(
+            doc.get_attribute(b, "class"),
+            None,
+            "absent attribute is null"
+        );
     }
 
     #[test]
@@ -921,7 +1092,10 @@ mod tests {
         assert_eq!(doc.style_property(field, "width"), "70px");
 
         assert!(doc.append_child(DOCUMENT, panel));
-        assert!(doc.connected(field), "a child of an inserted node is connected");
+        assert!(
+            doc.connected(field),
+            "a child of an inserted node is connected"
+        );
         assert_eq!(doc.value(field), "typed", "state survives insertion");
     }
 
@@ -937,7 +1111,10 @@ mod tests {
         doc.set_value(b, "deep");
 
         // Moving it to the body must find it two levels down and take it.
-        assert!(doc.append_child(DOCUMENT, b), "move out of a nested container");
+        assert!(
+            doc.append_child(DOCUMENT, b),
+            "move out of a nested container"
+        );
         assert_eq!(doc.node(inner).unwrap().children, Vec::<NodeId>::new());
         assert_eq!(doc.value(b), "deep", "the same control, not a rebuild");
     }
@@ -1011,7 +1188,8 @@ mod tests {
             y: 10.0,
             cmd: false,
             shift: false,
-            alt: false };
+            alt: false,
+        };
         form.handle_mouse(&press);
         form.handle_mouse(&MouseEvent {
             kind: MouseEventKind::Release(MouseButton::Left),

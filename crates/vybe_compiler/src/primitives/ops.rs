@@ -723,6 +723,68 @@ pub fn emit_js_ge(chunk: &mut Chunk, line: u32) {
 
 // ── emit_dyn_add ──────────────────────────────────────────────────────
 
+/// Replace an OBJECT in `slot` with its primitive, in place — ECMA-262 §7.1.1
+/// `ToPrimitive` with hint `"default"`, read from the DECLARED slots.
+///
+/// The three slots are already the chain: `ProtocolSlot::ToPrimitive`
+/// (`Symbol.toPrimitive`), then `ValueOf`, then `ToString`. Nothing in the tree
+/// read the first two, and `ToString` was read only by the render helpers — so
+/// an object reaching an arithmetic operator was coerced straight to a float,
+/// which is why `"a=" + someObject` trapped in `wasm:js-number.toF64`.
+///
+/// Asking the VALUE is the whole point: the slot travels with the object, so a
+/// C# `ToString`, a PHP `__toString`, a Python `__str__`, a Ruby `to_s` and a
+/// Dart `toString` all answer here, and an object crossing a language boundary
+/// keeps answering. There is no language name and no profile flag in this
+/// decision, and there cannot be one — the operand is the only thing that knows.
+///
+/// Two deliberate departures from §7.1.1, both toward the existing behaviour:
+/// `valueOf` returning an OBJECT falls through to `toString` (the spec's
+/// "must be primitive" retry), but an object declaring NONE of the three is
+/// left untouched rather than raising `TypeError`, so every value that works
+/// today keeps working. JS itself does not come through here at all — its
+/// profile routes `+` to `ecma:value.add`, which is the host's exact §13.15.4.
+fn emit_to_primitive_in_place(chunk: &mut Chunk, slot: u16, line: u32) {
+    let method = alloc_locals(chunk, 1);
+
+    load(chunk, slot, line);
+    crate::primitives::instructions::recipes::is_object(chunk, line);
+    chunk.emit_if(line);
+    for protocol_slot in [
+        vybe_ast::ProtocolSlot::ToPrimitive,
+        vybe_ast::ProtocolSlot::ValueOf,
+        vybe_ast::ProtocolSlot::ToString,
+    ] {
+        // Re-tested each round: an earlier link may have answered, and then
+        // this one must not overwrite it. `is_object` is also the "did we
+        // already get a primitive" test, which is what makes `valueOf`
+        // returning an object fall through to `toString`.
+        load(chunk, slot, line);
+        crate::primitives::instructions::recipes::is_object(chunk, line);
+        chunk.emit_if(line);
+
+        let key = chunk.add_constant(Value::String(Arc::from(
+            vybe_ast::protocol_slot_key(protocol_slot).as_str(),
+        )));
+        load(chunk, slot, line);
+        chunk.emit_struct_field_op(Op::STRUCT_GET, 0, key, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, method, line);
+
+        load(chunk, method, line);
+        chunk.emit_op(Op::REF_IS_NULL, line);
+        chunk.emit_op(Op::I32_EQZ, line);
+        chunk.emit_if(line);
+        load(chunk, method, line);
+        load(chunk, slot, line);
+        crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
+        chunk.emit_op_u16(Op::LOCAL_SET, slot, line);
+        chunk.emit_end(line);
+
+        chunk.emit_end(line);
+    }
+    chunk.emit_end(line);
+}
+
 pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
     let slots = alloc_locals(chunk, 2);
     let b_slot = slots;
@@ -740,6 +802,13 @@ pub fn emit_dyn_add(chunk: &mut Chunk, line: u32) {
 
     save(chunk, b_slot, line);
     save(chunk, a_slot, line);
+
+    // ToPrimitive BOTH operands first, then decide — the order §13.15.3 uses,
+    // and it matters: the String test below is on the PRIMITIVES, not on the
+    // originals, so an object whose `toString` yields a string concatenates
+    // rather than being forced through a numeric coercion.
+    emit_to_primitive_in_place(chunk, a_slot, line);
+    emit_to_primitive_in_place(chunk, b_slot, line);
 
     // either is a string → string concatenation
     load(chunk, a_slot, line);

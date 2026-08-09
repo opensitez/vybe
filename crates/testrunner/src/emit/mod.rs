@@ -13,10 +13,10 @@ pub mod fortran;
 pub mod go;
 pub mod java;
 pub mod js;
+pub mod kotlin;
 pub mod lua;
 pub mod pascal;
 pub mod php;
-pub mod kotlin;
 pub mod python;
 pub mod ruby;
 pub mod vb;
@@ -47,8 +47,7 @@ pub fn harness_path(lang: &str) -> Option<PathBuf> {
 /// `package main` is a parse error, and `go run` refuses files from two
 /// different directories. Both are recorded as findings.
 pub fn harness_body(lang: &str) -> anyhow::Result<String> {
-    let path = harness_path(lang)
-        .ok_or_else(|| anyhow::anyhow!("no harness for `{lang}`"))?;
+    let path = harness_path(lang).ok_or_else(|| anyhow::anyhow!("no harness for `{lang}`"))?;
     let text = std::fs::read_to_string(&path)?;
 
     let mut body = String::new();

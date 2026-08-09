@@ -30,8 +30,7 @@ impl VM {
             return Ok(());
         }
         loop {
-            let has_pending =
-                self.event_loop.borrow().has_pending() || self.deferred_pending();
+            let has_pending = self.event_loop.borrow().has_pending() || self.deferred_pending();
             if !has_pending {
                 break;
             }
@@ -86,7 +85,8 @@ impl VM {
                 ip: f.ip,
                 base: f.base,
                 label_base: f.label_base,
-                upvalues: f.upvalues })
+                upvalues: f.upvalues,
+            })
             .collect();
         self.open_upvalues = fiber.open_upvalues;
         self.label_stack = fiber.label_stack;
@@ -113,7 +113,8 @@ impl VM {
                 ip: f.ip,
                 base: f.base,
                 label_base: f.label_base,
-                upvalues: f.upvalues })
+                upvalues: f.upvalues,
+            })
             .collect();
         self.open_upvalues = fiber.open_upvalues;
         self.label_stack = fiber.label_stack;
@@ -155,7 +156,8 @@ impl VM {
                 }
                 Ok(ExecResult::Suspended {
                     kind: crate::vm::SuspensionKind::Jspi,
-                    id }) => {
+                    id,
+                }) => {
                     if let Some(&floor) = self.async_floors.last() {
                         if self.frames.len() > floor {
                             // Unsaved bounded suspension at an in-fiber async
@@ -233,7 +235,8 @@ impl VM {
                 // state by registering host reactions that settle ours.
                 self.settle_promise_via_host(result_promise, "adopt", val.clone());
             }
-            _ => self.settle_promise_via_host(result_promise, "fulfilled", inner) }
+            _ => self.settle_promise_via_host(result_promise, "fulfilled", inner),
+        }
     }
 
     /// JSPI `WebAssembly.promising` boundary — invoking an async function.
@@ -357,7 +360,8 @@ impl VM {
                 ip: f.ip,
                 base: f.base - call_base,
                 label_base: f.label_base - label_floor,
-                upvalues: f.upvalues })
+                upvalues: f.upvalues,
+            })
             .collect();
         let stack: Vec<Value> = self.stack.split_off(call_base);
         let mut labels = self.label_stack.split_off(label_floor);
@@ -438,7 +442,8 @@ impl VM {
         let name = match state {
             "rejected" => "__settle_rejected",
             "adopt" => "__adopt",
-            _ => "__settle_fulfilled" };
+            _ => "__settle_fulfilled",
+        };
         let idx = self
             .host_registry
             .get(&("ecma:promise".to_string(), name.to_string()))
@@ -516,7 +521,8 @@ impl VM {
                 ip: f.ip,
                 base: f.base,
                 label_base: f.label_base,
-                upvalues: f.upvalues })
+                upvalues: f.upvalues,
+            })
             .collect();
         let stack = self.stack.drain(..).collect();
         let upvalues = self.open_upvalues.drain(..).collect();

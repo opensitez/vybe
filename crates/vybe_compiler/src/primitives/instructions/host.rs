@@ -1,18 +1,21 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use vybe_runtime::{Chunk, VM};
 
 pub type EmitFn = fn(&FunctionRegistry, &mut Chunk, u32);
 
+/// Which host functions the platform plugins registered, as module → names.
+///
+/// Nested rather than keyed by `(module, name)` so a lookup is an actual hash
+/// lookup. With a `(&'static str, &'static str)` key there is no way to probe
+/// the map with a borrowed `(&str, &str)` — `Borrow` does not reach inside a
+/// tuple — so both queries below degenerated into `.keys().any(...)`, a linear
+/// scan of every host export (~1,900) on EVERY emitted host call and every
+/// resolution probe. Nesting works because `&'static str: Borrow<str>`, so
+/// `get(module)` and `contains(name)` take a plain `&str`.
 pub struct FunctionRegistry {
-    functions: HashMap<(&'static str, &'static str), FunctionEntry>,
-}
-
-#[allow(dead_code)]
-struct FunctionEntry {
-    module: &'static str,
-    name: &'static str,
+    functions: HashMap<&'static str, HashSet<&'static str>>,
 }
 
 impl FunctionRegistry {
@@ -23,22 +26,18 @@ impl FunctionRegistry {
         // irrelevant here (they register descriptors, not host fns).
         let mut vm = VM::new();
         crate::primitives::platforms::register_platforms_all(&mut vm);
-        let functions = vm
-            .iter_host_function_exports()
-            .map(|(module, name, _idx)| {
-                let module: &'static str = Box::leak(module.into_boxed_str());
-                let name: &'static str = Box::leak(name.into_boxed_str());
-                ((module, name), FunctionEntry { module, name })
-            })
-            .collect();
+        let mut functions: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+        for (module, name, _idx) in vm.iter_host_function_exports() {
+            let module: &'static str = Box::leak(module.into_boxed_str());
+            let name: &'static str = Box::leak(name.into_boxed_str());
+            functions.entry(module).or_default().insert(name);
+        }
         Self { functions }
     }
 
     pub fn emit(&self, c: &mut Chunk, module: &str, name: &str, argc: u8, line: u32) {
         debug_assert!(
-            self.functions
-                .keys()
-                .any(|(m, n)| *m == module && *n == name),
+            self.has(module, name),
             "host function {module}.{name} was not registered by the platform plugins"
         );
         let idx = c.add_import(module, name);
@@ -47,16 +46,21 @@ impl FunctionRegistry {
 
     pub fn has(&self, module: &str, name: &str) -> bool {
         self.functions
-            .keys()
-            .any(|(m, n)| *m == module && *n == name)
+            .get(module)
+            .is_some_and(|names| names.contains(name))
     }
 
     /// Every registered host export as `(module, name)` — the component-model
     /// interface surface. The namespace tree mounts from this
     /// (`namespaces::resolve_path` lazy mount), so resolution and emission
     /// share ONE source of truth for what the host exports.
+    ///
+    /// Unordered, as it was before: the one consumer mounts each pair into a
+    /// tree, where order cannot matter.
     pub fn entries(&self) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
-        self.functions.keys().copied()
+        self.functions
+            .iter()
+            .flat_map(|(module, names)| names.iter().map(move |name| (*module, *name)))
     }
 }
 

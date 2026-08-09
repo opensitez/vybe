@@ -26,13 +26,91 @@ static NEXT_JS_DYNAMIC_ID: AtomicU64 = AtomicU64::new(1);
 pub struct DynamicCompilation {
     pub chunks: Vec<Chunk>,
     pub host_imports: HostImportMetadata,
-    pub entry_path: Option<PathBuf> }
+    pub entry_path: Option<PathBuf>,
+}
 
 pub struct RuntimeCompilerService<'vm> {
     vm: &'vm mut VM,
     caps: Capabilities,
     php_runtime: PhpIncludeRuntime,
-    js_runtime: JsDynamicRuntime }
+    js_runtime: JsDynamicRuntime,
+}
+
+/// Somewhere to keep a runtime include's compiled output between runs.
+///
+/// A runtime `require` compiles the file while the program is RUNNING, so the
+/// server's entry-level cache — which wraps `compile_bundle` and is finished
+/// long before `run_compiled` starts — never sees it. Under `--serve` that is
+/// every include of every request recompiled from source.
+///
+/// The storage deliberately lives on the far side of this trait, in the
+/// server, for the same reason the entry cache does: anything held in the VM
+/// dies at `reset_to`, and anything held in a `static` here would be shared by
+/// every tenant of the process with no owner to scope or clear it.
+///
+/// `fingerprint` is what makes a hit LEGAL — see [`module_fingerprint`].
+pub trait IncludeCompileCache: Send + Sync {
+    fn get(&self, path: &Path, fingerprint: u64) -> Option<Result<DynamicCompilation, String>>;
+    fn store(
+        &self,
+        path: &Path,
+        fingerprint: u64,
+        deps: Option<Vec<PathBuf>>,
+        result: Result<&DynamicCompilation, &str>,
+    );
+}
+
+/// Everything a runtime include's compile depends on BESIDES its own source.
+///
+/// `compile_full_with_modules_and_php_entry_override` reads two things from the
+/// live VM: the module map (`modules.get(m).exports.get(n)`, so record CONTENT,
+/// not just which modules exist) and the entry path, which PHP's magic
+/// constants make observable. A cached compilation may only be reused where
+/// both are what they were.
+///
+/// That map is not frozen during a run: `host_imports::install` runs on every
+/// dynamic include and registers host functions, and registration is the one
+/// path that writes `vm.modules` (`insert_host_module_export`). So the
+/// fingerprint is checked per include rather than assumed stable for the run.
+///
+/// Order-independent (wrapping sum of per-entry hashes) so no sort is needed —
+/// this runs on every include and has to stay far below the ~15-25ms compile it
+/// is there to avoid.
+pub fn module_fingerprint(vm: &VM, entry_path: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of(value: impl Hash) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    let mut total: u64 = hash_of(entry_path);
+    total = total.wrapping_mul(31).wrapping_add(vm.modules.len() as u64);
+    for (name, record) in &vm.modules {
+        let mut per_module = hash_of(name).wrapping_add(record.exports.len() as u64);
+        for (export, entry) in &record.exports {
+            // The export's IDENTITY, not just its name: re-registering the same
+            // `(module, name)` with a different index leaves both counts equal
+            // and would otherwise read as "nothing changed".
+            per_module = per_module
+                .wrapping_add(hash_of(export))
+                .wrapping_add(hash_of(std::mem::discriminant(entry)))
+                .wrapping_add(match entry {
+                    vybe_runtime::ExportEntry::Function { idx } => *idx as u64,
+                    vybe_runtime::ExportEntry::ResourceType { type_id } => *type_id as u64,
+                    // A `Value` export re-registered under the same name with a
+                    // different value is invisible here — only its variant is.
+                    // Those are boot infrastructure (`ecma:math.PI`), written
+                    // before any include runs, not something a running script
+                    // rewrites.
+                    _ => 0,
+                });
+        }
+        total = total.wrapping_add(per_module);
+    }
+    total
+}
 
 pub fn run_with_js_dynamic_runtime(
     vm: &mut VM,
@@ -54,26 +132,35 @@ struct PhpIncludeRuntime {
     caps: Capabilities,
     vm: *mut VM,
     current_paths: Vec<PathBuf>,
+    /// Per-RUN, and it stays that way. Only the COMPILATION is cacheable: share
+    /// this across requests and request two sees request one's "already
+    /// included" and skips the include entirely.
     included_once: HashSet<PathBuf>,
     active_imports: Vec<Import>,
-    active_resolved_imports: Vec<ImportTarget> }
+    active_resolved_imports: Vec<ImportTarget>,
+    include_cache: Option<std::sync::Arc<dyn IncludeCompileCache>>,
+}
 
 struct ActivePhpRuntimeGuard {
-    previous: Option<*mut PhpIncludeRuntime> }
+    previous: Option<*mut PhpIncludeRuntime>,
+}
 
 struct JsDynamicRuntime {
     caps: Capabilities,
     vm: *mut VM,
     active_imports: Vec<Import>,
-    active_resolved_imports: Vec<ImportTarget> }
+    active_resolved_imports: Vec<ImportTarget>,
+}
 
 struct ConstructedJsFunction {
     caps: Capabilities,
     vm: VM,
-    function: Value }
+    function: Value,
+}
 
 struct ActiveJsRuntimeGuard {
-    previous: Option<*mut JsDynamicRuntime> }
+    previous: Option<*mut JsDynamicRuntime>,
+}
 
 impl<'vm> RuntimeCompilerService<'vm> {
     pub fn new(vm: &'vm mut VM) -> Self {
@@ -85,11 +172,19 @@ impl<'vm> RuntimeCompilerService<'vm> {
             vm,
             caps: caps.clone(),
             php_runtime: PhpIncludeRuntime::new(caps.clone()),
-            js_runtime: JsDynamicRuntime::new(caps) }
+            js_runtime: JsDynamicRuntime::new(caps),
+        }
     }
 
     pub fn vm(&mut self) -> &mut VM {
         self.vm
+    }
+
+    /// Give runtime includes somewhere to reuse a compilation from. Without
+    /// one they compile from source every time, which is the behaviour this
+    /// service has always had.
+    pub fn set_include_cache(&mut self, cache: std::sync::Arc<dyn IncludeCompileCache>) {
+        self.php_runtime.include_cache = Some(cache);
     }
 
     pub fn compile_bundle(&mut self, bundle: &Bundle) -> Result<DynamicCompilation, String> {
@@ -99,7 +194,8 @@ impl<'vm> RuntimeCompilerService<'vm> {
         Ok(DynamicCompilation {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
-            entry_path: bundle.sources.first().map(|source| source.path.clone()) })
+            entry_path: bundle.sources.first().map(|source| source.path.clone()),
+        })
     }
 
     pub fn compile_path(&mut self, path: &Path) -> Result<DynamicCompilation, String> {
@@ -240,7 +336,8 @@ pub fn bundle_from_source(
         language,
         sources: vec![SourceFile { path, code }],
         wasm_files: Vec::new(),
-        entry_point: EntryPoint::Auto }
+        entry_point: EntryPoint::Auto,
+    }
 }
 
 pub fn language_for_path(path: &Path) -> Option<Language> {
@@ -308,7 +405,8 @@ pub fn debug_eval_expression(
             is_rest: false,
             is_kwargs: false,
             is_optional: false,
-            is_nullable: false })
+            is_nullable: false,
+        })
         .collect();
     module.body.push(crate::ast::Statement::new(
         crate::ast::StmtKind::FunctionDecl {
@@ -322,7 +420,8 @@ pub fn debug_eval_expression(
             handles: Vec::new(),
             is_async: false,
             is_generator: false,
-            is_sub: false },
+            is_sub: false,
+        },
     ));
 
     // 3. Set up the isolated mini-VM (runtime registration + host functions).
@@ -441,7 +540,8 @@ fn eval_scaffold(language_name: &str, expr: &str) -> Option<String> {
         "vb" => format!(
             "Module __VbFrag\n  Function __vybe_frag() As Object\n    Return ({expr})\n  End Function\nEnd Module\n"
         ),
-        _ => return None };
+        _ => return None,
+    };
     Some(src)
 }
 
@@ -455,7 +555,8 @@ fn frag_return_expression(module: &crate::ast::Module) -> Option<crate::ast::Exp
         }
         body.iter().find_map(|bs| match &bs.kind {
             StmtKind::Return(Some(e)) => Some(e.clone()),
-            _ => None })
+            _ => None,
+        })
     }
     for s in &module.body {
         match &s.kind {
@@ -505,7 +606,8 @@ pub fn install_chunk_globals(vm: &mut VM, chunks: &[Chunk], base_chunk_index: us
             name: Some(chunk.name.clone()),
             arity: chunk.arity,
             chunk_index: base_chunk_index + idx,
-            upvalues: vec![] };
+            upvalues: vec![],
+        };
         let mut obj = Object::new();
         obj.kind = ObjectKind::Function(func);
         let val = Value::Object(vybe_runtime::heap::alloc(obj));
@@ -541,7 +643,8 @@ fn replace_php_magic_constants(source: &str, file_literal: &str, dir_literal: &s
         SingleQuoted,
         DoubleQuoted,
         LineComment,
-        BlockComment }
+        BlockComment,
+    }
 
     let bytes = source.as_bytes();
     // Accumulate raw bytes so multibyte UTF-8 sequences survive verbatim; the
@@ -670,7 +773,8 @@ pub fn into_dynamic_compilation(compiled: CompiledBundle) -> DynamicCompilation 
     DynamicCompilation {
         chunks: compiled.chunks,
         host_imports: compiled.host_imports,
-        entry_path: None }
+        entry_path: None,
+    }
 }
 
 impl PhpIncludeRuntime {
@@ -680,8 +784,10 @@ impl PhpIncludeRuntime {
             vm: std::ptr::null_mut(),
             current_paths: Vec::new(),
             included_once: HashSet::new(),
+            include_cache: None,
             active_imports: Vec::new(),
-            active_resolved_imports: Vec::new() }
+            active_resolved_imports: Vec::new(),
+        }
     }
 
     fn activate(
@@ -702,18 +808,28 @@ impl PhpIncludeRuntime {
         ActivePhpRuntimeGuard { previous }
     }
 
+    /// PHP does NOT report every include failure the same way, so neither do
+    /// we: a file that cannot be opened is a warning and `false` for
+    /// `include`/`include_once` but FATAL for `require`/`require_once`, and an
+    /// error raised *inside* the included file is the script's error either
+    /// way — never "the include returned false". Every `Err` returned here is
+    /// thrown by the host-fn wrapper in `ensure_php_runtime_registered`.
     fn handle_dynamic_include(&mut self, args: &[Value]) -> Result<Value, String> {
+        let kind = args.first().map(value_to_string).unwrap_or_default();
+        let fatal_if_missing = matches!(kind.as_str(), "require" | "require_once");
+
         if !self.caps.has(Capability::DynamicCompile) {
-            return Ok(Value::Bool(false));
+            return Err(format!(
+                "{kind} needs the DynamicCompile capability, which this run was not granted"
+            ));
         }
 
         if self.vm.is_null() {
-            return Ok(Value::Bool(false));
+            return Err(format!("{kind} ran with no active VM"));
         }
 
         let vm = unsafe { &mut *self.vm };
 
-        let kind = args.first().map(value_to_string).unwrap_or_default();
         let target = args.get(1).map(value_to_string).unwrap_or_default();
         let caller = self
             .current_paths
@@ -738,12 +854,80 @@ impl PhpIncludeRuntime {
 
         let source = match fs::read_to_string(&resolved_path) {
             Ok(source) => source,
-            Err(_) => return Ok(Value::Bool(false)) };
+            Err(e) => {
+                let detail = format!(
+                    "{kind}({}): failed to open stream: {e}",
+                    resolved_path.display()
+                );
+                if fatal_if_missing {
+                    return Err(detail);
+                }
+                eprintln!("Warning: {detail}");
+                return Ok(Value::Bool(false));
+            }
+        };
 
         let language = languages::find_by_name("php")
             .ok_or_else(|| "php language profile missing".to_string())?;
+
+        // Reuse an earlier compilation of this exact file only where everything
+        // the compile READ is still what it was — the file itself and whatever
+        // it statically pulls in (the dependency set), plus the VM's module map
+        // and the entry path (the fingerprint).
+        let cache = self.include_cache.clone();
+        let fingerprint = cache
+            .as_ref()
+            .map(|_| module_fingerprint(vm, &entry))
+            .unwrap_or(0);
+        if let Some(cache) = cache.as_ref() {
+            if let Some(hit) = cache.get(&canonical_path, fingerprint) {
+                // A cached compile FAILURE is still that file's answer; letting
+                // it fall through would recompile a broken include on every
+                // request, which is exactly what the entry cache refuses to do.
+                let compiled = hit?;
+                return self.run_included_compilation(vm, compiled, kind, canonical_path);
+            }
+        }
+
         let bundle = bundle_from_source(source, language, resolved_path.clone());
-        let compiled = self.compile_dynamic_php(vm, &bundle, &entry)?;
+        let compiled = match cache.as_ref() {
+            Some(cache) => {
+                // The dependency set has to be collected DURING the compile —
+                // `prepared_module` opens files this bundle never names. The
+                // recorder returns `None` when an outer scope owns the reads,
+                // and `store` then caches nothing rather than risk staleness.
+                let (result, deps) =
+                    crate::bundle::record_source_reads(|| self.compile_dynamic_php(vm, &bundle, &entry));
+                let deps = deps.map(|mut deps| {
+                    // The include's own source is read by THIS function, before
+                    // the recorded scope opens, so it is never in `deps` — and
+                    // it is the one file whose edit must invalidate.
+                    deps.push(resolved_path.clone());
+                    deps
+                });
+                cache.store(
+                    &canonical_path,
+                    fingerprint,
+                    deps,
+                    result.as_ref().map_err(|err| err.as_str()),
+                );
+                result?
+            }
+            None => self.compile_dynamic_php(vm, &bundle, &entry)?,
+        };
+        self.run_included_compilation(vm, compiled, kind, canonical_path)
+    }
+
+    /// Install a compiled include into the live VM and run it — the half that
+    /// is identical whether the compilation was just produced or came from the
+    /// cache.
+    fn run_included_compilation(
+        &mut self,
+        vm: &mut VM,
+        compiled: DynamicCompilation,
+        kind: String,
+        canonical_path: PathBuf,
+    ) -> Result<Value, String> {
 
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
@@ -783,7 +967,11 @@ impl PhpIncludeRuntime {
                 }
                 Ok(value)
             }
-            Err(_) => Ok(Value::Bool(false)) }
+            // The included file ran and failed. That is the script's error, not
+            // a failed file open — reporting it as `false` made a fatal inside
+            // an include indistinguishable from a missing file.
+            Err(err) => Err(err),
+        }
     }
 
     fn compile_dynamic_php(
@@ -797,7 +985,8 @@ impl PhpIncludeRuntime {
         Ok(DynamicCompilation {
             chunks: compiled.chunks,
             host_imports: compiled.host_imports,
-            entry_path: bundle.sources.first().map(|source| source.path.clone()) })
+            entry_path: bundle.sources.first().map(|source| source.path.clone()),
+        })
     }
 }
 
@@ -818,7 +1007,8 @@ impl JsDynamicRuntime {
         let vm = unsafe { &mut *self.vm };
         let compiled = match bundle.compile_full_with_modules(&vm.modules) {
             Ok(compiled) => compiled,
-            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e) };
+            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
+        };
 
         let base_chunk_index = vm.chunks.len();
         crate::host_imports::install(vm, &compiled.host_imports);
@@ -831,7 +1021,8 @@ impl JsDynamicRuntime {
             .unwrap_or_default();
         let child_active_resolved_imports = match resolve_imports(vm, &child_active_imports) {
             Ok(resolved) => resolved,
-            Err(e) => return throw_eval_error(ctx, "EvalError", &e.to_string()) };
+            Err(e) => return throw_eval_error(ctx, "EvalError", &e.to_string()),
+        };
         let saved_active_imports =
             std::mem::replace(&mut self.active_imports, child_active_imports);
         let saved_active_resolved_imports = std::mem::replace(
@@ -846,7 +1037,8 @@ impl JsDynamicRuntime {
 
         let run_value = match result {
             Ok(value) => value,
-            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e.to_string()) };
+            Err(e) => return throw_eval_error(ctx, "SyntaxError", &e.to_string()),
+        };
 
         // An uncaught throw inside eval'd code propagates to the caller.
         if let Some(exc) = vm.last_exception.take() {
@@ -858,7 +1050,8 @@ impl JsDynamicRuntime {
         // and drop it so it does not linger as a caller global.
         match completion_capture {
             Some(name) => vm.globals.remove(name).unwrap_or(Value::Undefined),
-            None => run_value }
+            None => run_value,
+        }
     }
 
     fn new(caps: Capabilities) -> Self {
@@ -866,7 +1059,8 @@ impl JsDynamicRuntime {
             caps,
             vm: std::ptr::null_mut(),
             active_imports: Vec::new(),
-            active_resolved_imports: Vec::new() }
+            active_resolved_imports: Vec::new(),
+        }
     }
 
     fn activate(
@@ -891,7 +1085,8 @@ impl JsDynamicRuntime {
         let source = match args.first() {
             Some(Value::String(s)) => s.to_string(),
             Some(other) => return other.clone(),
-            None => return Value::Undefined };
+            None => return Value::Undefined,
+        };
 
         if !self.can_dynamic_compile() {
             return Value::Undefined;
@@ -914,10 +1109,12 @@ impl JsDynamicRuntime {
         // through the registry so this crate never names the JS language crate.
         let parse_eval = match vybe_runtime::registry::hooks("js").parse_eval {
             Some(f) => f,
-            None => return throw_eval_error(ctx, "EvalError", "js eval hook not registered") };
+            None => return throw_eval_error(ctx, "EvalError", "js eval hook not registered"),
+        };
         let module = match parse_eval(trimmed) {
             Ok(module) => module,
-            Err(err) => return throw_eval_error(ctx, "SyntaxError", &err) };
+            Err(err) => return throw_eval_error(ctx, "SyntaxError", &err),
+        };
 
         // Directive prologue (§11.2.1): a leading "use strict" turns on the
         // early errors the (sloppy-mode) parser doesn't enforce.
@@ -943,7 +1140,8 @@ impl JsDynamicRuntime {
             for s in &module.body {
                 if let crate::ast::StmtKind::VarDecl {
                     kind: crate::ast::VarDeclKind::Var,
-                    declarations } = &s.kind
+                    declarations,
+                } = &s.kind
                 {
                     for d in declarations {
                         let mut names = std::collections::HashSet::new();
@@ -983,7 +1181,8 @@ impl JsDynamicRuntime {
                 let tail = tail.trim_end().trim_end_matches(';');
                 format!("function {fn_name}() {{ {head}\nreturn ({tail}); }}\n")
             }
-            None => format!("function {fn_name}() {{ {source_text}\n}}\n") };
+            None => format!("function {fn_name}() {{ {source_text}\n}}\n"),
+        };
 
         let Some(language) = languages::find_by_name("js") else {
             return Value::Undefined;
@@ -1008,7 +1207,8 @@ impl JsDynamicRuntime {
                             ObjectKind::Function(_) | ObjectKind::HostFunction(_)
                         )
                     }
-                    _ => true };
+                    _ => true,
+                };
                 if copy {
                     eval_vm.globals.insert(k.clone(), v.clone());
                 }
@@ -1066,7 +1266,8 @@ impl JsDynamicRuntime {
                         }
                         Some(names)
                     }
-                    _ => None })
+                    _ => None,
+                })
                 .flatten()
                 .collect();
             for (k, v) in &eval_vm.globals {
@@ -1100,10 +1301,12 @@ impl JsDynamicRuntime {
         let source = match args.first() {
             Some(Value::String(s)) => s.to_string(),
             Some(other) => return other.clone(),
-            None => return Value::Undefined };
+            None => return Value::Undefined,
+        };
         let language_name = match args.get(1) {
             Some(Value::String(s)) => s.to_string(),
-            _ => return throw_eval_error(ctx, "EvalError", "eval: missing source language") };
+            _ => return throw_eval_error(ctx, "EvalError", "eval: missing source language"),
+        };
 
         if !self.can_dynamic_compile() || self.vm.is_null() {
             return Value::Undefined;
@@ -1144,7 +1347,8 @@ impl JsDynamicRuntime {
                     source.clone()
                 }
             }
-            _ => source.clone() };
+            _ => source.clone(),
+        };
 
         let bundle = bundle_from_source(eval_source, language, PathBuf::from("<eval>"));
 
@@ -1187,7 +1391,8 @@ impl JsDynamicRuntime {
             .and_then(|a| object_get_prop(a, "namespace"))
             .and_then(|v| match v {
                 Value::Object(ns) => Some(ns),
-                _ => None });
+                _ => None,
+            });
         // Original keys of the namespace dict — used at write-back to tell the
         // caller's bindings apart from host builtins seeded by register_all.
         let ns_keys: HashSet<String> = namespace
@@ -1219,7 +1424,8 @@ impl JsDynamicRuntime {
                             ObjectKind::Function(_) | ObjectKind::HostFunction(_)
                         )
                     }
-                    _ => true };
+                    _ => true,
+                };
                 if copy {
                     eval_vm.globals.insert(k.clone(), v.clone());
                 }
@@ -1235,7 +1441,8 @@ impl JsDynamicRuntime {
                 RuntimeCompilerService::with_capabilities(&mut eval_vm, self.caps.clone());
             match service.compile_and_run_bundle(&bundle) {
                 Ok(value) => value,
-                Err(e) => return throw_eval_error(ctx, "SyntaxError", &e) }
+                Err(e) => return throw_eval_error(ctx, "SyntaxError", &e),
+            }
         };
 
         // Propagate an uncaught throw from eval'd code to the caller.
@@ -1253,7 +1460,8 @@ impl JsDynamicRuntime {
                 .get(name)
                 .cloned()
                 .unwrap_or(Value::Undefined),
-            None => run_result };
+            None => run_result,
+        };
 
         // Definitions/assignments escape: into the explicit namespace dict if
         // one was given, otherwise the caller's globals. (Skip the completion
@@ -1343,7 +1551,8 @@ impl JsDynamicRuntime {
         let state = Box::new(ConstructedJsFunction {
             caps: self.caps.clone(),
             vm: function_vm,
-            function });
+            function,
+        });
         let state_ptr = Box::into_raw(state);
         CONSTRUCTED_JS_FUNCTIONS.with(|slot| {
             slot.borrow_mut().insert(id, state_ptr);
@@ -1384,7 +1593,8 @@ impl JsDynamicRuntime {
                     let _guard = nested_runtime.activate(&mut state.vm, Vec::new(), Vec::new());
                     let result = match state.vm.invoke(&state.function, args) {
                         Ok(value) => value,
-                        Err(err) => throw_dynamic_compile_error(ctx, err.to_string()) };
+                        Err(err) => throw_dynamic_compile_error(ctx, err.to_string()),
+                    };
 
                     if let Some(saved_this) = saved_this {
                         state.vm.globals.insert("__js_this".into(), saved_this);
@@ -1436,15 +1646,19 @@ fn ensure_php_runtime_registered(vm: &mut VM) {
     vm.register_host_fn(
         "vybe:php",
         "dynamic_include",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             ACTIVE_PHP_RUNTIME.with(|slot| {
                 let Some(runtime_ptr) = *slot.borrow() else {
-                    return Value::Bool(false);
+                    return throw_dynamic_compile_error(
+                        ctx,
+                        "include/require ran with no active PHP runtime".to_string(),
+                    );
                 };
                 let runtime = unsafe { &mut *runtime_ptr };
-                runtime
-                    .handle_dynamic_include(args)
-                    .unwrap_or(Value::Bool(false))
+                match runtime.handle_dynamic_include(args) {
+                    Ok(value) => value,
+                    Err(message) => throw_dynamic_compile_error(ctx, message),
+                }
             })
         }),
     );
@@ -1463,7 +1677,8 @@ fn object_bool_prop(v: &Value, key: &str) -> bool {
         let o = obj.lock().unwrap();
         let found = match &o.kind {
             ObjectKind::Map(m) => m.get(&Value::String(key.into())).cloned(),
-            _ => o.properties.get(key).cloned() };
+            _ => o.properties.get(key).cloned(),
+        };
         return matches!(found, Some(Value::Bool(true)));
     }
     false
@@ -1475,7 +1690,8 @@ fn object_get_prop(v: &Value, key: &str) -> Option<Value> {
         let o = obj.lock().unwrap();
         return match &o.kind {
             ObjectKind::Map(m) => m.get(&Value::String(key.into())).cloned(),
-            _ => o.properties.get(key).cloned() };
+            _ => o.properties.get(key).cloned(),
+        };
     }
     None
 }
@@ -1488,13 +1704,15 @@ fn ns_string_entries(obj: &Object) -> Vec<(String, Value)> {
             .iter()
             .filter_map(|(k, v)| match k {
                 Value::String(s) => Some((s.to_string(), v.clone())),
-                _ => None })
+                _ => None,
+            })
             .collect(),
         _ => obj
             .properties
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
-            .collect() }
+            .collect(),
+    }
 }
 
 /// Insert a string-keyed binding into a namespace object, matching its shape.
@@ -1627,7 +1845,8 @@ fn ensure_js_runtime_registered(vm: &mut VM) {
                 let runtime = unsafe { &mut *runtime_ptr };
                 match runtime.handle_function_constructor(args) {
                     Ok(value) => value,
-                    Err(err) => throw_dynamic_compile_error(ctx, err) }
+                    Err(err) => throw_dynamic_compile_error(ctx, err),
+                }
             })
         }),
     );
@@ -1716,7 +1935,8 @@ fn is_explicit_relative_php_include(path: &Path) -> bool {
 fn value_to_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        _ => format!("{value}") }
+        _ => format!("{value}"),
+    }
 }
 
 fn global_constructor_prototype(vm: &VM, name: &str) -> Option<Value> {
@@ -1737,7 +1957,8 @@ fn dynamic_function_length(value: &Value) -> f64 {
     }
     match &function_obj.kind {
         ObjectKind::Function(function) => function.arity as f64,
-        _ => 0.0 }
+        _ => 0.0,
+    }
 }
 
 fn dynamic_host_function_value(
@@ -1814,21 +2035,46 @@ fn is_shared_dynamic_global(name: &str, value: &Value) -> bool {
                 ObjectKind::Function(_) | ObjectKind::HostFunction(_)
             )
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 /// Thin wrapper over the VM's single import-resolution policy
 /// (`VM::resolve_import_target`) — this used to be a third hand-rolled copy
 /// of the loop, drifted to a raw `host_registry` lookup that bypassed
 /// Module Record exports.
+/// Resolve a child module's imports against the live VM.
+///
+/// A free global (`env` / `*`) that is not defined YET is not an error: a
+/// runtime `include`/`require` — or an `eval` — may define it a moment from
+/// now, and resolving eagerly to a link failure is what made a function
+/// defined by an included file unreachable from its caller. Those names fall
+/// back to [`ImportTarget::StdlibRedirect`], which holds the NAME and looks it
+/// up in `vm.globals` at CALL time; `install_chunk_globals` publishes exactly
+/// that key when the include runs. Still missing when called, the VM reports
+/// it then — which is where PHP reports an undefined function too.
+///
+/// The fallback is deliberately limited to the embedder-provided namespaces.
+/// A `wasi:*` or `vybe:*` import that does not resolve is a genuinely missing
+/// host function and must still fail loudly at link time.
 fn resolve_imports(vm: &VM, imports: &[Import]) -> Result<Vec<ImportTarget>, String> {
     imports
         .iter()
-        .map(|import| {
-            vm.resolve_import_target(&import.module, &import.name)
-                .map_err(|e| e.to_string())
+        .map(|import| match vm.resolve_import_target(&import.module, &import.name) {
+            Ok(target) => Ok(target),
+            Err(_) if is_free_global_module(&import.module) => {
+                Ok(ImportTarget::StdlibRedirect(import.name.clone()))
+            }
+            Err(e) => Err(e.to_string()),
         })
         .collect()
+}
+
+/// The namespaces `globals::declare_free_globals` and the bundler treat as
+/// embedder-provided. Kept in sync with `bundle.rs`, which groups `"*"`,
+/// `"env"` and `"wasm:string-constants"` the same way.
+fn is_free_global_module(module: &str) -> bool {
+    matches!(module, "env" | "*")
 }
 
 #[cfg(test)]
@@ -1843,7 +2089,8 @@ mod tests {
     struct DynamicSmokeCase {
         language: &'static str,
         virtual_path: &'static str,
-        source: &'static str }
+        source: &'static str,
+    }
 
     fn configured_vm() -> VM {
         let mut vm = VM::new();
@@ -1856,7 +2103,8 @@ mod tests {
             Value::I32(n) => assert_eq!(n as f64, expected),
             Value::I64(n) => assert_eq!(n as f64, expected),
             Value::F64(n) => assert_eq!(n, expected),
-            other => panic!("expected numeric value, got {other:?}") }
+            other => panic!("expected numeric value, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1899,43 +2147,53 @@ mod tests {
             DynamicSmokeCase {
                 language: "js",
                 virtual_path: "dynamic/matrix.js",
-                source: "let x = 7;" },
+                source: "let x = 7;",
+            },
             DynamicSmokeCase {
                 language: "php",
                 virtual_path: "dynamic/matrix.php",
-                source: "<?php $x = 7;" },
+                source: "<?php $x = 7;",
+            },
             DynamicSmokeCase {
                 language: "python",
                 virtual_path: "dynamic/matrix.py",
-                source: "x = 7" },
+                source: "x = 7",
+            },
             DynamicSmokeCase {
                 language: "ruby",
                 virtual_path: "dynamic/matrix.rb",
-                source: "x = 7" },
+                source: "x = 7",
+            },
             DynamicSmokeCase {
                 language: "dart",
                 virtual_path: "dynamic/matrix.dart",
-                source: "var x = 7;" },
+                source: "var x = 7;",
+            },
             DynamicSmokeCase {
                 language: "vb",
                 virtual_path: "dynamic/matrix.vb",
-                source: "Dim x As Integer = 7" },
+                source: "Dim x As Integer = 7",
+            },
             DynamicSmokeCase {
                 language: "csharp",
                 virtual_path: "dynamic/matrix.cs",
-                source: "int x = 7;" },
+                source: "int x = 7;",
+            },
             DynamicSmokeCase {
                 language: "pascal",
                 virtual_path: "dynamic/matrix.pas",
-                source: "program T; var x: Integer; begin x := 7; end." },
+                source: "program T; var x: Integer; begin x := 7; end.",
+            },
             DynamicSmokeCase {
                 language: "cobol",
                 virtual_path: "dynamic/matrix.cob",
-                source: "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 X PIC 9 VALUE 7.\nPROCEDURE DIVISION.\n    STOP RUN." },
+                source: "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 X PIC 9 VALUE 7.\nPROCEDURE DIVISION.\n    STOP RUN.",
+            },
             DynamicSmokeCase {
                 language: "fortran",
                 virtual_path: "dynamic/matrix.f90",
-                source: "program test\n  integer :: x\n  x = 7\nend program test" },
+                source: "program test\n  integer :: x\n  x = 7\nend program test",
+            },
         ];
 
         for case in cases {
@@ -1993,7 +2251,8 @@ mod tests {
             Ok(Value::I64(value)) => assert_eq!(value, 5),
             Ok(Value::F64(value)) => assert_eq!(value, 5.0),
             Ok(other) => panic!("expected numeric result, got {other:?}"),
-            Err(err) => panic!("expected callable dynamic function, got {err}") }
+            Err(err) => panic!("expected callable dynamic function, got {err}"),
+        }
     }
 
     #[test]
@@ -2035,14 +2294,16 @@ mod tests {
 
         match &value {
             Value::Object(_) => {}
-            other => panic!("expected object result from CALL_IMPORT, got {other:?}") }
+            other => panic!("expected object result from CALL_IMPORT, got {other:?}"),
+        }
 
         match vm.invoke(&value, &[Value::I32(2), Value::I32(3)]) {
             Ok(Value::I32(value)) => assert_eq!(value, 5),
             Ok(Value::I64(value)) => assert_eq!(value, 5),
             Ok(Value::F64(value)) => assert_eq!(value, 5.0),
             Ok(other) => panic!("expected numeric result, got {other:?}"),
-            Err(err) => panic!("expected callable import result, got {err}") }
+            Err(err) => panic!("expected callable import result, got {err}"),
+        }
     }
 
     #[test]
@@ -2078,7 +2339,8 @@ mod tests {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected $result global, got {other:?}") }
+            other => panic!("expected $result global, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2120,7 +2382,8 @@ mod tests {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected nested $result global, got {other:?}") }
+            other => panic!("expected nested $result global, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2156,13 +2419,15 @@ mod tests {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected include $result global, got {other:?}") }
+            other => panic!("expected include $result global, got {other:?}"),
+        }
 
         match vm.globals.get("__php_var_call_result") {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected include $call_result global, got {other:?}") }
+            other => panic!("expected include $call_result global, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2203,7 +2468,8 @@ mod tests {
             Some(Value::I32(value)) => assert_eq!(*value, 42),
             Some(Value::I64(value)) => assert_eq!(*value, 42),
             Some(Value::F64(value)) => assert_eq!(*value, 42.0),
-            other => panic!("expected nested entry-relative $result global, got {other:?}") }
+            other => panic!("expected nested entry-relative $result global, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2250,7 +2516,8 @@ mod tests {
                 for arg in args {
                     match arg {
                         Value::String(text) => out.push_str(text.as_ref()),
-                        other => out.push_str(&format!("{}", other)) }
+                        other => out.push_str(&format!("{}", other)),
+                    }
                 }
                 Value::Null
             }),

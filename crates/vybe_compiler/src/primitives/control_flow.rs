@@ -72,7 +72,8 @@ impl Compiler {
                 self.compile_expr(expr)?;
                 self.emit_exit_from_stack(1)
             }
-            None => self.emit_exit_from_stack(0) }
+            None => self.emit_exit_from_stack(0),
+        }
     }
 
     /// Emit a `for v in gen():` loop that drives the generator via
@@ -189,7 +190,8 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             iterator_close_slot: Some(it_slot),
             is_continuable: true,
-            finally_depth: self.active_finally_blocks.len() });
+            finally_depth: self.active_finally_blocks.len(),
+        });
         for s in body {
             self.compile_stmt(s)?;
         }
@@ -239,7 +241,8 @@ impl Compiler {
         // Compile and stash the continuation.
         let (callee, args) = match &iter.kind {
             ExprKind::Call { callee, args, .. } => (callee, args),
-            _ => unreachable!("compile_generator_for_in expects Call") };
+            _ => unreachable!("compile_generator_for_in expects Call"),
+        };
         self.compile_call(callee, args)?;
         let cont_slot = self.define_local("__gen_cont");
         self.emit_u16(Op::LOCAL_SET, cont_slot);
@@ -331,7 +334,8 @@ impl Compiler {
             did_break_slot: Some(did_break_slot),
             iterator_close_slot: None,
             is_continuable: true,
-            finally_depth: self.active_finally_blocks.len() });
+            finally_depth: self.active_finally_blocks.len(),
+        });
         for s in body {
             self.compile_stmt(s)?;
         }
@@ -428,7 +432,8 @@ impl Compiler {
 
                 self.multi_return_functions.get(&self.canon(field)).copied()
             }
-            _ => None }
+            _ => None,
+        }
     }
 
     /// Emit the CALL for a multi-value receive context *without* the
@@ -523,17 +528,20 @@ impl Compiler {
                         ArrayPatternElem::Pattern(BindingPattern::Ident(n), _) => {
                             names.push(n.clone());
                         }
-                        _ => return None }
+                        _ => return None,
+                    }
                 }
                 names
             }
-            _ => return None };
+            _ => return None,
+        };
         let multi_n = match &value.kind {
             ExprKind::Call { callee, args, .. } => {
                 let _ = args;
                 self.multi_return_arity_for_callee(callee)?
             }
-            _ => return None };
+            _ => return None,
+        };
         if multi_n as usize != idents.len() {
             return None;
         }
@@ -604,7 +612,8 @@ impl Compiler {
                     body,
                     catches,
                     else_body,
-                    finally } => {
+                    finally,
+                } => {
                     self.collect_multi_return_functions(body);
                     for catch in catches {
                         self.collect_multi_return_functions(&catch.body);
@@ -695,8 +704,8 @@ impl Compiler {
         // `self.canon(name)` unconditionally, while `pointer_binding_key` canons
         // only when the language folds case — php variables are case-SENSITIVE,
         // so for php the two diverge and asking with either one alone misses.
-        let declared_open = self.scope().declared_open(name)
-            || self.scope().declared_open(&self.canon(name));
+        let declared_open =
+            self.scope().declared_open(name) || self.scope().declared_open(&self.canon(name));
         if !declared_open {
             if let Some(holds) = self.scope().holds_reference(name) {
                 return holds;
@@ -1097,29 +1106,15 @@ impl Compiler {
     pub(super) fn compile_address_of_expr(&mut self, expr: &Expression) -> Result<(), String> {
         match &expr.kind {
             ExprKind::Ident(name) => {
-                let canon_name = self.canon(name);
-                if self.defined_functions.contains(&canon_name) {
-                    self.emit_var_get(name);
-                    return Ok(());
-                }
-                if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
-                    self.emit_u16(Op::LOCAL_GET, slot);
-                    return Ok(());
-                }
-                // A NAME denotes storage, so the global arm always resolves —
-                // the Ident case never reaches the rvalue wrap below.
-                self.promote_global_binding_to_pointer_cell(name);
-                {
-                    // Same key the promotion wrote — see
-                    // `variable_global_binding_key`.
-                    let global_key = self.variable_global_binding_key(name);
-                    self.emit_global_read(&global_key);
-                    return Ok(());
-                }
+                // Callable address syntax is language-specific and must lower
+                // to `ExprKind::FuncRef` before reaching this storage-address path.
+                self.compile_ident_reference(name);
+                return Ok(());
             }
             ExprKind::Unary {
                 op: UnaryOp::Deref,
-                expr } => {
+                expr,
+            } => {
                 self.compile_expr(expr)?;
                 return Ok(());
             }
@@ -1144,6 +1139,29 @@ impl Compiler {
         self.compile_expr(expr)?;
         self.emit_wrap_top_of_stack_in_pointer_cell();
         Ok(())
+    }
+
+    /// `&name` where `name` denotes STORAGE — this frame's local, else the
+    /// module global.
+    ///
+    /// A NAME always has storage, so this always resolves. It never falls
+    /// through to the rvalue wrap, which would hand back a DETACHED cell —
+    /// §4's rule that a place must never reach the rvalue path.
+    ///
+    /// Shared by BOTH spellings. `RefOf(PlaceExpr::Ident)` used to carry only
+    /// the local half and wrapped every global, so go's `var g int; p := &g;
+    /// *p = 2` left `g` at its old value while the identical program written
+    /// with a local worked (§10d, pre-existing #2). One concept, two spellings,
+    /// one resolution — the recurring failure this plan exists to end.
+    pub(super) fn compile_ident_reference(&mut self, name: &str) {
+        if let Some(slot) = self.promote_local_binding_to_pointer_cell(name) {
+            self.emit_u16(Op::LOCAL_GET, slot);
+            return;
+        }
+        self.promote_global_binding_to_pointer_cell(name);
+        // Same key the promotion wrote — see `variable_global_binding_key`.
+        let global_key = self.variable_global_binding_key(name);
+        self.emit_global_read(&global_key);
     }
 
     /// `&container[key]` → `{__ref_kind:"carray", __base, __idx}`.
@@ -1585,7 +1603,11 @@ impl Compiler {
 
     /// Same as `define_local` but with a type hint — sugar around
     /// `Scope::define_typed`. Keeps the sync invariant.
-    pub(crate) fn define_local_typed(&mut self, name: &str, type_hint: Option<vybe_ast::TypeHint>) -> u16 {
+    pub(crate) fn define_local_typed(
+        &mut self,
+        name: &str,
+        type_hint: Option<vybe_ast::TypeHint>,
+    ) -> u16 {
         {
             let scope = self.scopes.last_mut().unwrap();
             let chunk_locals = self.chunks[self.current].local_count;

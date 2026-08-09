@@ -20,7 +20,8 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     let header = format!("! vybe-test: {slug}\n! origin: {origin}\n");
@@ -29,7 +30,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     let Some(expected) = case.expected.as_ref() else {
         return Emitted {
             text: format!("{header}{body}\n"),
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     };
 
     let prints = find_prints(body);
@@ -42,7 +44,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
         }
         return Emitted {
             text: format!("{header}{out}\n"),
-            pairing: Pairing::Direct };
+            pairing: Pairing::Direct,
+        };
     }
 
     // RUNTIME pairing: an expected table plus a counter, checked where each
@@ -57,10 +60,13 @@ pub fn emit(case: &Case, origin: &str, slug: &str, _harness: &str) -> Emitted {
     match runtime_paired(body, &prints, expected) {
         Ok(out) => Emitted {
             text: format!("{header}{out}\n"),
-            pairing: Pairing::Direct },
+            pairing: Pairing::Direct,
+        },
         Err(reason) => Emitted {
             text: format!("{header}{body}\n"),
-            pairing: Pairing::Unpairable(reason) } }
+            pairing: Pairing::Unpairable(reason),
+        },
+    }
 }
 
 // NOTE: the names must begin with a LETTER. `__vybe_i` is not a Fortran
@@ -73,7 +79,8 @@ enum TableKind {
     Integer,
     Real,
     Logical,
-    Character }
+    Character,
+}
 
 fn table_kind(expected: &[String]) -> Option<TableKind> {
     let mut kind: Option<TableKind> = None;
@@ -95,7 +102,8 @@ fn table_kind(expected: &[String]) -> Option<TableKind> {
             Some(prev) if prev == this => prev,
             Some(TableKind::Real) if this == TableKind::Integer => TableKind::Real,
             Some(TableKind::Integer) if this == TableKind::Real => TableKind::Real,
-            Some(_) => return None });
+            Some(_) => return None,
+        });
     }
     kind
 }
@@ -108,7 +116,9 @@ fn runtime_paired(src: &str, prints: &[Print], expected: &[String]) -> Result<St
         return Err("uses `write` — output does not pass through `print`".into());
     }
     if let Some((_, _, expr)) = prints.iter().find(|(_, _, e)| has_top_level_comma(e)) {
-        return Err(format!("multi-value print (`{expr}`) — one line, several values"));
+        return Err(format!(
+            "multi-value print (`{expr}`) — one line, several values"
+        ));
     }
     let Some(kind) = table_kind(expected) else {
         return Err("expectations mix types — a Fortran array is homogeneous".into());
@@ -144,7 +154,8 @@ fn runtime_paired(src: &str, prints: &[Print], expected: &[String]) -> Result<St
                 out.push('\n');
             }
             out.push_str(&epilogue);
-        } }
+        }
+    }
     Ok(out)
 }
 
@@ -153,7 +164,10 @@ fn table_declaration(kind: TableKind, expected: &[String]) -> String {
     let (ty, items) = match kind {
         TableKind::Integer => (
             "integer".to_string(),
-            expected.iter().map(|w| w.trim().to_string()).collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|w| w.trim().to_string())
+                .collect::<Vec<_>>(),
         ),
         TableKind::Real => (
             "real".to_string(),
@@ -169,7 +183,12 @@ fn table_declaration(kind: TableKind, expected: &[String]) -> String {
         TableKind::Character => {
             // Every element of a character array has the SAME length, so the
             // table is declared at the longest and the comparison trims.
-            let width = expected.iter().map(|w| w.trim().len()).max().unwrap_or(1).max(1);
+            let width = expected
+                .iter()
+                .map(|w| w.trim().len())
+                .max()
+                .unwrap_or(1)
+                .max(1);
             (
                 format!("character(len={width})"),
                 expected
@@ -194,7 +213,8 @@ fn runtime_check(kind: TableKind, expr: &str, n: usize, indent: &str) -> String 
         // in the last bit.
         TableKind::Real => format!("abs(({expr}) - vybe_check_w(vybe_check_i)) > 1.0e-6"),
         TableKind::Logical => format!("({expr}) .neqv. vybe_check_w(vybe_check_i)"),
-        TableKind::Character => format!("trim({expr}) /= trim(vybe_check_w(vybe_check_i))") };
+        TableKind::Character => format!("trim({expr}) /= trim(vybe_check_w(vybe_check_i))"),
+    };
     format!(
         "{indent}vybe_check_i = vybe_check_i + 1\n\
          {indent}if (vybe_check_i > {n}) then\n\
@@ -276,7 +296,8 @@ fn as_logical(text: &str) -> Option<&'static str> {
         "F" | "f" => Some("false"),
         w if w.eq_ignore_ascii_case("true") => Some("true"),
         w if w.eq_ignore_ascii_case("false") => Some("false"),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn is_integer(text: &str) -> bool {
@@ -339,7 +360,9 @@ fn unpairable(src: &str, prints: &[Print], expected: usize) -> Option<String> {
     // A print of several comma-separated values produces ONE line holding all
     // of them, so there is no single value to compare.
     if let Some((_, _, expr)) = prints.iter().find(|(_, _, e)| has_top_level_comma(e)) {
-        return Some(format!("multi-value print (`{expr}`) — one line, several values"));
+        return Some(format!(
+            "multi-value print (`{expr}`) — one line, several values"
+        ));
     }
     None
 }
@@ -357,7 +380,8 @@ fn has_top_level_comma(expr: &str) -> bool {
                 ')' | ']' => depth -= 1,
                 ',' if depth == 0 => return true,
                 _ => {}
-            } }
+            },
+        }
     }
     false
 }

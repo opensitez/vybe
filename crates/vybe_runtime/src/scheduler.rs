@@ -46,4 +46,17 @@ pub trait DeferredSource: Send + Sync {
     /// Visit every queued callback. Fiber capture needs this: a callback's
     /// open upvalues must be closed before the stack it indexes is saved.
     fn for_each_callback(&self, f: &mut dyn FnMut(&crate::value::Value));
+
+    /// Drop every queued entry — called by [`crate::VM::reset_to`].
+    ///
+    /// A queued callback is a `Value` belonging to the program that queued it.
+    /// A source that keeps one across a reset hands the NEXT program a closure
+    /// over code that no longer exists: `reset_to` truncates the chunks a
+    /// callback indexes, and those indices are then reused by whatever runs
+    /// next. Draining it would run the new tenant's bytes through the old
+    /// tenant's closure.
+    ///
+    /// Default no-op only for sources that hold no per-program state; any
+    /// source that queues `Value`s MUST implement it.
+    fn clear_pending(&self) {}
 }

@@ -16,9 +16,7 @@ use vybe_compiler::primitives::platforms::register_platforms;
 use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
-use vybex::server::script::{
-    publish_wasi_request, WASI_REQUEST_GLOBAL, WASI_RESPONSE_OUT_GLOBAL,
-};
+use vybex::server::script::{WASI_REQUEST_GLOBAL, WASI_RESPONSE_OUT_GLOBAL, publish_wasi_request};
 
 fn vm() -> VM {
     let mut vm = VM::new();
@@ -68,14 +66,7 @@ fn str_of(value: &Value) -> Option<String> {
     }
 }
 
-fn publish(
-    vm: &mut VM,
-    method: &str,
-    path: &str,
-    query: &str,
-    scheme: &str,
-    host: &str,
-) -> Value {
+fn publish(vm: &mut VM, method: &str, path: &str, query: &str, scheme: &str, host: &str) -> Value {
     publish_wasi_request(
         vm,
         method,
@@ -131,7 +122,14 @@ fn path_with_query_joins_path_and_query() {
     // §incoming-request.path-with-query — "the path with query parameters".
     // The server holds them separately, so this join is ours to get right.
     let mut vm = vm();
-    let request = publish(&mut vm, "GET", "/search", "q=cats&page=2", "https", "x.test");
+    let request = publish(
+        &mut vm,
+        "GET",
+        "/search",
+        "q=cats&page=2",
+        "https",
+        "x.test",
+    );
 
     let got = call("[method]incoming-request.path-with-query", vec![request]);
     assert_eq!(
@@ -191,13 +189,30 @@ fn each_request_gets_distinct_handles() {
     // request could consume another's body.
     let mut vm_a = vm();
     let (req_a, param_a) = publish_wasi_request(
-        &mut vm_a, "GET", "/a", "", "http", "h", Vec::new(), Vec::new(),
+        &mut vm_a,
+        "GET",
+        "/a",
+        "",
+        "http",
+        "h",
+        Vec::new(),
+        Vec::new(),
     );
     let mut vm_b = vm();
     let (req_b, param_b) = publish_wasi_request(
-        &mut vm_b, "GET", "/b", "", "http", "h", Vec::new(), Vec::new(),
+        &mut vm_b,
+        "GET",
+        "/b",
+        "",
+        "http",
+        "h",
+        Vec::new(),
+        Vec::new(),
     );
 
     assert_ne!(req_a, req_b, "incoming-request ids must be per-request");
-    assert_ne!(param_a, param_b, "response-outparam ids must be per-request");
+    assert_ne!(
+        param_a, param_b,
+        "response-outparam ids must be per-request"
+    );
 }

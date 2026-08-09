@@ -169,7 +169,12 @@ impl TestReport {
         let mut slugs: Vec<String> = self
             .executions
             .iter()
-            .filter(|e| matches!(e.result, TestResult::Fail | TestResult::Timeout | TestResult::Error))
+            .filter(|e| {
+                matches!(
+                    e.result,
+                    TestResult::Fail | TestResult::Timeout | TestResult::Error
+                )
+            })
             .map(|e| e.slug())
             .collect();
         slugs.sort();

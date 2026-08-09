@@ -18,7 +18,6 @@ fn alloc_local(chunk: &mut Chunk) -> u16 {
     chunk.alloc_scratch(1)
 }
 
-
 fn push_str(chunk: &mut Chunk, value: &str, line: u32) {
     chunk.emit_string_const(value, line);
 }
@@ -221,7 +220,7 @@ pub fn emit_resolver_stack_invoke(
             chunk.emit_if(line);
             chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
-            chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+            crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
             chunk.emit_op(Op::DROP, line);
             chunk.emit_else(line);
             // Through `emit_invoke_method`, not a raw `ecma:value.invokeMethod`
@@ -242,7 +241,7 @@ pub fn emit_resolver_stack_invoke(
         None => {
             chunk.emit_op_u16(Op::LOCAL_GET, entry_slot, line);
             chunk.emit_op_u16(Op::LOCAL_GET, name_slot, line);
-            chunk.emit_op_u8_u8(Op::CALL_REF, 1, 1, line);
+            crate::primitives::callable::emit_direct_invoke_chunk(chunk, 1, line);
             chunk.emit_op(Op::DROP, line);
         }
     }
@@ -355,6 +354,19 @@ pub fn emit_symbol_kind_test(
     emit_undefined_test(chunk, line);
     chunk.emit_op(Op::I32_EQZ, line);
 
+    // Not-undefined is not enough: a module global that was DECLARED but never
+    // ASSIGNED reads `null`, which is exactly the shape of a conditionally
+    // declared symbol whose branch did not run —
+    // `if (false) { function f() {…} }` declares the global and never stores
+    // the closure. Treating that as defined reported `function_exists('f')`
+    // true for a function that never comes into being, which in turn made
+    // `if (!function_exists('f')) { function f() {…} }` skip its own body.
+    // Null is not a defined symbol in any language this serves.
+    chunk.emit_op_u16(Op::LOCAL_GET, symbol_slot, line);
+    chunk.emit_op(Op::REF_IS_NULL, line);
+    chunk.emit_op(Op::I32_EQZ, line);
+    chunk.emit_op(Op::I32_AND, line);
+
     let Some(kind) = expected_kind else {
         // No kind constraint: defined is the whole answer.
         crate::primitives::ops::emit_i32_to_bool(chunk, line);
@@ -452,7 +464,7 @@ pub fn emit_receiver_missing_symbol_get(
     }
     chunks[current].emit_op_u16(Op::LOCAL_GET, name_slot, line);
     let argc = if include_receiver_arg { 2 } else { 1 };
-    chunks[current].emit_op_u8_u8(Op::CALL_REF, argc, 1, line);
+    crate::primitives::callable::emit_direct_invoke_chunk(&mut chunks[current], argc, line);
     chunks[current].emit_else(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
     chunks[current].emit_end(line);

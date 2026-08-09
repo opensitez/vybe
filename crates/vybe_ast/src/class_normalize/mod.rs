@@ -13,7 +13,8 @@ pub use types::{
     Access, Augmentation, AugmentationAdjustment, AugmentationConflict, AugmentationContributes,
     AugmentationMode, AugmentationPolicy, AugmentationPosition, AugmentationSuper, BaseCall,
     NormalClass, NormalConstructor, NormalField, NormalMembers, NormalMethod, NormalProperty,
-    PROTOCOL_SLOT_TABLE, PlatformBaseSpec, PlatformFieldGui, SpecialMethod, SpecialMethodKind };
+    PROTOCOL_SLOT_TABLE, PlatformBaseSpec, PlatformFieldGui, SpecialMethod, SpecialMethodKind,
+};
 
 use crate::{Modifiers, Param, Span, Statement, StmtKind, Visibility};
 
@@ -49,7 +50,8 @@ pub fn build_normal_method(
         is_generator,
         is_abstract: raw_modifiers.is_abstract,
         is_sub,
-        raw_modifiers }
+        raw_modifiers,
+    }
 }
 
 /// Convenience: extract the `Statement`-shaped `ClassMember::Method` body into a
@@ -96,5 +98,6 @@ pub fn access_from_visibility(v: Visibility) -> Access {
         Visibility::Public => Access::Public,
         Visibility::Protected => Access::Protected,
         Visibility::Private => Access::Private,
-        Visibility::Internal => Access::Internal }
+        Visibility::Internal => Access::Internal,
+    }
 }

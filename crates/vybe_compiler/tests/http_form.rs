@@ -39,8 +39,10 @@ fn key(map: &Value, name: &str) -> Option<String> {
             .find(|(k, _)| matches!(k, Value::String(s) if s.as_ref() == name))
             .and_then(|(_, v)| match v {
                 Value::String(s) => Some(s.to_string()),
-                _ => None }),
-        _ => None }
+                _ => None,
+            }),
+        _ => None,
+    }
 }
 
 fn len(map: &Value) -> usize {
@@ -48,7 +50,8 @@ fn len(map: &Value) -> usize {
     let object = object.lock().unwrap();
     match &object.kind {
         ObjectKind::Map(entries) => entries.len(),
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 #[test]
@@ -135,7 +138,8 @@ fn sub(map: &Value, which: &str) -> Value {
             .find(|(k, _)| matches!(k, Value::String(s) if s.as_ref() == which))
             .map(|(_, v)| v.clone())
             .unwrap_or_else(|| panic!("no `{which}` in multipart result")),
-        _ => panic!("multipart result is not a map") }
+        _ => panic!("multipart result is not a map"),
+    }
 }
 
 /// Wrap parts in boundary delimiters. Parts are passed already CRLF-correct —
@@ -158,7 +162,8 @@ fn upload(form: &Value, name: &str, field: &str) -> Option<String> {
                 .iter()
                 .find(|(k, _)| matches!(k, Value::String(s) if s.as_ref() == name))
                 .map(|(_, v)| v.clone()),
-            _ => None }
+            _ => None,
+        }
     }?;
     key(&entry, field)
 }

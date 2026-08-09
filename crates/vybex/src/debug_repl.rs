@@ -12,10 +12,11 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use vybe_runtime::debugger::{
-    ChunkRef, DebugEvent, DebugResponse, FrameInfo, Location, PauseReason };
-use vybe_runtime::{DebugCommand, DebugRequest, VM};
 use vybe_platform_vybe::gui_state::GuiState;
+use vybe_runtime::debugger::{
+    ChunkRef, DebugEvent, DebugResponse, FrameInfo, Location, PauseReason,
+};
+use vybe_runtime::{DebugCommand, DebugRequest, VM};
 
 /// Attach a debugger to `vm` and spawn the REPL worker threads. Call this before
 /// running the VM; it pauses on entry so breakpoints can be set first. `gui` is
@@ -26,6 +27,10 @@ pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
     let (cmd_tx, cmd_rx) = channel::<DebugRequest>();
     let (evt_tx, evt_rx) = channel::<DebugEvent>();
     vm.attach_debugger(cmd_rx, evt_tx, /* pause_on_entry */ true);
+    // Runs on the VM's thread, before the guest does — so the document opened
+    // here is the one the guest will build in, and `widgets` can read it from
+    // the REPL thread.
+    crate::gui_document::pin();
 
     // Event printer: renders async events (paused / resumed / exited / opcode).
     thread::spawn(move || {
@@ -83,7 +88,8 @@ pub fn attach(vm: &mut VM, gui: Arc<Mutex<GuiState>>) {
                         break; // channel closed — VM gone
                     }
                 }
-                Err(msg) => eprintln!("  {msg}") }
+                Err(msg) => eprintln!("  {msg}"),
+            }
         }
     });
 }
@@ -147,7 +153,8 @@ fn format_draw_cmd(cmd: &vybe_widgets::canvas::DrawCmd) -> String {
 fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
     let mut g = match gui.lock() {
         Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner() };
+        Err(poisoned) => poisoned.into_inner(),
+    };
 
     let limit: usize = args
         .iter()
@@ -172,7 +179,10 @@ fn print_draws(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
         }
     }
     for (name, canvas) in g.overlay_canvases.iter() {
-        found.push((format!("{name} (overlay)"), canvas.commands_for_debug().to_vec()));
+        found.push((
+            format!("{name} (overlay)"),
+            canvas.commands_for_debug().to_vec(),
+        ));
     }
 
     if found.is_empty() {
@@ -219,15 +229,23 @@ fn capture_frame(gui: &Arc<Mutex<GuiState>>, args: &[&str]) {
         [] => (None, "vybe-capture.png"),
         [one] if is_file(one) => (None, *one),
         [one] => (Some(*one), "vybe-capture.png"),
-        [a, b, ..] => (Some(*a), *b) };
+        [a, b, ..] => (Some(*a), *b),
+    };
     match crate::gui_capture::capture_to_png(gui, path, control, 1.0) {
         Ok((w, h)) => eprintln!("  wrote {w}x{h} PNG → {path}"),
-        Err(e) => eprintln!("  capture failed: {e}") }
+        Err(e) => eprintln!("  capture failed: {e}"),
+    }
 }
 
 /// Dump the live GUI state (controls, their properties, wired events). Reads the
 /// shared `GuiState` directly — reflects the live program, not the eval VM.
 fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
+    // A control IS `document.createElement(tag)` for every frontend, so the
+    // document is what a running program has built. `GuiState` is still the
+    // tree for a designer form, and only then is it what to report.
+    if print_document_widgets() {
+        return;
+    }
     let g = match gui.lock() {
         Ok(g) => g,
         Err(_) => {
@@ -271,8 +289,16 @@ fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
             .map(|(_, ev)| ev.to_string())
             .collect();
         events.sort();
-        let prop_str = if props.is_empty() { String::new() } else { format!("  {{{}}}", props.join(", ")) };
-        let evt_str = if events.is_empty() { String::new() } else { format!("  events[{}]", events.join(",")) };
+        let prop_str = if props.is_empty() {
+            String::new()
+        } else {
+            format!("  {{{}}}", props.join(", "))
+        };
+        let evt_str = if events.is_empty() {
+            String::new()
+        } else {
+            format!("  events[{}]", events.join(","))
+        };
         // The LAID-OUT rect, which the property store does not carry. A zero
         // rect means the control was never laid out — it will not render and it
         // cannot be hit-tested, and nothing else in this dump reveals that.
@@ -281,9 +307,59 @@ fn print_widgets(gui: &Arc<Mutex<GuiState>>) {
                 format!("  rect={},{} {}x{}", r.x, r.y, r.w, r.h)
             }
             Some(_) => "  rect=0x0 ← never laid out".to_string(),
-            None => String::new() };
+            None => String::new(),
+        };
         eprintln!("  • {name}{rect_str}{prop_str}{evt_str}");
     }
+}
+
+/// Dump the document's elements — geometry, observable properties, listeners.
+/// Returns false when there is no document tree to report on, so the caller can
+/// fall back to `GuiState`.
+fn print_document_widgets() -> bool {
+    let controls = crate::gui_document::controls();
+    if controls.is_empty() {
+        return false;
+    }
+    match crate::gui_document::viewport() {
+        Some((w, h)) => eprintln!("  document {w}×{h}  ({} element(s))", controls.len()),
+        None => eprintln!("  document  ({} element(s))", controls.len()),
+    }
+    for control in controls {
+        // Same warning the GuiState dump carries, and for the same reason: a
+        // control with no rect will not render and cannot be hit-tested.
+        let rect = match control.rect {
+            Some(r) if r.w >= 1.0 && r.h >= 1.0 => {
+                format!("  rect={},{} {}x{}", r.x, r.y, r.w, r.h)
+            }
+            Some(_) => "  rect=0x0 ← never laid out".to_string(),
+            None => String::new(),
+        };
+        let props = if control.properties.is_empty() {
+            String::new()
+        } else {
+            let pairs: Vec<String> = control
+                .properties
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            format!("  {{{}}}", pairs.join(", "))
+        };
+        let events = if control.events.is_empty() {
+            String::new()
+        } else {
+            format!("  events[{}]", control.events.join(","))
+        };
+        // An unnamed control still needs a handle a `click` can take, and
+        // `n<node>` is the one the document itself uses.
+        let handle = if control.id.is_empty() {
+            format!("n{}", control.node)
+        } else {
+            control.id.clone()
+        };
+        eprintln!("  • {handle} <{}>{rect}{props}{events}", control.tag);
+    }
+    true
 }
 
 fn banner() {
@@ -302,7 +378,8 @@ fn send_and_print(cmd_tx: &Sender<DebugRequest>, command: DebugCommand) -> bool 
     if cmd_tx
         .send(DebugRequest {
             command,
-            reply: reply_tx })
+            reply: reply_tx,
+        })
         .is_err()
     {
         return false;
@@ -312,7 +389,8 @@ fn send_and_print(cmd_tx: &Sender<DebugRequest>, command: DebugCommand) -> bool 
             print_response(&resp);
             true
         }
-        Err(_) => false }
+        Err(_) => false,
+    }
 }
 
 // ─── Command parsing ────────────────────────────────────────────────────────
@@ -346,14 +424,16 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
                 .ok_or("usage: enable <id>")?
                 .parse()
                 .map_err(|_| "bad id")?,
-            enabled: true },
+            enabled: true,
+        },
         "disable" => DebugCommand::EnableBreakpoint {
             id: rest
                 .first()
                 .ok_or("usage: disable <id>")?
                 .parse()
                 .map_err(|_| "bad id")?,
-            enabled: false },
+            enabled: false,
+        },
 
         "p" | "print" => {
             // Join the whole tail so compound expressions (`p a + b`) survive;
@@ -371,16 +451,20 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
                 .ok_or("usage: set <name> = <literal>")?;
             DebugCommand::SetVar {
                 name: name.trim().to_string(),
-                literal: val.trim().to_string() }
+                literal: val.trim().to_string(),
+            }
         }
         "bt" | "where" | "backtrace" => DebugCommand::Backtrace,
         "locals" | "l" => DebugCommand::Locals {
-            frame: rest.first().and_then(|s| s.parse().ok()).unwrap_or(0) },
+            frame: rest.first().and_then(|s| s.parse().ok()).unwrap_or(0),
+        },
         "stack" => DebugCommand::OperandStack,
         "globals" | "g" => DebugCommand::Globals {
-            prefix: rest.first().map(|s| s.to_string()) },
+            prefix: rest.first().map(|s| s.to_string()),
+        },
         "dis" | "disasm" => DebugCommand::Disasm {
-            window: rest.first().and_then(|s| s.parse().ok()).unwrap_or(4) },
+            window: rest.first().and_then(|s| s.parse().ok()).unwrap_or(4),
+        },
         "chunks" => DebugCommand::Chunks,
         "watch" | "w" => {
             let expr = rest.join(" ");
@@ -395,26 +479,42 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
         "reload" | "r" => DebugCommand::Reload,
         "restart" | "R" => DebugCommand::Restart,
         "trace" => DebugCommand::StreamOpcodes {
-            enabled: rest.first() != Some(&"off") },
+            enabled: rest.first() != Some(&"off"),
+        },
         "skip-system" | "sys" => DebugCommand::SetSkipSystem {
-            enabled: rest.first() != Some(&"off") },
+            enabled: rest.first() != Some(&"off"),
+        },
 
         // ── simulate GUI events (fire a handler through the live VM) ──
         "click" | "tap" => DebugCommand::FireEvent {
-            control: rest.first().ok_or("usage: click <control>  (see `widgets` for names)")?.to_string(),
-            event: "Click".to_string() },
+            control: rest
+                .first()
+                .ok_or("usage: click <control>  (see `widgets` for names)")?
+                .to_string(),
+            event: "Click".to_string(),
+        },
         "fire" => {
-            let control = rest.first().ok_or("usage: fire <control> <event>")?.to_string();
-            let event = rest.get(1).ok_or("usage: fire <control> <event>")?.to_string();
+            let control = rest
+                .first()
+                .ok_or("usage: fire <control> <event>")?
+                .to_string();
+            let event = rest
+                .get(1)
+                .ok_or("usage: fire <control> <event>")?
+                .to_string();
             DebugCommand::FireEvent { control, event }
         }
         "close" | "window-close" => DebugCommand::FireEvent {
             control: rest.first().unwrap_or(&"form").to_string(),
-            event: "Close".to_string() },
+            event: "Close".to_string(),
+        },
 
         // ── function breakpoint / logpoint / run-to-cursor / ignore ──
         "bf" | "break-fn" => {
-            let name = rest.first().ok_or("usage: bf <function> [if <cond>]")?.to_string();
+            let name = rest
+                .first()
+                .ok_or("usage: bf <function> [if <cond>]")?
+                .to_string();
             let condition = rest
                 .iter()
                 .position(|t| *t == "if")
@@ -423,7 +523,11 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
             DebugCommand::BreakFunction { name, condition }
         }
         "logpoint" | "lp" => {
-            let line = rest.first().ok_or("usage: lp <line> <message>")?.parse().map_err(|_| "bad line")?;
+            let line = rest
+                .first()
+                .ok_or("usage: lp <line> <message>")?
+                .parse()
+                .map_err(|_| "bad line")?;
             let message = rest[1..].join(" ");
             if message.is_empty() {
                 return Err("usage: lp <line> <message>  (use {expr} to interpolate)".into());
@@ -431,20 +535,42 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
             DebugCommand::Logpoint { line, message }
         }
         "runto" | "rt" | "tbreak" => {
-            let line = rest.first().ok_or("usage: rt <line>")?.parse().map_err(|_| "bad line")?;
+            let line = rest
+                .first()
+                .ok_or("usage: rt <line>")?
+                .parse()
+                .map_err(|_| "bad line")?;
             DebugCommand::RunToLine { line }
         }
         "ignore" => {
-            let id = rest.first().ok_or("usage: ignore <id> <count>")?.parse().map_err(|_| "bad id")?;
-            let count = rest.get(1).ok_or("usage: ignore <id> <count>")?.parse().map_err(|_| "bad count")?;
+            let id = rest
+                .first()
+                .ok_or("usage: ignore <id> <count>")?
+                .parse()
+                .map_err(|_| "bad id")?;
+            let count = rest
+                .get(1)
+                .ok_or("usage: ignore <id> <count>")?
+                .parse()
+                .map_err(|_| "bad count")?;
             DebugCommand::SetIgnoreCount { id, count }
         }
         // ── exception breakpoints ──
         "catch" => match rest.first().copied() {
-            Some("throw") => DebugCommand::ExceptionBreak { on_throw: true, on_uncaught: false },
-            Some("uncaught") => DebugCommand::ExceptionBreak { on_throw: false, on_uncaught: true },
-            Some("off") | None => DebugCommand::ExceptionBreak { on_throw: false, on_uncaught: false },
-            Some(other) => return Err(format!("usage: catch throw|uncaught|off  (got `{other}`)")) },
+            Some("throw") => DebugCommand::ExceptionBreak {
+                on_throw: true,
+                on_uncaught: false,
+            },
+            Some("uncaught") => DebugCommand::ExceptionBreak {
+                on_throw: false,
+                on_uncaught: true,
+            },
+            Some("off") | None => DebugCommand::ExceptionBreak {
+                on_throw: false,
+                on_uncaught: false,
+            },
+            Some(other) => return Err(format!("usage: catch throw|uncaught|off  (got `{other}`)")),
+        },
         // ── data watchpoints ──
         "wp" | "watchpoint" => {
             let target = rest.join(" ");
@@ -463,16 +589,15 @@ fn parse_command(line: &str) -> Result<DebugCommand, String> {
             print_help();
             return Err(String::new());
         }
-        other => return Err(format!("unknown command `{other}` — try `h`")) })
+        other => return Err(format!("unknown command `{other}` — try `h`")),
+    })
 }
 
 /// `b <chunk>:<line> [if <cond>]`, `b <chunk>@<offset> [if <cond>]`. Chunk may
 /// be a name or an index. An `if <expr>` suffix makes it a conditional
 /// breakpoint (evaluated in the paused frame).
 fn parse_breakpoint(rest: &[&str]) -> Result<DebugCommand, String> {
-    let spec = rest
-        .first()
-        .ok_or("usage: b <chunk>:<line> [if <cond>]")?;
+    let spec = rest.first().ok_or("usage: b <chunk>:<line> [if <cond>]")?;
     // Optional `if <condition>` (everything after the `if` token).
     let condition = rest
         .iter()
@@ -488,13 +613,15 @@ fn parse_breakpoint(rest: &[&str]) -> Result<DebugCommand, String> {
         Ok(DebugCommand::BreakLine {
             chunk: chunk_ref(chunk),
             line,
-            condition })
+            condition,
+        })
     } else if let Some((chunk, offset)) = spec.split_once('@') {
         let offset: usize = offset.parse().map_err(|_| "bad offset")?;
         Ok(DebugCommand::BreakOffset {
             chunk: chunk_ref(chunk),
             offset,
-            condition })
+            condition,
+        })
     } else {
         Err("usage: b <line>  ·  b <file>:<line>  ·  b <chunk>@<offset>  [if <cond>]".into())
     }
@@ -503,7 +630,8 @@ fn parse_breakpoint(rest: &[&str]) -> Result<DebugCommand, String> {
 fn chunk_ref(s: &str) -> ChunkRef {
     match s.parse::<usize>() {
         Ok(i) => ChunkRef::Index(i),
-        Err(_) => ChunkRef::Name(s.to_string()) }
+        Err(_) => ChunkRef::Name(s.to_string()),
+    }
 }
 
 // ─── Presentation ───────────────────────────────────────────────────────────
@@ -514,7 +642,8 @@ fn print_event(event: &DebugEvent) {
             reason,
             location,
             frame_summary,
-            watches } => {
+            watches,
+        } => {
             eprintln!(
                 "\n■ paused ({}) — {}",
                 reason_str(reason),
@@ -534,10 +663,12 @@ fn print_event(event: &DebugEvent) {
             chunk,
             ip,
             op,
-            stack_depth } => {
+            stack_depth,
+        } => {
             eprintln!("  · {chunk}@{ip:04} {op}  (stack {stack_depth})");
         }
-        DebugEvent::Log { message } => eprintln!("  {message}") }
+        DebugEvent::Log { message } => eprintln!("  {message}"),
+    }
 }
 
 fn print_response(resp: &DebugResponse) {
@@ -554,7 +685,8 @@ fn print_response(resp: &DebugResponse) {
             id,
             chunk,
             offset,
-            line } => {
+            line,
+        } => {
             let at = line
                 .map(|l| format!("line {l}"))
                 .unwrap_or_else(|| format!("offset {offset}"));
@@ -582,7 +714,8 @@ fn print_response(resp: &DebugResponse) {
             for s in slots {
                 match &s.name {
                     Some(name) => eprintln!("  {} [{}] = {}", name, s.index, s.value),
-                    None => eprintln!("  [{}] = {}", s.index, s.value) }
+                    None => eprintln!("  [{}] = {}", s.index, s.value),
+                }
             }
         }
         DebugResponse::OperandStack(vals) => {
@@ -628,7 +761,11 @@ fn reason_str(r: &PauseReason) -> String {
         PauseReason::Interrupt => "interrupt".into(),
         PauseReason::Watchpoint { id } => format!("watchpoint #{id}"),
         PauseReason::Exception { uncaught } => {
-            if *uncaught { "uncaught exception".into() } else { "exception".into() }
+            if *uncaught {
+                "uncaught exception".into()
+            } else {
+                "exception".into()
+            }
         }
     }
 }

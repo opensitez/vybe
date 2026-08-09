@@ -29,7 +29,8 @@ fn return_call_ref_delivers_callee_result() {
     main.local_count = 1;
     main.global_inits.push(GlobalInit {
         name: "__double".to_string(),
-        init: ConstExpr::RefFunc(1) });
+        init: ConstExpr::RefFunc(1),
+    });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__double")));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0); // push func ref
@@ -71,7 +72,8 @@ fn return_call_delivers_callee_result() {
     main.local_count = 1;
     main.global_inits.push(GlobalInit {
         name: "__add_one".to_string(),
-        init: ConstExpr::RefFunc(1) });
+        init: ConstExpr::RefFunc(1),
+    });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__add_one")));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);
@@ -181,7 +183,8 @@ fn return_call_chain_does_not_overflow() {
 
         countdown.global_inits.push(GlobalInit {
             name: "__countdown".to_string(),
-            init: ConstExpr::RefFunc(0) });
+            init: ConstExpr::RefFunc(0),
+        });
 
         // if n == 0, return 0
         countdown.emit_op_u16(opcode::Op::LOCAL_GET, 0, 0);
@@ -204,7 +207,8 @@ fn return_call_chain_does_not_overflow() {
     main.local_count = 0;
     main.global_inits.push(GlobalInit {
         name: "__countdown".to_string(),
-        init: ConstExpr::RefFunc(1) });
+        init: ConstExpr::RefFunc(1),
+    });
     {
         let fn_name = main.add_constant(Value::String(Arc::from("__countdown")));
         main.emit_op_u16(opcode::Op::GLOBAL_GET, fn_name, 0);

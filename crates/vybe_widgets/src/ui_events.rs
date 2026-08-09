@@ -75,7 +75,8 @@ impl UiEventQueue {
     fn new() -> Self {
         UiEventQueue {
             events: Mutex::new(VecDeque::new()),
-            pointer: Mutex::new(PointerState::default()) }
+            pointer: Mutex::new(PointerState::default()),
+        }
     }
 
     /// Enqueue an event, updating the tracked pointer/modifier state the way
@@ -122,6 +123,18 @@ impl UiEventQueue {
 pub fn queue() -> Arc<UiEventQueue> {
     static QUEUE: OnceLock<Arc<UiEventQueue>> = OnceLock::new();
     QUEUE.get_or_init(|| Arc::new(UiEventQueue::new())).clone()
+}
+
+/// Drop undelivered input and reset pointer state.
+///
+/// An event queued but never read belongs to the program that was running when
+/// it arrived; delivering it to the next program in a reused VM is both wrong
+/// and a way for one tenant to observe another's input. Called from the owning
+/// plugin's `reset`.
+pub fn reset() {
+    let q = queue();
+    q.events.lock().unwrap().clear();
+    *q.pointer.lock().unwrap() = PointerState::default();
 }
 
 #[cfg(test)]

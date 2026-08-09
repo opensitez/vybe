@@ -28,13 +28,15 @@ fn assert_f64(val: &Value, expected: f64) {
             expected,
             v
         ),
-        _ => panic!("Expected F64({}), got {:?}", expected, val) }
+        _ => panic!("Expected F64({}), got {:?}", expected, val),
+    }
 }
 
 fn assert_i32(val: &Value, expected: i32) {
     match val {
         Value::I32(v) => assert_eq!(*v, expected, "Expected I32({}), got I32({})", expected, v),
-        _ => panic!("Expected I32({}), got {:?}", expected, val) }
+        _ => panic!("Expected I32({}), got {:?}", expected, val),
+    }
 }
 
 fn assert_string(val: &Value, expected: &str) {
@@ -46,26 +48,30 @@ fn assert_string(val: &Value, expected: &str) {
             expected,
             s.as_ref()
         ),
-        _ => panic!("Expected String({:?}), got {:?}", expected, val) }
+        _ => panic!("Expected String({:?}), got {:?}", expected, val),
+    }
 }
 
 fn assert_null(val: &Value) {
     match val {
         Value::Null | Value::Undefined => {}
-        _ => panic!("Expected Null/Undefined, got {:?}", val) }
+        _ => panic!("Expected Null/Undefined, got {:?}", val),
+    }
 }
 
 fn assert_undefined(val: &Value) {
     match val {
         Value::Undefined => {}
-        _ => panic!("Expected Undefined, got {:?}", val) }
+        _ => panic!("Expected Undefined, got {:?}", val),
+    }
 }
 
 #[allow(dead_code)]
 fn assert_bool(val: &Value, expected: bool) {
     match val {
         Value::Bool(v) => assert_eq!(*v, expected),
-        _ => panic!("Expected Bool({}), got {:?}", expected, val) }
+        _ => panic!("Expected Bool({}), got {:?}", expected, val),
+    }
 }
 
 // ============================================================
@@ -539,9 +545,11 @@ fn invoke_zero_args_arity_zero() {
             name: Some("get42".to_string()),
             arity: 0,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
     assert_i32(&result, 42);
@@ -573,9 +581,11 @@ fn invoke_fewer_args_padding() {
             name: Some("check_pad".to_string()),
             arity: 3,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     let result = vm.invoke(&func_obj, &[Value::I32(100)]).unwrap();
     assert_null(&result);
@@ -611,9 +621,11 @@ fn invoke_exact_args() {
             name: Some("sum3".to_string()),
             arity: 3,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     let result = vm
         .invoke(&func_obj, &[Value::I32(10), Value::I32(20), Value::I32(30)])
@@ -647,9 +659,11 @@ fn invoke_returning_value() {
             name: Some("greet".to_string()),
             arity: 0,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
     assert_string(&result, "hello");
@@ -683,9 +697,11 @@ fn invoke_returning_object() {
             name: Some("make_obj".to_string()),
             arity: 0,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     let result = vm.invoke(&func_obj, &[]).unwrap();
     match &result {
@@ -693,7 +709,8 @@ fn invoke_returning_object() {
             let ob = o.lock().unwrap();
             assert_i32(&ob.get("x"), 10);
         }
-        _ => panic!("Expected Object, got {:?}", result) }
+        _ => panic!("Expected Object, got {:?}", result),
+    }
 }
 
 // ============================================================
@@ -737,9 +754,11 @@ fn invoke_host_function() {
             name: Some("wrapper".to_string()),
             arity: 1,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     let result = vm.invoke(&wrapper_obj, &[Value::I32(9)]).unwrap();
     assert_i32(&result, 81);
@@ -773,9 +792,11 @@ fn invoke_stack_clean_between_invocations() {
             name: Some("double".to_string()),
             arity: 1,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     let r1 = vm.invoke(&func_obj, &[Value::I32(5)]).unwrap();
     assert_i32(&r1, 10);
@@ -824,9 +845,11 @@ fn invoke_preserves_globals() {
             name: Some("set_global".to_string()),
             arity: 1,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     let getter_obj = Value::Object(Arc::new(std::sync::Mutex::new(Object {
         properties: indexmap::IndexMap::new(),
@@ -834,9 +857,11 @@ fn invoke_preserves_globals() {
             name: Some("get_global".to_string()),
             arity: 0,
             chunk_index: 2,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     // Set global to 42
     vm.invoke(&setter_obj, &[Value::I32(42)]).unwrap();
@@ -873,9 +898,11 @@ fn invoke_function_that_uses_struct_get() {
             name: Some("get_x".to_string()),
             arity: 1,
             chunk_index: 1,
-            upvalues: vec![] }),
+            upvalues: vec![],
+        }),
         type_id: 0,
-        fields: Vec::new() })));
+        fields: Vec::new(),
+    })));
 
     // Create an object {x: 99}
     let mut obj = Object::new();

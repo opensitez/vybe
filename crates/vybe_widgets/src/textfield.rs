@@ -3,7 +3,8 @@
 use super::WidgetColors;
 use super::layout::{
     CommandValue, KeyEvent, LayoutRect, MouseButton as LayoutMouseButton, MouseEvent,
-    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId };
+    MouseEventKind, PanelWidget, RenderContext, WidgetCommand, WidgetEvent, WidgetId,
+};
 use cosmic_text::Color as CosmicColor;
 
 pub struct TextInput {
@@ -13,6 +14,11 @@ pub struct TextInput {
     /// Selection anchor (the other end of the selection range). `None` = no selection.
     pub selection_anchor: Option<usize>,
     pub password: bool,
+    /// Whether a newline is content rather than a terminator. A memo, a
+    /// `<textarea>` and a WinForms `RichTextBox` are all this control with the
+    /// flag set: the text is top-aligned, `Enter` inserts, and the caret,
+    /// selection and hit-test work in (line, column) instead of one offset.
+    pub multiline: bool,
     pub disabled: bool,
     pub read_only: bool,
     pub max_length: Option<usize>,
@@ -27,7 +33,8 @@ pub struct TextInput {
     rect: LayoutRect,
     pending_events: Vec<WidgetEvent>,
     /// Whether a mouse drag selection is in progress.
-    dragging: bool }
+    dragging: bool,
+}
 
 impl TextInput {
     pub fn new() -> Self {
@@ -37,6 +44,7 @@ impl TextInput {
             cursor: 0,
             selection_anchor: None,
             password: false,
+            multiline: false,
             disabled: false,
             read_only: false,
             max_length: None,
@@ -50,7 +58,8 @@ impl TextInput {
             name: String::new(),
             rect: LayoutRect::zero(),
             pending_events: Vec::new(),
-            dragging: false }
+            dragging: false,
+        }
     }
 
     pub fn with_placeholder(mut self, p: &str) -> Self {
@@ -121,6 +130,90 @@ impl TextInput {
 
     pub fn measure(&self) -> (f32, f32) {
         (self.width, self.height)
+    }
+
+    /// The baseline-to-baseline step the text renderer actually uses, so the
+    /// caret and the hit-test land on the same rows the glyphs do.
+    /// Mirrors `Metrics::new(size, size * 1.3)` in `ide_text`.
+    fn line_height(&self) -> f32 {
+        self.font_size * 1.3
+    }
+
+    /// `(start_byte, text)` per line. A single-line field is simply one line,
+    /// so everything below is written once for both cases rather than branched.
+    ///
+    /// A trailing `\r` is dropped from the TEXT but still counted in the
+    /// offsets: `\r\n` is how Delphi and Windows spell a line break, and it is
+    /// terminator, not content — drawing it would put a box at every EOL.
+    fn lines(&self) -> Vec<(usize, &str)> {
+        let mut out = Vec::new();
+        let mut start = 0usize;
+        for raw in self.value.split('\n') {
+            out.push((start, raw.strip_suffix('\r').unwrap_or(raw)));
+            start += raw.len() + 1; // + the '\n' itself
+        }
+        out
+    }
+
+    /// The cursor as `(line index, byte offset within that line)`.
+    fn cursor_line_col(&self) -> (usize, usize) {
+        let cursor = self.cursor.min(self.value.len());
+        let before = &self.value[..cursor];
+        let line = before.matches('\n').count();
+        let col = before.rfind('\n').map_or(cursor, |nl| cursor - nl - 1);
+        (line, col)
+    }
+
+    /// Move the caret a line at a time, keeping its column where it can.
+    /// Single-line fields have nowhere to go, so this is a no-op for them.
+    fn move_vertical(&mut self, delta: isize) {
+        let target = {
+            let lines = self.lines();
+            let (line, col) = self.cursor_line_col();
+            let want = line as isize + delta;
+            if want < 0 || want >= lines.len() as isize {
+                None
+            } else {
+                let (start, text) = lines[want as usize];
+                let mut col = col.min(text.len());
+                while col > 0 && !text.is_char_boundary(col) {
+                    col -= 1;
+                }
+                Some(start + col)
+            }
+        };
+        if let Some(cursor) = target {
+            self.cursor = cursor;
+        }
+    }
+
+    /// Byte offset for a point in the widget's own coordinates.
+    ///
+    /// The column is the same average-advance estimate this control has always
+    /// used — it has no font system on the event path — but it is now applied
+    /// to the line the point falls on instead of to the whole value.
+    fn offset_at(&self, x: f32, y: f32) -> usize {
+        let padding = 4.0;
+        let lines = self.lines();
+        let index = if self.multiline {
+            let local_y = y - self.rect.y - padding;
+            ((local_y / self.line_height()).floor().max(0.0) as usize).min(lines.len() - 1)
+        } else {
+            0
+        };
+        let (start, text) = lines[index];
+        if text.is_empty() {
+            return start;
+        }
+        let local_x = x - self.rect.x - padding;
+        let chars = text.chars().count();
+        let advance = self.width / chars.max(1) as f32;
+        let column = ((local_x / advance).round().max(0.0) as usize).min(chars);
+        start
+            + text
+                .char_indices()
+                .nth(column)
+                .map_or(text.len(), |(i, _)| i)
     }
 
     /// Insert text at cursor position (replaces selection if any).
@@ -333,54 +426,62 @@ impl PanelWidget for TextInput {
 
         // Text content
         let padding = 4.0;
-        let display = self.display_text();
         let is_ph = self.is_placeholder();
         let (cr, cg, cb, _) = if is_ph {
             self.colors.placeholder
         } else {
             self.colors.foreground
         };
-        let ty = r.y + (r.h - self.font_size) / 2.0 - 1.0;
+        // A memo fills from the top; a one-line field centres in its box.
+        let ty = if self.multiline {
+            r.y + padding
+        } else {
+            r.y + (r.h - self.font_size) / 2.0 - 1.0
+        };
+        let line_h = self.line_height();
+        // One line for a single-line field, so the loops below are the general
+        // case rather than a second implementation.
+        let lines: Vec<(usize, String)> = if is_ph {
+            vec![(0, self.placeholder.clone())]
+        } else {
+            self.lines()
+                .into_iter()
+                .map(|(start, text)| {
+                    let shown = if self.password {
+                        "\u{2022}".repeat(text.chars().count())
+                    } else {
+                        text.to_string()
+                    };
+                    (start, shown)
+                })
+                .collect()
+        };
+        // Width of the first `bytes` of a line as drawn.
+        let prefix_x = |ctx: &mut RenderContext, text: &str, bytes: usize| -> f32 {
+            let end = bytes.min(text.len());
+            if end == 0 {
+                return 0.0;
+            }
+            super::ide_text::measure_text(ctx.font_system, &text[..end], self.font_size, ctx.scale)
+        };
 
-        // Selection highlight
-        if self.focused {
+        // Selection highlight — one rect per line it covers.
+        if self.focused && !is_ph {
             if let Some((sel_start, sel_end)) = self.selection_range() {
-                if sel_start != sel_end {
-                    let sel_display_start = if self.password {
-                        "\u{2022}".repeat(self.value[..sel_start].chars().count())
-                    } else {
-                        self.value[..sel_start].to_string()
-                    };
-                    let sel_display_end = if self.password {
-                        "\u{2022}".repeat(self.value[..sel_end].chars().count())
-                    } else {
-                        self.value[..sel_end].to_string()
-                    };
-                    let x_start = if sel_display_start.is_empty() {
-                        0.0
-                    } else {
-                        super::ide_text::measure_text(
-                            ctx.font_system,
-                            &sel_display_start,
-                            self.font_size,
-                            ctx.scale,
-                        )
-                    };
-                    let x_end = if sel_display_end.is_empty() {
-                        0.0
-                    } else {
-                        super::ide_text::measure_text(
-                            ctx.font_system,
-                            &sel_display_end,
-                            self.font_size,
-                            ctx.scale,
-                        )
-                    };
-                    // Draw selection rectangle
+                for (i, (start, text)) in lines.iter().enumerate() {
+                    let (from, to) = (sel_start.max(*start), sel_end.min(start + text.len()));
+                    if from >= to {
+                        continue;
+                    }
+                    let x_start = prefix_x(ctx, text, from - start);
+                    let x_end = prefix_x(ctx, text, to - start);
                     let sx = (r.x + padding + x_start) * ctx.scale;
                     let sw = (x_end - x_start) * ctx.scale;
-                    let sy = (r.y + 2.0) * ctx.scale;
-                    let sh = (r.h - 4.0) * ctx.scale;
+                    let (sy, sh) = if self.multiline {
+                        ((ty + i as f32 * line_h) * ctx.scale, line_h * ctx.scale)
+                    } else {
+                        ((r.y + 2.0) * ctx.scale, (r.h - 4.0) * ctx.scale)
+                    };
                     if let Some(rect) = tiny_skia::Rect::from_xywh(sx, sy, sw.max(1.0), sh) {
                         let mut paint = tiny_skia::Paint::default();
                         paint.set_color_rgba8(51, 153, 255, 100); // blue selection highlight
@@ -391,33 +492,38 @@ impl PanelWidget for TextInput {
             }
         }
 
-        super::ide_text::draw_text(
-            ctx.pixmap,
-            ctx.font_system,
-            ctx.swash_cache,
-            &display,
-            r.x + padding,
-            ty,
-            self.font_size,
-            CosmicColor::rgba(cr, cg, cb, 255),
-            ctx.scale,
-        );
+        for (i, (_, text)) in lines.iter().enumerate() {
+            let y = ty + i as f32 * line_h;
+            // Stop at the bottom edge instead of painting outside the control.
+            if self.multiline && y + line_h > r.y + r.h {
+                break;
+            }
+            super::ide_text::draw_text(
+                ctx.pixmap,
+                ctx.font_system,
+                ctx.swash_cache,
+                text,
+                r.x + padding,
+                y,
+                self.font_size,
+                CosmicColor::rgba(cr, cg, cb, 255),
+                ctx.scale,
+            );
+        }
 
         // Cursor
         if self.focused {
-            let before = if self.password {
-                "\u{2022}".repeat(self.cursor.min(self.value.len()))
-            } else {
-                self.value[..self.cursor.min(self.value.len())].to_string()
-            };
-            let cursor_x = if before.is_empty() {
-                0.0
-            } else {
-                super::ide_text::measure_text(ctx.font_system, &before, self.font_size, ctx.scale)
-            };
+            let (line, col) = self.cursor_line_col();
+            let cursor_x = lines
+                .get(line)
+                .map_or(0.0, |(_, text)| prefix_x(ctx, text, col));
             let cx = (r.x + padding + cursor_x) * ctx.scale;
-            let cy_top = (r.y + 3.0) * ctx.scale;
-            let cy_bot = (r.y + r.h - 3.0) * ctx.scale;
+            let (cy_top, cy_bot) = if self.multiline {
+                let top = ty + line as f32 * line_h;
+                ((top * ctx.scale), (top + line_h) * ctx.scale)
+            } else {
+                ((r.y + 3.0) * ctx.scale, (r.y + r.h - 3.0) * ctx.scale)
+            };
             let mut paint = tiny_skia::Paint::default();
             let (fr, fg, fb, _) = self.colors.foreground;
             paint.set_color_rgba8(fr, fg, fb, 255);
@@ -446,26 +552,7 @@ impl PanelWidget for TextInput {
         match event.kind {
             MouseEventKind::Press(LayoutMouseButton::Left) => {
                 self.focused = true;
-                // Need font system for hit-test; approximate with simple char-width method
-                // A proper hit-test is done in render with measure_text; here we store basic position.
-                // We'll refine in render, but for click we set the flag:
-                let padding = 4.0;
-                let local_x = event.x - self.rect.x - padding;
-                // Approximate: set cursor to end; proper hit-test happens via `hit_test_cursor` in handle_mouse_with_font.
-                // For now, use a simple proportional approximation.
-                if self.value.is_empty() {
-                    self.cursor = 0;
-                } else {
-                    let char_count = self.value.chars().count();
-                    let avg_char_width = self.width / char_count.max(1) as f32;
-                    let char_idx = ((local_x / avg_char_width).round() as usize).min(char_count);
-                    // Convert char index to byte position
-                    self.cursor = self
-                        .value
-                        .char_indices()
-                        .nth(char_idx)
-                        .map_or(self.value.len(), |(i, _)| i);
-                }
+                self.cursor = self.offset_at(event.x, event.y);
                 if event.shift {
                     // Shift+click: extend selection
                     if self.selection_anchor.is_none() {
@@ -479,24 +566,10 @@ impl PanelWidget for TextInput {
             }
             MouseEventKind::Move => {
                 if self.dragging {
-                    let padding = 4.0;
-                    let local_x = event.x - self.rect.x - padding;
                     if self.selection_anchor.is_none() {
                         self.selection_anchor = Some(self.cursor);
                     }
-                    if self.value.is_empty() {
-                        self.cursor = 0;
-                    } else {
-                        let char_count = self.value.chars().count();
-                        let avg_char_width = self.width / char_count.max(1) as f32;
-                        let char_idx =
-                            ((local_x / avg_char_width).round() as usize).min(char_count);
-                        self.cursor = self
-                            .value
-                            .char_indices()
-                            .nth(char_idx)
-                            .map_or(self.value.len(), |(i, _)| i);
-                    }
+                    self.cursor = self.offset_at(event.x, event.y);
                     return true;
                 }
             }
@@ -620,6 +693,35 @@ impl PanelWidget for TextInput {
                 }
                 true
             }
+            // In a memo a newline is CONTENT. A single-line field keeps
+            // ignoring Enter, which is what submits a form.
+            Key::Named(NamedKey::Enter) if self.multiline => {
+                self.insert("\n");
+                self.pending_events.push(WidgetEvent::TextChanged(
+                    self.name.clone(),
+                    self.value.clone(),
+                ));
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown)
+                if self.multiline =>
+            {
+                if is_shift {
+                    if self.selection_anchor.is_none() {
+                        self.selection_anchor = Some(self.cursor);
+                    }
+                } else {
+                    self.clear_selection();
+                }
+                self.move_vertical(
+                    if matches!(&event.key_without_modifiers, Key::Named(NamedKey::ArrowUp)) {
+                        -1
+                    } else {
+                        1
+                    },
+                );
+                true
+            }
             Key::Named(NamedKey::Home) => {
                 if is_shift {
                     if self.selection_anchor.is_none() {
@@ -628,7 +730,12 @@ impl PanelWidget for TextInput {
                 } else {
                     self.clear_selection();
                 }
-                self.cursor = 0;
+                // Home is the start of the LINE in a memo, of the value in a field.
+                self.cursor = if self.multiline {
+                    self.cursor - self.cursor_line_col().1
+                } else {
+                    0
+                };
                 true
             }
             Key::Named(NamedKey::End) => {
@@ -639,7 +746,13 @@ impl PanelWidget for TextInput {
                 } else {
                     self.clear_selection();
                 }
-                self.cursor = self.value.len();
+                self.cursor = if self.multiline {
+                    let (line, _) = self.cursor_line_col();
+                    let lines = self.lines();
+                    lines[line].0 + lines[line].1.len()
+                } else {
+                    self.value.len()
+                };
                 true
             }
             _ => {
@@ -691,7 +804,8 @@ impl PanelWidget for TextInput {
                 self.disabled = !e;
                 CommandValue::None
             }
-            _ => CommandValue::None }
+            _ => CommandValue::None,
+        }
     }
 
     fn drain_events(&mut self) -> Vec<WidgetEvent> {

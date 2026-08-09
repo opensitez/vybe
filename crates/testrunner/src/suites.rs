@@ -54,11 +54,10 @@ impl Table {
         if !visible {
             multi.set_draw_target(indicatif::ProgressDrawTarget::hidden());
         }
-        let style = ProgressStyle::with_template(
-            " {prefix} {bar:22.cyan/blue} {pos:>6}/{len:<6} {msg}",
-        )
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-        .progress_chars("##-");
+        let style =
+            ProgressStyle::with_template(" {prefix} {bar:22.cyan/blue} {pos:>6}/{len:<6} {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("##-");
 
         let mut suites = BTreeMap::new();
         for (lang, count) in counts {
@@ -87,7 +86,11 @@ impl Table {
         );
         total.set_prefix(format!("\x1b[1m{:<9}\x1b[0m", "total"));
 
-        Table { multi, suites, total }
+        Table {
+            multi,
+            suites,
+            total,
+        }
     }
 
     /// Fold one finished test into its suite's row.
@@ -120,7 +123,10 @@ impl Table {
         suite.bar.inc(1);
 
         let (all_ok, all_bad): (usize, usize) = self.suites.values().fold((0, 0), |(o, b), s| {
-            (o + s.ok.load(Ordering::Relaxed), b + s.failed.load(Ordering::Relaxed))
+            (
+                o + s.ok.load(Ordering::Relaxed),
+                b + s.failed.load(Ordering::Relaxed),
+            )
         });
         self.total.set_message(format!(
             "{all_ok} ok / {all_bad} fail ({:.1}%)",
@@ -143,5 +149,9 @@ impl Table {
 }
 
 fn pct(part: usize, whole: usize) -> f64 {
-    if whole == 0 { 0.0 } else { 100.0 * part as f64 / whole as f64 }
+    if whole == 0 {
+        0.0
+    } else {
+        100.0 * part as f64 / whole as f64
+    }
 }

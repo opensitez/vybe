@@ -14,15 +14,20 @@ use crate::extract::Case;
 
 pub struct Emitted {
     pub text: String,
-    pub pairing: Pairing }
+    pub pairing: Pairing,
+}
 
 pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
     let header = format!("' vybe-test: {slug}\n' origin: {origin}\n");
 
     let Some(raw) = case.expected.as_ref() else {
         return Emitted {
-            text: format!("{header}' vybe-test-mode: compile\n\n{}\n", case.source.trim()),
-            pairing: Pairing::Direct };
+            text: format!(
+                "{header}' vybe-test-mode: compile\n\n{}\n",
+                case.source.trim()
+            ),
+            pairing: Pairing::Direct,
+        };
     };
 
     // The `vb_*_spec!`/`vb_case!` macros pass expectations through
@@ -33,14 +38,16 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
         .map(|e| match e.as_str() {
             "true" => "True".to_string(),
             "false" => "False".to_string(),
-            other => other.to_string() })
+            other => other.to_string(),
+        })
         .collect();
 
     let (body, rewritten) = rewrite_prints(&case.source);
     if let Some(reason) = unpairable(&case.source, rewritten) {
         return Emitted {
             text: format!("{header}\n{}\n", case.source.trim()),
-            pairing: Pairing::Unpairable(reason) };
+            pairing: Pairing::Unpairable(reason),
+        };
     }
 
     let want = vb_string(&expected.join("\n"));
@@ -48,7 +55,8 @@ pub fn emit(case: &Case, origin: &str, slug: &str, harness: &str) -> Emitted {
 
     Emitted {
         text: format!("{header}\n{harness}\n\n{}\n", body.trim_end()),
-        pairing: Pairing::Direct }
+        pairing: Pairing::Direct,
+    }
 }
 
 /// Put `__Check(…)` at the END of `Sub Main`, where every print has already
@@ -108,11 +116,18 @@ fn rewrite_prints(src: &str) -> (String, usize) {
             let args_start = i + needle.len();
             if let Some(end) = close_paren(src, bytes, args_start) {
                 let args = src[args_start..end].trim();
-                let target = if needle.ends_with("WriteLine(") { "__P" } else { "__Pr" };
+                let target = if needle.ends_with("WriteLine(") {
+                    "__P"
+                } else {
+                    "__Pr"
+                };
                 // Render HERE, where the expression still has its static type.
                 // `WriteLine()` with no argument writes a bare newline.
-                let rendered =
-                    if args.is_empty() { "\"\"".to_string() } else { format!("CStr({args})") };
+                let rendered = if args.is_empty() {
+                    "\"\"".to_string()
+                } else {
+                    format!("CStr({args})")
+                };
                 out.push_str(&format!("{target}({rendered})"));
                 count += 1;
                 i = end + 1;
@@ -186,7 +201,8 @@ fn skip_atom(_src: &str, bytes: &[u8], at: usize) -> Option<usize> {
             }
             Some(i)
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 /// VB keywords are case-insensitive.
