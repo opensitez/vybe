@@ -105,9 +105,19 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget("Radio", "StatefulWidget", "RadioButton", RADIO_FIELDS),
     FlutterClass::widget("Switch", "StatefulWidget", "CheckBox", F_SWITCH),
     FlutterClass::widget("Slider", "StatefulWidget", "trackbar", F_SLIDER),
-    FlutterClass::widget("DropdownButton", "StatefulWidget", "combobox", F_DROPDOWNBTN),
+    FlutterClass::widget(
+        "DropdownButton",
+        "StatefulWidget",
+        "combobox",
+        F_DROPDOWNBTN,
+    ),
     FlutterClass::widget("DropdownMenuItem", "Widget", "Panel", F_DROPDOWNITEM),
-    FlutterClass::widget("InputDecorator", "StatefulWidget", "Panel", F_INPUTDECORATOR),
+    FlutterClass::widget(
+        "InputDecorator",
+        "StatefulWidget",
+        "Panel",
+        F_INPUTDECORATOR,
+    ),
     FlutterClass::data("InputDecoration", None, F_INPUTDECORATION),
     FlutterClass::data("TextEditingController", None, F_TEXTEDITCTRL),
 ];

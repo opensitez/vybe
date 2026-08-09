@@ -1,7 +1,7 @@
 //! Builder & inherited/implicit-animation widgets — async/state builders,
 //! Hero transitions, inherited scopes, and the `Animated*` implicit family.
 
-use crate::emitter::catalog::{FlutterClass, FlutterField, F_CHILD_ONLY};
+use crate::emitter::catalog::{F_CHILD_ONLY, FlutterClass, FlutterField};
 
 const F_FUTUREB: &[FlutterField] = &[
     FlutterField::named("future"),
@@ -38,14 +38,14 @@ const F_HERO: &[FlutterField] = &[
     FlutterField::named("placeholderBuilder"),
 ];
 
-const F_HEROMODE: &[FlutterField] =
-    &[FlutterField::named("enabled"), FlutterField::named("child")];
+const F_HEROMODE: &[FlutterField] = &[FlutterField::named("enabled"), FlutterField::named("child")];
 
-const F_ICONTHEME: &[FlutterField] =
-    &[FlutterField::named("data"), FlutterField::named("child")];
+const F_ICONTHEME: &[FlutterField] = &[FlutterField::named("data"), FlutterField::named("child")];
 
-const F_INHNOTIFIER: &[FlutterField] =
-    &[FlutterField::named("notifier"), FlutterField::named("child")];
+const F_INHNOTIFIER: &[FlutterField] = &[
+    FlutterField::named("notifier"),
+    FlutterField::named("child"),
+];
 
 const F_INTERACTIVE: &[FlutterField] = &[
     FlutterField::named("clipBehavior"),
@@ -89,7 +89,12 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget("FutureBuilder", "StatefulWidget", "Panel", F_FUTUREB),
     FlutterClass::widget("StreamBuilder", "StatefulWidget", "Panel", F_STREAMB),
     FlutterClass::widget("StatefulBuilder", "StatefulWidget", "Panel", F_STATEFULB),
-    FlutterClass::widget("ValueListenableBuilder", "StatefulWidget", "Panel", F_VLBUILDER),
+    FlutterClass::widget(
+        "ValueListenableBuilder",
+        "StatefulWidget",
+        "Panel",
+        F_VLBUILDER,
+    ),
     FlutterClass::widget("AnimatedBuilder", "AnimatedWidget", "Panel", F_ANIMBUILDER),
     // Scope/transition wrappers contribute no visual of their own — they carry
     // a theme, a notifier or an animation over the child, so the child realizes
@@ -103,5 +108,10 @@ pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::wrapper("AnimatedPadding", "ImplicitlyAnimatedWidget", F_ANIMPADDING),
     FlutterClass::wrapper("AnimatedSize", "StatefulWidget", F_ANIMSIZE),
     FlutterClass::wrapper("AnimatedOpacity", "ImplicitlyAnimatedWidget", F_ANIMOPACITY),
-    FlutterClass::widget("InteractiveViewer", "StatefulWidget", "Panel", F_INTERACTIVE),
+    FlutterClass::widget(
+        "InteractiveViewer",
+        "StatefulWidget",
+        "Panel",
+        F_INTERACTIVE,
+    ),
 ];

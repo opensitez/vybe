@@ -15,11 +15,15 @@ const F_IMAGE: &[FlutterField] = &[
     FlutterField::named("filterQuality"),
 ];
 
-const F_NETIMAGE: &[FlutterField] =
-    &[FlutterField::positional("url", 0), FlutterField::named("scale")];
+const F_NETIMAGE: &[FlutterField] = &[
+    FlutterField::positional("url", 0),
+    FlutterField::named("scale"),
+];
 
-const F_ASSETIMAGE: &[FlutterField] =
-    &[FlutterField::positional("assetName", 0), FlutterField::named("scale")];
+const F_ASSETIMAGE: &[FlutterField] = &[
+    FlutterField::positional("assetName", 0),
+    FlutterField::named("scale"),
+];
 
 const F_FILEIMAGE: &[FlutterField] = &[FlutterField::positional("file", 0)];
 

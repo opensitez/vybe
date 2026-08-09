@@ -26,8 +26,10 @@ const F_EDGEINSETS: &[FlutterField] = &[
     FlutterField::named("bottom"),
 ];
 
-const F_OFFSET: &[FlutterField] =
-    &[FlutterField::positional("dx", 0), FlutterField::positional("dy", 1)];
+const F_OFFSET: &[FlutterField] = &[
+    FlutterField::positional("dx", 0),
+    FlutterField::positional("dy", 1),
+];
 
 // A `Rect` stores its four edges; `width`/`height`/`center` are derived in
 // Flutter, so the walker's named-constructor desugar computes them once at
@@ -42,8 +44,7 @@ const F_RECT: &[FlutterField] = &[
 ];
 
 // `Radius.circular(r)` is an elliptical radius with equal axes.
-const F_RADIUS: &[FlutterField] =
-    &[FlutterField::named("x"), FlutterField::named("y")];
+const F_RADIUS: &[FlutterField] = &[FlutterField::named("x"), FlutterField::named("y")];
 
 const F_RRECT: &[FlutterField] = &[
     FlutterField::named("left"),
@@ -80,10 +81,14 @@ const F_RELATIVERECT: &[FlutterField] = &[
     FlutterField::named("right"),
     FlutterField::named("bottom"),
 ];
-const F_SIZE: &[FlutterField] =
-    &[FlutterField::positional("width", 0), FlutterField::positional("height", 1)];
-const F_ICONDATA: &[FlutterField] =
-    &[FlutterField::positional("codePoint", 0), FlutterField::named("fontFamily")];
+const F_SIZE: &[FlutterField] = &[
+    FlutterField::positional("width", 0),
+    FlutterField::positional("height", 1),
+];
+const F_ICONDATA: &[FlutterField] = &[
+    FlutterField::positional("codePoint", 0),
+    FlutterField::named("fontFamily"),
+];
 const F_ICONTHEMEDATA: &[FlutterField] =
     &[FlutterField::named("color"), FlutterField::named("size")];
 const F_TEXTSTYLE: &[FlutterField] = &[
@@ -97,8 +102,7 @@ const F_TEXTSPAN2: &[FlutterField] = &[
     FlutterField::named("children"),
     FlutterField::named("style"),
 ];
-const F_BORDERSIDE: &[FlutterField] =
-    &[FlutterField::named("color"), FlutterField::named("width")];
+const F_BORDERSIDE: &[FlutterField] = &[FlutterField::named("color"), FlutterField::named("width")];
 const F_BOXDECORATION: &[FlutterField] = &[
     FlutterField::named("color"),
     FlutterField::named("shape"),
@@ -119,10 +123,11 @@ const F_RADIALGRAD: &[FlutterField] = &[
     FlutterField::named("colors"),
     FlutterField::named("tileMode"),
 ];
-const F_TIMEOFDAY: &[FlutterField] =
-    &[FlutterField::named("hour"), FlutterField::named("minute")];
-const F_ROUTESETTINGS: &[FlutterField] =
-    &[FlutterField::named("name"), FlutterField::named("arguments")];
+const F_TIMEOFDAY: &[FlutterField] = &[FlutterField::named("hour"), FlutterField::named("minute")];
+const F_ROUTESETTINGS: &[FlutterField] = &[
+    FlutterField::named("name"),
+    FlutterField::named("arguments"),
+];
 const F_SEMNODE: &[FlutterField] = &[
     FlutterField::named("label"),
     FlutterField::named("value"),
@@ -135,8 +140,7 @@ const F_SEMNODE: &[FlutterField] = &[
     FlutterField::named("tags"),
 ];
 const F_LABEL_ONLY: &[FlutterField] = &[FlutterField::named("label")];
-const F_SEMACTION: &[FlutterField] =
-    &[FlutterField::named("hint"), FlutterField::named("action")];
+const F_SEMACTION: &[FlutterField] = &[FlutterField::named("hint"), FlutterField::named("action")];
 const F_SEMTAG: &[FlutterField] = &[FlutterField::positional("name", 0)];
 const F_FITTEDSIZES: &[FlutterField] = &[
     FlutterField::positional("source", 0),
@@ -149,8 +153,10 @@ const F_ASYNCSNAPSHOT: &[FlutterField] = &[
     FlutterField::named("data"),
     FlutterField::named("hasError"),
 ];
-const F_IMGCONFIG: &[FlutterField] =
-    &[FlutterField::named("size"), FlutterField::named("devicePixelRatio")];
+const F_IMGCONFIG: &[FlutterField] = &[
+    FlutterField::named("size"),
+    FlutterField::named("devicePixelRatio"),
+];
 
 pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::data("Color", None, COLOR_FIELDS),

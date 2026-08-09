@@ -68,9 +68,10 @@ pub fn register(vm: &mut VM) {
             c.properties.insert("g".into(), Value::F64(*g as f64));
             c.properties.insert("b".into(), Value::F64(*b as f64));
             c.properties.insert("a".into(), Value::F64(alpha as f64));
-            color_obj
-                .properties
-                .insert(name.to_lowercase(), Value::Object(vybe_runtime::heap::alloc(c)));
+            color_obj.properties.insert(
+                name.to_lowercase(),
+                Value::Object(vybe_runtime::heap::alloc(c)),
+            );
         }
         vm.globals.insert(
             "color".into(),

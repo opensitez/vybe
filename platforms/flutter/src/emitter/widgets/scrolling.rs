@@ -2,7 +2,7 @@
 //! `Sliver*` family, SafeArea, plus the scroll controllers and sliver child
 //! delegates they take as data arguments.
 
-use crate::emitter::catalog::{FlutterClass, FlutterField, F_CHILD_ONLY};
+use crate::emitter::catalog::{F_CHILD_ONLY, FlutterClass, FlutterField};
 
 const F_LISTVIEW: &[FlutterField] = &[
     FlutterField::children_list("children"),
@@ -82,8 +82,10 @@ const F_SLIVERLIST: &[FlutterField] = &[
     FlutterField::named("separatorBuilder"),
 ];
 
-const F_SLIVERPAD: &[FlutterField] =
-    &[FlutterField::named("padding"), FlutterField::named("sliver")];
+const F_SLIVERPAD: &[FlutterField] = &[
+    FlutterField::named("padding"),
+    FlutterField::named("sliver"),
+];
 
 const F_SLIVERAPPBAR: &[FlutterField] = &[
     FlutterField::named("title"),
@@ -104,8 +106,10 @@ const F_SAFEAREA: &[FlutterField] = &[
     FlutterField::named("child"),
 ];
 
-const F_SLIVERSAFEAREA: &[FlutterField] =
-    &[FlutterField::named("sliver"), FlutterField::named("minimum")];
+const F_SLIVERSAFEAREA: &[FlutterField] = &[
+    FlutterField::named("sliver"),
+    FlutterField::named("minimum"),
+];
 
 const F_SCROLLCONTROLLER: &[FlutterField] = &[
     FlutterField::named("initialScrollOffset"),
@@ -139,25 +143,65 @@ const F_SGRIDDELEGATE: &[FlutterField] = &[
 pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget("ListView", "BoxScrollView", "listbox", F_LISTVIEW),
     FlutterClass::widget("GridView", "BoxScrollView", "FlowLayoutPanel", F_GRIDVIEW),
-    FlutterClass::widget("CustomScrollView", "ScrollView", "FlowLayoutPanel", F_CUSTOMSCROLL),
-    FlutterClass::widget("SingleChildScrollView", "StatelessWidget", "FlowLayoutPanel", F_SINGLESCROLL),
+    FlutterClass::widget(
+        "CustomScrollView",
+        "ScrollView",
+        "FlowLayoutPanel",
+        F_CUSTOMSCROLL,
+    ),
+    FlutterClass::widget(
+        "SingleChildScrollView",
+        "StatelessWidget",
+        "FlowLayoutPanel",
+        F_SINGLESCROLL,
+    ),
     FlutterClass::widget("PageView", "StatefulWidget", "FlowLayoutPanel", F_PAGEVIEW),
     FlutterClass::widget("Scrollbar", "StatelessWidget", "vscrollbar", F_SCROLLBAR),
-    FlutterClass::widget("SliverGrid", "StatelessWidget", "FlowLayoutPanel", F_SLIVERGRID),
-    FlutterClass::widget("SliverList", "StatelessWidget", "FlowLayoutPanel", F_SLIVERLIST),
+    FlutterClass::widget(
+        "SliverGrid",
+        "StatelessWidget",
+        "FlowLayoutPanel",
+        F_SLIVERGRID,
+    ),
+    FlutterClass::widget(
+        "SliverList",
+        "StatelessWidget",
+        "FlowLayoutPanel",
+        F_SLIVERLIST,
+    ),
     // Inset/adapter slivers only pad or re-box their sliver — no visual of
     // their own on the backing controls, so they realize transparently.
-    FlutterClass::wrapper("SliverPadding", "SingleChildRenderObjectWidget", F_SLIVERPAD),
-    FlutterClass::wrapper("SliverToBoxAdapter", "SingleChildRenderObjectWidget", F_CHILD_ONLY),
+    FlutterClass::wrapper(
+        "SliverPadding",
+        "SingleChildRenderObjectWidget",
+        F_SLIVERPAD,
+    ),
+    FlutterClass::wrapper(
+        "SliverToBoxAdapter",
+        "SingleChildRenderObjectWidget",
+        F_CHILD_ONLY,
+    ),
     FlutterClass::wrapper("SafeArea", "StatelessWidget", F_SAFEAREA),
     FlutterClass::wrapper("SliverSafeArea", "StatelessWidget", F_SLIVERSAFEAREA),
     FlutterClass::widget("SliverAppBar", "StatefulWidget", "Panel", F_SLIVERAPPBAR),
     FlutterClass::data("ScrollController", None, F_SCROLLCONTROLLER),
-    FlutterClass::data("TrackingScrollController", Some("ScrollController"), F_SCROLLCONTROLLER),
-    FlutterClass::data("FixedExtentScrollController", Some("ScrollController"), F_FIXEDEXTENT),
+    FlutterClass::data(
+        "TrackingScrollController",
+        Some("ScrollController"),
+        F_SCROLLCONTROLLER,
+    ),
+    FlutterClass::data(
+        "FixedExtentScrollController",
+        Some("ScrollController"),
+        F_FIXEDEXTENT,
+    ),
     FlutterClass::data("PageController", None, F_PAGECONTROLLER),
     FlutterClass::data("SliverChildBuilderDelegate", None, F_SLIVERBUILDERDELEGATE),
     FlutterClass::data("SliverChildListDelegate", None, F_SLIVERLISTDELEGATE),
-    FlutterClass::data("SliverGridDelegateWithFixedCrossAxisCount", None, F_SGRIDDELEGATE),
+    FlutterClass::data(
+        "SliverGridDelegateWithFixedCrossAxisCount",
+        None,
+        F_SGRIDDELEGATE,
+    ),
     FlutterClass::data("BouncingScrollPhysics", None, &[]),
 ];

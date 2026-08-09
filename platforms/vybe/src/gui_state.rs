@@ -9,8 +9,7 @@ use vybe_runtime::Value;
 use vybe_widgets::canvas::RecordingCanvas;
 // The individual control types are no longer named here: construction moved
 // to `vybe_widgets::controls::make_widget`, shared with the `web:html` DOM.
-use vybe_widgets::{
-    Canvas as CanvasWidget, CommandValue, Form as WidgetForm, WidgetCommand };
+use vybe_widgets::{Canvas as CanvasWidget, CommandValue, Form as WidgetForm, WidgetCommand};
 
 /// Holds the live widget form + event callbacks.
 /// Created before VM runs, shared with host fns via `Arc<Mutex<>>`.
@@ -95,7 +94,8 @@ pub struct GuiState {
     pub mouse_y: i32,
     pub mouse_buttons: u32,
     /// Current modifier mask for `SDL_GetModState` (KMOD_* bits).
-    pub mod_state: u32 }
+    pub mod_state: u32,
+}
 
 /// One raw input event, in SDL's own vocabulary — the window layer maps
 /// winit's types into this so the host fns and the C program agree on
@@ -116,7 +116,8 @@ pub struct SdlInputEvent {
     /// SDL_BUTTON_* index (button events).
     pub button: u32,
     /// Wheel delta (wheel events).
-    pub wheel_y: i32 }
+    pub wheel_y: i32,
+}
 
 impl SdlInputEvent {
     pub fn empty(event_type: u32) -> Self {
@@ -128,7 +129,8 @@ impl SdlInputEvent {
             x: 0,
             y: 0,
             button: 0,
-            wheel_y: 0 }
+            wheel_y: 0,
+        }
     }
 }
 
@@ -157,7 +159,8 @@ impl GuiState {
             mouse_x: 0,
             mouse_y: 0,
             mouse_buttons: 0,
-            mod_state: 0 }
+            mod_state: 0,
+        }
     }
 
     /// Queue a raw input event for `SDL_PollEvent`, updating the sampled
@@ -181,7 +184,8 @@ impl GuiState {
             0x300 | 0x301 => {
                 self.mod_state = event.mod_state;
             }
-            _ => {} }
+            _ => {}
+        }
         if self.input_events.len() < SDL_INPUT_QUEUE_CAP {
             self.input_events.push_back(event);
         }
@@ -493,7 +497,8 @@ impl GuiState {
         parent_is_form: bool,
     ) {
         let widget = vybe_widgets::controls::make_widget(type_name, name, text, w as f32, h as f32);
-        self.form.stage_control(name, widget, parent, parent_is_form);
+        self.form
+            .stage_control(name, widget, parent, parent_is_form);
         self.track_live_control_name(name, name);
     }
 
@@ -517,7 +522,9 @@ impl GuiState {
     pub fn active_timers(&self) -> Vec<(String, u64, Value)> {
         let mut out = Vec::new();
         for (key, handler) in &self.event_handlers {
-            let Some((name, ev)) = key.rsplit_once('.') else { continue };
+            let Some((name, ev)) = key.rsplit_once('.') else {
+                continue;
+            };
             if ev != "timer" && ev != "tick" {
                 continue;
             }
@@ -586,14 +593,12 @@ impl GuiState {
                     self.form.send_command(&name, &WidgetCommand::SetValue(n));
                 } else {
                     let c = matches!(value, "true" | "True" | "1");
-                    self.form
-                        .send_command(&name, &WidgetCommand::SetChecked(c));
+                    self.form.send_command(&name, &WidgetCommand::SetChecked(c));
                 }
             }
             "checked" | "ischecked" | "selected" => {
                 let c = matches!(value, "true" | "True" | "1");
-                self.form
-                    .send_command(&name, &WidgetCommand::SetChecked(c));
+                self.form.send_command(&name, &WidgetCommand::SetChecked(c));
             }
             "selectedindex" => {
                 if let Ok(i) = value.parse::<usize>() {
@@ -621,7 +626,8 @@ impl GuiState {
                 let cmd = format!("Set{}", capitalize_first(&prop_lower));
                 let payload = match value.trim().parse::<f64>() {
                     Ok(n) => CommandValue::Number(n),
-                    Err(_) => CommandValue::Text(value.to_string()) };
+                    Err(_) => CommandValue::Text(value.to_string()),
+                };
                 // `send_command` addresses a CHILD widget. The form is not one,
                 // so a width/height written to the form itself would be silently
                 // dropped and the window would keep the default size — which is
@@ -695,7 +701,8 @@ impl GuiState {
                 let result = self.form.send_command(&name, &WidgetCommand::GetText);
                 match result {
                     CommandValue::Text(s) => s,
-                    _ => String::new() }
+                    _ => String::new(),
+                }
             }
             _ => {
                 let result = self.form.send_command(
@@ -707,7 +714,8 @@ impl GuiState {
                 );
                 match result {
                     CommandValue::Text(s) => s,
-                    _ => String::new() }
+                    _ => String::new(),
+                }
             }
         }
     }
@@ -717,7 +725,8 @@ fn capitalize_first(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
         None => String::new(),
-        Some(f) => f.to_uppercase().collect::<String>() + c.as_str() }
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
 }
 
 // The control factory moved to `vybe_widgets::controls::make_widget`: the
@@ -779,7 +788,8 @@ mod adapter_tests {
             kind: MouseEventKind::Press(MouseButton::Left),
             cmd: false,
             shift: false,
-            alt: false };
+            alt: false,
+        };
         gui.form.handle_mouse(&click);
         let events = gui.form.drain_events();
         assert!(
@@ -793,7 +803,8 @@ mod adapter_tests {
     fn slider_actual(gui: &mut GuiState, name: &str) -> f64 {
         match gui.form.send_command(name, &WidgetCommand::GetValue) {
             CommandValue::Number(n) => n,
-            other => panic!("slider GetValue returned {other:?}") }
+            other => panic!("slider GetValue returned {other:?}"),
+        }
     }
 
     /// Slider, fully wired: `Slider(value:, min:, max:)` positions the real
@@ -848,7 +859,8 @@ mod adapter_tests {
         gui.set_property("tf1", "text", "hello");
         match gui.form.send_command("tf1", &WidgetCommand::GetText) {
             CommandValue::Text(s) => assert_eq!(s, "hello"),
-            other => panic!("TextField GetText returned {other:?}") }
+            other => panic!("TextField GetText returned {other:?}"),
+        }
     }
 
     /// Radio, control side: the adapter reflects `value == groupValue` as a

@@ -15,7 +15,8 @@ use vybe_widgets::canvas::{Canvas, Color, Font, FontStyle, FontWeight, LineCap, 
 use crate::gui_state::GuiState;
 
 struct WidgetsBackend {
-    gui: Arc<Mutex<GuiState>> }
+    gui: Arc<Mutex<GuiState>>,
+}
 
 fn color(r: u8, g: u8, b: u8, a: u8) -> Color {
     Color { r, g, b, a }
@@ -27,7 +28,11 @@ impl CanvasBackend for WidgetsBackend {
     }
 
     fn clear_all(&self, target: &str) {
-        self.gui.lock().unwrap().find_canvas_for_draw(target).clear();
+        self.gui
+            .lock()
+            .unwrap()
+            .find_canvas_for_draw(target)
+            .clear();
     }
 
     fn apply(&self, target: &str, op: Op2D) {
@@ -43,22 +48,34 @@ impl CanvasBackend for WidgetsBackend {
             Op2D::SetLineCap(k) => c.set_line_cap(match k.as_str() {
                 "round" => LineCap::Round,
                 "square" => LineCap::Square,
-                _ => LineCap::Butt }),
+                _ => LineCap::Butt,
+            }),
             Op2D::SetLineJoin(k) => c.set_line_join(match k.as_str() {
                 "round" => LineJoin::Round,
                 "bevel" => LineJoin::Bevel,
-                _ => LineJoin::Miter }),
+                _ => LineJoin::Miter,
+            }),
             Op2D::SetGlobalAlpha(a) => c.set_global_alpha(a),
             Op2D::SetImageSmoothing(on) => c.set_image_smoothing(on),
             Op2D::SetFont {
                 family,
                 size,
                 bold,
-                italic } => c.set_font(&Font {
+                italic,
+            } => c.set_font(&Font {
                 family,
                 size,
-                weight: if bold { FontWeight::Bold } else { FontWeight::Normal },
-                style: if italic { FontStyle::Italic } else { FontStyle::Normal } }),
+                weight: if bold {
+                    FontWeight::Bold
+                } else {
+                    FontWeight::Normal
+                },
+                style: if italic {
+                    FontStyle::Italic
+                } else {
+                    FontStyle::Normal
+                },
+            }),
             Op2D::Translate(x, y) => c.translate(x, y),
             Op2D::Scale(x, y) => c.scale(x, y),
             Op2D::Rotate(a) => c.rotate(a),
@@ -85,7 +102,8 @@ impl CanvasBackend for WidgetsBackend {
                 dx,
                 dy,
                 dw,
-                dh } => {
+                dh,
+            } => {
                 let img = vybe_widgets::canvas::Image::from_rgba(width, height, pixels);
                 c.draw_image(&img, dx, dy, dw, dh);
             }
@@ -97,7 +115,8 @@ impl CanvasBackend for WidgetsBackend {
                 dx,
                 dy,
                 dw,
-                dh } => {
+                dh,
+            } => {
                 // The palette arrives as RGB triples (SDL's shape); the
                 // engine wants packed 0xRRGGBB entries.
                 let packed: Vec<u32> = palette
@@ -108,9 +127,8 @@ impl CanvasBackend for WidgetsBackend {
                             | (*c.get(2).unwrap_or(&0) as u32)
                     })
                     .collect();
-                let img = vybe_widgets::canvas::Image::from_paletted(
-                    width, height, &indices, &packed,
-                );
+                let img =
+                    vybe_widgets::canvas::Image::from_paletted(width, height, &indices, &packed);
                 c.draw_image(&img, dx, dy, dw, dh);
             }
         }

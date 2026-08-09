@@ -39,7 +39,8 @@ pub struct FlutterClass {
     /// place instead of creating a Panel that just nests one child — a bare
     /// Panel per wrapper is pure layout noise, since none of the effects
     /// (opacity/clip/transform) are expressible on the backing controls.
-    pub transparent: bool }
+    pub transparent: bool,
+}
 
 impl FlutterClass {
     /// A concrete widget backed by a `vybe:gui` control constructor.
@@ -55,7 +56,8 @@ impl FlutterClass {
             interfaces: NO_INTERFACES,
             fields,
             widget_host_fn: Some(host),
-            transparent: false }
+            transparent: false,
+        }
     }
 
     /// A TRANSPARENT wrapper widget: keeps full type identity and field
@@ -72,7 +74,8 @@ impl FlutterClass {
             interfaces: NO_INTERFACES,
             fields,
             widget_host_fn: Some("Panel"),
-            transparent: true }
+            transparent: true,
+        }
     }
 
     /// An abstract base in the `is`/identity chain (no backing control).
@@ -83,7 +86,8 @@ impl FlutterClass {
             interfaces: NO_INTERFACES,
             fields: NO_FIELDS,
             widget_host_fn: None,
-            transparent: false }
+            transparent: false,
+        }
     }
 
     /// A pure data / value type (no backing control): Color, Offset, FocusNode…
@@ -98,7 +102,8 @@ impl FlutterClass {
             interfaces: NO_INTERFACES,
             fields,
             widget_host_fn: None,
-            transparent: false }
+            transparent: false,
+        }
     }
 
     /// A data type carrying extra `is`-identity names (e.g. `Key` → ValueKey).
@@ -114,7 +119,8 @@ impl FlutterClass {
             interfaces,
             fields,
             widget_host_fn: None,
-            transparent: false }
+            transparent: false,
+        }
     }
 }
 
@@ -131,21 +137,42 @@ pub struct FlutterField {
     /// True when the value is a LIST of child widgets (`Column.children`) —
     /// construction adds each element to the control. Single-child/scalar
     /// fields (`false`) are resolved per-value at construction runtime.
-    pub children: bool }
+    pub children: bool,
+}
 
 impl FlutterField {
     pub(crate) const fn named(name: &'static str) -> Self {
-        FlutterField { name, positional: None, default: None, children: false }
+        FlutterField {
+            name,
+            positional: None,
+            default: None,
+            children: false,
+        }
     }
     pub(crate) const fn named_default(name: &'static str, default: &'static str) -> Self {
-        FlutterField { name, positional: None, default: Some(default), children: false }
+        FlutterField {
+            name,
+            positional: None,
+            default: Some(default),
+            children: false,
+        }
     }
     pub(crate) const fn positional(name: &'static str, slot: u8) -> Self {
-        FlutterField { name, positional: Some(slot), default: None, children: false }
+        FlutterField {
+            name,
+            positional: Some(slot),
+            default: None,
+            children: false,
+        }
     }
     /// A list-of-children field (`Column(children: [...])`).
     pub(crate) const fn children_list(name: &'static str) -> Self {
-        FlutterField { name, positional: None, default: Some("const []"), children: true }
+        FlutterField {
+            name,
+            positional: None,
+            default: Some("const []"),
+            children: true,
+        }
     }
 }
 
@@ -180,13 +207,48 @@ pub fn flutter_classes() -> &'static [FlutterClass] {
 /// Unambiguous only — deliberately EXCLUDES polymorphic names like `value`
 /// (double on Slider, bool on Checkbox, generic on DropdownButton).
 const DOUBLE_FIELD_NAMES: &[&str] = &[
-    "width", "height", "left", "top", "right", "bottom", "elevation", "opacity",
-    "fontSize", "letterSpacing", "wordSpacing", "dx", "dy", "widthFactor",
-    "heightFactor", "aspectRatio", "thickness", "indent", "endIndent", "angle",
-    "radius", "spacing", "runSpacing", "strokeWidth", "blurRadius", "spreadRadius",
-    "scale", "textScaleFactor", "cacheExtent", "itemExtent", "minWidth", "maxWidth",
-    "minHeight", "maxHeight", "toolbarHeight", "leadingWidth", "titleSpacing",
-    "borderRadius", "minValue", "maxValue", "progress", "spaceRadius",
+    "width",
+    "height",
+    "left",
+    "top",
+    "right",
+    "bottom",
+    "elevation",
+    "opacity",
+    "fontSize",
+    "letterSpacing",
+    "wordSpacing",
+    "dx",
+    "dy",
+    "widthFactor",
+    "heightFactor",
+    "aspectRatio",
+    "thickness",
+    "indent",
+    "endIndent",
+    "angle",
+    "radius",
+    "spacing",
+    "runSpacing",
+    "strokeWidth",
+    "blurRadius",
+    "spreadRadius",
+    "scale",
+    "textScaleFactor",
+    "cacheExtent",
+    "itemExtent",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
+    "toolbarHeight",
+    "leadingWidth",
+    "titleSpacing",
+    "borderRadius",
+    "minValue",
+    "maxValue",
+    "progress",
+    "spaceRadius",
 ];
 
 /// `(OwnerType, field)` pairs whose name is in `DOUBLE_FIELD_NAMES` but which
@@ -346,13 +408,23 @@ pub const LIVE_PROPERTIES: &[&str] = &[
 /// The `is`/`instanceof` ancestry for `class`, self first: e.g. `Scaffold` →
 /// `["Scaffold", "StatefulWidget", "Widget"]`. Stamped as the object's
 /// `__types` array so `x is StatefulWidget` matches by membership.
-pub fn ancestry(class: &FlutterClass) -> Vec<&'static str> {
-    let all = flutter_classes();
-    let mut chain = vec![class.name];
-    let mut parent = class.parent;
-    while let Some(p) = parent {
-        chain.push(p);
-        parent = all.iter().find(|c| c.name == p).and_then(|c| c.parent);
-    }
-    chain
+///
+/// The WALK is `vybe_runtime::namespaces::ancestry_of` — one definition shared
+/// with the other catalog-backed adapters instead of four hand-rolled loops.
+/// What stays here is the `parent_of` lookup, because `FlutterClass` is an
+/// adapter row type and has no business in `vybe_runtime`.
+///
+/// The lookup is deliberately EXACT (`c.name == name`): catalog names are
+/// declared, not user-spelled, so a case-folded match would only widen it. The
+/// shared helper's own cycle guard folds case, which is a guard rather than a
+/// lookup — no difference for this catalog, and it is what stops a cyclic
+/// `parent` spinning forever, which the loop this replaces did.
+pub fn ancestry(class: &FlutterClass) -> Vec<String> {
+    vybe_runtime::namespaces::ancestry_of(class.name, |name| {
+        flutter_classes()
+            .iter()
+            .find(|c| c.name == name)
+            .and_then(|c| c.parent)
+            .map(str::to_string)
+    })
 }

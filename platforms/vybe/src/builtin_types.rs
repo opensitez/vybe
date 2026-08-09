@@ -9,8 +9,8 @@
 //! capability is granted; without it those fns are absent and the entries are
 //! simply skipped, but the TypeDefs still register (as before).
 
-use vybe_runtime::{Method, TypeDef};
 use vybe_runtime::Framework;
+use vybe_runtime::{Method, TypeDef};
 
 /// The concrete control types — each a subtype of `Control`, each with a
 /// `new_<Name>` constructor. (Several `.NET` non-visual components — `Timer`,
@@ -113,50 +113,143 @@ pub fn register_types(fw: &mut Framework<'_>) {
     }
 
     // --- WinForms enums (compile-time constants) ---
-    register_enum(fw, "DialogResult", &[
-        ("none", 0), ("ok", 1), ("cancel", 2), ("abort", 3),
-        ("retry", 4), ("ignore", 5), ("yes", 6), ("no", 7),
-    ]);
-    register_enum(fw, "MessageBoxButtons", &[
-        ("ok", 0), ("okcancel", 1), ("abortretryignore", 2),
-        ("yesnocancel", 3), ("yesno", 4), ("retrycancel", 5),
-    ]);
-    register_enum(fw, "MessageBoxIcon", &[
-        ("none", 0), ("error", 16), ("question", 32),
-        ("warning", 48), ("information", 64),
-    ]);
-    register_enum(fw, "Keys", &[
-        ("none", 0), ("back", 8), ("tab", 9), ("return", 13), ("enter", 13),
-        ("escape", 27), ("space", 32), ("left", 37), ("up", 38),
-        ("right", 39), ("down", 40), ("delete", 46), ("insert", 45),
-        ("shift", 16), ("control", 17), ("alt", 18),
-        ("f1", 112), ("f2", 113), ("f3", 114), ("f4", 115), ("f5", 116),
-        ("f6", 117), ("f7", 118), ("f8", 119), ("f9", 120), ("f10", 121),
-        ("f11", 122), ("f12", 123),
-    ]);
-    register_enum(fw, "FormBorderStyle", &[
-        ("none", 0), ("fixedsingle", 1), ("fixeddialog", 3),
-        ("sizable", 4), ("fixedtoolwindow", 5), ("sizabletoolwindow", 6),
-    ]);
-    register_enum(fw, "FormStartPosition", &[
-        ("manual", 0), ("centerscreen", 1), ("windowsdefaultlocation", 2),
-        ("windowsdefaultbounds", 3), ("centerparent", 4),
-    ]);
-    register_enum(fw, "FormWindowState", &[
-        ("normal", 0), ("minimized", 1), ("maximized", 2),
-    ]);
-    register_enum(fw, "DockStyle", &[
-        ("none", 0), ("top", 1), ("bottom", 2), ("left", 3), ("right", 4), ("fill", 5),
-    ]);
-    register_enum(fw, "AnchorStyles", &[
-        ("none", 0), ("top", 1), ("bottom", 2), ("left", 4), ("right", 8),
-    ]);
-    register_enum(fw, "CloseReason", &[
-        ("none", 0), ("windowsshutdown", 1), ("userclosing", 3), ("applicationexitcall", 5),
-    ]);
-    register_enum(fw, "MouseButtons", &[
-        ("none", 0), ("left", 1), ("right", 2), ("middle", 4),
-    ]);
+    register_enum(
+        fw,
+        "DialogResult",
+        &[
+            ("none", 0),
+            ("ok", 1),
+            ("cancel", 2),
+            ("abort", 3),
+            ("retry", 4),
+            ("ignore", 5),
+            ("yes", 6),
+            ("no", 7),
+        ],
+    );
+    register_enum(
+        fw,
+        "MessageBoxButtons",
+        &[
+            ("ok", 0),
+            ("okcancel", 1),
+            ("abortretryignore", 2),
+            ("yesnocancel", 3),
+            ("yesno", 4),
+            ("retrycancel", 5),
+        ],
+    );
+    register_enum(
+        fw,
+        "MessageBoxIcon",
+        &[
+            ("none", 0),
+            ("error", 16),
+            ("question", 32),
+            ("warning", 48),
+            ("information", 64),
+        ],
+    );
+    register_enum(
+        fw,
+        "Keys",
+        &[
+            ("none", 0),
+            ("back", 8),
+            ("tab", 9),
+            ("return", 13),
+            ("enter", 13),
+            ("escape", 27),
+            ("space", 32),
+            ("left", 37),
+            ("up", 38),
+            ("right", 39),
+            ("down", 40),
+            ("delete", 46),
+            ("insert", 45),
+            ("shift", 16),
+            ("control", 17),
+            ("alt", 18),
+            ("f1", 112),
+            ("f2", 113),
+            ("f3", 114),
+            ("f4", 115),
+            ("f5", 116),
+            ("f6", 117),
+            ("f7", 118),
+            ("f8", 119),
+            ("f9", 120),
+            ("f10", 121),
+            ("f11", 122),
+            ("f12", 123),
+        ],
+    );
+    register_enum(
+        fw,
+        "FormBorderStyle",
+        &[
+            ("none", 0),
+            ("fixedsingle", 1),
+            ("fixeddialog", 3),
+            ("sizable", 4),
+            ("fixedtoolwindow", 5),
+            ("sizabletoolwindow", 6),
+        ],
+    );
+    register_enum(
+        fw,
+        "FormStartPosition",
+        &[
+            ("manual", 0),
+            ("centerscreen", 1),
+            ("windowsdefaultlocation", 2),
+            ("windowsdefaultbounds", 3),
+            ("centerparent", 4),
+        ],
+    );
+    register_enum(
+        fw,
+        "FormWindowState",
+        &[("normal", 0), ("minimized", 1), ("maximized", 2)],
+    );
+    register_enum(
+        fw,
+        "DockStyle",
+        &[
+            ("none", 0),
+            ("top", 1),
+            ("bottom", 2),
+            ("left", 3),
+            ("right", 4),
+            ("fill", 5),
+        ],
+    );
+    register_enum(
+        fw,
+        "AnchorStyles",
+        &[
+            ("none", 0),
+            ("top", 1),
+            ("bottom", 2),
+            ("left", 4),
+            ("right", 8),
+        ],
+    );
+    register_enum(
+        fw,
+        "CloseReason",
+        &[
+            ("none", 0),
+            ("windowsshutdown", 1),
+            ("userclosing", 3),
+            ("applicationexitcall", 5),
+        ],
+    );
+    register_enum(
+        fw,
+        "MouseButtons",
+        &[("none", 0), ("left", 1), ("right", 2), ("middle", 4)],
+    );
 
     // --- Value-type constructors (no-op today: the Point/Size/Font TypeDefs
     // aren't registered, so these bind only if some future prelude adds them). ---

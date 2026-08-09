@@ -43,8 +43,10 @@ const F_DISMISSIBLE: &[FlutterField] = &[
     FlutterField::named("onDismissed"),
 ];
 
-const F_RECOGNIZER: &[FlutterField] =
-    &[FlutterField::named("debugOwner"), FlutterField::named("onTap")];
+const F_RECOGNIZER: &[FlutterField] = &[
+    FlutterField::named("debugOwner"),
+    FlutterField::named("onTap"),
+];
 
 const F_POINTER: &[FlutterField] = &[FlutterField::named("pointer")];
 

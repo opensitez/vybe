@@ -16,12 +16,12 @@ pub mod builtin_types; // TypeRegistry vtables for the vybe:gui control surface;
 // paints for it — see `canvas_backend_impl`.
 // The control descriptions moved to `vybe_widgets::html`: the tag/CSS of a
 // control is what a web engine consumes, so it belongs beside the DOM.
+#[cfg(feature = "gui")]
+pub mod canvas_backend_impl;
 pub mod drawing;
 pub mod gui;
 #[cfg(feature = "gui")]
-pub mod gui_state;
-#[cfg(feature = "gui")]
-pub mod canvas_backend_impl; // installs vybe_widgets as the `web:canvas` engine
+pub mod gui_state; // installs vybe_widgets as the `web:canvas` engine
 
 // Input is NOT here. UI events are a web-platform concept and live in
 // `platforms/web` (`web:ui-events`), where the queue is owned; SDL reaches
@@ -30,8 +30,7 @@ pub mod canvas_backend_impl; // installs vybe_widgets as the `web:canvas` engine
 pub mod plugin;
 pub use plugin::Plugin;
 
-
 pub mod stubs;
-pub use stubs::register_gui_stubs;
 #[cfg(feature = "gui")]
 pub use plugin::init_platforms_with_gui;
+pub use stubs::register_gui_stubs;

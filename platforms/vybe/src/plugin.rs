@@ -21,9 +21,8 @@ pub struct Plugin;
 /// dylib: the plugin's own `init` finds the state, and the accessor hands back
 /// a registered handle.
 #[cfg(feature = "gui")]
-static GUI: std::sync::Mutex<
-    Option<std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>>>,
-> = std::sync::Mutex::new(None);
+static GUI: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>>>> =
+    std::sync::Mutex::new(None);
 
 impl Plugin {
     /// A drawing-only vybe plugin (no widget state).
@@ -43,7 +42,9 @@ impl Plugin {
 
     /// The shared `GuiState`, if one is installed (for the form launcher).
     #[cfg(feature = "gui")]
-    pub fn gui_state(&self) -> Option<std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>>> {
+    pub fn gui_state(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<crate::gui_state::GuiState>>> {
         GUI.lock().unwrap().clone()
     }
 }
@@ -92,6 +93,33 @@ impl vybe_runtime::Plugin for Plugin {
         // registered via the `register_type` primitive after every plugin's
         // host fns exist. Idempotent across the base + gui-variant passes.
         crate::builtin_types::register_types(fw);
+    }
+
+    /// Drop the script's GUI: controls, event handlers, the property store,
+    /// the form object, canvases.
+    ///
+    /// `GuiState::reset` was written for exactly this and its doc already
+    /// claimed "the runner calls this ... as part of `reset_to`" — but it had
+    /// no callers at all. Widget state therefore survived every reset, so a
+    /// reused VM handed the next program the previous one's window, controls
+    /// and handlers, with the handlers still holding guest closures.
+    fn reset(&self) {
+        #[cfg(feature = "gui")]
+        if let Some(state) = GUI.lock().unwrap().as_ref() {
+            if let Ok(mut g) = state.lock() {
+                g.reset();
+            }
+        }
+        // `GuiState` is this crate's view of the widgets; the widget crate
+        // keeps its OWN process-wide tables, and those outlive a `GuiState`
+        // replacement. Documents, undelivered input, and scheduled timers and
+        // frames all belong to the program that produced them.
+        #[cfg(feature = "gui")]
+        {
+            vybe_widgets::dom::reset();
+            vybe_widgets::ui_events::reset();
+            vybe_widgets::scheduling::reset();
+        }
     }
 }
 

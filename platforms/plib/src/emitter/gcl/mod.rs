@@ -4,8 +4,6 @@
 //! Pascal classes such as `TForm` and `TButton` to the existing generic
 //! `vybe:gui` host imports without adding Pascal-specific host functions.
 
-pub mod builder;
-
 use vybe_compiler::primitives::gui;
 
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +28,11 @@ pub enum GclMethodTarget {
     Host {
         module: &'static str,
         fn_name: &'static str,
+    },
+    /// A shared emit in `primitives/gui.rs`, named rather than called through a
+    /// host function — the same way a property role binds.
+    Common {
+        emit: &'static str,
     },
 }
 
@@ -94,6 +97,7 @@ const FORM_PROPERTIES: &[&str] = &[
     "Caption",
     "BorderStyle",
     "Position",
+    "Menu",
     "MainMenu",
     "PopupMenu",
     "ClientWidth",
@@ -102,12 +106,30 @@ const FORM_PROPERTIES: &[&str] = &[
     "OnClose",
 ];
 const TEXT_PROPERTIES: &[&str] = &["PasswordChar", "ReadOnly", "MaxLength"];
+/// A memo is an edit that also answers questions about its LINES.
+///
+/// `Count` is written `Lines.Count`, and `Lines` yields the receiver (see
+/// `SELF_MEMBERS`), so the count is asked of the memo itself — which is why it
+/// is declared here rather than on some separate strings object.
+const MEMO_PROPERTIES: &[&str] = &["PasswordChar", "ReadOnly", "MaxLength", "Count"];
 const CHECK_PROPERTIES: &[&str] = &["Checked", "State"];
 const LIST_PROPERTIES: &[&str] = &["Items", "ItemIndex", "Sorted"];
 const GRID_PROPERTIES: &[&str] = &["ColCount", "RowCount", "FixedCols", "FixedRows", "Cells"];
 const RANGE_PROPERTIES: &[&str] = &["Min", "Max", "Position", "Step"];
 const SPIN_PROPERTIES: &[&str] = &["MinValue", "MaxValue", "Value", "Increment"];
 const PAGE_PROPERTIES: &[&str] = &["ActivePage", "PageIndex", "PageControl"];
+/// Common-dialog properties, shared by the file dialogs the same way WinForms
+/// hangs them off `FileDialog`. Declaring them is what makes
+/// `D.Filter := '...'` a property write instead of a call into `undefined`.
+const FILE_DIALOG_PROPERTIES: &[&str] = &[
+    "FileName",
+    "Filter",
+    "FilterIndex",
+    "DefaultExt",
+    "InitialDir",
+    "Title",
+    "Options",
+];
 const MENU_PROPERTIES: &[&str] = &[
     "Caption", "Text", "Name", "ShortCut", "Checked", "Enabled", "Visible", "OnClick",
 ];
@@ -137,8 +159,37 @@ const SHOW_METHODS: &[GclMethod] = &[
 const ADD_METHODS: &[GclMethod] = &[GclMethod {
     name: "Add",
     arity: 2,
-    target: GclMethodTarget::host(gui::HOST_FN_ADD_CHILD),
+    target: GclMethodTarget::Common {
+        emit: gui::APPEND_CHILD_EMIT,
+    },
 }];
+
+/// Members that ARE the control, as `(class, member, reads back as)`.
+///
+/// VCL wraps a control's contents in a helper object — `TMainMenu.Items` is a
+/// `TMenuItem`, `TMemo.Lines` is a `TStrings` — but in the document the element
+/// already IS that container. So the member yields the receiver and nothing is
+/// allocated, and the declared return type is what the NEXT hop resolves
+/// against: `M.Items.Add(x)` looks `Add` up on `TMenuItem`, `FMemo.Lines.Text`
+/// looks `Text` up on `TMemo`. Without the return type the chain resolved
+/// against nothing and called `undefined` (menus), or — worse — silently wrote
+/// to a property no element had (`Lines.Text`, measured: the textarea stayed
+/// empty and nothing errored).
+///
+/// The menu entries declare `TMenuItem` while the getter hands back the
+/// receiver, so for `TMainMenu` the compiler believes `TMenuItem` and the
+/// runtime holds the `TMainMenu` element. That is sound only because both are
+/// `vybe-menustrip` with the same member set — it is a deliberate alias, not a
+/// coincidence to preserve blindly.
+///
+/// Distinct from `TListBox.Items`, which is a list of STRINGS and takes the
+/// `items` role instead.
+pub const SELF_MEMBERS: &[(&str, &str, &str)] = &[
+    ("TMainMenu", "Items", "TMenuItem"),
+    ("TPopupMenu", "Items", "TMenuItem"),
+    ("TMenuItem", "Items", "TMenuItem"),
+    ("TMemo", "Lines", "TMemo"),
+];
 
 const EMPTY_METHODS: &[GclMethod] = &[];
 
@@ -212,7 +263,7 @@ static CLASSES: &[GclClass] = &[
         "TMemo",
         "TWinControl",
         "textarea",
-        TEXT_PROPERTIES,
+        MEMO_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(
@@ -250,13 +301,7 @@ static CLASSES: &[GclClass] = &[
         LIST_PROPERTIES,
         EMPTY_METHODS
     ),
-    widget_class!(
-        "TGroupBox",
-        "TWinControl",
-        "fieldset",
-        &[],
-        EMPTY_METHODS
-    ),
+    widget_class!("TGroupBox", "TWinControl", "fieldset", &[], EMPTY_METHODS),
     widget_class!("TPanel", "TWinControl", "div", &[], EMPTY_METHODS),
     widget_class!("TImage", "TControl", "vybe-picturebox", &[], EMPTY_METHODS),
     widget_class!(
@@ -330,18 +375,31 @@ static CLASSES: &[GclClass] = &[
         &["ViewStyle", "Items"],
         EMPTY_METHODS
     ),
-    widget_class!(
-        "TTreeView",
-        "TWinControl",
-        "ul",
-        &["Items"],
-        EMPTY_METHODS
-    ),
+    widget_class!("TTreeView", "TWinControl", "ul", &["Items"], EMPTY_METHODS),
     widget_class!(
         "TColorDialog",
         "TComponent",
         "vybe-colordialog",
         &["Color"],
+        EMPTY_METHODS
+    ),
+    // The file dialogs. DECLARED so construction and every property work; the
+    // picker itself is `Execute`, which VCL defines as a BLOCKING modal
+    // returning Boolean and the web has no synchronous equivalent of. That is
+    // a scope decision, not something to fake — a stub returning True would
+    // send the program down the "user chose a file" branch with no file.
+    widget_class!(
+        "TOpenDialog",
+        "TComponent",
+        "vybe-opendialog",
+        FILE_DIALOG_PROPERTIES,
+        EMPTY_METHODS
+    ),
+    widget_class!(
+        "TSaveDialog",
+        "TComponent",
+        "vybe-savedialog",
+        FILE_DIALOG_PROPERTIES,
         EMPTY_METHODS
     ),
     widget_class!(

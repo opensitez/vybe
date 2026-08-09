@@ -173,8 +173,10 @@ const F_INTRINSICW: &[FlutterField] = &[
     FlutterField::named("child"),
 ];
 
-const F_ASPECTRATIO: &[FlutterField] =
-    &[FlutterField::named("aspectRatio"), FlutterField::named("child")];
+const F_ASPECTRATIO: &[FlutterField] = &[
+    FlutterField::named("aspectRatio"),
+    FlutterField::named("child"),
+];
 
 const F_BASELINE: &[FlutterField] = &[
     FlutterField::named("baseline"),
@@ -195,8 +197,10 @@ const F_TRANSFORM: &[FlutterField] = &[
     FlutterField::named("child"),
 ];
 
-const F_ROTATEDBOX: &[FlutterField] =
-    &[FlutterField::named("quarterTurns"), FlutterField::named("child")];
+const F_ROTATEDBOX: &[FlutterField] = &[
+    FlutterField::named("quarterTurns"),
+    FlutterField::named("child"),
+];
 
 const F_RICHTEXT: &[FlutterField] = &[
     FlutterField::named("text"),
@@ -215,35 +219,105 @@ use crate::emitter::catalog::F_CHILD_ONLY;
 pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::widget("Text", "StatelessWidget", "Label", TEXT_FIELDS),
     FlutterClass::widget("Placeholder", "StatelessWidget", "Panel", &[]),
-    FlutterClass::widget("Container", "StatelessWidget", "FlowLayoutPanel", CONTAINER_FIELDS),
-    FlutterClass::widget("Flex", "MultiChildRenderObjectWidget", "FlowLayoutPanel", FLEX_FIELDS),
+    FlutterClass::widget(
+        "Container",
+        "StatelessWidget",
+        "FlowLayoutPanel",
+        CONTAINER_FIELDS,
+    ),
+    FlutterClass::widget(
+        "Flex",
+        "MultiChildRenderObjectWidget",
+        "FlowLayoutPanel",
+        FLEX_FIELDS,
+    ),
     FlutterClass::widget("Column", "Flex", "FlowLayoutPanel", COLUMN_FIELDS),
     FlutterClass::widget("Row", "Flex", "HFlowLayoutPanel", ROW_FIELDS),
-    FlutterClass::widget("Stack", "MultiChildRenderObjectWidget", "FlowLayoutPanel", STACK_FIELDS),
-    FlutterClass::widget("Align", "SingleChildRenderObjectWidget", "FlowLayoutPanel", ALIGN_FIELDS),
+    FlutterClass::widget(
+        "Stack",
+        "MultiChildRenderObjectWidget",
+        "FlowLayoutPanel",
+        STACK_FIELDS,
+    ),
+    FlutterClass::widget(
+        "Align",
+        "SingleChildRenderObjectWidget",
+        "FlowLayoutPanel",
+        ALIGN_FIELDS,
+    ),
     FlutterClass::widget("Center", "Align", "FlowLayoutPanel", CENTER_FIELDS),
-    FlutterClass::widget("Padding", "SingleChildRenderObjectWidget", "FlowLayoutPanel", PADDING_FIELDS),
-    FlutterClass::widget("SizedBox", "SingleChildRenderObjectWidget", "FlowLayoutPanel", SIZEDBOX_FIELDS),
+    FlutterClass::widget(
+        "Padding",
+        "SingleChildRenderObjectWidget",
+        "FlowLayoutPanel",
+        PADDING_FIELDS,
+    ),
+    FlutterClass::widget(
+        "SizedBox",
+        "SingleChildRenderObjectWidget",
+        "FlowLayoutPanel",
+        SIZEDBOX_FIELDS,
+    ),
     FlutterClass::widget("Icon", "StatelessWidget", "Label", ICON_FIELDS),
-    FlutterClass::widget("Flexible", "ParentDataWidget", "FlowLayoutPanel", FLEXIBLE_FIELDS),
+    FlutterClass::widget(
+        "Flexible",
+        "ParentDataWidget",
+        "FlowLayoutPanel",
+        FLEXIBLE_FIELDS,
+    ),
     FlutterClass::widget("Expanded", "Flexible", "FlowLayoutPanel", EXPANDED_FIELDS),
     FlutterClass::widget("Positioned", "ParentDataWidget", "Panel", POSITIONED_FIELDS),
-    FlutterClass::widget("PositionedDirectional", "ParentDataWidget", "Panel", F_POSDIR),
+    FlutterClass::widget(
+        "PositionedDirectional",
+        "ParentDataWidget",
+        "Panel",
+        F_POSDIR,
+    ),
     FlutterClass::widget("Spacer", "StatelessWidget", "Panel", F_SPACER),
     FlutterClass::widget("IndexedStack", "Stack", "FlowLayoutPanel", F_INDEXEDSTACK),
-    FlutterClass::widget("Wrap", "MultiChildRenderObjectWidget", "FlowLayoutPanel", F_WRAP),
+    FlutterClass::widget(
+        "Wrap",
+        "MultiChildRenderObjectWidget",
+        "FlowLayoutPanel",
+        F_WRAP,
+    ),
     // Sizing/transform wrappers: the effect (fit, fraction, rotation, matrix)
     // has no backing-control command, so they realize their child directly
     // rather than wrapping it in an inert Panel.
     FlutterClass::wrapper("FittedBox", "SingleChildRenderObjectWidget", F_FITTEDBOX),
-    FlutterClass::wrapper("FractionalTranslation", "SingleChildRenderObjectWidget", F_FRACTRANS),
-    FlutterClass::wrapper("FractionallySizedBox", "SingleChildRenderObjectWidget", F_FRACSIZED),
-    FlutterClass::wrapper("IntrinsicHeight", "SingleChildRenderObjectWidget", F_CHILD_ONLY),
-    FlutterClass::wrapper("IntrinsicWidth", "SingleChildRenderObjectWidget", F_INTRINSICW),
-    FlutterClass::wrapper("AspectRatio", "SingleChildRenderObjectWidget", F_ASPECTRATIO),
+    FlutterClass::wrapper(
+        "FractionalTranslation",
+        "SingleChildRenderObjectWidget",
+        F_FRACTRANS,
+    ),
+    FlutterClass::wrapper(
+        "FractionallySizedBox",
+        "SingleChildRenderObjectWidget",
+        F_FRACSIZED,
+    ),
+    FlutterClass::wrapper(
+        "IntrinsicHeight",
+        "SingleChildRenderObjectWidget",
+        F_CHILD_ONLY,
+    ),
+    FlutterClass::wrapper(
+        "IntrinsicWidth",
+        "SingleChildRenderObjectWidget",
+        F_INTRINSICW,
+    ),
+    FlutterClass::wrapper(
+        "AspectRatio",
+        "SingleChildRenderObjectWidget",
+        F_ASPECTRATIO,
+    ),
     FlutterClass::wrapper("Baseline", "SingleChildRenderObjectWidget", F_BASELINE),
     FlutterClass::wrapper("Transform", "SingleChildRenderObjectWidget", F_TRANSFORM),
     FlutterClass::wrapper("RotatedBox", "SingleChildRenderObjectWidget", F_ROTATEDBOX),
     FlutterClass::wrapper("DefaultTextStyle", "StatelessWidget", F_DEFTEXTSTYLE),
-    FlutterClass::widget("RichText", "MultiChildRenderObjectWidget", "Label", F_RICHTEXT),
+    FlutterClass::widget(
+        "RichText",
+        "MultiChildRenderObjectWidget",
+        "Label",
+        F_RICHTEXT,
+    ),
 ];

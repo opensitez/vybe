@@ -1,7 +1,7 @@
 //! Painting / effect widgets — opacity, clipping, decoration, custom paint,
 //! shaders and physical-model shadows. All lower onto a `vybe:gui` Panel.
 
-use crate::emitter::catalog::{FlutterClass, FlutterField, F_CHILD_ONLY};
+use crate::emitter::catalog::{F_CHILD_ONLY, FlutterClass, FlutterField};
 
 const F_OPACITY: &[FlutterField] = &[
     FlutterField::named("opacity"),
@@ -34,8 +34,10 @@ const F_CLIPRRECT: &[FlutterField] = &[
     FlutterField::named("clipper"),
 ];
 
-const F_COLORFILTERED: &[FlutterField] =
-    &[FlutterField::named("colorFilter"), FlutterField::named("child")];
+const F_COLORFILTERED: &[FlutterField] = &[
+    FlutterField::named("colorFilter"),
+    FlutterField::named("child"),
+];
 
 const F_CUSTOMPAINT: &[FlutterField] = &[
     FlutterField::named("painter"),
@@ -82,19 +84,52 @@ const F_PHYSSHAPE: &[FlutterField] = &[
 // the wrapper's place rather than inside an inert Panel.
 pub(crate) const CLASSES: &[FlutterClass] = &[
     FlutterClass::wrapper("Opacity", "SingleChildRenderObjectWidget", F_OPACITY),
-    FlutterClass::wrapper("SliverOpacity", "SingleChildRenderObjectWidget", F_SLIVEROPACITY),
-    FlutterClass::wrapper("DecoratedBox", "SingleChildRenderObjectWidget", F_DECORATEDBOX),
+    FlutterClass::wrapper(
+        "SliverOpacity",
+        "SingleChildRenderObjectWidget",
+        F_SLIVEROPACITY,
+    ),
+    FlutterClass::wrapper(
+        "DecoratedBox",
+        "SingleChildRenderObjectWidget",
+        F_DECORATEDBOX,
+    ),
     FlutterClass::wrapper("ClipOval", "SingleChildRenderObjectWidget", F_CLIPPER),
     FlutterClass::wrapper("ClipPath", "SingleChildRenderObjectWidget", F_CLIPPER),
     FlutterClass::wrapper("ClipRect", "SingleChildRenderObjectWidget", F_CLIPPER),
     FlutterClass::wrapper("ClipRRect", "SingleChildRenderObjectWidget", F_CLIPRRECT),
-    FlutterClass::wrapper("ColorFiltered", "SingleChildRenderObjectWidget", F_COLORFILTERED),
-    FlutterClass::wrapper("BackdropFilter", "SingleChildRenderObjectWidget", F_BACKDROP),
+    FlutterClass::wrapper(
+        "ColorFiltered",
+        "SingleChildRenderObjectWidget",
+        F_COLORFILTERED,
+    ),
+    FlutterClass::wrapper(
+        "BackdropFilter",
+        "SingleChildRenderObjectWidget",
+        F_BACKDROP,
+    ),
     FlutterClass::wrapper("ShaderMask", "SingleChildRenderObjectWidget", F_SHADERMASK),
-    FlutterClass::wrapper("PhysicalModel", "SingleChildRenderObjectWidget", F_PHYSMODEL),
-    FlutterClass::wrapper("PhysicalShape", "SingleChildRenderObjectWidget", F_PHYSSHAPE),
-    FlutterClass::wrapper("RepaintBoundary", "SingleChildRenderObjectWidget", F_CHILD_ONLY),
+    FlutterClass::wrapper(
+        "PhysicalModel",
+        "SingleChildRenderObjectWidget",
+        F_PHYSMODEL,
+    ),
+    FlutterClass::wrapper(
+        "PhysicalShape",
+        "SingleChildRenderObjectWidget",
+        F_PHYSSHAPE,
+    ),
+    FlutterClass::wrapper(
+        "RepaintBoundary",
+        "SingleChildRenderObjectWidget",
+        F_CHILD_ONLY,
+    ),
     // CustomPaint owns a painter callback rather than a child effect — it keeps
     // a real Panel so the painted surface has somewhere to live.
-    FlutterClass::widget("CustomPaint", "SingleChildRenderObjectWidget", "Panel", F_CUSTOMPAINT),
+    FlutterClass::widget(
+        "CustomPaint",
+        "SingleChildRenderObjectWidget",
+        "Panel",
+        F_CUSTOMPAINT,
+    ),
 ];

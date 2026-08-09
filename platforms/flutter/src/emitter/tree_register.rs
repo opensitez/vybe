@@ -21,10 +21,7 @@ use super::catalog::{self, FlutterClass};
 /// interfaces/mixins).
 fn ctor_spec(class: &FlutterClass) -> CtorSpec {
     let names: Vec<String> = class.fields.iter().map(|f| f.name.to_string()).collect();
-    let mut ancestry: Vec<String> = catalog::ancestry(class)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let mut ancestry: Vec<String> = catalog::ancestry(class);
     for iface in class.interfaces {
         ancestry.push((*iface).to_string());
     }
@@ -86,9 +83,7 @@ fn ctor_spec(class: &FlutterClass) -> CtorSpec {
 /// `onLongPress`/`onDoubleTap`/`onSelected`/`onDeleted`/`onDismissed`/
 /// `onPageChanged`/`onClosing`/`onSaved`.
 fn is_callback_field(name: &str) -> bool {
-    name.starts_with("on")
-        && name.len() > 2
-        && name.as_bytes()[2].is_ascii_uppercase()
+    name.starts_with("on") && name.len() > 2 && name.as_bytes()[2].is_ascii_uppercase()
 }
 
 /// Flutter immutable value types whose `operator ==` is by VALUE (structural),
@@ -129,7 +124,7 @@ pub fn register_namespace_tree() {
                     ctor_call: None,
                     statics: Subtree::new(),
                     methods: BTreeMap::new(),
-                member_returns: std::collections::BTreeMap::new(),
+                    member_returns: std::collections::BTreeMap::new(),
                 },
             );
         }
