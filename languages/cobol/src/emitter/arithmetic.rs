@@ -1,6 +1,6 @@
+use vybe_compiler::primitives::instructions::core_wasm;
 use vybe_runtime::Chunk;
 use vybe_runtime::opcode::Op;
-use vybe_compiler::primitives::instructions::core_wasm;
 
 use super::support::stash_args;
 
