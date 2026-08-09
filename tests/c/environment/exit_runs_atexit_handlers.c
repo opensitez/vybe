@@ -16,5 +16,4 @@ int main() {
   if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; }
     exit(0);
 }
-if (__i != __n) { printf("FAIL: %d line(s), wanted %d\n", __i, __n); assert(0); }
 

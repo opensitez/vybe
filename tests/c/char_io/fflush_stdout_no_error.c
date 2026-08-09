@@ -5,8 +5,8 @@
 #include <assert.h>
 
 #include <stdio.h>
-int main() {const char *__w[] = {"hello world"};
-int __n = 1, __i = 0;
+int main() {const char *__w[] = {"hello ", "world\n"};
+int __n = 2, __i = 0;
 
     { char __t[512]; snprintf(__t, sizeof(__t), "hello ");
   if (__i >= __n || strcmp(__t, __w[__i]) != 0) { printf("FAIL at line %d: got [%s]\n", __i, __t); assert(0); } __i++; }
