@@ -79,7 +79,8 @@ fn magic_load_i32(obj: &Arc<Mutex<Object>>, idx: usize) -> i32 {
     match o.properties.get(&idx.to_string()) {
         Some(Value::I32(v)) => *v,
         Some(Value::F64(v)) => *v as i32,
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 fn magic_store_i32(obj: &Arc<Mutex<Object>>, idx: usize, val: i32) {
@@ -107,7 +108,8 @@ fn atomic_load(buf: &Arc<Mutex<Vec<u8>>>, byte_offset: usize, idx: usize, bpe: u
             data[off + 6],
             data[off + 7],
         ]),
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 fn atomic_store_bytes(
@@ -147,7 +149,8 @@ fn arg_i64(args: &[Value], idx: usize) -> i64 {
         Some(Value::BigInt(n)) => n.to_i64_wrapping(),
         Some(Value::I64(n)) => *n,
         Some(v) => v.as_i32() as i64,
-        None => 0 }
+        None => 0,
+    }
 }
 
 pub fn register(vm: &mut VM) {

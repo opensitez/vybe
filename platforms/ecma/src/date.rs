@@ -15,10 +15,11 @@
 //! reinvent leap-year / timezone arithmetic.
 
 use chrono::{
-    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc };
+    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
+};
 use std::sync::{Arc, Mutex, OnceLock};
 use vybe_runtime::value::Object;
-use vybe_runtime::{HostContext, Value, VM};
+use vybe_runtime::{HostContext, VM, Value};
 
 const MODULE: &str = "ecma:date";
 
@@ -63,7 +64,8 @@ fn component_i64(args: &[Value], idx: usize) -> Result<Option<i64>, ()> {
                 Ok(Some(numeric.trunc() as i64))
             }
         }
-        None => Ok(None) }
+        None => Ok(None),
+    }
 }
 
 fn build_utc_ms(
@@ -146,10 +148,12 @@ fn ms_arg(args: &[Value], idx: usize) -> f64 {
             let o = obj.lock().unwrap();
             match o.properties.get("__time") {
                 Some(v) => v.as_f64(),
-                None => f64::NAN }
+                None => f64::NAN,
+            }
         }
         Some(v) => v.as_f64(),
-        None => f64::NAN }
+        None => f64::NAN,
+    }
 }
 
 /// Apply a single setter (`setFullYear`, `setHours`, ...) to the Date in
@@ -163,7 +167,8 @@ fn setter_helper(args: &[Value], component: &str) -> f64 {
     let ms = ms_arg(args, 0);
     let dt = match dt_from_ms(ms) {
         Some(d) => d,
-        None => return f64::NAN };
+        None => return f64::NAN,
+    };
     let mut year = dt.year();
     let mut month_zero = dt.month0() as i64;
     let mut day = dt.day() as i64;
@@ -260,7 +265,8 @@ fn setter_helper(args: &[Value], component: &str) -> f64 {
             };
             millisecond = next_millisecond;
         }
-        _ => return f64::NAN }
+        _ => return f64::NAN,
+    }
 
     build_utc_ms(year, month_zero, day, hour, minute, second, millisecond)
 }
@@ -324,13 +330,15 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
                     dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str(),
                 )),
                 None if method == "toJSON" => Value::Null,
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }
         "toUTCString" => {
             let ms = ms_arg(args, 0);
             match format_utc_string(ms) {
                 Some(text) => Value::String(Arc::from(text.as_str())),
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }
         "toString" | "toLocaleString" => {
             let ms = ms_arg(args, 0);
@@ -340,13 +348,15 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
                         .to_string()
                         .as_str(),
                 )),
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }
         "toDateString" | "toLocaleDateString" => {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
                 Some(dt) => Value::String(Arc::from(dt.format("%a %b %d %Y").to_string().as_str())),
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }
         "toTimeString" | "toLocaleTimeString" => {
             let ms = ms_arg(args, 0);
@@ -354,7 +364,8 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
                 Some(dt) => Value::String(Arc::from(
                     dt.format("%H:%M:%S GMT+0000 (UTC)").to_string().as_str(),
                 )),
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }
         // Setters mutate __time on args[0] and return the new ms.
         "setTime" => {
@@ -374,7 +385,8 @@ pub fn dispatch_date_method(method: &str, args: &[Value]) -> Option<Value> {
         "setMinutes" | "setUTCMinutes" => date_setter(args, "minute"),
         "setSeconds" | "setUTCSeconds" => date_setter(args, "second"),
         "setMilliseconds" | "setUTCMilliseconds" => date_setter(args, "millisecond"),
-        _ => return None };
+        _ => return None,
+    };
     Some(result)
 }
 
@@ -592,7 +604,8 @@ pub fn register(vm: &mut VM) {
                     let s = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
                     Value::String(Arc::from(s.as_str()))
                 }
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }),
     );
 
@@ -607,7 +620,8 @@ pub fn register(vm: &mut VM) {
                     let s = dt.format("%a %b %d %Y %H:%M:%S GMT+0000 (UTC)").to_string();
                     Value::String(Arc::from(s.as_str()))
                 }
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }),
     );
 
@@ -618,7 +632,8 @@ pub fn register(vm: &mut VM) {
             let ms = ms_arg(args, 0);
             match format_utc_string(ms) {
                 Some(text) => Value::String(Arc::from(text.as_str())),
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }),
     );
 
@@ -630,7 +645,8 @@ pub fn register(vm: &mut VM) {
             let ms = ms_arg(args, 0);
             match dt_from_ms(ms) {
                 Some(dt) => Value::String(Arc::from(dt.format("%a %b %d %Y").to_string().as_str())),
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }),
     );
 
@@ -644,7 +660,8 @@ pub fn register(vm: &mut VM) {
                 Some(dt) => Value::String(Arc::from(
                     dt.format("%H:%M:%S GMT+0000 (UTC)").to_string().as_str(),
                 )),
-                None => Value::String(Arc::from("Invalid Date")) }
+                None => Value::String(Arc::from("Invalid Date")),
+            }
         }),
     );
 
@@ -658,7 +675,8 @@ pub fn register(vm: &mut VM) {
                 Some(dt) => Value::String(Arc::from(
                     dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string().as_str(),
                 )),
-                None => Value::Null }
+                None => Value::Null,
+            }
         }),
     );
 

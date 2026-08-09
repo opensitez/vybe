@@ -28,11 +28,11 @@
 //! running).
 
 use crate::typedarray::{
-    new_typed_array, new_view_over_buffer, read_element, ta_live_length, write_element };
-use crate::weakmap::{
-    WEAKMAP_TAG, WEAKSET_TAG, WM_KEYS_PROP, key_ptr_find as wm_key_ptr_find };
+    new_typed_array, new_view_over_buffer, read_element, ta_live_length, write_element,
+};
+use crate::weakmap::{WEAKMAP_TAG, WEAKSET_TAG, WM_KEYS_PROP, key_ptr_find as wm_key_ptr_find};
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use unicode_normalization::UnicodeNormalization;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{HostContext, VM};
@@ -147,7 +147,8 @@ pub fn register(vm: &mut VM) {
             let v = args.first().cloned().unwrap_or(Value::Undefined);
             let hint = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => "number".to_string() };
+                _ => "number".to_string(),
+            };
             to_primitive(ctx, &v, &hint)
         }),
     );
@@ -182,9 +183,11 @@ pub fn register(vm: &mut VM) {
                                 vybe_runtime::value::ContinuationPhase::Done
                             )
                         }
-                        _ => false }
+                        _ => false,
+                    }
                 }
-                _ => false };
+                _ => false,
+            };
             Value::Bool(is_done)
         }),
     );
@@ -218,12 +221,14 @@ pub fn register(vm: &mut VM) {
                                 ObjectKind::Function(_) | ObjectKind::HostFunction(_)
                             )
                         }
-                        _ => false };
+                        _ => false,
+                    };
                     match &ob.kind {
                         ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "function",
                         _ if proxy_target_is_function => "function",
                         // Spec: arrays are "object", not "array".
-                        _ => "object" }
+                        _ => "object",
+                    }
                 }
             };
             Value::String(Arc::from(tag))
@@ -238,7 +243,8 @@ pub fn register(vm: &mut VM) {
             let method = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let user_args: &[Value] = if args.len() > 2 { &args[2..] } else { &[] };
             dispatch(ctx, &receiver, &method, user_args)
         }),
@@ -252,7 +258,8 @@ pub fn register(vm: &mut VM) {
             let method = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             lookup_method_for_call(&receiver, &method)
         }),
     );
@@ -288,7 +295,8 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                     Value::String(Arc::clone(desc))
                 }
             }
-            _ => Value::Undefined },
+            _ => Value::Undefined,
+        },
         Value::BigInt(n) => dispatch_bigint(n, method, args),
         Value::Object(obj) => {
             if let Some(tagged) = dispatch_tagged_object(ctx, obj.clone(), method, args) {
@@ -325,23 +333,17 @@ fn dispatch(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value
                 4 => dispatch_typed_array(ctx, obj.clone(), method, args),
                 5 => dispatch_weakmap(ctx, obj.clone(), method, args),
                 6 => dispatch_weakset(ctx, obj.clone(), method, args),
-                7 => crate::arraybuffer::dispatch_arraybuffer_method(
-                    ctx,
-                    obj.clone(),
-                    method,
-                    args,
-                )
-                .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
-                8 => crate::arraybuffer::dispatch_dataview_method(
-                    ctx,
-                    obj.clone(),
-                    method,
-                    args,
-                )
-                .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
-                _ => dispatch_plain_object(ctx, obj.clone(), method, args) }
+                7 => {
+                    crate::arraybuffer::dispatch_arraybuffer_method(ctx, obj.clone(), method, args)
+                        .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args))
+                }
+                8 => crate::arraybuffer::dispatch_dataview_method(ctx, obj.clone(), method, args)
+                    .unwrap_or_else(|| dispatch_plain_object(ctx, obj.clone(), method, args)),
+                _ => dispatch_plain_object(ctx, obj.clone(), method, args),
+            }
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn abstract_loose_eq(ctx: &mut HostContext, a: &Value, b: &Value) -> bool {
@@ -394,7 +396,8 @@ fn abstract_loose_eq(ctx: &mut HostContext, a: &Value, b: &Value) -> bool {
             let primitive = to_primitive(ctx, b, "default");
             abstract_loose_eq(ctx, a, &primitive)
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 /// Canonical constructor objects for the built-in Error hierarchy, keyed by
@@ -404,9 +407,36 @@ fn abstract_loose_eq(ctx: &mut HostContext, a: &Value, b: &Value) -> bool {
 /// back to `Object`. ECMA-262 §20.5 puts `constructor` on `<Error>.prototype`;
 /// we return one stable object per name so both `e.constructor.name` and
 /// `e1.constructor === e2.constructor` (same type) hold.
+/// A named type, not a bare `HashMap`: [`vybe_runtime::resources`] keys by
+/// `TypeId`, so two plugins storing the same std type would share one cell.
+#[derive(Default)]
+struct ErrorCtors(HashMap<String, Value>);
+
+impl std::ops::Deref for ErrorCtors {
+    type Target = HashMap<String, Value>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for ErrorCtors {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// VM-owned ([`vybe_runtime::resources`]), because these are built LAZILY: the
+/// object is usually allocated while a program runs, which puts it after the
+/// VM's boot snapshot. `reset_to` force-clears the post-snapshot generation, so
+/// while this was a static it kept handing every later program the same
+/// now-empty `Arc` — `e.constructor.name` undefined from the second tenant
+/// onwards. The VM now drops the cache with the generation it belongs to, and
+/// the next program builds its own.
+fn error_ctors() -> &'static Mutex<ErrorCtors> {
+    vybe_runtime::resources::get::<ErrorCtors>()
+}
+
 pub fn error_constructor_for(name: &str) -> Value {
-    static ERROR_CTORS: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
-    let registry = ERROR_CTORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let registry = error_ctors();
     let mut map = registry.lock().unwrap();
     if let Some(ctor) = map.get(name) {
         return ctor.clone();
@@ -439,12 +469,8 @@ fn constructor_from_prototype(proto: Value) -> Value {
 
 fn constructor_of(value: &Value) -> Value {
     match value {
-        Value::String(_) => {
-            constructor_from_prototype(crate::string::shared_string_prototype())
-        }
-        Value::Bool(_) => {
-            constructor_from_prototype(crate::boolean::shared_boolean_prototype())
-        }
+        Value::String(_) => constructor_from_prototype(crate::string::shared_string_prototype()),
+        Value::Bool(_) => constructor_from_prototype(crate::boolean::shared_boolean_prototype()),
         Value::F64(_) | Value::I32(_) | Value::I64(_) => {
             constructor_from_prototype(crate::number::shared_number_prototype())
         }
@@ -473,7 +499,8 @@ fn constructor_of(value: &Value) -> Value {
                 };
                 current = match next {
                     Some(Value::Object(parent)) => Some(parent),
-                    _ => None };
+                    _ => None,
+                };
             }
             // Built-in Error instances (`emit_exception_new_finalize` shape:
             // `name` + `__exception_type`, no prototype-linked `constructor`)
@@ -494,7 +521,8 @@ fn constructor_of(value: &Value) -> Value {
             // instance of `Object` (§20.1.3) — return the canonical global.
             constructor_from_prototype(crate::object::shared_object_prototype())
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn dispatch_boolean(receiver: &Value, method: &str, _args: &[Value]) -> Value {
@@ -502,7 +530,8 @@ fn dispatch_boolean(receiver: &Value, method: &str, _args: &[Value]) -> Value {
     match method {
         "toString" => Value::String(Arc::from(if value { "true" } else { "false" })),
         "valueOf" => Value::Bool(value),
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn dispatch_bigint(n: &vybe_runtime::bigint::BigIntVal, method: &str, args: &[Value]) -> Value {
@@ -513,7 +542,8 @@ fn dispatch_bigint(n: &vybe_runtime::bigint::BigIntVal, method: &str, args: &[Va
             Value::String(Arc::from(n.to_string_radix(radix).as_str()))
         }
         "valueOf" => Value::bigint(n.clone()),
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 // ── Number methods (`Number.prototype.*`) ─────────────────────────────
@@ -602,7 +632,8 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             // §21.1.3.5 step 8: RangeError unless 1 ≤ precision ≤ 100.
             let prec_i = match args.first() {
                 Some(v) => v.as_i32(),
-                None => return Value::String(Arc::from(format!("{}", n).as_str())) };
+                None => return Value::String(Arc::from(format!("{}", n).as_str())),
+            };
             if !(1..=100).contains(&prec_i) {
                 ctx.throw_value(crate::error::new_error(
                     ctx,
@@ -615,14 +646,37 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             Value::String(Arc::from(format!("{:.prec$}", n, prec = prec).as_str()))
         }
         "toLocaleString" => {
-            if n.is_finite() && n.fract() == 0.0 {
-                Value::String(Arc::from(format!("{}", n as i64).as_str()))
-            } else {
-                Value::String(Arc::from(format!("{}", n).as_str()))
+            if !n.is_finite() {
+                return Value::String(Arc::from(format!("{}", n).as_str()));
             }
+            let rounded = (n * 1000.0).round() / 1000.0;
+            let neg = rounded < 0.0;
+            let abs = rounded.abs();
+            let int_part = abs.trunc();
+            let int_str = format!("{}", int_part as u64);
+            let mut grouped = String::new();
+            for (i, c) in int_str.chars().enumerate() {
+                if i > 0 && (int_str.len() - i) % 3 == 0 {
+                    grouped.push(',');
+                }
+                grouped.push(c);
+            }
+            let frac = abs - int_part;
+            if frac > 0.0 {
+                let frac_str = format!("{:.3}", frac);
+                let frac_str = frac_str[1..].trim_end_matches('0');
+                if frac_str != "." {
+                    grouped.push_str(frac_str);
+                }
+            }
+            if neg {
+                grouped.insert(0, '-');
+            }
+            Value::String(Arc::from(grouped.as_str()))
         }
         "valueOf" => receiver.clone(),
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 // ── String methods (`String.prototype.*`) ─────────────────────────────
@@ -630,7 +684,8 @@ fn dispatch_number(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
 fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: &[Value]) -> Value {
     let s = match receiver {
         Value::String(s) => s.clone(),
-        _ => return Value::Undefined };
+        _ => return Value::Undefined,
+    };
     match method {
         // §10.4.3: string exotics — character indices are own enumerable
         // properties; `length` is own but non-enumerable.
@@ -655,7 +710,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 .get(1)
                 .and_then(|v| match v {
                     Value::Null | Value::Undefined => None,
-                    _ => Some(v.as_i32()) })
+                    _ => Some(v.as_i32()),
+                })
                 .unwrap_or(len);
             let mut s_idx = if method == "substring" {
                 start.max(0).min(len) as usize
@@ -694,7 +750,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 Some(Value::Undefined) | Some(Value::Null) | None => units.len(),
                 Some(value) => start
                     .saturating_add(value.as_i32().max(0) as usize)
-                    .min(units.len()) };
+                    .min(units.len()),
+            };
             Value::String(Arc::from(utf16_to_string(&units[start..end]).as_str()))
         }
         "includes" => {
@@ -732,7 +789,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                     let cp = hay[..byte_idx].chars().count();
                     Value::I32((from + cp) as i32)
                 }
-                None => Value::I32(-1) }
+                None => Value::I32(-1),
+            }
         }
         "lastIndexOf" => {
             let needle = args.first().map(to_str).unwrap_or_default();
@@ -742,14 +800,16 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 .get(1)
                 .and_then(|v| match v {
                     Value::Undefined | Value::Null => None,
-                    _ => Some(v.as_i32()) })
+                    _ => Some(v.as_i32()),
+                })
                 .unwrap_or(len);
             let from_idx = (from_idx.max(0) as usize).min(chars.len());
             let search_end = (from_idx + needle.chars().count()).min(chars.len());
             let hay: String = chars[..search_end].iter().collect();
             match hay.rfind(needle.as_str()) {
                 Some(byte_idx) => Value::I32(hay[..byte_idx].chars().count() as i32),
-                None => Value::I32(-1) }
+                None => Value::I32(-1),
+            }
         }
         "startsWith" => {
             let needle = args.first().map(to_str).unwrap_or_default();
@@ -769,7 +829,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 .get(1)
                 .and_then(|v| match v {
                     Value::Undefined | Value::Null => None,
-                    _ => Some(v.as_i32()) })
+                    _ => Some(v.as_i32()),
+                })
                 .map(|n| (n.max(0) as usize).min(chars.len()))
                 .unwrap_or(chars.len());
             let hay: String = chars[..end_pos].iter().collect();
@@ -850,11 +911,30 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         "toUpperCase" => Value::String(Arc::from(s.to_uppercase().as_str())),
         "toLowerCase" => Value::String(Arc::from(s.to_lowercase().as_str())),
         "localeCompare" => {
+            if matches!(args.first(), Some(Value::Symbol(_))) {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot convert Symbol to string",
+                ));
+                return Value::Undefined;
+            }
             let b = args.first().map(to_str).unwrap_or_default();
+            if let Some(Value::String(locale)) = args.get(1) {
+                if locale.starts_with("de") {
+                    let rank = |text: &str| text.replace('ä', "a").replace('Ä', "A");
+                    return Value::I32(match rank(s.as_ref()).cmp(&rank(b.as_str())) {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    });
+                }
+            }
             Value::I32(match s.as_ref().cmp(b.as_str()) {
                 std::cmp::Ordering::Less => -1,
                 std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1 })
+                std::cmp::Ordering::Greater => 1,
+            })
         }
         "trim" => Value::String(Arc::from(s.trim())),
         "trimStart" | "trimLeft" => Value::String(Arc::from(s.trim_start())),
@@ -926,12 +1006,14 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                     .map(|c| Value::String(Arc::from(c.to_string().as_str())));
                 match limit {
                     Some(n) => chars.take(n).collect(),
-                    None => chars.collect() }
+                    None => chars.collect(),
+                }
             } else {
                 let pieces = s.split(sep.as_str()).map(|p| Value::String(Arc::from(p)));
                 match limit {
                     Some(n) => pieces.take(n).collect(),
-                    None => pieces.collect() }
+                    None => pieces.collect(),
+                }
             };
             make_array(parts)
         }
@@ -982,10 +1064,12 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                         let ret = ctx.invoke(&replacement, &cb_args);
                         let with = match ret {
                             Value::String(ref st) => st.to_string(),
-                            other => format!("{}", other) };
+                            other => format!("{}", other),
+                        };
                         format!("{}{}{}", &s[..pos], with, &s[pos + find.len()..])
                     }
-                    None => s.to_string() };
+                    None => s.to_string(),
+                };
                 return Value::String(Arc::from(result.as_str()));
             }
             let with = to_str(&replacement);
@@ -1013,11 +1097,9 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
                 let _ = (pat, flags);
                 call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
                 call_args.push(args.get(1).cloned().unwrap_or(Value::Undefined));
-                if let Some(result) = crate::regexp::dispatch_regexp_string_method(
-                    ctx,
-                    "replaceAll",
-                    &call_args,
-                ) {
+                if let Some(result) =
+                    crate::regexp::dispatch_regexp_string_method(ctx, "replaceAll", &call_args)
+                {
                     return result;
                 }
             }
@@ -1070,7 +1152,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
             call_args.push(args.first().cloned().unwrap_or(Value::Undefined));
             match crate::regexp::dispatch_regexp_string_method(ctx, "search", &call_args) {
                 Some(result) => result,
-                None => Value::I32(-1) }
+                None => Value::I32(-1),
+            }
         }
         "concat" => {
             let mut out = s.to_string();
@@ -1082,7 +1165,8 @@ fn dispatch_string(ctx: &mut HostContext, receiver: &Value, method: &str, args: 
         "padStart" => pad(&s, args, true),
         "padEnd" => pad(&s, args, false),
         "toString" | "valueOf" => Value::String(s),
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn invoke_string_symbol_hook(
@@ -1212,7 +1296,8 @@ fn dispatch_array(
             }
             let old_len = match &o.kind {
                 ObjectKind::Array(v) => v.len(),
-                _ => 0 };
+                _ => 0,
+            };
             if let ObjectKind::Array(ref mut v) = o.kind {
                 for a in args {
                     v.push(a.clone());
@@ -1229,7 +1314,8 @@ fn dispatch_array(
             let mut o = obj.lock().unwrap();
             let last_index = match &o.kind {
                 ObjectKind::Array(v) if !v.is_empty() => Some(v.len() - 1),
-                _ => None };
+                _ => None,
+            };
             if let Some(last_index) = last_index {
                 let was_hole = crate::array::is_array_hole(&o, last_index);
                 let popped = if let ObjectKind::Array(ref mut v) = o.kind {
@@ -1256,7 +1342,8 @@ fn dispatch_array(
                 };
                 crate::array::remap_array_holes(&mut o, |index| match index {
                     0 => None,
-                    other => Some(other - 1) });
+                    other => Some(other - 1),
+                });
                 sync_length(&mut o);
                 return if was_hole { Value::Undefined } else { r };
             }
@@ -1305,7 +1392,8 @@ fn dispatch_array(
                 let o = obj.lock().unwrap();
                 match &o.kind {
                     ObjectKind::Array(v) => v.clone(),
-                    _ => Vec::new() }
+                    _ => Vec::new(),
+                }
             };
             for a in args {
                 if let Some(spread) = concat_spread_elements(a) {
@@ -1378,7 +1466,8 @@ fn dispatch_array(
                     .get(1)
                     .and_then(|x| match x {
                         Value::Undefined | Value::Null => None,
-                        _ => Some(x.as_i32()) })
+                        _ => Some(x.as_i32()),
+                    })
                     .map(|n| {
                         if n < 0 {
                             (len + n).max(0) as usize
@@ -1424,7 +1513,8 @@ fn dispatch_array(
                         } else {
                             match value {
                                 Value::Null | Value::Undefined => String::new(),
-                                other => format!("{}", other) }
+                                other => format!("{}", other),
+                            }
                         }
                     })
                     .collect();
@@ -1585,7 +1675,8 @@ fn dispatch_array(
         "forEach" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
@@ -1598,7 +1689,8 @@ fn dispatch_array(
         "map" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
-                None => return make_array(Vec::new()) };
+                None => return make_array(Vec::new()),
+            };
             let (length, entries) = {
                 let o = obj.lock().unwrap();
                 let len = if let ObjectKind::Array(ref v) = o.kind {
@@ -1629,7 +1721,8 @@ fn dispatch_array(
         "filter" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
-                None => return make_array(Vec::new()) };
+                None => return make_array(Vec::new()),
+            };
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
@@ -1649,7 +1742,8 @@ fn dispatch_array(
         "reduce" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let has_initial = args.len() > 1;
             let mut acc = if has_initial {
                 args[1].clone()
@@ -1677,7 +1771,8 @@ fn dispatch_array(
         "some" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
-                None => return Value::Bool(false) };
+                None => return Value::Bool(false),
+            };
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
@@ -1693,7 +1788,8 @@ fn dispatch_array(
         "every" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
-                None => return Value::Bool(true) };
+                None => return Value::Bool(true),
+            };
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
@@ -1709,7 +1805,8 @@ fn dispatch_array(
         "find" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
@@ -1727,7 +1824,8 @@ fn dispatch_array(
         "findIndex" => {
             let cb = match args.first() {
                 Some(c) => c.clone(),
-                None => return Value::I32(-1) };
+                None => return Value::I32(-1),
+            };
             let entries = {
                 let o = obj.lock().unwrap();
                 crate::array::present_array_entries(&o)
@@ -1752,7 +1850,8 @@ fn dispatch_array(
                         } else {
                             match value {
                                 Value::Null | Value::Undefined => String::new(),
-                                other => format!("{}", other) }
+                                other => format!("{}", other),
+                            }
                         }
                     })
                     .collect();
@@ -1760,7 +1859,8 @@ fn dispatch_array(
             }
             Value::String(Arc::from("[object Object]"))
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn is_array_iterator(obj: &Arc<Mutex<Object>>) -> bool {
@@ -1836,7 +1936,8 @@ fn truthy(v: &Value) -> bool {
         Value::F64(n) => *n != 0.0 && !n.is_nan(),
         Value::String(s) => !s.is_empty(),
         Value::Null | Value::Undefined => false,
-        _ => true }
+        _ => true,
+    }
 }
 
 // ── Map / Set dispatch — operate directly on ObjectKind::Map/Set.
@@ -1971,7 +2072,8 @@ fn dispatch_map(
             }
             Value::Undefined
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn dispatch_set(
@@ -2067,7 +2169,8 @@ fn dispatch_set(
         "intersection" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return crate::set::make_set(indexmap::IndexSet::new()) };
+                _ => return crate::set::make_set(indexmap::IndexSet::new()),
+            };
             let mut out = indexmap::IndexSet::new();
             if Arc::ptr_eq(&obj, &rhs) {
                 let so = obj.lock().unwrap();
@@ -2090,7 +2193,8 @@ fn dispatch_set(
         "difference" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return crate::set::make_set(indexmap::IndexSet::new()) };
+                _ => return crate::set::make_set(indexmap::IndexSet::new()),
+            };
             // §24.2.4.5: every element of `this` is in `other` — empty set.
             if Arc::ptr_eq(&obj, &rhs) {
                 return crate::set::make_set(indexmap::IndexSet::new());
@@ -2110,7 +2214,8 @@ fn dispatch_set(
         "symmetricDifference" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return crate::set::make_set(indexmap::IndexSet::new()) };
+                _ => return crate::set::make_set(indexmap::IndexSet::new()),
+            };
             // §24.2.4.12: no element is in exactly one operand — empty set.
             if Arc::ptr_eq(&obj, &rhs) {
                 return crate::set::make_set(indexmap::IndexSet::new());
@@ -2135,7 +2240,8 @@ fn dispatch_set(
         "isSubsetOf" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return Value::Bool(false) };
+                _ => return Value::Bool(false),
+            };
             if Arc::ptr_eq(&obj, &rhs) {
                 let so = obj.lock().unwrap();
                 if let ObjectKind::Set(lhs) = &so.kind {
@@ -2153,7 +2259,8 @@ fn dispatch_set(
         "isSupersetOf" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return Value::Bool(false) };
+                _ => return Value::Bool(false),
+            };
             if Arc::ptr_eq(&obj, &rhs) {
                 let so = obj.lock().unwrap();
                 if let ObjectKind::Set(lhs) = &so.kind {
@@ -2171,7 +2278,8 @@ fn dispatch_set(
         "isDisjointFrom" => {
             let rhs = match args.first() {
                 Some(Value::Object(rhs)) => rhs.clone(),
-                _ => return Value::Bool(false) };
+                _ => return Value::Bool(false),
+            };
             if Arc::ptr_eq(&obj, &rhs) {
                 let so = obj.lock().unwrap();
                 if let ObjectKind::Set(lhs) = &so.kind {
@@ -2209,7 +2317,8 @@ fn dispatch_set(
             }
             Value::Undefined
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 // ── TypedArray methods (`TypedArray.prototype.*`) ─────────────────────
@@ -2564,16 +2673,17 @@ fn dispatch_typed_array(
                         ObjectKind::TypedArray(src_ta) => (0..ta_live_length(src_ta))
                             .map(|i| read_element(src_ta, i))
                             .collect(),
-                        _ => Vec::new() }
+                        _ => Vec::new(),
+                    }
                 }
-                _ => Vec::new() };
+                _ => Vec::new(),
+            };
             let o = obj.lock().unwrap();
             if let ObjectKind::TypedArray(ta) = &o.kind {
                 let live = ta_live_length(ta);
                 if offset.saturating_add(source_values.len()) > live {
                     drop(o);
-                    let err =
-                        crate::error::new_error(ctx, "RangeError", "TypedArray set offset");
+                    let err = crate::error::new_error(ctx, "RangeError", "TypedArray set offset");
                     ctx.throw_value(err);
                     return Value::Undefined;
                 }
@@ -2659,13 +2769,15 @@ fn dispatch_typed_array(
             }
             crate::array::make_array_iterator(Vec::new())
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn typed_array_element_to_string(value: Value) -> String {
     match value {
         Value::BigInt(n) => format!("{}", n),
-        other => format!("{}", other) }
+        other => format!("{}", other),
+    }
 }
 
 // ── Plain object / prototype walk ─────────────────────────────────────
@@ -2699,7 +2811,8 @@ fn dispatch_plain_object(
             }
             current = match proto {
                 Some(Value::Object(p)) => Some(p),
-                _ => None };
+                _ => None,
+            };
         }
         found
     };
@@ -2759,7 +2872,8 @@ fn dispatch_plain_object(
                         true
                     }
                 }
-                _ => true };
+                _ => true,
+            };
             Value::Bool(is_enum)
         }
         // §20.1.3.7: default valueOf returns the receiver itself (boxed
@@ -2774,7 +2888,8 @@ fn dispatch_plain_object(
                 let o = obj.lock().unwrap();
                 match o.properties.get("Symbol(toStringTag)") {
                     Some(Value::String(s)) => s.to_string(),
-                    _ => "Object".to_string() }
+                    _ => "Object".to_string(),
+                }
             };
             Value::String(Arc::from(format!("[object {}]", tag).as_str()))
         }
@@ -2786,7 +2901,8 @@ fn dispatch_plain_object(
                     let link = v.lock().unwrap().properties.get("__proto__").cloned();
                     link
                 }
-                _ => None };
+                _ => None,
+            };
             let mut found = false;
             let mut guard = 0;
             while let Some(Value::Object(p)) = current {
@@ -2802,7 +2918,8 @@ fn dispatch_plain_object(
             }
             Value::Bool(found)
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 fn dispatch_tagged_object(
@@ -2862,24 +2979,21 @@ fn dispatch_tagged_object(
                             Value::String(Arc::clone(desc))
                         }
                     }
-                    _ => Value::Undefined });
+                    _ => Value::Undefined,
+                });
             }
         } else if tag == "RegExp" {
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(Value::Object(obj));
             call_args.extend_from_slice(args);
-            if let Some(result) =
-                crate::regexp::dispatch_regexp_method(ctx, method, &call_args)
-            {
+            if let Some(result) = crate::regexp::dispatch_regexp_method(ctx, method, &call_args) {
                 return Some(result);
             }
         } else if tag == "Promise" {
             let mut call_args = Vec::with_capacity(args.len() + 1);
             call_args.push(Value::Object(obj));
             call_args.extend_from_slice(args);
-            if let Some(result) =
-                crate::promise::dispatch_promise_method(ctx, method, &call_args)
-            {
+            if let Some(result) = crate::promise::dispatch_promise_method(ctx, method, &call_args) {
                 return Some(result);
             }
         } else if tag == "WeakRef" {
@@ -2887,8 +3001,7 @@ fn dispatch_tagged_object(
                 return Some(result);
             }
         } else if tag == "FinalizationRegistry" {
-            if let Some(result) = crate::weakref::dispatch_registry_method(obj, method, args)
-            {
+            if let Some(result) = crate::weakref::dispatch_registry_method(obj, method, args) {
                 return Some(result);
             }
         }
@@ -2968,7 +3081,9 @@ fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
         // have no prototype and fall out here.
         _ => match crate::object::js_prototype_of(receiver) {
             Value::Object(proto) => return lookup_user_member_on_chain(proto, method),
-            _ => return Value::Null } };
+            _ => return Value::Null,
+        },
+    };
 
     let mut current = Some(receiver_obj.clone());
     while let Some(obj) = current {
@@ -2988,7 +3103,8 @@ fn lookup_method_for_call(receiver: &Value, method: &str) -> Value {
 
         current = match next_proto {
             Some(Value::Object(proto)) => Some(proto),
-            _ => None };
+            _ => None,
+        };
     }
 
     Value::Null
@@ -3031,7 +3147,8 @@ fn lookup_user_member_on_chain(start: Arc<Mutex<Object>>, method: &str) -> Value
         }
         current = match next_proto {
             Some(Value::Object(proto)) => Some(proto),
-            _ => None };
+            _ => None,
+        };
     }
     Value::Null
 }
@@ -3071,10 +3188,12 @@ fn bind_method_receiver(receiver: Arc<Mutex<Object>>, method: Value) -> Value {
                             Vec::new()
                         }
                     }
-                    _ => Vec::new() };
+                    _ => Vec::new(),
+                };
                 (Some(o.kind.clone()), prev_bound)
             }
-            _ => (None, Vec::new()) }
+            _ => (None, Vec::new()),
+        }
     };
 
     let Some(kind) = kind else {
@@ -3106,9 +3225,11 @@ fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
             match ctor_lock.properties.get("name") {
                 Some(Value::String(name)) => Some(name.to_string()),
                 Some(other) => Some(format!("{}", other)),
-                None => None }
+                None => None,
+            }
         }
-        _ => None };
+        _ => None,
+    };
 
     if matches!(ctor_name.as_deref(), Some("Array")) {
         let o = obj.lock().unwrap();
@@ -3135,7 +3256,8 @@ fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
                             false
                         }
                     }
-                    _ => false }
+                    _ => false,
+                }
             }
         };
         if matched_stamp {
@@ -3151,7 +3273,8 @@ fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
         let ctor_lock = ctor_obj.lock().unwrap();
         match ctor_lock.properties.get("prototype") {
             Some(Value::Object(proto)) => Some(proto.clone()),
-            _ => None }
+            _ => None,
+        }
     };
 
     let Some(target_proto) = target_proto else {
@@ -3171,7 +3294,8 @@ fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
                 }
                 current = Some(proto);
             }
-            _ => return false }
+            _ => return false,
+        }
     }
 
     false
@@ -3182,7 +3306,8 @@ fn js_instanceof(receiver: &Value, ctor: &Value) -> bool {
 fn to_str(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
-        other => format!("{}", other) }
+        other => format!("{}", other),
+    }
 }
 
 /// Walk own + `__proto__` chain looking for a method named `key`.
@@ -3201,11 +3326,13 @@ fn lookup_method_via_proto(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value>
             }
             match o.properties.get("__proto__").cloned() {
                 Some(Value::Object(p)) => Some(p),
-                _ => None }
+                _ => None,
+            }
         };
         match next_proto {
             Some(p) => current = p,
-            None => break }
+            None => break,
+        }
     }
     None
 }
@@ -3218,7 +3345,8 @@ fn lookup_method_via_proto(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value>
 pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     let obj = match v {
         Value::Object(o) => o.clone(),
-        _ => return v.clone() };
+        _ => return v.clone(),
+    };
     {
         let o = obj.lock().unwrap();
         if let ObjectKind::Array(elems) = &o.kind {
@@ -3226,7 +3354,8 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
                 .iter()
                 .map(|value| match value {
                     Value::Null | Value::Undefined => String::new(),
-                    other => format!("{}", other) })
+                    other => format!("{}", other),
+                })
                 .collect::<Vec<_>>()
                 .join(",");
             return Value::String(Arc::from(joined.as_str()));
@@ -3237,19 +3366,12 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     if let Some(tp_fn) = tp {
         if !matches!(tp_fn, Value::Null | Value::Undefined) {
             let hint_val = Value::String(Arc::from(hint));
-            if let Some(result) = crate::function::invoke_bound_callback_if_needed(
-                ctx,
-                &tp_fn,
-                &[hint_val.clone()],
-            ) {
+            if let Some(result) =
+                crate::function::invoke_bound_callback_if_needed(ctx, &tp_fn, &[hint_val.clone()])
+            {
                 return result;
             }
-            return crate::function::invoke_with_explicit_this(
-                ctx,
-                &tp_fn,
-                v.clone(),
-                &[hint_val],
-            );
+            return crate::function::invoke_with_explicit_this(ctx, &tp_fn, v.clone(), &[hint_val]);
         }
     }
     // Skip the dance for non-Ordinary objects (Functions, Continuations
@@ -3269,7 +3391,8 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
         let o = obj.lock().unwrap();
         o.properties.get("__type").and_then(|v| match v {
             Value::String(s) => Some(s.to_string()),
-            _ => None })
+            _ => None,
+        })
     };
     if matches!(
         type_tag.as_deref(),
@@ -3313,7 +3436,8 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     for m in methods {
         let fn_val = match lookup_method_via_proto(&obj, m) {
             Some(v) if !matches!(v, Value::Null | Value::Undefined) => v,
-            _ => continue };
+            _ => continue,
+        };
         // Only invoke user-defined bytecode functions. HostFunctions (e.g.
         // Object.prototype.valueOf) are called inline by call_value_inner
         // without pushing a frame, causing the subsequent execute_until to
@@ -3348,7 +3472,8 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
         let msg = match message {
             Some(Value::String(s)) => s.to_string(),
             Some(Value::Null) | Some(Value::Undefined) | None => String::new(),
-            Some(other) => format!("{}", other) };
+            Some(other) => format!("{}", other),
+        };
         return Value::String(Arc::from(msg.as_str()));
     }
     // Class instances with a `__type` tag get the spec-shaped
@@ -3356,7 +3481,8 @@ pub fn to_primitive(ctx: &mut HostContext, v: &Value, hint: &str) -> Value {
     // default for Ordinary).
     match tag {
         Some(t) if !t.is_empty() => Value::String(Arc::from(format!("[object {}]", t).as_str())),
-        _ => Value::String(Arc::from("[object Object]")) }
+        _ => Value::String(Arc::from("[object Object]")),
+    }
 }
 
 /// If `arg` is a RegExp object (Object stamped with `__type=RegExp`),
@@ -3374,11 +3500,13 @@ fn regex_pattern(arg: Option<&Value>) -> Option<(String, String)> {
     }
     let src = match o.properties.get("source")? {
         Value::String(s) => s.to_string(),
-        other => format!("{}", other) };
+        other => format!("{}", other),
+    };
     let flags = match o.properties.get("flags") {
         Some(Value::String(s)) => s.to_string(),
         Some(other) => format!("{}", other),
-        None => String::new() };
+        None => String::new(),
+    };
     Some((src, flags))
 }
 
@@ -3498,7 +3626,8 @@ fn dispatch_weakmap(
             }
             Value::Bool(false)
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }
 
 // ── WeakSet dynamic dispatch ──────────────────────────────────────────────────
@@ -3564,5 +3693,6 @@ fn dispatch_weakset(
             }
             Value::Bool(false)
         }
-        _ => Value::Undefined }
+        _ => Value::Undefined,
+    }
 }

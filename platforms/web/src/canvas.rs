@@ -20,7 +20,7 @@ use std::sync::Arc;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
 
-use crate::canvas_backend::{apply, backend, Op2D};
+use crate::canvas_backend::{Op2D, apply, backend};
 
 /// `getContext` returns a handle; every op reads the target name back out of
 /// it. Accepts the handle or a bare name, the way `getContext` itself accepts
@@ -35,7 +35,8 @@ fn target_of(arg: Option<&Value>) -> String {
                 .unwrap_or_default()
         }
         Some(Value::Null) | Some(Value::Undefined) | None => String::new(),
-        Some(other) => format!("{}", other).to_lowercase() }
+        Some(other) => format!("{}", other).to_lowercase(),
+    }
 }
 
 fn f32_arg(args: &[Value], idx: usize) -> f32 {
@@ -43,7 +44,9 @@ fn f32_arg(args: &[Value], idx: usize) -> f32 {
 }
 
 fn u8_arg(args: &[Value], idx: usize) -> u8 {
-    args.get(idx).map(|v| v.as_i32().clamp(0, 255) as u8).unwrap_or(0)
+    args.get(idx)
+        .map(|v| v.as_i32().clamp(0, 255) as u8)
+        .unwrap_or(0)
 }
 
 fn bool_arg(args: &[Value], idx: usize) -> bool {
@@ -57,7 +60,8 @@ fn text_arg(args: &[Value], idx: usize) -> String {
         match v {
             Value::String(s) => match s.find('\0') {
                 Some(k) => s[..k].to_string(),
-                None => s.to_string() },
+                None => s.to_string(),
+            },
             Value::Object(obj) => {
                 enum Shape {
                     Chars(String),
@@ -92,7 +96,8 @@ fn text_arg(args: &[Value], idx: usize) -> String {
                                     }
                                 }
                                 Value::Null | Value::Undefined => break 'items,
-                                other => out.push_str(&format!("{}", other)) }
+                                other => out.push_str(&format!("{}", other)),
+                            }
                         }
                         Shape::Chars(out)
                     } else if o
@@ -114,12 +119,12 @@ fn text_arg(args: &[Value], idx: usize) -> String {
                 };
                 match shape {
                     Shape::Chars(s) => s,
-                    Shape::View(Some(base), skip) => {
-                        from_value(&base).chars().skip(skip).collect()
-                    }
-                    Shape::View(None, _) | Shape::Other => String::new() }
+                    Shape::View(Some(base), skip) => from_value(&base).chars().skip(skip).collect(),
+                    Shape::View(None, _) | Shape::Other => String::new(),
+                }
             }
-            other => format!("{}", other) }
+            other => format!("{}", other),
+        }
     }
     args.get(idx).map(from_value).unwrap_or_default()
 }
@@ -142,7 +147,8 @@ fn bytes_arg(args: &[Value], idx: usize) -> Vec<u8> {
                 None
             }
         }
-        _ => None };
+        _ => None,
+    };
     let target = unwrapped.unwrap_or_else(|| v.clone());
     match &target {
         Value::Object(obj) => {
@@ -152,9 +158,11 @@ fn bytes_arg(args: &[Value], idx: usize) -> Vec<u8> {
                     .iter()
                     .map(|it| it.as_i32().clamp(0, 255) as u8)
                     .collect(),
-                _ => Vec::new() }
+                _ => Vec::new(),
+            }
         }
-        _ => Vec::new() }
+        _ => Vec::new(),
+    }
 }
 
 pub fn register(vm: &mut VM) {
@@ -177,10 +185,14 @@ pub fn register(vm: &mut VM) {
                 b.ensure(&name);
             }
             let mut o = Object::new();
-            o.properties
-                .insert("__type".into(), Value::String(Arc::from("CanvasRenderingContext2D")));
-            o.properties
-                .insert("__control_name".into(), Value::String(Arc::from(name.as_str())));
+            o.properties.insert(
+                "__type".into(),
+                Value::String(Arc::from("CanvasRenderingContext2D")),
+            );
+            o.properties.insert(
+                "__control_name".into(),
+                Value::String(Arc::from(name.as_str())),
+            );
             Value::Object(vybe_runtime::heap::alloc(o))
         }),
     );
@@ -226,7 +238,10 @@ pub fn register(vm: &mut VM) {
     simple!("setImageSmoothingEnabled", |a| Op2D::SetImageSmoothing(
         bool_arg(a, 1)
     ));
-    simple!("translate", |a| Op2D::Translate(f32_arg(a, 1), f32_arg(a, 2)));
+    simple!("translate", |a| Op2D::Translate(
+        f32_arg(a, 1),
+        f32_arg(a, 2)
+    ));
     simple!("scale", |a| Op2D::Scale(f32_arg(a, 1), f32_arg(a, 2)));
     simple!("rotate", |a| Op2D::Rotate(f32_arg(a, 1)));
 
@@ -260,7 +275,8 @@ pub fn register(vm: &mut VM) {
                     family: args.get(1).map(|v| format!("{}", v)).unwrap_or_default(),
                     size: f32_arg(args, 2),
                     bold: bool_arg(args, 3),
-                    italic: bool_arg(args, 4) },
+                    italic: bool_arg(args, 4),
+                },
             );
             Value::Null
         }),
@@ -366,7 +382,8 @@ pub fn register(vm: &mut VM) {
                     dx: f32_arg(args, 4),
                     dy: f32_arg(args, 5),
                     dw: f32_arg(args, 6),
-                    dh: f32_arg(args, 7) },
+                    dh: f32_arg(args, 7),
+                },
             );
             Value::Null
         }),
@@ -390,7 +407,8 @@ pub fn register(vm: &mut VM) {
                     dx: f32_arg(args, 5),
                     dy: f32_arg(args, 6),
                     dw: f32_arg(args, 7),
-                    dh: f32_arg(args, 8) },
+                    dh: f32_arg(args, 8),
+                },
             );
             Value::Null
         }),

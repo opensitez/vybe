@@ -23,10 +23,10 @@
 //! requires plugging in `icu_*` Rust crates — separate work.
 
 use std::sync::{Arc, Mutex};
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -73,7 +73,8 @@ fn s(text: &str) -> Value {
 fn as_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        other => format!("{}", other) }
+        other => format!("{}", other),
+    }
 }
 
 fn new_array(elements: Vec<Value>) -> Value {
@@ -1112,13 +1113,8 @@ fn time_zone_offsets_follow_daylight_saving() {
 
 #[test]
 fn time_zone_identifiers_canonicalize_to_tzdb_casing() {
-    let canon = |zone: &str| {
-        as_string(&invoke(
-            "ecma:intl/timezone",
-            "canonicalize",
-            vec![s(zone)],
-        ))
-    };
+    let canon =
+        |zone: &str| as_string(&invoke("ecma:intl/timezone", "canonicalize", vec![s(zone)]));
     assert_eq!(canon("america/new_york"), "America/New_York");
     // ECMA-402: "UTC" is primary; Etc/UTC, Etc/GMT and GMT resolve to it.
     for alias in ["Etc/UTC", "Etc/GMT", "GMT"] {
@@ -1136,7 +1132,8 @@ fn date_time_format_accepts_named_time_zones() {
     // advertised them.
     let options = Value::Object(Arc::new(Mutex::new({
         let mut o = Object::new();
-        o.properties.insert("timeZone".into(), s("America/New_York"));
+        o.properties
+            .insert("timeZone".into(), s("America/New_York"));
         o
     })));
     let dtf = invoke("ecma:intl/datetimeformat", "new", vec![s("en-US"), options]);
@@ -1157,10 +1154,14 @@ fn supported_values_of_time_zone_is_the_real_identifier_set() {
         let lock = obj.lock().unwrap();
         match &lock.kind {
             ObjectKind::Array(elems) => elems.len(),
-            other => panic!("expected array, got {other:?}") }
+            other => panic!("expected array, got {other:?}"),
+        }
     };
     // The old hand-written list held 15 entries; tzdb has hundreds.
-    assert!(count > 300, "expected full tzdb identifier set, got {count}");
+    assert!(
+        count > 300,
+        "expected full tzdb identifier set, got {count}"
+    );
 }
 
 #[test]
@@ -1248,7 +1249,8 @@ fn number_format_format_range_to_parts_tags_each_source() {
                 .iter()
                 .map(|part| as_string(&obj_prop(part, "source")))
                 .collect(),
-            other => panic!("expected array, got {other:?}") }
+            other => panic!("expected array, got {other:?}"),
+        }
     };
     assert!(sources.contains(&"startRange".to_string()), "{sources:?}");
     assert!(sources.contains(&"endRange".to_string()), "{sources:?}");
@@ -1282,7 +1284,10 @@ fn locale_first_day_of_week_and_variants() {
     assert_eq!(obj_prop(&loc, "firstDayOfWeek").as_f64() as i64, 3);
 
     let plain = invoke("ecma:intl/locale", "new", vec![s("en-US")]);
-    assert!(matches!(obj_prop(&plain, "firstDayOfWeek"), Value::Undefined));
+    assert!(matches!(
+        obj_prop(&plain, "firstDayOfWeek"),
+        Value::Undefined
+    ));
 
     let variant = invoke("ecma:intl/locale", "new", vec![s("de-DE-1901")]);
     assert_eq!(as_string(&obj_prop(&variant, "variants")), "1901");

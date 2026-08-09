@@ -116,14 +116,16 @@ fn s_arg(args: &[Value], idx: usize) -> String {
     match args.get(idx) {
         Some(Value::String(text)) => text.to_string(),
         Some(other) => format!("{}", other),
-        None => String::new() }
+        None => String::new(),
+    }
 }
 
 fn i32_arg(args: &[Value], idx: usize, default: i32) -> i32 {
     match args.get(idx) {
         Some(Value::I32(n)) => *n,
         Some(Value::F64(n)) => *n as i32,
-        _ => default }
+        _ => default,
+    }
 }
 
 fn to_integer_or_infinity(value: Option<&Value>, default_for_undefined: f64) -> f64 {
@@ -153,7 +155,8 @@ fn to_integer_or_infinity(value: Option<&Value>, default_for_undefined: f64) -> 
                 trimmed.parse::<f64>().unwrap_or(f64::NAN)
             }
         }
-        Some(other) => format!("{other}").parse::<f64>().unwrap_or(f64::NAN) };
+        Some(other) => format!("{other}").parse::<f64>().unwrap_or(f64::NAN),
+    };
     if number.is_nan() || number == 0.0 {
         0.0
     } else if number.is_infinite() {
@@ -428,7 +431,8 @@ fn register_query_ops(vm: &mut VM) {
             // unpaired surrogate half surfaces as U+FFFD (UTF-8 storage).
             match utf16_units(&s).get(pos as usize) {
                 Some(unit) => s_val(&String::from_utf16_lossy(&[*unit])),
-                None => s_val("") }
+                None => s_val(""),
+            }
         }),
     );
 
@@ -444,7 +448,8 @@ fn register_query_ops(vm: &mut VM) {
             }
             match utf16_units(&s).get(pos as usize) {
                 Some(unit) => Value::F64(*unit as f64),
-                None => Value::F64(f64::NAN) }
+                None => Value::F64(f64::NAN),
+            }
         }),
     );
 
@@ -460,7 +465,8 @@ fn register_query_ops(vm: &mut VM) {
             }
             match s.chars().nth(pos as usize) {
                 Some(ch) => Value::F64(ch as u32 as f64),
-                None => Value::Undefined }
+                None => Value::Undefined,
+            }
         }),
     );
 
@@ -519,7 +525,8 @@ fn register_extract_ops(vm: &mut VM) {
             for a in args {
                 match a {
                     Value::String(text) => out.push_str(text),
-                    other => out.push_str(&format!("{}", other)) }
+                    other => out.push_str(&format!("{}", other)),
+                }
             }
             s_val(&out)
         }),
@@ -896,11 +903,13 @@ fn register_split(vm: &mut VM) {
             let separator = match args.get(1) {
                 Some(Value::String(text)) => Some(text.to_string()),
                 None | Some(Value::Undefined) => None,
-                Some(other) => Some(format!("{}", other)) };
+                Some(other) => Some(format!("{}", other)),
+            };
             let limit: Option<usize> = match args.get(2) {
                 Some(Value::F64(n)) if *n >= 0.0 => Some(*n as usize),
                 Some(Value::I32(n)) if *n >= 0 => Some(*n as usize),
-                _ => None };
+                _ => None,
+            };
 
             let parts: Vec<Value> = match separator {
                 None => vec![s_val(&s)],
@@ -908,10 +917,12 @@ fn register_split(vm: &mut VM) {
                     // ECMA-262: empty string separator splits every char.
                     s.chars().map(|c| s_val(&c.to_string())).collect()
                 }
-                Some(sep) => s.split(&sep).map(|piece| s_val(piece)).collect() };
+                Some(sep) => s.split(&sep).map(|piece| s_val(piece)).collect(),
+            };
             let truncated: Vec<Value> = match limit {
                 Some(n) => parts.into_iter().take(n).collect(),
-                None => parts };
+                None => parts,
+            };
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(truncated)))
         }),
     );
@@ -929,7 +940,8 @@ fn register_constructor_statics(vm: &mut VM) {
                 let code = match arg {
                     Value::F64(n) => *n as u32,
                     Value::I32(n) => *n as u32,
-                    _ => continue };
+                    _ => continue,
+                };
                 if let Some(ch) = char::from_u32(code) {
                     out.push(ch);
                 }
@@ -947,7 +959,8 @@ fn register_constructor_statics(vm: &mut VM) {
                 let code = match arg {
                     Value::F64(n) => *n as u32,
                     Value::I32(n) => *n as u32,
-                    _ => continue };
+                    _ => continue,
+                };
                 if let Some(ch) = char::from_u32(code) {
                     out.push(ch);
                 }
@@ -975,7 +988,8 @@ fn register_locale_compare(vm: &mut VM) {
             Value::I32(match a.as_str().cmp(b.as_str()) {
                 std::cmp::Ordering::Less => -1,
                 std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1 })
+                std::cmp::Ordering::Greater => 1,
+            })
         }),
     );
 }
@@ -1386,7 +1400,8 @@ fn register_base64(vm: &mut VM) {
                         for i in 1..caps.len() {
                             arr_vals.push(match caps.get(i) {
                                 Some(g) => Value::String(Arc::from(g.as_str())),
-                                None => Value::Undefined });
+                                None => Value::Undefined,
+                            });
                         }
                     }
                     return Value::Object(vybe_runtime::heap::alloc(Object::new_array(arr_vals)));
@@ -1444,7 +1459,8 @@ fn register_base64(vm: &mut VM) {
                                 v.iter()
                                     .map(|v| match v {
                                         Value::String(s) => s.as_ref().to_string(),
-                                        other => format!("{}", other) })
+                                        other => format!("{}", other),
+                                    })
                                     .collect::<Vec<_>>()
                             } else {
                                 Vec::new()
@@ -1459,12 +1475,15 @@ fn register_base64(vm: &mut VM) {
                                 .iter()
                                 .map(|v| match v {
                                     Value::String(s) => s.as_ref().to_string(),
-                                    other => format!("{}", other) })
+                                    other => format!("{}", other),
+                                })
                                 .collect::<Vec<_>>(),
-                            _ => Vec::new() }
+                            _ => Vec::new(),
+                        }
                     }
                 }
-                _ => Vec::new() };
+                _ => Vec::new(),
+            };
             let subs: Vec<String> = if args.len() > 1 {
                 args[1..].iter().map(|v| format!("{}", v)).collect()
             } else {

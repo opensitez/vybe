@@ -34,7 +34,8 @@ struct WellKnown {
     split: Arc<str>,
     species: Arc<str>,
     dispose: Arc<str>,
-    async_dispose: Arc<str> }
+    async_dispose: Arc<str>,
+}
 
 static WELL_KNOWN: std::sync::OnceLock<WellKnown> = std::sync::OnceLock::new();
 
@@ -54,7 +55,8 @@ fn well_known() -> &'static WellKnown {
         split: Arc::from("@@split"),
         species: Arc::from("@@species"),
         dispose: Arc::from("@@dispose"),
-        async_dispose: Arc::from("@@asyncDispose") })
+        async_dispose: Arc::from("@@asyncDispose"),
+    })
 }
 
 // Process-global Symbol.for(...) registry. Per spec §20.4.2.2 each key
@@ -89,7 +91,8 @@ pub fn canonical_property_key(sym: &Arc<str>) -> String {
         "@@species" => "species".to_string(),
         "@@dispose" => "dispose".to_string(),
         "@@asyncDispose" => "asyncdispose".to_string(),
-        _ => format!("Symbol({})", sym) }
+        _ => format!("Symbol({})", sym),
+    }
 }
 
 pub fn has_description(sym: &Arc<str>) -> bool {

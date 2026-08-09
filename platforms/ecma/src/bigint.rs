@@ -36,7 +36,8 @@ fn to_bigint(v: &Value) -> BigIntVal {
         Value::F64(n) => BigIntVal::from_f64(*n),
         Value::Bool(b) => BigIntVal::from_i64(*b as i64),
         Value::String(s) => BigIntVal::parse(s).unwrap_or_else(BigIntVal::zero),
-        _ => BigIntVal::zero() }
+        _ => BigIntVal::zero(),
+    }
 }
 
 fn big(v: BigIntVal) -> Value {
@@ -301,7 +302,8 @@ pub fn register(vm: &mut VM) {
                     let ord: Option<Ordering> = match (&a, &b) {
                         (Value::BigInt(x), Value::F64(f)) => x.cmp_f64(*f),
                         (Value::F64(f), Value::BigInt(y)) => y.cmp_f64(*f).map(Ordering::reverse),
-                        _ => Some(to_bigint(&a).cmp_big(&to_bigint(&b))) };
+                        _ => Some(to_bigint(&a).cmp_big(&to_bigint(&b))),
+                    };
                     let accept: fn(Ordering) -> bool = $accept;
                     Value::Bool(ord.map(accept).unwrap_or($nan))
                 }),

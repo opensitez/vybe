@@ -23,6 +23,22 @@ impl vybe_runtime::Plugin for Plugin {
         // plugin's host fns exist.
         crate::builtin_types::register_types(fw);
     }
+
+    // No `reset`. Everything this platform holds on a program's behalf — the
+    // DOM listener table, the ambient document — is VM-owned storage
+    // (`vybe_runtime::resources`), so `reset_to` drops it without this plugin
+    // taking part. That is the whole point of the store: the listener table
+    // used to be a process-global static with a hand-written `reset_listeners`,
+    // and `reset_active_document`'s only caller was a pascal test helper — a
+    // per-test helper cannot be the mechanism, it fixes the one caller that
+    // remembers to call it and leaves every other embedder broken.
+    //
+    // Queued timer and animation callbacks are not here either: they are
+    // `DeferredSource`s, and `reset_to` clears every registered source's queue
+    // through `clear_pending`. That is what a `setTimeout` callback outliving
+    // its program used to defeat — it stayed queued and was drained by the NEXT
+    // program, against chunk indices that had since been reused, which is how
+    // one tenant's code came to run under another's closure.
 }
 
 // Link-time registration: this crate submits its plugin to the one registry.

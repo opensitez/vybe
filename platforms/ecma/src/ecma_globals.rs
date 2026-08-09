@@ -12,10 +12,10 @@
 //! (`Symbol`, `BigInt`) double as the namespace object's own
 //! invocation target via the `__call` convention.
 
+use crate::receiver_host_fn_ref;
 use std::sync::Arc;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{VM, Value};
-use crate::receiver_host_fn_ref;
 
 // ---- Namespace/global wiring helpers (moved from vybe_host::namespaces) ----
 
@@ -114,8 +114,10 @@ fn host_fn_ref(vm: &VM, module: &str, name: &str) -> Value {
             .insert("__host_name".into(), Value::String(Arc::from(name)));
         obj.properties
             .insert("__host_idx".into(), Value::F64(idx as f64));
-        obj.properties
-            .insert("__proto__".into(), crate::function::shared_function_prototype());
+        obj.properties.insert(
+            "__proto__".into(),
+            crate::function::shared_function_prototype(),
+        );
         obj.properties
             .insert("name".into(), Value::String(Arc::from(name)));
         obj.kind = ObjectKind::HostFunction(idx);
@@ -528,7 +530,11 @@ pub fn register(vm: &mut VM) {
                     // accessor is undefined, not a method. `__get_<name>` is
                     // how the VM spells a getter (`dispatch.rs`), so the same
                     // host function is installed there instead of under `size`.
-                    let key = if *method == "size" { "__get_size" } else { *method };
+                    let key = if *method == "size" {
+                        "__get_size"
+                    } else {
+                        *method
+                    };
                     set_prop(&proto, key, receiver_host_fn_ref(module, method, idx));
                     if let Value::Object(ref p) = proto {
                         crate::object::track_nonenum(p, key);
@@ -935,10 +941,7 @@ pub fn register(vm: &mut VM) {
     let core_protos: [(&str, Value); 6] = [
         ("Object", crate::object::shared_object_prototype()),
         ("Array", crate::array::shared_array_prototype()),
-        (
-            "Function",
-            crate::function::shared_function_prototype(),
-        ),
+        ("Function", crate::function::shared_function_prototype()),
         ("Number", crate::number::shared_number_prototype()),
         ("String", crate::string::shared_string_prototype()),
         ("Boolean", crate::boolean::shared_boolean_prototype()),

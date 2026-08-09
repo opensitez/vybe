@@ -55,14 +55,16 @@ fn f_arg(args: &[Value], idx: usize) -> Option<f64> {
             };
             primitive.as_ref().map(coerce_to_number)
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 fn s_arg(args: &[Value], idx: usize) -> String {
     match args.get(idx) {
         Some(Value::String(text)) => text.to_string(),
         Some(other) => format!("{}", other),
-        None => String::new() }
+        None => String::new(),
+    }
 }
 
 fn s_val(text: &str) -> Value {
@@ -122,7 +124,8 @@ fn coerce_to_number_with_context(ctx: &mut HostContext, value: &Value) -> Result
             "TypeError",
             "Cannot convert a Symbol value to a number",
         )),
-        other => Ok(coerce_to_number(&other)) }
+        other => Ok(coerce_to_number(&other)),
+    }
 }
 
 fn coerce_to_number(value: &Value) -> f64 {
@@ -148,7 +151,8 @@ fn coerce_to_number(value: &Value) -> f64 {
                         .iter()
                         .map(|v| match v {
                             Value::Null | Value::Undefined => String::new(),
-                            other => format!("{}", other) })
+                            other => format!("{}", other),
+                        })
                         .collect();
                     parse_to_number(&joined.join(","))
                 }
@@ -158,9 +162,11 @@ fn coerce_to_number(value: &Value) -> f64 {
                         .map(|v| v.as_f64())
                         .unwrap_or(f64::NAN)
                 }
-                _ => f64::NAN }
+                _ => f64::NAN,
+            }
         }
-        _ => f64::NAN }
+        _ => f64::NAN,
+    }
 }
 
 /// ECMA-262 §7.1.4.1.1 StringToNumber — same trim + parse the
@@ -306,7 +312,8 @@ fn to_f64_coerce(v: &Value) -> f64 {
                 trimmed.parse::<f64>().unwrap_or(f64::NAN)
             }
         }
-        _ => f64::NAN }
+        _ => f64::NAN,
+    }
 }
 
 fn register_predicates(vm: &mut VM) {
@@ -317,7 +324,8 @@ fn register_predicates(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(Value::F64(n)) => Value::Bool(n.is_finite()),
             Some(Value::I32(_)) => Value::Bool(true),
-            _ => Value::Bool(false) }),
+            _ => Value::Bool(false),
+        }),
     );
 
     // ecma:number:isNaN — STRICT, no coercion (Number.isNaN).
@@ -326,7 +334,8 @@ fn register_predicates(vm: &mut VM) {
         "isNaN",
         Box::new(|_ctx, args| match args.first() {
             Some(Value::F64(n)) => Value::Bool(n.is_nan()),
-            _ => Value::Bool(false) }),
+            _ => Value::Bool(false),
+        }),
     );
 
     // ecma:number:globalIsFinite — coerces (global isFinite).
@@ -355,7 +364,8 @@ fn register_predicates(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(Value::F64(n)) => Value::Bool(n.is_finite() && n.fract() == 0.0),
             Some(Value::I32(_)) => Value::Bool(true),
-            _ => Value::Bool(false) }),
+            _ => Value::Bool(false),
+        }),
     );
 
     vm.register_host_fn(
@@ -365,7 +375,8 @@ fn register_predicates(vm: &mut VM) {
             let n = match args.first() {
                 Some(Value::F64(n)) => *n,
                 Some(Value::I32(n)) => *n as f64,
-                _ => return Value::Bool(false) };
+                _ => return Value::Bool(false),
+            };
             Value::Bool(n.is_finite() && n.fract() == 0.0 && n.abs() <= 9007199254740991.0)
         }),
     );
@@ -385,7 +396,8 @@ fn register_parsers(vm: &mut VM) {
             let radix = match args.get(1) {
                 Some(Value::F64(n)) if *n != 0.0 => *n as u32,
                 Some(Value::I32(n)) if *n != 0 => *n as u32,
-                _ => 0 };
+                _ => 0,
+            };
             Value::F64(parse_int_ecma(&input, radix))
         }),
     );
@@ -417,7 +429,8 @@ fn parse_int_ecma(input: &str, radix: u32) -> f64 {
     let (sign, rest) = match trimmed.as_bytes()[0] {
         b'+' => (1.0_f64, &trimmed[1..]),
         b'-' => (-1.0_f64, &trimmed[1..]),
-        _ => (1.0_f64, trimmed) };
+        _ => (1.0_f64, trimmed),
+    };
     if rest.is_empty() {
         return f64::NAN;
     }
@@ -440,7 +453,8 @@ fn parse_int_ecma(input: &str, radix: u32) -> f64 {
     for (i, ch) in body.chars().enumerate() {
         let digit = match ch.to_digit(effective_radix) {
             Some(d) => d,
-            None => break };
+            None => break,
+        };
         acc = acc
             .saturating_mul(effective_radix as u128)
             .saturating_add(digit as u128);
@@ -501,7 +515,8 @@ fn register_prototype(vm: &mut VM) {
             let digits_f = match args.get(1) {
                 Some(Value::F64(d)) => *d,
                 Some(Value::I32(d)) => *d as f64,
-                _ => 0.0 };
+                _ => 0.0,
+            };
             // §21.1.3.3 step 2: RangeError unless 0 ≤ digits ≤ 100.
             if !(0.0..=100.0).contains(&digits_f) || digits_f.is_nan() {
                 ctx.throw_value(crate::error::new_error(
@@ -530,7 +545,8 @@ fn register_prototype(vm: &mut VM) {
             let radix = match args.get(1) {
                 Some(Value::F64(r)) => *r as u32,
                 Some(Value::I32(r)) => *r as u32,
-                _ => 10 };
+                _ => 10,
+            };
             // §21.1.3.6 step 2: RangeError unless 2 ≤ radix ≤ 36.
             if !(2..=36).contains(&radix) {
                 ctx.throw_value(crate::error::new_error(
@@ -585,7 +601,8 @@ fn register_prototype(vm: &mut VM) {
             let n = match args.first() {
                 Some(Value::F64(f)) => *f,
                 Some(Value::I32(i)) => *i as f64,
-                _ => return Value::String(Arc::from("0")) };
+                _ => return Value::String(Arc::from("0")),
+            };
             if !n.is_finite() {
                 return Value::String(Arc::from(format!("{}", n).as_str()));
             }
@@ -627,7 +644,8 @@ fn register_prototype(vm: &mut VM) {
             let frac = match args.get(1) {
                 Some(Value::F64(d)) => Some(*d),
                 Some(Value::I32(d)) => Some(*d as f64),
-                _ => None };
+                _ => None,
+            };
             if let Some(d) = frac {
                 if !(0.0..=100.0).contains(&d) || d.is_nan() {
                     ctx.throw_value(crate::error::new_error(
@@ -645,7 +663,8 @@ fn register_prototype(vm: &mut VM) {
             let raw = match args.get(1) {
                 Some(Value::F64(d)) => format!("{:.1$e}", n, *d as usize),
                 Some(Value::I32(d)) => format!("{:.1$e}", n, *d as usize),
-                _ => format!("{:e}", n) };
+                _ => format!("{:e}", n),
+            };
             let parts: Vec<&str> = raw.splitn(2, 'e').collect();
             if parts.len() == 2 {
                 let exp: i32 = parts[1].parse().unwrap_or(0);
@@ -665,7 +684,8 @@ fn register_prototype(vm: &mut VM) {
             let prec_f = match args.get(1) {
                 Some(Value::F64(p)) => *p,
                 Some(Value::I32(p)) => *p as f64,
-                _ => return s_val(&format!("{}", n)) };
+                _ => return s_val(&format!("{}", n)),
+            };
             // §21.1.3.5 step 8: RangeError unless 1 ≤ precision ≤ 100.
             if !(1.0..=100.0).contains(&prec_f) || prec_f.is_nan() {
                 ctx.throw_value(crate::error::new_error(

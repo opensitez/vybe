@@ -609,7 +609,8 @@ pub fn register(vm: &mut VM) {
                         make_promise("fulfilled", result)
                     }
                 }
-                Err(exc) => make_promise("rejected", exc) }
+                Err(exc) => make_promise("rejected", exc),
+            }
         }),
     );
 
@@ -744,7 +745,8 @@ pub fn dispatch_promise_method(
             let on_finally = args.get(1).cloned().unwrap_or(Value::Undefined);
             finally_impl(ctx, p, on_finally)
         }
-        _ => return None };
+        _ => return None,
+    };
     Some(result)
 }
 
@@ -947,7 +949,8 @@ fn run_reaction(
                         }
                     }
                 }
-                Ok(_) => mutate_promise_state(ctx, &result_promise, state, value) }
+                Ok(_) => mutate_promise_state(ctx, &result_promise, state, value),
+            }
             return;
         }
     }
@@ -984,7 +987,8 @@ fn run_reaction(
         Err(exc) => mutate_promise_state(ctx, &result_promise, "rejected", exc),
         // Otherwise resolve the derived promise WITH the handler's return value,
         // assimilating a returned promise/thenable (adopt its eventual state).
-        Ok(result) => resolve_promise_with_value(ctx, &result_promise, result) }
+        Ok(result) => resolve_promise_with_value(ctx, &result_promise, result),
+    }
 }
 
 /// ECMA-262 §27.2.1.3.2 Promise Resolve Functions — settle `promise` with
@@ -995,11 +999,8 @@ fn run_reaction(
 fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Value) {
     if let Some(previous) = read_thenable_resolution(promise) {
         if same_object(&previous, &value) {
-            let err = crate::error::new_error(
-                ctx,
-                "TypeError",
-                "Chaining cycle detected for promise",
-            );
+            let err =
+                crate::error::new_error(ctx, "TypeError", "Chaining cycle detected for promise");
             mutate_promise_state(ctx, promise, "rejected", err);
             return;
         }
@@ -1008,8 +1009,7 @@ fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Val
     // §27.2.1.3.2 step 6: resolving a promise with ITSELF is a TypeError
     // rejection ("Chaining cycle detected").
     if same_object(promise, &value) {
-        let err =
-            crate::error::new_error(ctx, "TypeError", "Chaining cycle detected for promise");
+        let err = crate::error::new_error(ctx, "TypeError", "Chaining cycle detected for promise");
         mutate_promise_state(ctx, promise, "rejected", err);
         return;
     }
@@ -1043,7 +1043,8 @@ fn resolve_promise_with_value(ctx: &mut HostContext, promise: &Value, value: Val
                 ctx.queue_ready(job, Value::Undefined);
             }
         }
-        Ok(None) => mutate_promise_state(ctx, promise, "fulfilled", value) }
+        Ok(None) => mutate_promise_state(ctx, promise, "fulfilled", value),
+    }
 }
 
 fn same_object(a: &Value, b: &Value) -> bool {
@@ -1085,8 +1086,10 @@ fn get_then(ctx: &mut HostContext, val: &Value) -> Result<Option<Value>, Value> 
             let arity = match &g {
                 Value::Object(go) => match &go.lock().unwrap().kind {
                     ObjectKind::Function(f) => f.arity,
-                    _ => 0 },
-                _ => 0 };
+                    _ => 0,
+                },
+                _ => 0,
+            };
             let saved_this = ctx.current_js_this();
             ctx.set_js_this(val.clone());
             let outcome = if arity >= 1 {
@@ -1108,7 +1111,8 @@ fn get_then(ctx: &mut HostContext, val: &Value) -> Result<Option<Value>, Value> 
 fn settle_and_drain(ctx: &mut HostContext, args: &[Value], state: &str) {
     let promise = match args.first() {
         Some(p) => p.clone(),
-        None => return };
+        None => return,
+    };
     let value = args.get(1).cloned().unwrap_or(Value::Undefined);
 
     let promise_id = if let Value::Object(ref obj) = promise {
@@ -1359,7 +1363,8 @@ fn any_record_rejection(aggregate: &Value, index: usize, reason: Value) -> Optio
         if let Some(Value::Object(arr)) = errors {
             let values = match &arr.lock().unwrap().kind {
                 ObjectKind::Array(elems) => elems.clone(),
-                _ => vec![] };
+                _ => vec![],
+            };
             Some(aggregate_error(values))
         } else {
             Some(aggregate_error(vec![]))

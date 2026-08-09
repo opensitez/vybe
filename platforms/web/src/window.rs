@@ -19,7 +19,7 @@
 
 use vybe_runtime::{HostContext, VM, Value};
 
-use crate::engine::{window, WindowId, WindowOp, WindowValue};
+use crate::engine::{WindowId, WindowOp, WindowValue, window};
 
 fn num_arg(args: &[Value], idx: usize) -> f64 {
     args.get(idx).map(|v| v.as_f64()).unwrap_or(0.0)
@@ -40,13 +40,15 @@ fn str_arg(args: &[Value], idx: usize) -> String {
 fn first(v: WindowValue) -> f64 {
     match v {
         WindowValue::Pair(a, _) => a,
-        _ => 0.0 }
+        _ => 0.0,
+    }
 }
 
 fn second(v: WindowValue) -> f64 {
     match v {
         WindowValue::Pair(_, b) => b,
-        _ => 0.0 }
+        _ => 0.0,
+    }
 }
 
 pub fn register(vm: &mut VM) {
@@ -59,9 +61,11 @@ pub fn register(vm: &mut VM) {
             // every window opens the spec's initial `about:blank`.
             match window(WindowOp::Open {
                 target: str_arg(args, 1),
-                features: str_arg(args, 2) }) {
+                features: str_arg(args, 2),
+            }) {
                 WindowValue::Window(id) => Value::F64(id as f64),
-                _ => Value::Null }
+                _ => Value::Null,
+            }
         }),
     );
 
@@ -72,7 +76,8 @@ pub fn register(vm: &mut VM) {
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             match window(WindowOp::Document(win_arg(args, 0))) {
                 WindowValue::Document(d) => Value::F64(d as f64),
-                _ => Value::Null }
+                _ => Value::Null,
+            }
         }),
     );
 
@@ -162,7 +167,8 @@ pub fn register(vm: &mut VM) {
         Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             match window(WindowOp::Name(win_arg(args, 0))) {
                 WindowValue::Text(s) => Value::String(s.into()),
-                _ => Value::String("".into()) }
+                _ => Value::String("".into()),
+            }
         }),
     );
 }

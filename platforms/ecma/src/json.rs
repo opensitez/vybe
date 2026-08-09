@@ -30,7 +30,8 @@ pub fn register(vm: &mut VM) {
             let root_holder = make_root_holder(value.clone());
             match serialize_property(ctx, &root_holder, "", value, &mut state, false) {
                 Some(text) => Value::String(Arc::from(text.as_str())),
-                None => Value::Undefined }
+                None => Value::Undefined,
+            }
         }),
     );
 
@@ -41,7 +42,8 @@ pub fn register(vm: &mut VM) {
             let text: String = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let parsed = match parse_json(&text) {
                 Some(parsed) => parsed,
                 None => {
@@ -55,7 +57,8 @@ pub fn register(vm: &mut VM) {
             };
             match args.get(1).cloned() {
                 Some(reviver) if is_callable(&reviver) => apply_reviver(ctx, parsed, reviver),
-                _ => parsed }
+                _ => parsed,
+            }
         }),
     );
 
@@ -66,7 +69,8 @@ pub fn register(vm: &mut VM) {
             let text: String = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             parse_json(&text).unwrap_or(Value::Null)
         }),
     );
@@ -83,7 +87,8 @@ pub fn register(vm: &mut VM) {
             let root_holder = make_root_holder(value.clone());
             match serialize_property(ctx, &root_holder, "", value, &mut state, false) {
                 Some(text) => Value::String(Arc::from(text.as_str())),
-                None => Value::Undefined }
+                None => Value::Undefined,
+            }
         }),
     );
 
@@ -95,7 +100,8 @@ pub fn register(vm: &mut VM) {
             let text: String = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let parsed = match parse_json(&text) {
                 Some(parsed) => parsed,
                 None => {
@@ -132,7 +138,8 @@ pub fn register(vm: &mut VM) {
             let text = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let mut obj = Object::new();
             obj.properties
                 .insert("__type".into(), Value::String(Arc::from("RawJSON")));
@@ -170,7 +177,8 @@ struct StringifyState {
     property_list: Option<Vec<String>>,
     gap: String,
     indent: String,
-    visited: HashSet<usize> }
+    visited: HashSet<usize>,
+}
 
 impl StringifyState {
     fn new(replacer: Option<&Value>, space: Option<&Value>) -> Self {
@@ -181,7 +189,8 @@ impl StringifyState {
             property_list,
             gap: build_gap(space),
             indent: String::new(),
-            visited: HashSet::new() }
+            visited: HashSet::new(),
+        }
     }
 }
 
@@ -243,11 +252,8 @@ fn serialize_json_value(
         Value::V128(_) | Value::WeakRef(_) => Some("null".to_string()),
         // ECMA-262 §25.5.2: BigInt values must throw TypeError.
         Value::BigInt(_) => {
-            let err = crate::error::new_error(
-                ctx,
-                "TypeError",
-                "Do not know how to serialize a BigInt",
-            );
+            let err =
+                crate::error::new_error(ctx, "TypeError", "Do not know how to serialize a BigInt");
             ctx.throw_value(err);
             return None;
         }
@@ -488,7 +494,8 @@ fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
                     Value::String(key) if o.properties.contains_key(key.as_ref()) => {
                         Some(key.to_string())
                     }
-                    _ => None })
+                    _ => None,
+                })
                 .collect(),
         )
     });
@@ -504,7 +511,8 @@ fn ordinary_ordered_keys(o: &Object) -> Vec<String> {
             }
             keys
         }
-        None => live }
+        None => live,
+    }
 }
 
 fn object_serialization_keys(o: &Object, property_list: Option<&Vec<String>>) -> Vec<String> {
@@ -558,7 +566,8 @@ fn is_non_enumerable(o: &Object, key: &str) -> bool {
                 .iter()
                 .any(|value| matches!(value, Value::String(name) if name.as_ref() == key))
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn json_array_index(key: &str) -> Option<u32> {
@@ -601,9 +610,11 @@ fn build_gap(space: Option<&Value>) -> String {
                         " ".repeat(n.floor().clamp(0.0, 10.0) as usize)
                     }
                 }
-                _ => String::new() }
+                _ => String::new(),
+            }
         }
-        _ => String::new() }
+        _ => String::new(),
+    }
 }
 
 fn collect_property_list(value: &Value) -> Option<Vec<String>> {
@@ -634,7 +645,8 @@ fn replacer_property_key(value: &Value) -> Option<String> {
         Value::I32(n) => Some(n.to_string()),
         Value::I64(n) => Some(n.to_string()),
         Value::F64(n) if n.is_finite() => Some(json_number_string(n)),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn json_number_string(n: f64) -> String {
@@ -679,7 +691,8 @@ fn unbox_json_wrapper(value: Value) -> Value {
             Some(Value::String(tag)) if matches!(tag.as_ref(), "Number" | "String" | "Boolean") => {
                 guard.properties.get("__primitive").cloned()
             }
-            _ => None }
+            _ => None,
+        }
     };
     primitive.unwrap_or(value)
 }
@@ -734,7 +747,8 @@ fn quote_string(s: &str) -> String {
             c if (c as u32) < 0x20 => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
-            c => out.push(c) }
+            c => out.push(c),
+        }
     }
     out.push('"');
     out
@@ -744,7 +758,8 @@ fn quote_string(s: &str) -> String {
 
 struct Parser<'a> {
     src: &'a [u8],
-    pos: usize }
+    pos: usize,
+}
 
 fn apply_reviver(ctx: &mut HostContext, parsed: Value, reviver: Value) -> Value {
     let holder = make_root_holder(parsed);
@@ -784,7 +799,8 @@ fn double_numbers_revive(value: Value) -> Value {
                 Value::Object(vybe_runtime::heap::alloc(new_obj))
             }
         }
-        _ => value }
+        _ => value,
+    }
 }
 
 fn internalize_json_property(
@@ -805,7 +821,8 @@ fn internalize_json_property(
                 let guard = obj.lock().unwrap();
                 match &guard.kind {
                     ObjectKind::Array(elems) => elems.len(),
-                    _ => 0 }
+                    _ => 0,
+                }
             };
             for index in 0..len {
                 let idx_key = index.to_string();
@@ -936,7 +953,8 @@ fn clear_array_hole(object: &mut Object, index: i32) {
 fn parse_json(text: &str) -> Option<Value> {
     let mut p = Parser {
         src: text.as_bytes(),
-        pos: 0 };
+        pos: 0,
+    };
     p.skip_whitespace();
     let v = p.parse_value()?;
     p.skip_whitespace();
@@ -951,7 +969,8 @@ impl<'a> Parser<'a> {
         while self.pos < self.src.len() {
             match self.src[self.pos] {
                 b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
-                _ => break }
+                _ => break,
+            }
         }
     }
 
@@ -970,7 +989,8 @@ impl<'a> Parser<'a> {
             b't' | b'f' => self.parse_bool(),
             b'n' => self.parse_null(),
             b'-' | b'0'..=b'9' => self.parse_number(),
-            _ => None }
+            _ => None,
+        }
     }
 
     fn parse_null(&mut self) -> Option<Value> {
@@ -1081,14 +1101,16 @@ impl<'a> Parser<'a> {
                                     self.pos += 6;
                                     0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
                                 }
-                                _ => code };
+                                _ => code,
+                            };
                             // An unpaired surrogate is a code unit no `char` can
                             // hold; `wasm:js-string.fromCharCode` already renders
                             // one as U+FFFD via `from_utf16_lossy`, so match that
                             // rather than dropping the escape entirely.
                             out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
                         }
-                        _ => return None }
+                        _ => return None,
+                    }
                 }
                 _ => {
                     // Copy UTF-8 bytes up to the next special char.
@@ -1133,7 +1155,8 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     break;
                 }
-                _ => return None }
+                _ => return None,
+            }
         }
         Some(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
             elems,
@@ -1175,7 +1198,8 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     break;
                 }
-                _ => return None }
+                _ => return None,
+            }
         }
         obj.properties.insert(
             "__keys".into(),

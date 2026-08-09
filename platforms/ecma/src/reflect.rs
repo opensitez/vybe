@@ -25,7 +25,8 @@ use crate::function::invoke_with_explicit_this;
 use crate::object::{
     install_noop_setter, is_nonconfig, is_not_extensible, mark_not_extensible,
     ordered_own_string_keys, proto_walk_get, proxy_target_and_handler, proxy_trap, track_key,
-    track_nonconfig, track_nonenum };
+    track_nonconfig, track_nonenum,
+};
 use std::sync::Arc;
 use vybe_runtime::value::{Object, ObjectKind};
 use vybe_runtime::{HostContext, VM, Value};
@@ -46,7 +47,8 @@ fn property_key(value: &Value) -> String {
     match value {
         Value::Symbol(sym) => crate::symbol::canonical_property_key(sym),
         Value::String(text) => text.to_string(),
-        _ => format!("{}", value) }
+        _ => format!("{}", value),
+    }
 }
 
 /// §28.1.5 Reflect.get — proxy trap, typed-array elements, and a
@@ -97,8 +99,10 @@ fn reflect_get(ctx: &mut HostContext, target: &Value, key: &str, receiver: Value
             let arity = match &g {
                 Value::Object(go) => match &go.lock().unwrap().kind {
                     ObjectKind::Function(f) => f.arity,
-                    _ => 0 },
-                _ => 0 };
+                    _ => 0,
+                },
+                _ => 0,
+            };
             if arity == 0 {
                 return invoke_with_explicit_this(ctx, &g, receiver, &[]);
             }
@@ -109,7 +113,8 @@ fn reflect_get(ctx: &mut HostContext, target: &Value, key: &str, receiver: Value
         }
         current = match next {
             Some(Value::Object(p)) => Some(p),
-            _ => None };
+            _ => None,
+        };
     }
     Value::Undefined
 }
@@ -141,7 +146,8 @@ fn reflect_set(
         // §10.5.9 outcome for trap-less proxies).
         let follow_receiver = match (&receiver, target) {
             (Value::Object(r), Value::Object(t)) if Arc::ptr_eq(r, t) => proxy_target.clone(),
-            _ => receiver };
+            _ => receiver,
+        };
         return reflect_set(ctx, &proxy_target, key, val, follow_receiver);
     }
     {
@@ -176,7 +182,8 @@ fn reflect_set(
         if let Some(Value::Object(s_obj)) = setter {
             let arity = match &s_obj.lock().unwrap().kind {
                 ObjectKind::Function(f) => Some(f.arity),
-                _ => None };
+                _ => None,
+            };
             if let Some(arity) = arity {
                 // Accessor convention: arity-1 setters take (value) with
                 // ambient `this`; arity-2 setters take (receiver, value).
@@ -200,12 +207,14 @@ fn reflect_set(
         }
         current = match next {
             Some(Value::Object(p)) => Some(p),
-            _ => None };
+            _ => None,
+        };
     }
     // Ordinary data assignment onto the receiver (defaults to target).
     let dest = match &receiver {
         Value::Object(recv) => recv.clone(),
-        _ => obj.clone() };
+        _ => obj.clone(),
+    };
     {
         let mut o = dest.lock().unwrap();
         if is_not_extensible(&o) && !o.properties.contains_key(key) {
@@ -342,9 +351,7 @@ pub fn register(vm: &mut VM) {
                 Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
             });
             let new_target = args.get(2).cloned();
-            crate::proxy::construct_dispatch_with_new_target(
-                ctx, &target, &args_list, new_target,
-            )
+            crate::proxy::construct_dispatch_with_new_target(ctx, &target, &args_list, new_target)
         }),
     );
 
@@ -663,7 +670,8 @@ pub fn register(vm: &mut VM) {
             // Object.setPrototypeOf would throw, this returns false.
             match crate::object::set_prototype_of(ctx, value, &proto) {
                 None => Value::Undefined,
-                Some(success) => Value::Bool(success) }
+                Some(success) => Value::Bool(success),
+            }
         }),
     );
 
@@ -671,8 +679,40 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:reflect",
         "isExtensible",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(Value::Object(obj)) = args.first() {
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let Some(value) = args.first() else {
+                return throw_type_error(ctx, "Reflect.isExtensible called on non-object");
+            };
+            if let Some(proxy) = crate::proxy::is_proxy(value) {
+                if crate::proxy::proxy_is_revoked(&proxy) {
+                    return throw_type_error(
+                        ctx,
+                        "Cannot perform 'isExtensible' on a proxy that has been revoked",
+                    );
+                }
+                let Some((target, handler)) = proxy_target_and_handler(&proxy) else {
+                    return Value::Bool(false);
+                };
+                let target_extensible = crate::object::value_is_extensible(&target);
+                let reported = if let Some(trap) = proxy_trap(&handler, "isExtensible") {
+                    crate::boolean::to_boolean(&invoke_with_explicit_this(
+                        ctx,
+                        &trap,
+                        handler,
+                        &[target.clone()],
+                    ))
+                } else {
+                    target_extensible
+                };
+                if reported != target_extensible {
+                    return throw_type_error(
+                        ctx,
+                        "Proxy isExtensible trap result does not match target",
+                    );
+                }
+                return Value::Bool(reported);
+            }
+            if let Value::Object(obj) = value {
                 let o = obj.lock().unwrap();
                 // §7.3.15 SetIntegrityLevel: seal/freeze also call
                 // [[PreventExtensions]] — a sealed object is not extensible.
@@ -680,7 +720,7 @@ pub fn register(vm: &mut VM) {
                     || o.properties.get("__vybe_frozen").is_some();
                 return Value::Bool(!sealed && !is_not_extensible(&o));
             }
-            Value::Bool(false)
+            throw_type_error(ctx, "Reflect.isExtensible called on non-object")
         }),
     );
 
@@ -688,13 +728,46 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:reflect",
         "preventExtensions",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            if let Some(Value::Object(obj)) = args.first() {
-                let mut o = obj.lock().unwrap();
-                mark_not_extensible(&mut o);
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let Some(value) = args.first() else {
+                return throw_type_error(ctx, "Reflect.preventExtensions called on non-object");
+            };
+            if let Some(proxy) = crate::proxy::is_proxy(value) {
+                if crate::proxy::proxy_is_revoked(&proxy) {
+                    return throw_type_error(
+                        ctx,
+                        "Cannot perform 'preventExtensions' on a proxy that has been revoked",
+                    );
+                }
+                let Some((target, handler)) = proxy_target_and_handler(&proxy) else {
+                    return Value::Bool(false);
+                };
+                let success = if let Some(trap) = proxy_trap(&handler, "preventExtensions") {
+                    crate::boolean::to_boolean(&invoke_with_explicit_this(
+                        ctx,
+                        &trap,
+                        handler,
+                        &[target.clone()],
+                    ))
+                } else {
+                    if let Value::Object(target_obj) = &target {
+                        mark_not_extensible(&mut target_obj.lock().unwrap());
+                    }
+                    true
+                };
+                if success && crate::object::value_is_extensible(&target) {
+                    return throw_type_error(
+                        ctx,
+                        "Proxy preventExtensions trap returned true but target is still extensible",
+                    );
+                }
+                return Value::Bool(success);
+            }
+            if let Value::Object(obj) = value {
+                mark_not_extensible(&mut obj.lock().unwrap());
                 return Value::Bool(true);
             }
-            Value::Bool(false)
+            throw_type_error(ctx, "Reflect.preventExtensions called on non-object")
         }),
     );
 }

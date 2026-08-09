@@ -181,7 +181,8 @@ pub fn try_materialize_iterable_values(
                 for x in values.into_iter().skip(start) {
                     let mapped_value = match invoke_magic_callback(&mapper, &[x.clone()]) {
                         Some(value) => value,
-                        None => ctx.try_invoke(&mapper, &[x])? };
+                        None => ctx.try_invoke(&mapper, &[x])?,
+                    };
                     mapped.push(mapped_value);
                 }
                 if let Ok(mut o) = obj.lock() {
@@ -204,13 +205,10 @@ pub fn try_materialize_iterable_values(
             } else {
                 "asyncIterator"
             };
-            if let Some(values) =
-                crate::object::collect_protocol_iterable_result(ctx, obj, first)
-            {
+            if let Some(values) = crate::object::collect_protocol_iterable_result(ctx, obj, first) {
                 return values.map(values_from_materialized);
             }
-            if let Some(values) =
-                crate::object::collect_protocol_iterable_result(ctx, obj, second)
+            if let Some(values) = crate::object::collect_protocol_iterable_result(ctx, obj, second)
             {
                 return values.map(values_from_materialized);
             }
@@ -225,7 +223,8 @@ pub fn try_materialize_iterable_values(
             .chars()
             .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
             .collect::<Vec<_>>()),
-        _ => Ok(Vec::new()) }
+        _ => Ok(Vec::new()),
+    }
 }
 
 pub fn register(vm: &mut VM) {
@@ -261,7 +260,8 @@ pub fn register(vm: &mut VM) {
                 0 => return make_iterator(Vec::new()),
                 1 => (0.0, args[0].as_f64(), 1.0),
                 2 => (args[0].as_f64(), args[1].as_f64(), 1.0),
-                _ => (args[0].as_f64(), args[1].as_f64(), args[2].as_f64()) };
+                _ => (args[0].as_f64(), args[1].as_f64(), args[2].as_f64()),
+            };
             if step == 0.0 {
                 return make_iterator(Vec::new());
             }
@@ -347,7 +347,9 @@ pub fn register(vm: &mut VM) {
                 Some(i) => i,
                 None => match iter.next() {
                     Some(x) => x,
-                    None => return Value::Undefined } };
+                    None => return Value::Undefined,
+                },
+            };
             for x in iter {
                 acc = invoke_magic_callback(&reducer, &[acc.clone(), x.clone()])
                     .unwrap_or_else(|| ctx.invoke(&reducer, &[acc.clone(), x]));

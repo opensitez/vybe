@@ -5,10 +5,10 @@
 //!
 //! Reference: ECMA-262 §22.2 RegExp + §22.1.3.{13,14,16,18,19,20}.
 
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 fn invoke(name: &str, args: Vec<Value>) -> Value {
     invoke_result(name, args).expect("VM run failed")

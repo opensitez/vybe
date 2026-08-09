@@ -22,7 +22,7 @@
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
-use crate::engine::{events, EventOp, EventValue, UiEventFields};
+use crate::engine::{EventOp, EventValue, UiEventFields, events};
 
 fn obj(props: Vec<(&str, Value)>) -> Value {
     let mut o = Object::new();
@@ -79,7 +79,8 @@ fn get_bool(o: &Object, k: &str) -> bool {
         Some(Value::F64(f)) => *f != 0.0 && !f.is_nan(),
         Some(Value::String(s)) => !s.is_empty(),
         Some(Value::Null) | Some(Value::Undefined) | None => false,
-        Some(_) => true }
+        Some(_) => true,
+    }
 }
 
 /// Read a guest event object back into spec fields — the inverse of
@@ -98,12 +99,17 @@ fn event_from_value(v: Option<&Value>) -> Option<UiEventFields> {
         client_y: get_i32(&o, "clientY"),
         button: get_i32(&o, "button"),
         buttons: get_i32(&o, "buttons"),
-        delta_y: o.properties.get("deltaY").map(|v| v.as_f64()).unwrap_or(0.0),
+        delta_y: o
+            .properties
+            .get("deltaY")
+            .map(|v| v.as_f64())
+            .unwrap_or(0.0),
         ctrl_key: get_bool(&o, "ctrlKey"),
         shift_key: get_bool(&o, "shiftKey"),
         alt_key: get_bool(&o, "altKey"),
         meta_key: get_bool(&o, "metaKey"),
-        repeat: get_bool(&o, "repeat") })
+        repeat: get_bool(&o, "repeat"),
+    })
 }
 
 fn tracing() -> bool {
@@ -142,7 +148,8 @@ pub fn register(vm: &mut VM) {
                     events(EventOp::Dispatch(evt));
                     Value::Bool(true)
                 }
-                None => Value::Bool(false) }
+                None => Value::Bool(false),
+            }
         }),
     );
 
@@ -151,8 +158,8 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "web:ui-events",
         "pollEvent",
-        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-            match events(EventOp::Poll) {
+        Box::new(
+            move |_ctx: &mut HostContext, _args: &[Value]| match events(EventOp::Poll) {
                 EventValue::Event(e) => {
                     if tracing() {
                         eprintln!(
@@ -162,19 +169,21 @@ pub fn register(vm: &mut VM) {
                     }
                     event_object(&e)
                 }
-                _ => Value::Null }
-        }),
+                _ => Value::Null,
+            },
+        ),
     );
 
     // pendingEvents() → queue depth (lets a loop drain without polling blind).
     vm.register_host_fn(
         "web:ui-events",
         "pendingEvents",
-        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-            match events(EventOp::Pending) {
+        Box::new(
+            move |_ctx: &mut HostContext, _args: &[Value]| match events(EventOp::Pending) {
                 EventValue::Count(n) => Value::I32(n as i32),
-                _ => Value::I32(0) }
-        }),
+                _ => Value::I32(0),
+            },
+        ),
     );
 
     // pointerState() → {clientX, clientY, buttons, ctrlKey, …} — what a page
@@ -191,7 +200,8 @@ pub fn register(vm: &mut VM) {
                     ctrl_key,
                     shift_key,
                     alt_key,
-                    meta_key } => obj(vec![
+                    meta_key,
+                } => obj(vec![
                     ("clientX", Value::I32(client_x)),
                     ("clientY", Value::I32(client_y)),
                     ("buttons", Value::I32(buttons)),
@@ -208,7 +218,8 @@ pub fn register(vm: &mut VM) {
                     ("shiftKey", Value::Bool(false)),
                     ("altKey", Value::Bool(false)),
                     ("metaKey", Value::Bool(false)),
-                ]) }
+                ]),
+            }
         }),
     );
 }

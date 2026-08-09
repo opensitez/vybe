@@ -112,13 +112,15 @@ fn new_set_from_iterable(args: &[Value]) -> Value {
                 let srclock = src.lock().unwrap();
                 match &srclock.kind {
                     ObjectKind::Array(items) => items.clone(),
-                    _ => Vec::new() }
+                    _ => Vec::new(),
+                }
             }
             Some(Value::String(text)) => text
                 .chars()
                 .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
                 .collect(),
-            _ => Vec::new() };
+            _ => Vec::new(),
+        };
         let mut so = setobj.lock().unwrap();
         if let ObjectKind::Set(ref mut iset) = so.kind {
             for item in items {
@@ -156,7 +158,8 @@ fn with_two_sets<R>(
     let bg = b.lock().unwrap();
     match (&ag.kind, &bg.kind) {
         (ObjectKind::Set(avs), ObjectKind::Set(bvs)) => Some(f(avs, bvs)),
-        _ => None }
+        _ => None,
+    }
 }
 
 pub fn register(vm: &mut VM) {
@@ -179,13 +182,15 @@ pub fn register(vm: &mut VM) {
                         let srclock = src.lock().unwrap();
                         match &srclock.kind {
                             ObjectKind::Array(items) => items.clone(),
-                            _ => Vec::new() }
+                            _ => Vec::new(),
+                        }
                     }
                     Some(Value::String(text)) => text
                         .chars()
                         .map(|ch| Value::String(Arc::from(ch.to_string().as_str())))
                         .collect(),
-                    _ => Vec::new() };
+                    _ => Vec::new(),
+                };
                 let mut so = setobj.lock().unwrap();
                 if let ObjectKind::Set(ref mut s) = so.kind {
                     for item in items {

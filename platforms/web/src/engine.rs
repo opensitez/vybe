@@ -39,7 +39,10 @@ pub enum DomOp {
     /// `document.createElement(localName)`, plus the `type` that — with the
     /// tag — is what HTML says decides which control an `<input>` is. The
     /// node is NOT inserted; it renders nothing until `appendChild`.
-    CreateElement { tag: String, input_type: String },
+    CreateElement {
+        tag: String,
+        input_type: String,
+    },
     /// `document.getElementById(elementId)` — matches the `id` ATTRIBUTE.
     GetElementById(String),
     /// `document.querySelectorAll(tag)` — tag selectors.
@@ -50,8 +53,14 @@ pub enum DomOp {
 
     // ── Node ─────────────────────────────────────────────────────────────
     /// `parent.appendChild(child)`. A node has ONE parent, so this moves it.
-    AppendChild { parent: NodeId, child: NodeId },
-    RemoveChild { parent: NodeId, child: NodeId },
+    AppendChild {
+        parent: NodeId,
+        child: NodeId,
+    },
+    RemoveChild {
+        parent: NodeId,
+        child: NodeId,
+    },
     /// `node.isConnected`
     IsConnected(NodeId),
     /// `node.textContent`
@@ -108,7 +117,10 @@ pub enum DomValue {
 pub enum WindowOp {
     /// `window.open(url, target, features)` — creates the context AND its
     /// initial `about:blank` document.
-    Open { target: String, features: String },
+    Open {
+        target: String,
+        features: String,
+    },
     /// `window.document`
     Document(WindowId),
     Close(WindowId),
@@ -266,29 +278,34 @@ pub fn engine() -> Option<Arc<dyn WebEngine>> {
 pub fn apply(document: DocumentId, op: DomOp) -> DomValue {
     match engine() {
         Some(e) => e.document(document, op),
-        None => DomValue::None }
+        None => DomValue::None,
+    }
 }
 
 pub fn window(op: WindowOp) -> WindowValue {
     match engine() {
         Some(e) => e.window(op),
-        None => WindowValue::None }
+        None => WindowValue::None,
+    }
 }
 
 pub fn events(op: EventOp) -> EventValue {
     match engine() {
         Some(e) => e.events(op),
-        None => EventValue::None }
+        None => EventValue::None,
+    }
 }
 
 pub fn schedule(op: ScheduleOp) -> ScheduleValue {
     match engine() {
         Some(e) => e.schedule(op),
-        None => ScheduleValue::None }
+        None => ScheduleValue::None,
+    }
 }
 
 pub fn new_document(title: &str) -> DocumentId {
     match engine() {
         Some(e) => e.new_document(title),
-        None => 0 }
+        None => 0,
+    }
 }

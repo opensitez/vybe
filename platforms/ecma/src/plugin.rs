@@ -15,6 +15,20 @@ impl vybe_runtime::Plugin for Plugin {
         "ecma"
     }
 
+    // No `reset`, and the split is worth stating because this platform holds
+    // both kinds of state:
+    //
+    // The shared prototypes stay in `OnceLock` statics, and must: they are
+    // primed before the boot snapshot and live in the tracked heap, so
+    // `reset_to` already restores their contents (a program that assigns
+    // `Array.prototype.map` has it rolled back). They are boot state — putting
+    // them in the resource store would DELETE them on every reset.
+    //
+    // The Error constructor cache is the opposite case — built lazily while a
+    // program runs, hence allocated after the snapshot and gutted by the very
+    // reset that is supposed to restore it — so it is VM-owned storage
+    // (`vybe_runtime::resources`) and `reset_to` drops it.
+
     fn init(&self, fw: &mut vybe_runtime::Framework<'_>) {
         // ecma:date reads the system clock — gated under Clock.
         let clock = fw.granted(Capability::Clock);

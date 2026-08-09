@@ -5,10 +5,10 @@
 //! Each test covers a distinct behaviour.
 
 use std::sync::{Arc, Mutex};
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -64,15 +64,18 @@ fn next_step(it: Value) -> (Value, bool) {
                 .unwrap_or(Value::Undefined);
             (val, done)
         }
-        _ => (Value::Undefined, true) }
+        _ => (Value::Undefined, true),
+    }
 }
 
 fn collect(it: Value) -> Vec<Value> {
     match invoke("toArray", vec![it]) {
         Value::Object(o) => match &o.lock().unwrap().kind {
             ObjectKind::Array(e) => e.clone(),
-            _ => vec![] },
-        _ => vec![] }
+            _ => vec![],
+        },
+        _ => vec![],
+    }
 }
 
 // ── next — iterator protocol ───────────────────────────────────────────────────

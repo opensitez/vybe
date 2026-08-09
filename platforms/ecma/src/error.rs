@@ -74,10 +74,9 @@ pub fn register(vm: &mut VM) {
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             // AggregateError(errors, message?, options?)
             let this = args.first().cloned().unwrap_or(Value::Null);
-            let errors = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![]))));
+            let errors = args.get(1).cloned().unwrap_or_else(|| {
+                Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![])))
+            });
             let message = args.get(2).map(|v| format!("{}", v)).unwrap_or_default();
             let cause = options_cause(args.get(3));
             if let Value::Object(ref obj) = this {
@@ -109,7 +108,9 @@ pub fn register(vm: &mut VM) {
                         drop(inner);
                         o.properties.insert(
                             "errors".into(),
-                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![errors]))),
+                            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                                errors,
+                            ]))),
                         );
                     }
                 } else {

@@ -33,7 +33,8 @@ struct HostFns {
     params_values: usize,
     params_entries: usize,
     params_iterator: usize,
-    params_for_each: usize }
+    params_for_each: usize,
+}
 
 static HOST_FNS: OnceLock<HostFns> = OnceLock::new();
 
@@ -99,7 +100,8 @@ fn current_url(obj: &Arc<Mutex<Object>>) -> Option<Url> {
 fn origin_string(url: &Url) -> String {
     match url.origin() {
         Origin::Opaque(_) => "null".into(),
-        origin => origin.ascii_serialization() }
+        origin => origin.ascii_serialization(),
+    }
 }
 
 fn parse_query_pairs(query: &str) -> Vec<(String, String)> {
@@ -148,7 +150,8 @@ fn pairs_from_params(obj: &Arc<Mutex<Object>>) -> Vec<(String, String)> {
                     values.get(1).map(|v| format!("{}", v)).unwrap_or_default(),
                 ))
             }
-            _ => None })
+            _ => None,
+        })
         .collect()
 }
 
@@ -219,7 +222,8 @@ fn coerce_init_pairs(value: &Value) -> Vec<(String, String)> {
                                 values.get(1).map(|v| format!("{}", v)).unwrap_or_default(),
                             ))
                         }
-                        _ => None })
+                        _ => None,
+                    })
                     .collect();
             }
             let props: Vec<(String, Value)> = lock
@@ -234,7 +238,8 @@ fn coerce_init_pairs(value: &Value) -> Vec<(String, String)> {
                 .map(|(key, value)| (key, format!("{}", value)))
                 .collect()
         }
-        _ => parse_query_pairs(&format!("{}", value)) }
+        _ => parse_query_pairs(&format!("{}", value)),
+    }
 }
 
 fn make_search_params_object(
@@ -374,7 +379,8 @@ fn sync_url_object(obj: &Arc<Mutex<Object>>, url: &Url) {
         let lock = obj.lock().unwrap();
         match lock.properties.get("searchParams") {
             Some(Value::Object(existing)) => Some(existing.clone()),
-            _ => None }
+            _ => None,
+        }
     };
 
     {
@@ -467,7 +473,8 @@ fn sync_url_object(obj: &Arc<Mutex<Object>>, url: &Url) {
             sync_search_params_owner(&existing, obj);
             Value::Object(existing)
         }
-        None => make_search_params_object(search_pairs, Some(obj.clone())) };
+        None => make_search_params_object(search_pairs, Some(obj.clone())),
+    };
 
     obj.lock()
         .unwrap()
@@ -488,7 +495,8 @@ fn update_owner_from_params(params_obj: &Arc<Mutex<Object>>) {
         let lock = params_obj.lock().unwrap();
         match lock.properties.get("__url_owner") {
             Some(Value::Object(owner)) => Some(owner.clone()),
-            _ => None }
+            _ => None,
+        }
     };
     let Some(owner) = owner else {
         return;
@@ -537,9 +545,11 @@ fn make_bound_array_iterator(values: Vec<Value>) -> Value {
                 Some(Value::Object(next)) => {
                     match next.lock().unwrap().properties.get("__host_idx") {
                         Some(Value::F64(idx)) => Some(*idx as usize),
-                        _ => None }
+                        _ => None,
+                    }
                 }
-                _ => None }
+                _ => None,
+            }
         };
         if let Some(next_idx) = next_idx {
             iterator_obj.lock().unwrap().properties.insert(
@@ -612,7 +622,8 @@ pub fn register(vm: &mut VM) {
                     .get("href")
                     .cloned()
                     .unwrap_or_else(|| str_value("")),
-                _ => str_value("") },
+                _ => str_value(""),
+            },
         ),
     );
 
@@ -628,7 +639,8 @@ pub fn register(vm: &mut VM) {
                     .get("href")
                     .cloned()
                     .unwrap_or_else(|| str_value("")),
-                _ => str_value("") },
+                _ => str_value(""),
+            },
         ),
     );
 
@@ -1074,5 +1086,6 @@ pub fn register(vm: &mut VM) {
         params_values: idx("searchParamsValues"),
         params_entries: idx("searchParamsEntries"),
         params_iterator: idx("searchParamsIterator"),
-        params_for_each: idx("searchParamsForEach") });
+        params_for_each: idx("searchParamsForEach"),
+    });
 }

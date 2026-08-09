@@ -28,7 +28,8 @@ pub fn register(vm: &mut VM) {
             let s = match args.first() {
                 Some(Value::String(s)) => s.trim().to_string(),
                 Some(v) => format!("{}", v),
-                None => return Value::F64(f64::NAN) };
+                None => return Value::F64(f64::NAN),
+            };
             let radix = args.get(1).map(|v| v.as_i32()).unwrap_or(10).max(2).min(36) as u32;
             let s = s.trim_start();
             let (neg, s) = if s.starts_with('-') {
@@ -52,7 +53,8 @@ pub fn register(vm: &mut VM) {
                         result = result.wrapping_mul(radix as i64).wrapping_add(d as i64);
                         any = true;
                     }
-                    None => break }
+                    None => break,
+                }
             }
             if !any {
                 return Value::F64(f64::NAN);
@@ -69,10 +71,12 @@ pub fn register(vm: &mut VM) {
                 Some(Value::String(s)) => s.trim().to_string(),
                 Some(Value::F64(n)) => return Value::F64(*n),
                 Some(Value::I32(n)) => return Value::F64(*n as f64),
-                _ => return Value::F64(f64::NAN) };
+                _ => return Value::F64(f64::NAN),
+            };
             match s.trim().parse::<f64>() {
                 Ok(n) => Value::F64(n),
-                Err(_) => Value::F64(f64::NAN) }
+                Err(_) => Value::F64(f64::NAN),
+            }
         }),
     );
 
@@ -89,7 +93,8 @@ pub fn register(vm: &mut VM) {
                     }
                 }
                 Some(v) => v.clone(),
-                None => Value::Undefined },
+                None => Value::Undefined,
+            },
         ),
     );
 
@@ -126,7 +131,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let s = match args.first() {
                 Some(v) => format!("{}", v),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let encoded: String = s
                 .chars()
                 .map(|c| {
@@ -152,7 +158,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let s = match args.first() {
                 Some(v) => format!("{}", v),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             Value::String(Arc::from(decode_uri(&s).as_str()))
         }),
     );
@@ -163,7 +170,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let s = match args.first() {
                 Some(v) => format!("{}", v),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let encoded: String = s
                 .chars()
                 .map(|c| {
@@ -210,7 +218,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             let s = match args.first() {
                 Some(v) => format!("{}", v),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             Value::String(Arc::from(decode_uri(&s).as_str()))
         }),
     );
@@ -231,7 +240,8 @@ fn to_number(v: &Value) -> f64 {
         Value::Null => 0.0,
         Value::Undefined => f64::NAN,
         Value::String(s) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
-        _ => f64::NAN }
+        _ => f64::NAN,
+    }
 }
 
 fn decode_uri(s: &str) -> String {

@@ -14,7 +14,7 @@
 
 use std::time::Instant;
 
-use vybe_platform_web::engine::{apply, new_document, DomOp, DomValue, DOCUMENT};
+use vybe_platform_web::engine::{DOCUMENT, DomOp, DomValue, apply, new_document};
 
 const ITERS: u32 = 20_000;
 
@@ -23,10 +23,12 @@ fn create(doc: u64, tag: &str, input_type: &str) -> u64 {
         doc,
         DomOp::CreateElement {
             tag: tag.into(),
-            input_type: input_type.into() },
+            input_type: input_type.into(),
+        },
     ) {
         DomValue::Node(n) => n,
-        other => panic!("expected a node, got {:?}", other) }
+        other => panic!("expected a node, got {:?}", other),
+    }
 }
 
 /// Seconds per operation, over `ITERS` write+read pairs.
@@ -54,19 +56,15 @@ fn the_seam_is_not_where_the_cost_is() {
         doc,
         DomOp::AppendChild {
             parent: DOCUMENT,
-            child: flat },
+            child: flat,
+        },
     );
 
     // A node five containers deep, so the by-name tree walk has real work.
     let mut parent = DOCUMENT;
     for _ in 0..5 {
         let div = create(doc, "div", "");
-        apply(
-            doc,
-            DomOp::AppendChild {
-                parent,
-                child: div },
-        );
+        apply(doc, DomOp::AppendChild { parent, child: div });
         parent = div;
     }
     let deep = create(doc, "input", "text");
@@ -74,7 +72,8 @@ fn the_seam_is_not_where_the_cost_is() {
         doc,
         DomOp::AppendChild {
             parent,
-            child: deep },
+            child: deep,
+        },
     );
 
     println!();

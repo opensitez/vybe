@@ -26,7 +26,7 @@ use vybe_runtime::event_loop::monotonic_now_ms;
 use vybe_runtime::scheduler::DeferredSource;
 use vybe_runtime::{HostContext, VM, Value};
 
-use crate::engine::{schedule, ScheduleOp, ScheduleValue};
+use crate::engine::{ScheduleOp, ScheduleValue, schedule};
 
 /// `id → callback`, in registration order so the drain matches the engine's
 /// first-registered-due-first ordering.
@@ -54,7 +54,10 @@ impl TimerCallbacks {
     /// Cancel by id. True if the timer was still queued.
     pub fn clear(&self, id: u64) -> bool {
         self.entries.lock().unwrap().retain(|(i, _)| *i != id);
-        matches!(schedule(ScheduleOp::ClearTimer(id)), ScheduleValue::Bool(true))
+        matches!(
+            schedule(ScheduleOp::ClearTimer(id)),
+            ScheduleValue::Bool(true)
+        )
     }
 
     fn take(&self, id: u64) -> Option<Value> {
@@ -65,6 +68,16 @@ impl TimerCallbacks {
 }
 
 impl DeferredSource for TimerCallbacks {
+    /// Drop every callback the finished program left queued.
+    ///
+    /// A timer that had not fired by the end of its program used to stay here,
+    /// and the next program in a reused VM drained it — running a closure over
+    /// chunks that `reset_to` had already truncated, at indices the new program
+    /// now occupies.
+    fn clear_pending(&self) {
+        self.entries.lock().unwrap().clear();
+    }
+
     fn has_pending(&self) -> bool {
         !self.entries.lock().unwrap().is_empty()
     }
@@ -72,7 +85,8 @@ impl DeferredSource for TimerCallbacks {
     fn earliest_deadline_ms(&self) -> Option<f64> {
         match schedule(ScheduleOp::TimerDelayMs) {
             ScheduleValue::Ms(delay) => Some(monotonic_now_ms() + delay),
-            _ => None }
+            _ => None,
+        }
     }
 
     fn pop_due(&self) -> Option<Value> {

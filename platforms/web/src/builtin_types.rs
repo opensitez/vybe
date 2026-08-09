@@ -6,8 +6,8 @@
 //! plugin declares its own types here, in its `finalize`. Each method resolves
 //! a `web:*` host fn by registry index, so it runs after every plugin's `init`.
 
-use vybe_runtime::{Method, TypeDef};
 use vybe_runtime::Framework;
+use vybe_runtime::{Method, TypeDef};
 
 /// Register the web-platform built-in types into the VM's TypeRegistry, and
 /// hand the DOM node type ids to `dom_parser` for construction-time stamping.
@@ -158,5 +158,6 @@ pub fn register_types(fw: &mut Framework<'_>) {
         comment: comment_id,
         processing_instruction: pi_id,
         attr: attr_id,
-        named_node_map: nnm_id });
+        named_node_map: nnm_id,
+    });
 }

@@ -78,14 +78,14 @@ pub fn js_prototype_of(value: &Value) -> Value {
                 // yet; their instances carry an explicit `__proto__` from
                 // their host constructors, so they're handled above. A bare
                 // collection with no proto falls back to Object.prototype.
-                _ => shared_object_prototype() }
+                _ => shared_object_prototype(),
+            }
         }
         Value::String(_) => crate::string::shared_string_prototype(),
         Value::Bool(_) => crate::boolean::shared_boolean_prototype(),
-        Value::F64(_) | Value::I32(_) | Value::I64(_) => {
-            crate::number::shared_number_prototype()
-        }
-        _ => Value::Null }
+        Value::F64(_) | Value::I32(_) | Value::I64(_) => crate::number::shared_number_prototype(),
+        _ => Value::Null,
+    }
 }
 
 fn is_object(v: &Value) -> bool {
@@ -136,14 +136,16 @@ fn to_object_for_object_static(
                 .insert(PROTO_KEY.into(), shared_object_prototype());
             Some(Value::Object(vybe_runtime::heap::alloc(obj)))
         }
-        _ => Some(new_ordinary_object_with_proto()) }
+        _ => Some(new_ordinary_object_with_proto()),
+    }
 }
 
 fn key_string(v: &Value) -> String {
     match v {
         Value::String(s) => s.to_string(),
         Value::Symbol(sym) => crate::symbol::canonical_property_key(sym),
-        _ => format!("{}", v) }
+        _ => format!("{}", v),
+    }
 }
 
 fn array_index_key(key: &str) -> Option<u32> {
@@ -342,7 +344,8 @@ fn assign_strict_set(
                 match &so.kind {
                     ObjectKind::Function(func) => Some(func.arity),
                     ObjectKind::HostFunction(_) => Some(0),
-                    _ => None }
+                    _ => None,
+                }
             };
             match setter_arity {
                 Some(1) => {
@@ -414,9 +417,7 @@ fn has_own_property_key(value: &Value, key_raw: &Value) -> Option<bool> {
                 }
                 ObjectKind::TypedArray(ta) => {
                     if let Some(index) = array_index_key(&key) {
-                        return Some(
-                            (index as usize) < crate::typedarray::ta_live_length(ta),
-                        );
+                        return Some((index as usize) < crate::typedarray::ta_live_length(ta));
                     }
                 }
                 ObjectKind::Map(_) | ObjectKind::Set(_) => {
@@ -443,7 +444,8 @@ fn has_own_property_key(value: &Value, key_raw: &Value) -> Option<bool> {
             Some(false)
         }
         Value::Null | Value::Undefined => None,
-        _ => Some(false) }
+        _ => Some(false),
+    }
 }
 
 pub fn proxy_target_and_handler(obj: &Arc<Mutex<Object>>) -> Option<(Value, Value)> {
@@ -467,7 +469,8 @@ pub fn proxy_trap(handler: &Value, name: &str) -> Option<Value> {
         {
             Some(trap)
         }
-        _ => None }
+        _ => None,
+    }
 }
 
 /// Append `key` to the object's `__keys` insertion-order tracker,
@@ -626,11 +629,13 @@ fn lookup_protocol_member(receiver: &Arc<Mutex<Object>>, key: &str) -> Option<Va
             }
             match lock.properties.get("__proto__").cloned() {
                 Some(Value::Object(proto)) => Some(proto),
-                _ => None }
+                _ => None,
+            }
         };
         match next_proto {
             Some(proto) => current = proto,
-            None => break }
+            None => break,
+        }
     }
     None
 }
@@ -650,7 +655,8 @@ fn call_iterator_if_generator(
         });
     let iterator = match await_or_reject(iterator) {
         Ok(value) => value,
-        Err(_) => return None };
+        Err(_) => return None,
+    };
     if let Value::Object(ref obj) = iterator {
         let o = obj.lock().unwrap();
         if matches!(o.kind, ObjectKind::Continuation(_)) {
@@ -683,7 +689,8 @@ pub fn collect_protocol_iterable_result(
         });
     let iterator = match await_or_reject(iterator) {
         Ok(value) => value,
-        Err(reason) => return Some(Err(reason)) };
+        Err(reason) => return Some(Err(reason)),
+    };
     let Value::Object(iterator_obj) = iterator else {
         return None;
     };
@@ -699,7 +706,8 @@ pub fn collect_protocol_iterable_result(
         {
             match result {
                 Ok(value) => value,
-                Err(reason) => return Some(Err(reason)) }
+                Err(reason) => return Some(Err(reason)),
+            }
         } else {
             match crate::function::try_invoke_with_explicit_this(
                 ctx,
@@ -708,11 +716,13 @@ pub fn collect_protocol_iterable_result(
                 &[],
             ) {
                 Ok(value) => value,
-                Err(reason) => return Some(Err(reason)) }
+                Err(reason) => return Some(Err(reason)),
+            }
         };
         let step = match await_or_reject(step) {
             Ok(value) => value,
-            Err(reason) => return Some(Err(reason)) };
+            Err(reason) => return Some(Err(reason)),
+        };
         let Value::Object(step_obj) = step else {
             break;
         };
@@ -738,9 +748,9 @@ pub fn collect_protocol_iterable_result(
         out.push(value);
     }
 
-    Some(Ok(Value::Object(vybe_runtime::heap::alloc(Object::new_array(
-        out,
-    )))))
+    Some(Ok(Value::Object(vybe_runtime::heap::alloc(
+        Object::new_array(out),
+    ))))
 }
 
 fn await_or_reject(value: Value) -> Result<Value, Value> {
@@ -849,7 +859,8 @@ pub fn ordered_own_string_keys(o: &Object) -> Vec<String> {
                                 Value::Symbol(sym) => {
                                     Some(crate::symbol::canonical_property_key(sym))
                                 }
-                                _ => None })
+                                _ => None,
+                            })
                             .collect(),
                     )
                 } else {
@@ -929,7 +940,8 @@ fn is_callable_value(value: &Value) -> bool {
                 ObjectKind::Function(_) | ObjectKind::HostFunction(_)
             ) || groupby_magic_key_callable(value)
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 fn throw_type_error(ctx: &mut HostContext, message: &str) -> Value {
@@ -961,7 +973,8 @@ fn collect_groupby_items(
                 ctx.throw_value(error);
                 None
             }
-        } }
+        },
+    }
 }
 
 /// Walk the prototype chain looking for `key`. Returns the value if
@@ -985,7 +998,8 @@ pub fn proto_walk_get(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
         // ends the chain immediately.
         let proto = match explicit {
             Some(p) => p,
-            None => js_prototype_of(&Value::Object(current.clone())) };
+            None => js_prototype_of(&Value::Object(current.clone())),
+        };
         match proto {
             Value::Object(p) => {
                 if Arc::ptr_eq(&p, &current) {
@@ -993,7 +1007,8 @@ pub fn proto_walk_get(obj: &Arc<Mutex<Object>>, key: &str) -> Option<Value> {
                 }
                 current = p;
             }
-            _ => return None }
+            _ => return None,
+        }
     }
 }
 
@@ -1032,13 +1047,16 @@ fn proto_walk_invoke_getter(
             match &getter_guard.kind {
                 ObjectKind::Function(func) => Some(func.arity),
                 ObjectKind::HostFunction(_) => Some(0),
-                _ => None }
+                _ => None,
+            }
         }
-        _ => None };
+        _ => None,
+    };
     let receiver = Value::Object(obj.clone());
     Some(match getter_arity {
         Some(0) => ctx.invoke(&getter, &[]),
-        _ => ctx.invoke(&getter, &[receiver]) })
+        _ => ctx.invoke(&getter, &[receiver]),
+    })
 }
 
 fn object_to_string_tag(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> String {
@@ -1048,7 +1066,8 @@ fn object_to_string_tag(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> Stri
         match tag {
             Value::String(text) if !text.is_empty() => return text.to_string(),
             Value::Undefined | Value::Null => {}
-            other => return format!("{}", other) }
+            other => return format!("{}", other),
+        }
     }
 
     let object = obj.lock().unwrap();
@@ -1069,7 +1088,8 @@ fn object_to_string_tag(ctx: &mut HostContext, obj: &Arc<Mutex<Object>>) -> Stri
             .unwrap_or_else(|| "TypedArray".to_string()),
         ObjectKind::Function(_) | ObjectKind::HostFunction(_) => "Function".to_string(),
         ObjectKind::ModuleNamespace => "Module".to_string(),
-        _ => "Object".to_string() }
+        _ => "Object".to_string(),
+    }
 }
 
 pub fn register(vm: &mut VM) {
@@ -1161,7 +1181,8 @@ fn register_construction(vm: &mut VM) {
                         .insert(PROTO_KEY.into(), shared_object_prototype());
                     Value::Object(vybe_runtime::heap::alloc(obj))
                 }
-                _ => new_ordinary_object_with_proto() },
+                _ => new_ordinary_object_with_proto(),
+            },
         ),
     );
 
@@ -1372,14 +1393,13 @@ fn register_construction(vm: &mut VM) {
             let Some(source) = args.first() else {
                 return throw_type_error(ctx, "undefined is not iterable");
             };
-            let pairs =
-                match crate::iterator::try_materialize_iterable_values(ctx, source, false) {
-                    Ok(values) => values,
-                    Err(error) => {
-                        ctx.throw_value(error);
-                        return Value::Undefined;
-                    }
-                };
+            let pairs = match crate::iterator::try_materialize_iterable_values(ctx, source, false) {
+                Ok(values) => values,
+                Err(error) => {
+                    ctx.throw_value(error);
+                    return Value::Undefined;
+                }
+            };
             for pair in pairs {
                 let Value::Object(pair_obj) = pair else {
                     return throw_type_error(ctx, "Iterator value is not an entry object");
@@ -1393,7 +1413,8 @@ fn register_construction(vm: &mut VM) {
                             let value = p.properties.get("1").cloned();
                             match (key, value) {
                                 (Some(k), Some(v)) => vec![k, v],
-                                _ => Vec::new() }
+                                _ => Vec::new(),
+                            }
                         }
                     }
                 };
@@ -1500,7 +1521,8 @@ fn register_access(vm: &mut VM) {
                                         .filter(|n| Value::F64(*n).to_string() == s.as_ref())
                                 }
                             }
-                            _ => None };
+                            _ => None,
+                        };
                         if let Some(n) = canonical {
                             let valid = n.fract() == 0.0
                                 && n >= 0.0
@@ -1851,15 +1873,20 @@ fn register_access(vm: &mut VM) {
                                 ObjectKind::Array(_) => {
                                     match crate::array::shared_array_prototype() {
                                         Value::Object(p) => Some(p),
-                                        _ => None }
+                                        _ => None,
+                                    }
                                 }
                                 _ => match shared_object_prototype() {
                                     Value::Object(p) => Some(p),
-                                    _ => None } } }
+                                    _ => None,
+                                },
+                            },
+                        }
                     };
                     match next_proto {
                         Some(p) => current = p,
-                        None => break }
+                        None => break,
+                    }
                 }
                 return Value::Bool(false);
             }
@@ -1954,7 +1981,8 @@ fn register_access(vm: &mut VM) {
                         Value::I32(n) => Some(*n as usize),
                         Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                         Value::String(s) => s.parse::<usize>().ok(),
-                        _ => None };
+                        _ => None,
+                    };
                     if let Some(i) = idx {
                         if i < elems.len() {
                             elems[i] = Value::Undefined;
@@ -1966,7 +1994,8 @@ fn register_access(vm: &mut VM) {
                             let holes_arc = match o.properties.get("__holes") {
                                 Some(Value::Object(a)) => a.clone(),
                                 _ => {
-                                    let a = vybe_runtime::heap::alloc(Object::new_array(Vec::new()));
+                                    let a =
+                                        vybe_runtime::heap::alloc(Object::new_array(Vec::new()));
                                     o.properties
                                         .insert("__holes".into(), Value::Object(a.clone()));
                                     a
@@ -1990,7 +2019,8 @@ fn register_access(vm: &mut VM) {
                         Value::I32(n) if *n >= 0 => Some(*n as usize),
                         Value::F64(n) if n.fract() == 0.0 && *n >= 0.0 => Some(*n as usize),
                         Value::String(s) => s.parse::<usize>().ok(),
-                        _ => None };
+                        _ => None,
+                    };
                     if matches!(idx, Some(i) if i < crate::typedarray::ta_live_length(ta)) {
                         drop(o);
                         _ctx.throw_value(crate::error::new_error(
@@ -2010,7 +2040,8 @@ fn register_access(vm: &mut VM) {
                 if let ObjectKind::Map(ref mut m) = o.kind {
                     let key_value = match &key_raw {
                         Value::Undefined | Value::Null => Value::String(Arc::from(key.as_str())),
-                        other => other.clone() };
+                        other => other.clone(),
+                    };
                     let removed = m.shift_remove(&key_value).is_some();
                     return Value::Bool(removed);
                 }
@@ -2102,7 +2133,8 @@ fn register_enumeration(vm: &mut VM) {
                                     Value::Symbol(sym) => {
                                         Some(crate::symbol::canonical_property_key(sym))
                                     }
-                                    _ => None })
+                                    _ => None,
+                                })
                                 .collect(),
                         )
                     } else {
@@ -2257,11 +2289,13 @@ fn register_enumeration(vm: &mut VM) {
                         }
                         match o.properties.get(PROTO_KEY).cloned() {
                             Some(Value::Object(p)) => Some(p),
-                            _ => None }
+                            _ => None,
+                        }
                     };
                     match next_proto {
                         Some(p) => current = p,
-                        None => break }
+                        None => break,
+                    }
                 }
                 return Value::Object(vybe_runtime::heap::alloc(Object::new_array(out)));
             }
@@ -2303,7 +2337,9 @@ fn register_enumeration(vm: &mut VM) {
                                 Value::Object(vybe_runtime::heap::alloc(Object::new_array(pair)))
                             })
                             .collect();
-                        return Value::Object(vybe_runtime::heap::alloc(Object::new_array(entries)));
+                        return Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                            entries,
+                        )));
                     }
                     ObjectKind::Set(s) => {
                         let vals: Vec<Value> = s.iter().cloned().collect();
@@ -2425,7 +2461,9 @@ fn register_enumeration(vm: &mut VM) {
                                 Value::Object(vybe_runtime::heap::alloc(Object::new_array(pair)))
                             })
                             .collect();
-                        return Value::Object(vybe_runtime::heap::alloc(Object::new_array(entries)));
+                        return Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                            entries,
+                        )));
                     }
                     ObjectKind::Map(m) => {
                         let entries: Vec<Value> = m
@@ -2435,7 +2473,9 @@ fn register_enumeration(vm: &mut VM) {
                                 Value::Object(vybe_runtime::heap::alloc(Object::new_array(pair)))
                             })
                             .collect();
-                        return Value::Object(vybe_runtime::heap::alloc(Object::new_array(entries)));
+                        return Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                            entries,
+                        )));
                     }
                     // Set entries() per spec yields [value, value] pairs.
                     ObjectKind::Set(s) => {
@@ -2446,7 +2486,9 @@ fn register_enumeration(vm: &mut VM) {
                                 Value::Object(vybe_runtime::heap::alloc(Object::new_array(pair)))
                             })
                             .collect();
-                        return Value::Object(vybe_runtime::heap::alloc(Object::new_array(entries)));
+                        return Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+                            entries,
+                        )));
                     }
                     _ => {}
                 }
@@ -2511,13 +2553,15 @@ fn register_enumeration(vm: &mut VM) {
                                 .iter()
                                 .filter_map(|e| match e {
                                     Value::Symbol(sym) => Some(Value::Symbol(sym.clone())),
-                                    _ => None })
+                                    _ => None,
+                                })
                                 .collect()
                         } else {
                             Vec::new()
                         }
                     }
-                    _ => Vec::new() };
+                    _ => Vec::new(),
+                };
                 return Value::Object(vybe_runtime::heap::alloc(Object::new_array(syms)));
             }
             Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
@@ -2644,7 +2688,8 @@ fn register_descriptors(vm: &mut VM) {
                                 .unwrap_or(false);
                             (val, get, set, e, w, c)
                         }
-                        _ => (None, None, None, false, None, false) };
+                        _ => (None, None, None, false, None, false),
+                    };
                 {
                     let mut o = define_obj.lock().unwrap();
                     if matches!(o.kind, ObjectKind::Array(_)) && key == "length" {
@@ -2843,7 +2888,8 @@ fn register_descriptors(vm: &mut VM) {
                                 if noop_idx > 0 {
                                     let mut noop_obj = Object::new();
                                     noop_obj.kind = ObjectKind::HostFunction(noop_idx);
-                                    let noop_val = Value::Object(vybe_runtime::heap::alloc(noop_obj));
+                                    let noop_val =
+                                        Value::Object(vybe_runtime::heap::alloc(noop_obj));
                                     o.properties.insert(format!("__set_{}", k), noop_val);
                                 }
                             }
@@ -3201,7 +3247,8 @@ fn same_prototype(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
         (Value::Null, Value::Null) => true,
-        _ => false }
+        _ => false,
+    }
 }
 
 /// `IsExtensible(O)` — §7.2.5. Seal and freeze both imply
@@ -3214,7 +3261,8 @@ pub fn value_is_extensible(value: &Value) -> bool {
                 || o.properties.contains_key("__vybe_frozen");
             !sealed && !is_not_extensible(&o)
         }
-        _ => false }
+        _ => false,
+    }
 }
 
 /// §10.1.1 / §10.5.1 `[[GetPrototypeOf]]` — proxy-aware and invariant
@@ -3420,6 +3468,32 @@ fn register_locking(vm: &mut VM) {
         "freeze",
         Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if crate::proxy::proxy_is_revoked(&obj) {
+                        throw_type_error(
+                            ctx,
+                            "Cannot perform 'preventExtensions' on a proxy that has been revoked",
+                        );
+                        return Value::Undefined;
+                    }
+                    if let Some(trap) = proxy_trap(&handler, "preventExtensions") {
+                        let success = crate::boolean::to_boolean(&invoke_with_explicit_this(
+                            ctx,
+                            &trap,
+                            handler,
+                            &[target.clone()],
+                        ));
+                        if !success || value_is_extensible(&target) {
+                            throw_type_error(
+                                ctx,
+                                "Proxy preventExtensions trap did not make target non-extensible",
+                            );
+                            return Value::Undefined;
+                        }
+                    } else if let Value::Object(target_obj) = &target {
+                        mark_not_extensible(&mut target_obj.lock().unwrap());
+                    }
+                }
                 // §10.4.5 integer-indexed exotic: a typed array WITH
                 // elements cannot be frozen — its indices can never be
                 // made non-writable — so freeze throws TypeError.
@@ -3494,8 +3568,34 @@ fn register_locking(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:object",
         "seal",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             if let Some(obj) = obj_of(args, 0) {
+                if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if crate::proxy::proxy_is_revoked(&obj) {
+                        throw_type_error(
+                            ctx,
+                            "Cannot perform 'preventExtensions' on a proxy that has been revoked",
+                        );
+                        return Value::Undefined;
+                    }
+                    if let Some(trap) = proxy_trap(&handler, "preventExtensions") {
+                        let success = crate::boolean::to_boolean(&invoke_with_explicit_this(
+                            ctx,
+                            &trap,
+                            handler,
+                            &[target.clone()],
+                        ));
+                        if !success || value_is_extensible(&target) {
+                            throw_type_error(
+                                ctx,
+                                "Proxy preventExtensions trap did not make target non-extensible",
+                            );
+                            return Value::Undefined;
+                        }
+                    } else if let Value::Object(target_obj) = &target {
+                        mark_not_extensible(&mut target_obj.lock().unwrap());
+                    }
+                }
                 let keys = {
                     let o = obj.lock().unwrap();
                     descriptor_own_keys(&o)
@@ -3535,20 +3635,43 @@ fn register_locking(vm: &mut VM) {
                 // §10.5.4: trap when present, otherwise the TARGET
                 // becomes non-extensible — never the proxy shell.
                 if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if crate::proxy::proxy_is_revoked(&obj) {
+                        throw_type_error(
+                            ctx,
+                            "Cannot perform 'preventExtensions' on a proxy that has been revoked",
+                        );
+                        return Value::Undefined;
+                    }
                     if let Some(trap) = proxy_trap(&handler, "preventExtensions") {
-                        invoke_with_explicit_this(ctx, &trap, handler, &[target]);
+                        let success = crate::boolean::to_boolean(&invoke_with_explicit_this(
+                            ctx,
+                            &trap,
+                            handler,
+                            &[target.clone()],
+                        ));
+                        if !success {
+                            throw_type_error(
+                                ctx,
+                                "Proxy preventExtensions trap returned false",
+                            );
+                            return Value::Undefined;
+                        }
+                        if value_is_extensible(&target) {
+                            throw_type_error(
+                                ctx,
+                                "Proxy preventExtensions trap returned true but target is still extensible",
+                            );
+                            return Value::Undefined;
+                        }
                         return Value::Object(obj);
                     }
                     if let Value::Object(t) = &target {
-                        t.lock()
-                            .unwrap()
-                            .properties
-                            .insert(EXTENSIBLE_MARK.into(), Value::I32(0));
+                        mark_not_extensible(&mut t.lock().unwrap());
                     }
                     return Value::Object(obj);
                 }
                 let mut o = obj.lock().unwrap();
-                o.properties.insert(EXTENSIBLE_MARK.into(), Value::I32(0));
+                mark_not_extensible(&mut o);
                 drop(o);
                 return Value::Object(obj);
             }
@@ -3564,18 +3687,27 @@ fn register_locking(vm: &mut VM) {
                 // §10.5.3: trap when present, otherwise the TARGET's
                 // extensibility answers.
                 if let Some((target, handler)) = proxy_target_and_handler(&obj) {
+                    if crate::proxy::proxy_is_revoked(&obj) {
+                        throw_type_error(
+                            ctx,
+                            "Cannot perform 'isExtensible' on a proxy that has been revoked",
+                        );
+                        return Value::Undefined;
+                    }
+                    let target_extensible = value_is_extensible(&target);
                     if let Some(trap) = proxy_trap(&handler, "isExtensible") {
                         let result = invoke_with_explicit_this(ctx, &trap, handler, &[target]);
-                        return Value::Bool(crate::boolean::to_boolean(&result));
+                        let reported = crate::boolean::to_boolean(&result);
+                        if reported != target_extensible {
+                            throw_type_error(
+                                ctx,
+                                "Proxy isExtensible trap result does not match target",
+                            );
+                            return Value::Undefined;
+                        }
+                        return Value::Bool(reported);
                     }
-                    if let Value::Object(t) = &target {
-                        let o = t.lock().unwrap();
-                        return Value::Bool(!matches!(
-                            o.properties.get(EXTENSIBLE_MARK),
-                            Some(Value::I32(0))
-                        ));
-                    }
-                    return Value::Bool(false);
+                    return Value::Bool(target_extensible);
                 }
                 let o = obj.lock().unwrap();
                 return Value::Bool(!matches!(
@@ -3610,7 +3742,8 @@ fn register_comparison(vm: &mut VM) {
                     }
                 }
                 (Some(x), Some(y)) => x.eq(y),
-                _ => false };
+                _ => false,
+            };
             // ECMA-262 §20.1.2.13: returns a Boolean.
             Value::Bool(same)
         }),
@@ -3647,7 +3780,8 @@ fn user_method_override(obj: &Arc<Mutex<Object>>, name: &str) -> Option<Value> {
         }
         current = match proto {
             Some(Value::Object(p)) => Some(p),
-            _ => None };
+            _ => None,
+        };
     }
     None
 }
@@ -3722,7 +3856,8 @@ fn register_prototype_methods(vm: &mut VM) {
                             }
                             current = Value::Object(p);
                         }
-                        _ => return Value::Bool(false) }
+                        _ => return Value::Bool(false),
+                    }
                 }
             }
             Value::Bool(false)
@@ -3792,7 +3927,8 @@ fn register_prototype_methods(vm: &mut VM) {
                 Some(Value::String(_)) => "String".to_string(),
                 Some(Value::Symbol(_)) => "Symbol".to_string(),
                 Some(Value::Object(obj)) => object_to_string_tag(ctx, obj),
-                _ => "Object".to_string() };
+                _ => "Object".to_string(),
+            };
             Value::String(Arc::from(format!("[object {}]", tag).as_str()))
         }),
     );
@@ -3836,7 +3972,8 @@ fn register_prototype_methods(vm: &mut VM) {
                 None | Some(Value::Undefined) => "Undefined".to_string(),
                 Some(Value::Null) => "Null".to_string(),
                 Some(Value::Object(obj)) => object_to_string_tag(ctx, obj),
-                _ => "Object".to_string() };
+                _ => "Object".to_string(),
+            };
             Value::String(Arc::from(format!("[object {}]", tag).as_str()))
         }),
     );
@@ -3875,7 +4012,8 @@ fn register_prototype_methods(vm: &mut VM) {
                             "Cannot convert a Symbol value to a property key",
                         );
                     }
-                    other => format!("{}", other) };
+                    other => format!("{}", other),
+                };
                 {
                     let needs_track = {
                         let out = result.lock().unwrap();
@@ -3896,7 +4034,8 @@ fn register_prototype_methods(vm: &mut VM) {
                     }
                     let len = match &group.kind {
                         ObjectKind::Array(v) => v.len(),
-                        _ => 0 };
+                        _ => 0,
+                    };
                     group
                         .properties
                         .insert("length".into(), Value::F64(len as f64));

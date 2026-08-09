@@ -10,10 +10,10 @@
 //! delegates rather than reimplementing — keeping a single source
 //! of truth and maximising cross-runtime portability.
 
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::{Object, ObjectKind, Value};
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -75,7 +75,8 @@ fn s(text: &str) -> Value {
 fn as_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.to_string(),
-        other => format!("{}", other) }
+        other => format!("{}", other),
+    }
 }
 
 fn array_strings(value: &Value) -> Vec<String> {
@@ -86,7 +87,8 @@ fn array_strings(value: &Value) -> Vec<String> {
                 .iter()
                 .map(|element| match element {
                     Value::String(text) => text.to_string(),
-                    other => format!("{}", other) })
+                    other => format!("{}", other),
+                })
                 .collect();
         }
     }
@@ -282,7 +284,10 @@ fn last_index_of_position_uses_to_integer_or_infinity() {
         Value::F64(3.0)
     );
     assert_eq!(
-        invoke("lastIndexOf", vec![s("ababa"), s("ba"), Value::F64(f64::NAN)]),
+        invoke(
+            "lastIndexOf",
+            vec![s("ababa"), s("ba"), Value::F64(f64::NAN)]
+        ),
         Value::F64(-1.0)
     );
     assert_eq!(

@@ -77,7 +77,11 @@ pub fn canonicalize(name: &str) -> Option<String> {
 pub fn offset_seconds(name: &str, ms: f64) -> Option<i32> {
     let tz = resolve(name)?;
     let dt = Utc.timestamp_millis_opt(ms as i64).single()?;
-    Some(tz.offset_from_utc_datetime(&dt.naive_utc()).fix().local_minus_utc())
+    Some(
+        tz.offset_from_utc_datetime(&dt.naive_utc())
+            .fix()
+            .local_minus_utc(),
+    )
 }
 
 /// Whether daylight saving is in effect for `name` at `ms`.
@@ -93,10 +97,24 @@ pub fn is_dst(name: &str, ms: f64) -> bool {
         return false;
     };
     let year_start = Utc
-        .with_ymd_and_hms(dt.format("%Y").to_string().parse().unwrap_or(1970), 1, 15, 0, 0, 0)
+        .with_ymd_and_hms(
+            dt.format("%Y").to_string().parse().unwrap_or(1970),
+            1,
+            15,
+            0,
+            0,
+            0,
+        )
         .single();
     let mid_year = Utc
-        .with_ymd_and_hms(dt.format("%Y").to_string().parse().unwrap_or(1970), 7, 15, 0, 0, 0)
+        .with_ymd_and_hms(
+            dt.format("%Y").to_string().parse().unwrap_or(1970),
+            7,
+            15,
+            0,
+            0,
+            0,
+        )
         .single();
     let (Some(jan), Some(jul)) = (year_start, mid_year) else {
         return false;
@@ -113,7 +131,11 @@ pub fn is_dst(name: &str, ms: f64) -> bool {
 pub fn abbreviation(name: &str, ms: f64) -> Option<String> {
     let tz = resolve(name)?;
     let dt = Utc.timestamp_millis_opt(ms as i64).single()?;
-    Some(tz.from_utc_datetime(&dt.naive_utc()).format("%Z").to_string())
+    Some(
+        tz.from_utc_datetime(&dt.naive_utc())
+            .format("%Z")
+            .to_string(),
+    )
 }
 
 /// IANA `zone.tab` — the ISO 3166-1 alpha-2 country code → zone identifier
@@ -195,7 +217,8 @@ pub fn set_system_identifier(name: &str) -> bool {
             }
             false
         }
-        None => false }
+        None => false,
+    }
 }
 
 /// ECMA-262 `SystemTimeZoneIdentifier()` — the host environment's zone as a
@@ -224,14 +247,16 @@ fn s(value: &str) -> Value {
 fn arg_str(args: &[Value], idx: usize) -> Option<String> {
     match args.get(idx) {
         Some(Value::String(v)) => Some(v.to_string()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn arg_ms(args: &[Value], idx: usize) -> f64 {
     match args.get(idx) {
         Some(Value::F64(v)) => *v,
         Some(Value::I32(v)) => *v as f64,
-        _ => 0.0 }
+        _ => 0.0,
+    }
 }
 
 fn make_array(items: Vec<Value>) -> Value {
@@ -274,7 +299,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match arg_str(args, 0).and_then(|n| canonicalize(&n)) {
                 Some(name) => s(&name),
-                None => Value::Null }
+                None => Value::Null,
+            }
         }),
     );
 
@@ -285,7 +311,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match arg_str(args, 0).and_then(|n| offset_seconds(&n, arg_ms(args, 1))) {
                 Some(secs) => Value::I32(secs),
-                None => Value::Null }
+                None => Value::Null,
+            }
         }),
     );
 
@@ -304,9 +331,12 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/timezone",
         "setSystemIdentifier",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| match arg_str(args, 0) {
-            Some(name) => Value::Bool(set_system_identifier(&name)),
-            None => Value::Bool(false) }),
+        Box::new(
+            |_ctx: &mut HostContext, args: &[Value]| match arg_str(args, 0) {
+                Some(name) => Value::Bool(set_system_identifier(&name)),
+                None => Value::Bool(false),
+            },
+        ),
     );
 
     // isDst(name, msSinceEpoch) — whether daylight saving is in effect.
@@ -328,7 +358,8 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx: &mut HostContext, args: &[Value]| {
             match arg_str(args, 0).and_then(|n| abbreviation(&n, arg_ms(args, 1))) {
                 Some(abbr) => s(&abbr),
-                None => Value::Null }
+                None => Value::Null,
+            }
         }),
     );
 }
@@ -378,7 +409,13 @@ mod tests {
 
     #[test]
     fn abbreviations_track_daylight_saving() {
-        assert_eq!(abbreviation("America/New_York", WINTER_MS).as_deref(), Some("EST"));
-        assert_eq!(abbreviation("America/New_York", SUMMER_MS).as_deref(), Some("EDT"));
+        assert_eq!(
+            abbreviation("America/New_York", WINTER_MS).as_deref(),
+            Some("EST")
+        );
+        assert_eq!(
+            abbreviation("America/New_York", SUMMER_MS).as_deref(),
+            Some("EDT")
+        );
     }
 }

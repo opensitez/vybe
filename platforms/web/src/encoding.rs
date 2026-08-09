@@ -27,7 +27,11 @@ fn make_uint8_array(bytes: Vec<u8>) -> Value {
         let locked = obj.lock().unwrap();
         if let ObjectKind::TypedArray(ref typed) = locked.kind {
             for (index, byte) in bytes.iter().enumerate() {
-                vybe_platform_ecma::typedarray::write_element(typed, index, &Value::I32(*byte as i32));
+                vybe_platform_ecma::typedarray::write_element(
+                    typed,
+                    index,
+                    &Value::I32(*byte as i32),
+                );
             }
         }
     }
@@ -43,7 +47,8 @@ fn bytes_from_arg(arg: Option<&Value>) -> Vec<u8> {
                 ObjectKind::TypedArray(ta) => {
                     let start = ta.byte_offset;
                     let end = start
-                        + vybe_platform_ecma::typedarray::ta_live_length(ta) * ta.elem.bytes_per_element();
+                        + vybe_platform_ecma::typedarray::ta_live_length(ta)
+                            * ta.elem.bytes_per_element();
                     let bytes = ta.buffer.lock().unwrap();
                     bytes
                         .get(start..end)
@@ -75,7 +80,8 @@ fn bytes_from_arg(arg: Option<&Value>) -> Vec<u8> {
                 }
             }
         }
-        _ => Vec::new() }
+        _ => Vec::new(),
+    }
 }
 
 fn option_bool(obj: Option<&Value>, name: &str) -> bool {
@@ -91,7 +97,11 @@ fn option_bool(obj: Option<&Value>, name: &str) -> bool {
 }
 
 fn throw_type_error(ctx: &mut HostContext, message: &str) {
-    ctx.throw_value(vybe_platform_ecma::error::new_error(ctx, "TypeError", message));
+    ctx.throw_value(vybe_platform_ecma::error::new_error(
+        ctx,
+        "TypeError",
+        message,
+    ));
 }
 
 fn decode_utf8(bytes: &[u8], fatal: bool, ignore_bom: bool) -> Result<String, ()> {
@@ -243,7 +253,8 @@ pub fn register(vm: &mut VM) {
                             .unwrap_or(false),
                     )
                 }
-                _ => (false, false) };
+                _ => (false, false),
+            };
             match decode_utf8(&bytes, fatal, ignore_bom) {
                 Ok(text) => Value::String(Arc::from(text.as_str())),
                 Err(()) => {

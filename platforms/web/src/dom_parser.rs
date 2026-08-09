@@ -85,7 +85,8 @@ pub struct DomTypeIds {
     pub comment: usize,
     pub processing_instruction: usize,
     pub attr: usize,
-    pub named_node_map: usize }
+    pub named_node_map: usize,
+}
 
 static DOM_TYPE_IDS: OnceLock<DomTypeIds> = OnceLock::new();
 
@@ -110,7 +111,8 @@ fn type_id_for(node_type: i32) -> usize {
         CDATA_SECTION_NODE => ids.cdata,
         COMMENT_NODE => ids.comment,
         PROCESSING_INSTRUCTION_NODE => ids.processing_instruction,
-        _ => 0 }
+        _ => 0,
+    }
 }
 
 // ── Public registration ───────────────────────────────────────────
@@ -144,7 +146,8 @@ pub fn register(vm: &mut VM) {
                         .get("__type")
                         .and_then(|v| match v {
                             Value::String(s) => Some(s.as_ref().to_string()),
-                            _ => None })
+                            _ => None,
+                        })
                         .as_deref()
                         == Some("DOMParser") =>
                 {
@@ -156,13 +159,16 @@ pub fn register(vm: &mut VM) {
                 _ => (
                     args.first().cloned().unwrap_or(Value::Null),
                     args.get(1).cloned().unwrap_or(Value::Null),
-                ) };
+                ),
+            };
             let xml = match xml_arg {
                 Value::String(s) => s.to_string(),
-                other => format!("{}", other) };
+                other => format!("{}", other),
+            };
             match parse_xml(&xml) {
                 Ok(doc) => doc,
-                Err(_) => parse_error_document(&xml) }
+                Err(_) => parse_error_document(&xml),
+            }
         }),
     );
 
@@ -175,10 +181,12 @@ pub fn register(vm: &mut VM) {
             let xml = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => String::new() };
+                None => String::new(),
+            };
             match parse_xml(&xml) {
                 Ok(doc) => doc,
-                Err(_) => parse_error_document(&xml) }
+                Err(_) => parse_error_document(&xml),
+            }
         }),
     );
 
@@ -206,13 +214,15 @@ pub fn register(vm: &mut VM) {
                         .get("__type")
                         .and_then(|v| match v {
                             Value::String(s) => Some(s.as_ref().to_string()),
-                            _ => None })
+                            _ => None,
+                        })
                         .as_deref()
                         == Some("XMLSerializer") =>
                 {
                     args.get(1).cloned().unwrap_or(Value::Null)
                 }
-                other => other.cloned().unwrap_or(Value::Null) };
+                other => other.cloned().unwrap_or(Value::Null),
+            };
             let mut out = String::new();
             if let Value::Object(o) = &node {
                 serialize_node(o, &mut out);
@@ -245,10 +255,12 @@ pub fn register(vm: &mut VM) {
             let path = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             match std::fs::read_to_string(&path) {
                 Ok(xml) => parse_xml(&xml).unwrap_or_else(|_| parse_error_document(&xml)),
-                Err(_) => Value::Null }
+                Err(_) => Value::Null,
+            }
         }),
     );
 
@@ -268,7 +280,8 @@ pub fn register(vm: &mut VM) {
             let target = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             find_by_id(root, &target).unwrap_or(Value::Null)
         }),
     );
@@ -283,7 +296,8 @@ pub fn register(vm: &mut VM) {
             let tag = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return empty_array() };
+                None => return empty_array(),
+            };
             let mut out: Vec<Value> = Vec::new();
             find_by_tag_name(root, &tag, &mut out);
             make_array(out)
@@ -300,7 +314,8 @@ pub fn register(vm: &mut VM) {
             let cls = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return empty_array() };
+                None => return empty_array(),
+            };
             let mut out: Vec<Value> = Vec::new();
             find_by_class_name(root, &cls, &mut out);
             make_array(out)
@@ -317,7 +332,8 @@ pub fn register(vm: &mut VM) {
             let name = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let elem = elem.lock().unwrap();
             let Some(Value::Object(attrs)) = elem.properties.get("attributes") else {
                 return Value::Null;
@@ -337,7 +353,8 @@ pub fn register(vm: &mut VM) {
             let name = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Bool(false) };
+                None => return Value::Bool(false),
+            };
             let elem = elem.lock().unwrap();
             let Some(Value::Object(attrs)) = elem.properties.get("attributes") else {
                 return Value::Bool(false);
@@ -364,10 +381,12 @@ pub fn register(vm: &mut VM) {
             let selector = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let parsed = match parse_selector_list(&selector) {
                 Some(s) => s,
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             find_first_match(root, &parsed).unwrap_or(Value::Null)
         }),
     );
@@ -382,10 +401,12 @@ pub fn register(vm: &mut VM) {
             let selector = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return empty_array() };
+                None => return empty_array(),
+            };
             let parsed = match parse_selector_list(&selector) {
                 Some(s) => s,
-                None => return empty_array() };
+                None => return empty_array(),
+            };
             let mut out: Vec<Value> = Vec::new();
             find_all_matches(root, &parsed, &mut out);
             make_array(out)
@@ -402,10 +423,12 @@ pub fn register(vm: &mut VM) {
             let selector = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Bool(false) };
+                None => return Value::Bool(false),
+            };
             let parsed = match parse_selector_list(&selector) {
                 Some(s) => s,
-                None => return Value::Bool(false) };
+                None => return Value::Bool(false),
+            };
             Value::Bool(parsed.iter().any(|sel| selector_matches(elem, sel)))
         }),
     );
@@ -443,10 +466,12 @@ pub fn register(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let namespace = match args.first() {
                 Some(Value::String(ns)) if !ns.is_empty() => Some(ns.to_string()),
-                _ => None };
+                _ => None,
+            };
             let qualified = match args.get(1) {
                 Some(Value::String(q)) if !q.is_empty() => Some(q.to_string()),
-                _ => None };
+                _ => None,
+            };
             let doc = make_node(DOCUMENT_NODE, "#document", None);
             if let (Value::Object(d), Some(name)) = (&doc, qualified.as_ref()) {
                 let elem = new_element_node(name, Some(d));
@@ -529,7 +554,8 @@ pub fn register(vm: &mut VM) {
             let text = match args.get(1).or(args.first()) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => String::new() };
+                None => String::new(),
+            };
             let node = make_node(COMMENT_NODE, "#comment", Some(&text));
             if let Value::Object(n) = &node {
                 n.lock()
@@ -551,11 +577,13 @@ pub fn register(vm: &mut VM) {
             let name = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let val = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => String::new() };
+                None => String::new(),
+            };
             let elem_lock = elem.lock().unwrap();
             let attrs = elem_lock.properties.get("attributes").cloned();
             drop(elem_lock);
@@ -583,7 +611,8 @@ pub fn register(vm: &mut VM) {
             let name = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let elem_lock = elem.lock().unwrap();
             let attrs = elem_lock.properties.get("attributes").cloned();
             drop(elem_lock);
@@ -622,8 +651,10 @@ pub fn register(vm: &mut VM) {
                     match c.properties.get("childNodes") {
                         Some(Value::Object(arr)) => match &arr.lock().unwrap().kind {
                             ObjectKind::Array(items) => items.clone(),
-                            _ => Vec::new() },
-                        _ => Vec::new() }
+                            _ => Vec::new(),
+                        },
+                        _ => Vec::new(),
+                    }
                 };
                 // Empty the fragment, then append each former child to parent.
                 if let Some(Value::Object(arr)) = child.lock().unwrap().properties.get("childNodes")
@@ -685,7 +716,8 @@ pub fn register(vm: &mut VM) {
                         append_child_inner(parent, new_child);
                     }
                 }
-                _ => append_child_inner(parent, new_child) }
+                _ => append_child_inner(parent, new_child),
+            }
             Value::Object(new_child.clone())
         }),
     );
@@ -749,17 +781,21 @@ pub fn register(vm: &mut VM) {
             let xml = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Bool(false) };
+                None => return Value::Bool(false),
+            };
             let doc = match parse_xml(&xml) {
                 Ok(doc) => doc,
-                Err(_) => return Value::Bool(false) };
+                Err(_) => return Value::Bool(false),
+            };
             // Move the parsed document's top-level nodes into the fragment.
             let roots: Vec<Value> = if let Value::Object(d) = &doc {
                 match d.lock().unwrap().properties.get("childNodes") {
                     Some(Value::Object(arr)) => match &arr.lock().unwrap().kind {
                         ObjectKind::Array(items) => items.clone(),
-                        _ => Vec::new() },
-                    _ => Vec::new() }
+                        _ => Vec::new(),
+                    },
+                    _ => Vec::new(),
+                }
             } else {
                 Vec::new()
             };
@@ -811,15 +847,18 @@ pub fn register(vm: &mut VM) {
             let _ns = match args.get(1) {
                 Some(Value::String(s)) => Some(s.to_string()),
                 Some(Value::Null) | None => None,
-                Some(other) => Some(format!("{}", other)) };
+                Some(other) => Some(format!("{}", other)),
+            };
             let name = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let val = match args.get(3) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => String::new() };
+                None => String::new(),
+            };
             let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
             if let Some(Value::Object(a)) = attrs {
                 a.lock().unwrap().properties.insert(name.clone(), s(&val));
@@ -846,7 +885,8 @@ pub fn register(vm: &mut VM) {
             let name = match args.get(2).or(args.get(1)) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
             if let Some(Value::Object(a)) = attrs {
                 return a
@@ -871,7 +911,8 @@ pub fn register(vm: &mut VM) {
             let name = match args.get(2).or(args.get(1)) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Bool(false) };
+                None => return Value::Bool(false),
+            };
             let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
             if let Some(Value::Object(a)) = attrs {
                 return Value::Bool(a.lock().unwrap().properties.contains_key(&name));
@@ -890,7 +931,8 @@ pub fn register(vm: &mut VM) {
             let name = match args.get(2).or(args.get(1)) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let attrs = elem.lock().unwrap().properties.get("attributes").cloned();
             if let Some(Value::Object(a)) = attrs {
                 a.lock().unwrap().properties.shift_remove(&name);
@@ -909,7 +951,8 @@ pub fn register(vm: &mut VM) {
             let local = match args.get(2).or(args.get(1)) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return empty_array() };
+                None => return empty_array(),
+            };
             let mut out: Vec<Value> = Vec::new();
             find_by_local_name(root, &local, &mut out);
             make_array(out)
@@ -926,10 +969,12 @@ pub fn register(vm: &mut VM) {
             let selector = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(other) => format!("{}", other),
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let parsed = match parse_selector_list(&selector) {
                 Some(s) => s,
-                None => return Value::Null };
+                None => return Value::Null,
+            };
             let mut current = Some(elem.clone());
             while let Some(node) = current {
                 if parsed.iter().any(|sel| selector_matches(&node, sel)) {
@@ -939,7 +984,8 @@ pub fn register(vm: &mut VM) {
                     let n = node.lock().unwrap();
                     match n.properties.get("parentNode") {
                         Some(Value::Object(p)) => Some(p.clone()),
-                        _ => None }
+                        _ => None,
+                    }
                 };
                 current = parent;
             }
@@ -964,7 +1010,8 @@ fn parse_xml(xml: &str) -> Result<Value, String> {
     // childNodes Vec (Element-style siblings).
     let mut node_stack: Vec<Arc<Mutex<Object>>> = vec![match &document_obj {
         Value::Object(o) => o.clone(),
-        _ => unreachable!() }];
+        _ => unreachable!(),
+    }];
 
     let mut buf = Vec::new();
     loop {
@@ -1022,7 +1069,8 @@ fn parse_xml(xml: &str) -> Result<Value, String> {
                 // visible difference for read-side tests).
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("XML parse error: {}", e)) }
+            Err(e) => return Err(format!("XML parse error: {}", e)),
+        }
         buf.clear();
     }
 
@@ -1032,7 +1080,8 @@ fn parse_xml(xml: &str) -> Result<Value, String> {
     // ElementChild are also populated here.
     let doc_arc = match &document_obj {
         Value::Object(o) => o.clone(),
-        _ => unreachable!() };
+        _ => unreachable!(),
+    };
     finalize_node_tree(&doc_arc, None, Some(&doc_arc));
     set_document_element(&doc_arc);
 
@@ -1097,7 +1146,8 @@ fn make_element_from_start(e: &quick_xml::events::BytesStart) -> Value {
     // Split optional prefix per Namespaces in XML 1.0 §3.
     let (prefix, local_name) = match raw_name.split_once(':') {
         Some((p, ln)) => (Some(p.to_string()), ln.to_string()),
-        None => (None, raw_name.clone()) };
+        None => (None, raw_name.clone()),
+    };
     let mut o = Object::new();
     o.type_id = type_id_for(ELEMENT_NODE);
     o.properties.insert("__type".into(), s("Element"));
@@ -1156,7 +1206,8 @@ fn make_node(node_type: i32, node_name: &str, value: Option<&str>) -> Value {
         CDATA_SECTION_NODE => "CDATASection",
         COMMENT_NODE => "Comment",
         PROCESSING_INSTRUCTION_NODE => "ProcessingInstruction",
-        _ => "Node" };
+        _ => "Node",
+    };
     o.properties.insert("__type".into(), s(typename));
     o.properties
         .insert("nodeType".into(), Value::I32(node_type));
@@ -1165,7 +1216,8 @@ fn make_node(node_type: i32, node_name: &str, value: Option<&str>) -> Value {
         "nodeValue".into(),
         match value {
             Some(v) => s(v),
-            None => Value::Null },
+            None => Value::Null,
+        },
     );
     if node_type == DOCUMENT_NODE {
         o.properties.insert("childNodes".into(), make_array(vec![]));
@@ -1195,7 +1247,8 @@ fn push_child(stack: &[Arc<Mutex<Object>>], child: Value) {
         let parent_lock = parent.lock().unwrap();
         match parent_lock.properties.get("childNodes") {
             Some(Value::Object(arr)) => arr.clone(),
-            _ => return }
+            _ => return,
+        }
     };
     let mut a = arr.lock().unwrap();
     let len = if let ObjectKind::Array(ref mut items) = a.kind {
@@ -1227,7 +1280,8 @@ fn finalize_node_tree(
             "ownerDocument".into(),
             match document {
                 Some(d) if !Arc::ptr_eq(d, node) => Value::Object(d.clone()),
-                _ => Value::Null },
+                _ => Value::Null,
+            },
         );
     }
     let children = {
@@ -1399,7 +1453,8 @@ fn find_by_id(node: &Arc<Mutex<Object>>, id: &str) -> Option<Value> {
                 attrs.lock().unwrap().properties.get("id"),
                 Some(Value::String(v)) if v.as_ref() == id
             ),
-            _ => false };
+            _ => false,
+        };
     if matches {
         return Some(Value::Object(node.clone()));
     }
@@ -1478,7 +1533,8 @@ fn serialize_node(node: &Arc<Mutex<Object>>, out: &mut String) {
     let n = node.lock().unwrap();
     let node_type = match n.properties.get("nodeType") {
         Some(Value::I32(t)) => *t,
-        _ => return };
+        _ => return,
+    };
     match node_type {
         DOCUMENT_NODE => {
             let children = n.properties.get("childNodes").cloned();
@@ -1499,7 +1555,8 @@ fn serialize_node(node: &Arc<Mutex<Object>>, out: &mut String) {
         ELEMENT_NODE => {
             let tag = match n.properties.get("tagName") {
                 Some(Value::String(s)) => s.to_string(),
-                _ => "".to_string() };
+                _ => "".to_string(),
+            };
             out.push('<');
             out.push_str(&tag);
             // Attributes
@@ -1528,7 +1585,8 @@ fn serialize_node(node: &Arc<Mutex<Object>>, out: &mut String) {
                         vec![]
                     }
                 }
-                _ => vec![] };
+                _ => vec![],
+            };
             if items.is_empty() {
                 out.push_str("/>");
             } else {
@@ -1585,7 +1643,8 @@ fn escape_text_into(s: &str, out: &mut String) {
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '&' => out.push_str("&amp;"),
-            other => out.push(other) }
+            other => out.push(other),
+        }
     }
 }
 
@@ -1595,7 +1654,8 @@ fn escape_attr_into(s: &str, out: &mut String) {
             '"' => out.push_str("&quot;"),
             '<' => out.push_str("&lt;"),
             '&' => out.push_str("&amp;"),
-            other => out.push(other) }
+            other => out.push(other),
+        }
     }
 }
 
@@ -1647,7 +1707,9 @@ enum SimplePart {
     Attr {
         name: String,
         op: AttrOp,
-        value: Option<String> } }
+        value: Option<String>,
+    },
+}
 
 #[derive(Debug, Clone)]
 enum AttrOp {
@@ -1657,24 +1719,28 @@ enum AttrOp {
     Prefix,
     Suffix,
     Word,
-    Lang }
+    Lang,
+}
 
 #[derive(Debug, Clone)]
 struct CompoundSelector {
-    parts: Vec<SimplePart> }
+    parts: Vec<SimplePart>,
+}
 
 #[derive(Debug, Clone)]
 enum Combinator {
     Descendant,
     Child,
     AdjacentSibling,
-    GeneralSibling }
+    GeneralSibling,
+}
 
 #[derive(Debug, Clone)]
 struct ComplexSelector {
     /// Pairs of (combinator-from-previous, compound). The first entry's
     /// combinator is unused (root of the chain).
-    parts: Vec<(Combinator, CompoundSelector)> }
+    parts: Vec<(Combinator, CompoundSelector)>,
+}
 
 fn parse_selector_list(input: &str) -> Option<Vec<ComplexSelector>> {
     let mut out = Vec::new();
@@ -1711,7 +1777,8 @@ fn parse_complex(input: &str) -> Option<ComplexSelector> {
             '>' => Some(Combinator::Child),
             '+' => Some(Combinator::AdjacentSibling),
             '~' => Some(Combinator::GeneralSibling),
-            _ => None };
+            _ => None,
+        };
         if let Some(comb) = explicit {
             next_combinator = comb;
             i += 1;
@@ -1821,7 +1888,8 @@ fn parse_attr(chars: &[char]) -> Option<(SimplePart, usize)> {
             SimplePart::Attr {
                 name,
                 op: AttrOp::Has,
-                value: None },
+                value: None,
+            },
             i + 1,
         ));
     }
@@ -1851,7 +1919,8 @@ fn parse_attr(chars: &[char]) -> Option<(SimplePart, usize)> {
             i += 2;
             AttrOp::Lang
         }
-        _ => return None };
+        _ => return None,
+    };
     // Skip whitespace
     while i < chars.len() && chars[i].is_whitespace() {
         i += 1;
@@ -1891,7 +1960,8 @@ fn parse_attr(chars: &[char]) -> Option<(SimplePart, usize)> {
         SimplePart::Attr {
             name,
             op,
-            value: Some(value) },
+            value: Some(value),
+        },
         i + 1,
     ))
 }
@@ -1948,7 +2018,8 @@ fn selector_matches(elem: &Arc<Mutex<Object>>, selector: &ComplexSelector) -> bo
             Combinator::Child => {
                 let parent = match parent_of(&current) {
                     Some(p) => p,
-                    None => return false };
+                    None => return false,
+                };
                 if !compound_matches(&parent, prev_compound) {
                     return false;
                 }
@@ -1958,7 +2029,8 @@ fn selector_matches(elem: &Arc<Mutex<Object>>, selector: &ComplexSelector) -> bo
                 let prev_sibling = previous_sibling_of(&current);
                 let p = match prev_sibling {
                     Some(p) => p,
-                    None => return false };
+                    None => return false,
+                };
                 if !compound_matches(&p, prev_compound) {
                     return false;
                 }
@@ -1992,13 +2064,16 @@ fn compound_matches(elem: &Arc<Mutex<Object>>, compound: &CompoundSelector) -> b
     }
     let tag_name = match n.properties.get("tagName") {
         Some(Value::String(s)) => s.to_string(),
-        _ => String::new() };
+        _ => String::new(),
+    };
     let id = match n.properties.get("id") {
         Some(Value::String(s)) => s.to_string(),
-        _ => String::new() };
+        _ => String::new(),
+    };
     let class_attr = match n.properties.get("className") {
         Some(Value::String(s)) => s.to_string(),
-        _ => String::new() };
+        _ => String::new(),
+    };
     let attrs = n.properties.get("attributes").cloned();
     drop(n);
 
@@ -2027,12 +2102,15 @@ fn compound_matches(elem: &Arc<Mutex<Object>>, compound: &CompoundSelector) -> b
                         match lock.properties.get(name) {
                             Some(Value::String(s)) => Some(s.to_string()),
                             Some(other) => Some(format!("{}", other)),
-                            None => None }
+                            None => None,
+                        }
                     }
-                    _ => None };
+                    _ => None,
+                };
                 let actual = match v {
                     Some(v) => v,
-                    None => return false };
+                    None => return false,
+                };
                 let target = value.as_deref().unwrap_or("");
                 let ok = match op {
                     AttrOp::Has => true,
@@ -2041,7 +2119,8 @@ fn compound_matches(elem: &Arc<Mutex<Object>>, compound: &CompoundSelector) -> b
                     AttrOp::Prefix => actual.starts_with(target),
                     AttrOp::Suffix => actual.ends_with(target),
                     AttrOp::Word => actual.split_whitespace().any(|w| w == target),
-                    AttrOp::Lang => actual == target || actual.starts_with(&format!("{}-", target)) };
+                    AttrOp::Lang => actual == target || actual.starts_with(&format!("{}-", target)),
+                };
                 if !ok {
                     return false;
                 }
@@ -2055,7 +2134,8 @@ fn parent_of(node: &Arc<Mutex<Object>>) -> Option<Arc<Mutex<Object>>> {
     let n = node.lock().unwrap();
     match n.properties.get("parentNode") {
         Some(Value::Object(p)) => Some(p.clone()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn previous_sibling_of(node: &Arc<Mutex<Object>>) -> Option<Arc<Mutex<Object>>> {
@@ -2066,7 +2146,8 @@ fn previous_sibling_of(node: &Arc<Mutex<Object>>) -> Option<Arc<Mutex<Object>>> 
         let n = node.lock().unwrap();
         match n.properties.get("previousSibling") {
             Some(Value::Object(p)) => Some(p.clone()),
-            _ => None }
+            _ => None,
+        }
     };
     while let Some(c) = cur {
         let nt = {
@@ -2082,7 +2163,8 @@ fn previous_sibling_of(node: &Arc<Mutex<Object>>) -> Option<Arc<Mutex<Object>>> 
             let n = c.lock().unwrap();
             match n.properties.get("previousSibling") {
                 Some(Value::Object(p)) => Some(p.clone()),
-                _ => None }
+                _ => None,
+            }
         };
     }
     None
@@ -2158,7 +2240,8 @@ fn new_element_node(tag: &str, owner: Option<&Arc<Mutex<Object>>>) -> Value {
     // Split optional prefix per Namespaces in XML 1.0 §3.
     let (prefix, local_name) = match tag.split_once(':') {
         Some((p, ln)) => (Some(p.to_string()), ln.to_string()),
-        None => (None, tag.to_string()) };
+        None => (None, tag.to_string()),
+    };
     let mut o = Object::new();
     o.type_id = type_id_for(ELEMENT_NODE);
     o.properties.insert("__type".into(), s("Element"));
@@ -2207,7 +2290,8 @@ fn detach_from_parent(node: &Arc<Mutex<Object>>) {
         let n = node.lock().unwrap();
         match n.properties.get("parentNode") {
             Some(Value::Object(p)) => Some(p.clone()),
-            _ => None }
+            _ => None,
+        }
     };
     if let Some(p) = parent {
         let _ = remove_child_inner(&p, node);

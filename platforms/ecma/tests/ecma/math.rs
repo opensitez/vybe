@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::Object;
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -476,7 +476,8 @@ fn fround_reduces_precision_of_non_representable_value() {
     let result = invoke("fround", vec![Value::F64(1.337)]);
     match result {
         Value::F64(f) => assert!((f - 1.337f32 as f64).abs() < 0.00001, "got {f}"),
-        other => panic!("expected F64, got {:?}", other) }
+        other => panic!("expected F64, got {:?}", other),
+    }
 }
 
 // ── Math.sumPrecise (ES2026 §21.3.2.37) ──────────────────────────────────────

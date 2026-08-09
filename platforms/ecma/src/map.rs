@@ -36,10 +36,8 @@ pub fn shared_map_prototype() -> Value {
             .insert("__proto__".into(), crate::object::shared_object_prototype());
         // §24.1.3.13 — `Map.prototype[@@toStringTag]` is "Map",
         // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
-        obj.properties.insert(
-            "@@toStringTag".into(),
-            Value::String(Arc::from("Map")),
-        );
+        obj.properties
+            .insert("@@toStringTag".into(), Value::String(Arc::from("Map")));
         vybe_runtime::heap::alloc(obj)
     });
     let value = Value::Object(proto.clone());

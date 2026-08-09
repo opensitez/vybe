@@ -7,14 +7,54 @@ const PROXY_TARGET: &str = "__vybe_proxy_target";
 const PROXY_HANDLER: &str = "__vybe_proxy_handler";
 const PROXY_REVOKED: &str = "__vybe_proxy_revoked";
 
-fn new_proxy(target: Value, handler: Value) -> Value {
+fn new_proxy(target: Value, handler: Value, call_idx: Option<usize>) -> Value {
+    let callable = call_idx.filter(|_| is_callable(&target));
     let mut obj = Object::new();
     obj.properties.insert(PROXY_TAG.into(), Value::I32(1));
-    obj.properties.insert(PROXY_TARGET.into(), target);
+    obj.properties.insert(PROXY_TARGET.into(), target.clone());
     obj.properties.insert(PROXY_HANDLER.into(), handler);
     obj.properties
         .insert(PROXY_REVOKED.into(), Value::Bool(false));
-    Value::Object(vybe_runtime::heap::alloc(obj))
+    if let Some(idx) = callable {
+        obj.kind = ObjectKind::HostFunction(idx);
+        obj.properties.insert(
+            "__host_module".into(),
+            Value::String(Arc::from("ecma:proxy")),
+        );
+        obj.properties
+            .insert("__host_name".into(), Value::String(Arc::from("call")));
+        obj.properties
+            .insert("__host_idx".into(), Value::F64(idx as f64));
+        obj.properties
+            .insert("__vybe_proxy_callable".into(), Value::Bool(true));
+        obj.properties.insert(
+            "__proto__".into(),
+            crate::function::shared_function_prototype(),
+        );
+        if let Value::Object(target_obj) = &target {
+            let target_locked = target_obj.lock().unwrap();
+            if let Some(name) = target_locked.properties.get("name").cloned() {
+                obj.properties.insert("name".into(), name);
+            }
+            if let Some(length) = target_locked.properties.get("length").cloned() {
+                obj.properties.insert("length".into(), length);
+            }
+            if let Some(prototype) = target_locked.properties.get("prototype").cloned() {
+                obj.properties.insert("prototype".into(), prototype);
+            }
+        }
+    }
+    let proxy = vybe_runtime::heap::alloc(obj);
+    if callable.is_some() {
+        proxy.lock().unwrap().properties.insert(
+            "__bound_args".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                Value::Object(proxy.clone()),
+                Value::Undefined,
+            ]))),
+        );
+    }
+    Value::Object(proxy)
 }
 
 pub fn is_proxy(v: &Value) -> Option<Arc<Mutex<Object>>> {
@@ -156,6 +196,67 @@ fn throw_revoked(ctx: &mut HostContext) -> Value {
     Value::Undefined
 }
 
+fn apply_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
+    let proxy_obj = match args.first().and_then(is_proxy) {
+        Some(p) => p,
+        None => {
+            let target = args.first().cloned().unwrap_or(Value::Undefined);
+            // Proxy.revocable's revoke function (§28.2.2.1) is modelled as an
+            // object carrying __revoke_target.
+            if let Value::Object(obj) = &target {
+                let revoke_target = obj
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .get("__revoke_target")
+                    .cloned();
+                if let Some(Value::Object(proxy_obj)) = revoke_target {
+                    proxy_obj
+                        .lock()
+                        .unwrap()
+                        .properties
+                        .insert(PROXY_REVOKED.into(), Value::Bool(true));
+                    return Value::Undefined;
+                }
+            }
+            let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+            let invoke_args = args.get(2).map(array_values).unwrap_or_default();
+            return crate::function::invoke_with_explicit_this(
+                ctx,
+                &target,
+                this_arg,
+                &invoke_args,
+            );
+        }
+    };
+    if proxy_is_revoked(&proxy_obj) {
+        return throw_revoked(ctx);
+    }
+    let handler = get_handler(&proxy_obj);
+    let target = get_target(&proxy_obj);
+    let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+    let args_list = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))));
+    if let Some(trap) = get_trap(&handler, "apply") {
+        if is_callable(&trap) {
+            return call_trap(ctx, &handler, &trap, &[target, this_arg, args_list]);
+        }
+    }
+    let invoke_args = array_values(&args_list);
+    crate::function::invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
+}
+
+fn callable_proxy_dispatch(ctx: &mut HostContext, args: &[Value]) -> Value {
+    let proxy = args.first().cloned().unwrap_or(Value::Undefined);
+    let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
+    let args_list = Value::Object(vybe_runtime::heap::alloc(Object::new_array(
+        args.iter().skip(2).cloned().collect(),
+    )));
+    apply_dispatch(ctx, &[proxy, this_arg, args_list])
+}
+
 fn is_callable(value: &Value) -> bool {
     matches!(value, Value::Object(obj)
         if matches!(obj.lock().unwrap().kind, ObjectKind::Function(_) | ObjectKind::HostFunction(_)))
@@ -244,11 +345,7 @@ pub fn own_keys_dispatch(ctx: &mut HostContext, value: &Value) -> Option<Value> 
 /// [[Construct]] dispatch — ECMA-262 §10.5.13 for proxy exotic objects,
 /// ordinary construct for everything else. Shared by `ecma:proxy.construct`
 /// and `ecma:reflect.construct` (§28.1.2 routes through [[Construct]]).
-pub fn construct_dispatch(
-    ctx: &mut HostContext,
-    constructor: &Value,
-    args_list: &Value,
-) -> Value {
+pub fn construct_dispatch(ctx: &mut HostContext, constructor: &Value, args_list: &Value) -> Value {
     construct_dispatch_with_new_target(ctx, constructor, args_list, None)
 }
 
@@ -399,11 +496,30 @@ fn construct_dispatch_inner(
 pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:proxy",
+        "apply",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| apply_dispatch(ctx, args)),
+    );
+    let proxy_apply_idx = vm
+        .host_registry
+        .get(&("ecma:proxy".to_string(), "apply".to_string()))
+        .copied();
+    vm.register_host_fn(
+        "ecma:proxy",
+        "call",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| callable_proxy_dispatch(ctx, args)),
+    );
+    let proxy_call_idx = vm
+        .host_registry
+        .get(&("ecma:proxy".to_string(), "call".to_string()))
+        .copied();
+
+    vm.register_host_fn(
+        "ecma:proxy",
         "new",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let handler = args.get(1).cloned().unwrap_or(Value::Undefined);
-            new_proxy(target, handler)
+            new_proxy(target, handler, proxy_call_idx)
         }),
     );
 
@@ -438,8 +554,7 @@ pub fn register(vm: &mut VM) {
             // Reading the target's raw slot instead skips the trap entirely.
             if key == "__proto__" {
                 let receiver = args.first().cloned().unwrap_or(Value::Undefined);
-                return crate::object::get_prototype_of(ctx, &receiver)
-                    .unwrap_or(Value::Undefined);
+                return crate::object::get_prototype_of(ctx, &receiver).unwrap_or(Value::Undefined);
             }
             target_get(&target, &key)
         }),
@@ -486,6 +601,9 @@ pub fn register(vm: &mut VM) {
                     None => Value::Undefined,
                     Some(success) => Value::Bool(success),
                 };
+            }
+            if !crate::object::value_is_extensible(&target) && !target_has(&target, &key) {
+                return Value::Bool(false);
             }
             target_set(&target, &key, val);
             Value::Bool(true)
@@ -589,67 +707,15 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:proxy",
         "isExtensible",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let proxy_obj = match args.first().and_then(is_proxy) {
-                Some(p) => p,
-                None => return Value::Bool(false),
-            };
-            if proxy_is_revoked(&proxy_obj) {
-                return Value::Bool(false);
-            }
-            Value::Bool(true)
-        }),
-    );
-
-    vm.register_host_fn(
-        "ecma:proxy",
-        "preventExtensions",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
-            let proxy_obj = match args.first().and_then(is_proxy) {
-                Some(p) => p,
-                None => return Value::Bool(false),
-            };
-            if proxy_is_revoked(&proxy_obj) {
-                return Value::Bool(false);
-            }
-            Value::Bool(true)
-        }),
-    );
-
-    vm.register_host_fn(
-        "ecma:proxy",
-        "apply",
         Box::new(|ctx: &mut HostContext, args: &[Value]| {
             let proxy_obj = match args.first().and_then(is_proxy) {
                 Some(p) => p,
                 None => {
-                    let target = args.first().cloned().unwrap_or(Value::Undefined);
-                    // Proxy.revocable's revoke function (§28.2.2.1) is
-                    // modelled as an object carrying __revoke_target.
-                    if let Value::Object(obj) = &target {
-                        let revoke_target = obj
-                            .lock()
-                            .unwrap()
-                            .properties
-                            .get("__revoke_target")
-                            .cloned();
-                        if let Some(Value::Object(proxy_obj)) = revoke_target {
-                            proxy_obj
-                                .lock()
-                                .unwrap()
-                                .properties
-                                .insert(PROXY_REVOKED.into(), Value::Bool(true));
-                            return Value::Undefined;
-                        }
-                    }
-                    let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-                    let invoke_args = args.get(2).map(array_values).unwrap_or_default();
-                    return crate::function::invoke_with_explicit_this(
+                    ctx.throw_value(make_type_error(
                         ctx,
-                        &target,
-                        this_arg,
-                        &invoke_args,
-                    );
+                        "Reflect.isExtensible called on non-object",
+                    ));
+                    return Value::Undefined;
                 }
             };
             if proxy_is_revoked(&proxy_obj) {
@@ -657,17 +723,69 @@ pub fn register(vm: &mut VM) {
             }
             let handler = get_handler(&proxy_obj);
             let target = get_target(&proxy_obj);
-            let this_arg = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let args_list = args.get(2).cloned().unwrap_or_else(|| {
-                Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new())))
-            });
-            if let Some(trap) = get_trap(&handler, "apply") {
+            let target_extensible = crate::object::value_is_extensible(&target);
+            let reported = if let Some(trap) = get_trap(&handler, "isExtensible") {
                 if is_callable(&trap) {
-                    return call_trap(ctx, &handler, &trap, &[target, this_arg, args_list]);
+                    crate::boolean::to_boolean(&call_trap(ctx, &handler, &trap, &[target.clone()]))
+                } else {
+                    target_extensible
                 }
+            } else {
+                target_extensible
+            };
+            if reported != target_extensible {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Proxy isExtensible trap result does not match target",
+                ));
+                return Value::Undefined;
             }
-            let invoke_args = array_values(&args_list);
-            crate::function::invoke_with_explicit_this(ctx, &target, this_arg, &invoke_args)
+            Value::Bool(reported)
+        }),
+    );
+
+    vm.register_host_fn(
+        "ecma:proxy",
+        "preventExtensions",
+        Box::new(|ctx: &mut HostContext, args: &[Value]| {
+            let proxy_obj = match args.first().and_then(is_proxy) {
+                Some(p) => p,
+                None => {
+                    ctx.throw_value(make_type_error(
+                        ctx,
+                        "Reflect.preventExtensions called on non-object",
+                    ));
+                    return Value::Undefined;
+                }
+            };
+            if proxy_is_revoked(&proxy_obj) {
+                return throw_revoked(ctx);
+            }
+            let handler = get_handler(&proxy_obj);
+            let target = get_target(&proxy_obj);
+            let success = if let Some(trap) = get_trap(&handler, "preventExtensions") {
+                if is_callable(&trap) {
+                    crate::boolean::to_boolean(&call_trap(ctx, &handler, &trap, &[target.clone()]))
+                } else {
+                    if let Value::Object(target_obj) = &target {
+                        crate::object::mark_not_extensible(&mut target_obj.lock().unwrap());
+                    }
+                    true
+                }
+            } else {
+                if let Value::Object(target_obj) = &target {
+                    crate::object::mark_not_extensible(&mut target_obj.lock().unwrap());
+                }
+                true
+            };
+            if success && crate::object::value_is_extensible(&target) {
+                ctx.throw_value(make_type_error(
+                    ctx,
+                    "Proxy preventExtensions trap returned true but target is still extensible",
+                ));
+                return Value::Undefined;
+            }
+            Value::Bool(success)
         }),
     );
 
@@ -686,17 +804,49 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:proxy",
         "revocable",
-        Box::new(|_ctx: &mut HostContext, args: &[Value]| {
+        Box::new(move |_ctx: &mut HostContext, args: &[Value]| {
             let target = args.first().cloned().unwrap_or(Value::Undefined);
             let handler = args.get(1).cloned().unwrap_or(Value::Undefined);
-            let proxy = new_proxy(target, handler);
+            let proxy = new_proxy(target, handler, proxy_call_idx);
             let proxy_clone = proxy.clone();
             // revoke is represented as an object with __revoke_target pointing to the proxy
             let mut revoke_obj = Object::new();
+            if let Some(idx) = proxy_apply_idx {
+                revoke_obj.kind = ObjectKind::HostFunction(idx);
+                revoke_obj.properties.insert(
+                    "__host_module".into(),
+                    Value::String(Arc::from("ecma:proxy")),
+                );
+                revoke_obj
+                    .properties
+                    .insert("__host_name".into(), Value::String(Arc::from("apply")));
+                revoke_obj
+                    .properties
+                    .insert("__host_idx".into(), Value::F64(idx as f64));
+                revoke_obj.properties.insert(
+                    "__proto__".into(),
+                    crate::function::shared_function_prototype(),
+                );
+                revoke_obj
+                    .properties
+                    .insert("name".into(), Value::String(Arc::from("revoke")));
+                revoke_obj
+                    .properties
+                    .insert("length".into(), Value::F64(0.0));
+            }
             revoke_obj
                 .properties
                 .insert("__revoke_target".into(), proxy_clone);
-            let revoke = Value::Object(vybe_runtime::heap::alloc(revoke_obj));
+            let revoke_arc = vybe_runtime::heap::alloc(revoke_obj);
+            if proxy_apply_idx.is_some() {
+                revoke_arc.lock().unwrap().properties.insert(
+                    "__bound_args".into(),
+                    Value::Object(vybe_runtime::heap::alloc(Object::new_array(vec![
+                        Value::Object(revoke_arc.clone()),
+                    ]))),
+                );
+            }
+            let revoke = Value::Object(revoke_arc);
             let mut result = Object::new();
             result.properties.insert("proxy".into(), proxy);
             result.properties.insert("revoke".into(), revoke);

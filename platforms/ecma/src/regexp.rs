@@ -18,7 +18,8 @@
 
 use icu::properties::CodePointSetData;
 use icu::properties::props::{
-    Emoji, EmojiComponent, EmojiModifier, EmojiModifierBase, EmojiPresentation, RegionalIndicator };
+    Emoji, EmojiComponent, EmojiModifier, EmojiModifierBase, EmojiPresentation, RegionalIndicator,
+};
 use regress::{Match, Regex};
 use std::sync::{Arc, Mutex};
 use unicode_segmentation::UnicodeSegmentation;
@@ -38,10 +39,9 @@ pub fn shared_regexp_prototype() -> Value {
         REGEXP_PROTOTYPE
             .get_or_init(|| {
                 let mut proto = Object::new();
-                proto.properties.insert(
-                    "__proto__".into(),
-                    crate::object::shared_object_prototype(),
-                );
+                proto
+                    .properties
+                    .insert("__proto__".into(), crate::object::shared_object_prototype());
                 vybe_runtime::heap::alloc(proto)
             })
             .clone(),
@@ -50,13 +50,15 @@ pub fn shared_regexp_prototype() -> Value {
 
 #[derive(Clone, Copy)]
 enum SpecialPattern {
-    RgiEmoji }
+    RgiEmoji,
+}
 
 fn s_arg(args: &[Value], idx: usize) -> String {
     match args.get(idx) {
         Some(Value::String(s)) => s.to_string(),
         Some(other) => format!("{}", other),
-        None => String::new() }
+        None => String::new(),
+    }
 }
 
 /// Extract `source` + `flags` from a RegExp object (or treat raw string
@@ -70,20 +72,23 @@ fn extract_pattern(args: &[Value], idx: usize) -> (String, String) {
                 .get("source")
                 .map(|v| match v {
                     Value::String(s) => s.to_string(),
-                    o => format!("{}", o) })
+                    o => format!("{}", o),
+                })
                 .unwrap_or_default();
             let flags = o
                 .properties
                 .get("flags")
                 .map(|v| match v {
                     Value::String(s) => s.to_string(),
-                    o => format!("{}", o) })
+                    o => format!("{}", o),
+                })
                 .unwrap_or_default();
             (src, flags)
         }
         Some(Value::String(s)) => split_regex_literal(s.as_ref()),
         Some(other) => split_regex_literal(&format!("{}", other)),
-        None => (String::new(), String::new()) }
+        None => (String::new(), String::new()),
+    }
 }
 
 /// Pull pattern + flags out of a string in `/pat/flags` shape — what the
@@ -117,7 +122,8 @@ fn split_regex_literal(s: &str) -> (String, String) {
             let flags = s[end + 1..].to_string();
             (pattern, flags)
         }
-        _ => (s.to_string(), String::new()) }
+        _ => (s.to_string(), String::new()),
+    }
 }
 
 fn display_source(pattern: &str) -> String {
@@ -169,7 +175,8 @@ fn special_match_at(input: &str, kind: SpecialPattern, start: usize) -> Option<u
     let grapheme = input[start..].graphemes(true).next()?;
     match kind {
         SpecialPattern::RgiEmoji if is_rgi_emoji_sequence(grapheme) => Some(start + grapheme.len()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn special_find(input: &str, kind: SpecialPattern, start: usize) -> Option<(usize, usize)> {
@@ -178,7 +185,8 @@ fn special_find(input: &str, kind: SpecialPattern, start: usize) -> Option<(usiz
     }
     for (offset, grapheme) in input[start..].grapheme_indices(true) {
         let found = match kind {
-            SpecialPattern::RgiEmoji => is_rgi_emoji_sequence(grapheme) };
+            SpecialPattern::RgiEmoji => is_rgi_emoji_sequence(grapheme),
+        };
         if found {
             let match_start = start + offset;
             return Some((match_start, match_start + grapheme.len()));
@@ -191,7 +199,8 @@ fn special_find_all(input: &str, kind: SpecialPattern) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     for (start, grapheme) in input.grapheme_indices(true) {
         let found = match kind {
-            SpecialPattern::RgiEmoji => is_rgi_emoji_sequence(grapheme) };
+            SpecialPattern::RgiEmoji => is_rgi_emoji_sequence(grapheme),
+        };
         if found {
             out.push((start, start + grapheme.len()));
         }
@@ -224,7 +233,8 @@ fn is_rgi_emoji_sequence(cluster: &str) -> bool {
             [base, '\u{FE0F}', modifier] => {
                 is_text_emoji_base(*base) && emoji_modifier.contains(*modifier)
             }
-            _ => false }
+            _ => false,
+        }
     };
 
     if matches!(chars.as_slice(), [first, second] if regional_indicator.contains(*first) && regional_indicator.contains(*second))
@@ -276,7 +286,8 @@ fn regexp_exec_special(args: &[Value], input: &str, kind: SpecialPattern, flags:
                     .properties
                     .get("lastIndex")
                     .map(|v| v.as_i32()),
-                _ => None })
+                _ => None,
+            })
             .unwrap_or(0)
             .max(0) as usize
     } else {
@@ -336,13 +347,15 @@ fn compile(pattern: &str, flags: &str) -> Option<Regex> {
 fn match_group_value(m: &Match, input: &str, index: usize) -> Value {
     match m.group(index) {
         Some(range) => s_val(&input[range]),
-        None => Value::Undefined }
+        None => Value::Undefined,
+    }
 }
 
 fn match_group_indices_value(m: &Match, index: usize, index_offset: usize) -> Value {
     match m.group(index) {
         Some(range) => range_to_value(index_offset + range.start, index_offset + range.end),
-        None => Value::Undefined }
+        None => Value::Undefined,
+    }
 }
 
 fn named_groups_object(m: &Match, input: &str) -> Value {
@@ -351,7 +364,8 @@ fn named_groups_object(m: &Match, input: &str) -> Value {
     for (name, _) in m.named_groups() {
         let value = match m.named_group(name) {
             Some(range) => s_val(&input[range]),
-            None => Value::Undefined };
+            None => Value::Undefined,
+        };
         groups.properties.insert(name.to_string(), value);
         group_order.push(s_val(name));
     }
@@ -370,7 +384,8 @@ fn named_groups_indices_object(m: &Match, index_offset: usize) -> Value {
     for (name, _) in m.named_groups() {
         let value = match m.named_group(name) {
             Some(range) => range_to_value(index_offset + range.start, index_offset + range.end),
-            None => Value::Undefined };
+            None => Value::Undefined,
+        };
         groups.properties.insert(name.to_string(), value);
         group_order.push(s_val(name));
     }
@@ -483,7 +498,8 @@ fn lookup_symbol_method(target: &Value, key: &str) -> Option<Value> {
                 o.properties.get(key).cloned(),
                 match o.properties.get("__proto__").cloned() {
                     Some(Value::Object(proto)) => Some(proto),
-                    _ => None },
+                    _ => None,
+                },
             )
         };
         if let Some(value) = prop {
@@ -517,7 +533,8 @@ fn register_constructor(vm: &mut VM) {
             let flags = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(Value::Undefined) | None => default_flags,
-                Some(other) => format!("{}", other) };
+                Some(other) => format!("{}", other),
+            };
             if let Err(message) = validate_flags(&flags) {
                 return throw_syntax_error(ctx, &message);
             }
@@ -605,7 +622,8 @@ fn register_constructor(vm: &mut VM) {
             let s = match args.first() {
                 Some(Value::String(s)) => s.as_ref().to_string(),
                 Some(v) => format!("{}", v),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let escaped: String = s
                 .chars()
                 .map(|c| {
@@ -663,7 +681,8 @@ pub fn dispatch_regexp_method(
         "test" => Some(regexp_test(ctx, args)),
         "exec" => Some(regexp_exec(ctx, args)),
         "toString" => Some(regexp_to_string(args)),
-        _ => None }
+        _ => None,
+    }
 }
 
 pub fn dispatch_regexp_string_method(
@@ -678,7 +697,8 @@ pub fn dispatch_regexp_string_method(
         "replace" => Some(regexp_string_replace(ctx, args)),
         "replaceAll" => Some(regexp_string_replace_all(args)),
         "split" => Some(regexp_string_split(args)),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn regexp_test(ctx: &mut HostContext, args: &[Value]) -> Value {
@@ -693,13 +713,15 @@ fn regexp_exec(ctx: &mut HostContext, args: &[Value]) -> Value {
     let input = match args.get(1) {
         Some(Value::String(s)) => s.to_string(),
         Some(other) => format!("{}", crate::value::to_primitive(ctx, other, "string")),
-        None => String::new() };
+        None => String::new(),
+    };
     if let Some(kind) = special_pattern(&pattern, &flags) {
         return regexp_exec_special(args, &input, kind, &flags);
     }
     let re = match compile(&pattern, &flags) {
         Some(re) => re,
-        None => return Value::Null };
+        None => return Value::Null,
+    };
     let is_global_or_sticky = flags.contains('g') || flags.contains('y');
     let is_sticky = flags.contains('y');
     let last_index = if is_global_or_sticky {
@@ -711,7 +733,8 @@ fn regexp_exec(ctx: &mut HostContext, args: &[Value]) -> Value {
                     .properties
                     .get("lastIndex")
                     .map(|v| v.as_i32()),
-                _ => None })
+                _ => None,
+            })
             .unwrap_or(0)
             .max(0) as usize
     } else {
@@ -851,11 +874,13 @@ fn regexp_string_match(ctx: &mut HostContext, args: &[Value]) -> Value {
         }
         return match special_find(&input, kind, 0) {
             Some((start, end)) => exec_span_to_value(&input, start, end, flags.contains('d')),
-            None => Value::Null };
+            None => Value::Null,
+        };
     }
     let re = match compile(&pattern, &flags) {
         Some(re) => re,
-        None => return Value::Null };
+        None => return Value::Null,
+    };
     if flags.contains('g') {
         let matches: Vec<Value> = re
             .find_iter(&input)
@@ -869,7 +894,8 @@ fn regexp_string_match(ctx: &mut HostContext, args: &[Value]) -> Value {
     } else {
         match re.find(&input) {
             Some(m) => exec_match_to_value(&m, &input, 0, flags.contains('d')),
-            None => Value::Null }
+            None => Value::Null,
+        }
     }
 }
 
@@ -891,7 +917,8 @@ fn regexp_string_match_all(ctx: &mut HostContext, args: &[Value]) -> Value {
     }
     let re = match compile(&pattern, &flags) {
         Some(re) => re,
-        None => return make_array(Vec::new()) };
+        None => return make_array(Vec::new()),
+    };
     let mut out = Vec::new();
     for m in re.find_iter(&input) {
         out.push(exec_match_to_value(&m, &input, 0, flags.contains('d')));
@@ -911,13 +938,16 @@ fn regexp_string_search(ctx: &mut HostContext, args: &[Value]) -> Value {
     if let Some(kind) = special_pattern(&pattern, &flags) {
         return match special_find(&input, kind, 0) {
             Some((start, _)) => Value::I32(start as i32),
-            None => Value::I32(-1) };
+            None => Value::I32(-1),
+        };
     }
     match compile(&pattern, &flags) {
         Some(re) => match re.find(&input) {
             Some(m) => Value::I32(m.start() as i32),
-            None => Value::I32(-1) },
-        None => Value::I32(-1) }
+            None => Value::I32(-1),
+        },
+        None => Value::I32(-1),
+    }
 }
 
 fn regexp_string_replace(ctx: &mut HostContext, args: &[Value]) -> Value {
@@ -925,7 +955,8 @@ fn regexp_string_replace(ctx: &mut HostContext, args: &[Value]) -> Value {
     let (pattern, flags) = extract_pattern(args, 1);
     let re = match compile(&pattern, &flags) {
         Some(re) => re,
-        None => return s_val(&input) };
+        None => return s_val(&input),
+    };
     let global = flags.contains('g');
     let replacement_arg = args.get(2).cloned().unwrap_or(Value::Undefined);
     let is_callable = matches!(&replacement_arg, Value::Object(o)
@@ -954,7 +985,8 @@ fn regexp_string_replace(ctx: &mut HostContext, args: &[Value]) -> Value {
             let ret = ctx.invoke(&replacement_arg, &cb_args);
             match ret {
                 Value::String(s) => out.push_str(s.as_ref()),
-                other => out.push_str(&format!("{}", other)) }
+                other => out.push_str(&format!("{}", other)),
+            }
             last_end = m.end();
             if !global {
                 break;
@@ -983,7 +1015,8 @@ fn regexp_string_replace_all(args: &[Value]) -> Value {
             true,
             replacement.as_str(),
         )),
-        None => s_val(&input) }
+        None => s_val(&input),
+    }
 }
 
 fn regexp_string_split(args: &[Value]) -> Value {
@@ -1025,7 +1058,8 @@ fn regexp_string_split(args: &[Value]) -> Value {
             }
             make_array(parts)
         }
-        None => make_array(vec![s_val(&input)]) }
+        None => make_array(vec![s_val(&input)]),
+    }
 }
 
 fn regex_like_arg(arg: Option<&Value>) -> bool {

@@ -24,7 +24,7 @@ use vybe_runtime::event_loop::monotonic_now_ms;
 use vybe_runtime::scheduler::DeferredSource;
 use vybe_runtime::{HostContext, VM, Value};
 
-use crate::engine::{schedule, ScheduleOp, ScheduleValue};
+use crate::engine::{ScheduleOp, ScheduleValue, schedule};
 
 /// `id → callback`, in registration order.
 #[derive(Default)]
@@ -67,6 +67,14 @@ impl FrameCallbacks {
 }
 
 impl DeferredSource for FrameCallbacks {
+    /// Drop every frame callback the finished program left queued — same
+    /// reasoning as [`crate::timers::TimerCallbacks::clear_pending`]: a
+    /// `requestAnimationFrame` callback belongs to the program that requested
+    /// it, and the registry outlives that program.
+    fn clear_pending(&self) {
+        self.entries.lock().unwrap().clear();
+    }
+
     fn has_pending(&self) -> bool {
         !self.entries.lock().unwrap().is_empty()
     }
@@ -74,7 +82,8 @@ impl DeferredSource for FrameCallbacks {
     fn earliest_deadline_ms(&self) -> Option<f64> {
         match schedule(ScheduleOp::FrameDelayMs) {
             ScheduleValue::Ms(delay) => Some(monotonic_now_ms() + delay),
-            _ => None }
+            _ => None,
+        }
     }
 
     fn pop_due(&self) -> Option<Value> {
@@ -140,8 +149,6 @@ pub fn register(vm: &mut VM) {
     vm.register_host_fn(
         "web:animation",
         "now",
-        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| {
-            Value::F64(monotonic_now_ms())
-        }),
+        Box::new(move |_ctx: &mut HostContext, _args: &[Value]| Value::F64(monotonic_now_ms())),
     );
 }

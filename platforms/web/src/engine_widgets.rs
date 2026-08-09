@@ -14,7 +14,8 @@ use vybe_widgets::window as wnd;
 
 use crate::engine::{
     DocumentId, DomOp, DomValue, EventOp, EventValue, ScheduleOp, ScheduleValue, UiEventFields,
-    WebEngine, WindowOp, WindowValue };
+    WebEngine, WindowOp, WindowValue,
+};
 
 /// Borrow a document — how the window runner reaches the form it renders.
 pub fn with_document<T>(id: DocumentId, f: impl FnOnce(&mut dom::Document) -> T) -> Option<T> {
@@ -36,7 +37,8 @@ fn to_fields(e: UiEvent) -> UiEventFields {
         shift_key: e.shift_key,
         alt_key: e.alt_key,
         meta_key: e.meta_key,
-        repeat: e.repeat }
+        repeat: e.repeat,
+    }
 }
 
 fn from_fields(f: UiEventFields) -> UiEvent {
@@ -54,7 +56,8 @@ fn from_fields(f: UiEventFields) -> UiEvent {
         shift_key: f.shift_key,
         alt_key: f.alt_key,
         meta_key: f.meta_key,
-        repeat: f.repeat }
+        repeat: f.repeat,
+    }
 }
 
 struct Widgets;
@@ -71,7 +74,8 @@ impl WebEngine for Widgets {
             }
             DomOp::GetElementById(id) => match doc.get_element_by_id(&id) {
                 Some(n) => DomValue::Node(n),
-                None => DomValue::Null },
+                None => DomValue::Null,
+            },
             DomOp::ElementsByTag(tag) => DomValue::Nodes(doc.elements_by_tag(&tag)),
             DomOp::Title => DomValue::Text(doc.title()),
             DomOp::SetTitle(t) => {
@@ -94,7 +98,8 @@ impl WebEngine for Widgets {
             }
             DomOp::GetAttribute(n, name) => match doc.get_attribute(n, &name) {
                 Some(v) => DomValue::Text(v),
-                None => DomValue::Null },
+                None => DomValue::Null,
+            },
             DomOp::RemoveAttribute(n, name) => {
                 doc.remove_attribute(n, &name);
                 DomValue::None
@@ -149,7 +154,8 @@ impl WebEngine for Widgets {
             }
             WindowOp::Document(w) => match wnd::document(w) {
                 Some(d) => WindowValue::Document(d),
-                None => WindowValue::Null },
+                None => WindowValue::Null,
+            },
             WindowOp::Close(w) => {
                 wnd::close(w);
                 WindowValue::None
@@ -171,7 +177,8 @@ impl WebEngine for Widgets {
                 let (x, y) = wnd::screen_position(w);
                 WindowValue::Pair(x, y)
             }
-            WindowOp::Name(w) => WindowValue::Text(wnd::name(w)) }
+            WindowOp::Name(w) => WindowValue::Text(wnd::name(w)),
+        }
     }
 
     fn events(&self, op: EventOp) -> EventValue {
@@ -183,7 +190,8 @@ impl WebEngine for Widgets {
             }
             EventOp::Poll => match q.poll() {
                 Some(e) => EventValue::Event(to_fields(e)),
-                None => EventValue::Null },
+                None => EventValue::Null,
+            },
             EventOp::Pending => EventValue::Count(q.pending()),
             EventOp::PointerState => {
                 let st = q.pointer_state();
@@ -194,7 +202,8 @@ impl WebEngine for Widgets {
                     ctrl_key: st.ctrl_key,
                     shift_key: st.shift_key,
                     alt_key: st.alt_key,
-                    meta_key: st.meta_key }
+                    meta_key: st.meta_key,
+                }
             }
         }
     }
@@ -207,19 +216,24 @@ impl WebEngine for Widgets {
             ScheduleOp::ClearTimer(id) => ScheduleValue::Bool(scheduling::timers().cancel(id)),
             ScheduleOp::TakeDueTimer => match scheduling::timers().take_due() {
                 Some(id) => ScheduleValue::Id(id),
-                None => ScheduleValue::Null },
+                None => ScheduleValue::Null,
+            },
             ScheduleOp::RequestFrame => ScheduleValue::Id(scheduling::frames().request()),
             ScheduleOp::CancelFrame(id) => ScheduleValue::Bool(scheduling::frames().cancel(id)),
             ScheduleOp::TakeDueFrame => match scheduling::frames().take_due() {
                 Some(id) => ScheduleValue::Id(id),
-                None => ScheduleValue::Null },
+                None => ScheduleValue::Null,
+            },
             ScheduleOp::TimerDelayMs => match scheduling::timers().delay_until_next_ms() {
                 Some(ms) => ScheduleValue::Ms(ms),
-                None => ScheduleValue::Null },
+                None => ScheduleValue::Null,
+            },
             ScheduleOp::FrameDelayMs => match scheduling::frames().delay_until_next_ms() {
                 Some(ms) => ScheduleValue::Ms(ms),
-                None => ScheduleValue::Null },
-            ScheduleOp::Now => ScheduleValue::Ms(scheduling::now_ms()) }
+                None => ScheduleValue::Null,
+            },
+            ScheduleOp::Now => ScheduleValue::Ms(scheduling::now_ms()),
+        }
     }
 }
 

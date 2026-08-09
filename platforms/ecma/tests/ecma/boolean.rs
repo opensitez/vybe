@@ -5,10 +5,10 @@
 //! Covers the Boolean() coercion rules (ToBoolean), Boolean object wrapper,
 //! and valueOf. Each test covers a distinct ECMA-262 behaviour.
 
+use vybe_compiler::primitives::platforms::register_platforms;
+use vybe_runtime::capabilities::Capabilities;
 use vybe_runtime::value::Value;
 use vybe_runtime::{Chunk, Op, VM};
-use vybe_runtime::capabilities::Capabilities;
-use vybe_compiler::primitives::platforms::register_platforms;
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 

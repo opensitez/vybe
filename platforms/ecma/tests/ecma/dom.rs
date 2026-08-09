@@ -2,8 +2,8 @@
 //! (DOM Living Standard §4.5.1 `DOMImplementation.createDocument`).
 
 use std::sync::Arc;
-use vybe_runtime::{Chunk, Op, VM, Value};
 use vybe_compiler::primitives::platforms::register_platforms_all;
+use vybe_runtime::{Chunk, Op, VM, Value};
 
 static TEST_GLOBAL_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 

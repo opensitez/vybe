@@ -17,7 +17,6 @@
 //! `crates/vybe_runtime/src/wasm/JS_BUILTIN_CONVENTIONS.md`.
 
 // ── ECMA-262 spec types (one file per spec chapter) ──────────────────
-pub mod scheduler;
 pub mod array; // §23.1  Array
 pub mod arraybuffer; // §25.1 ArrayBuffer + §25.3 DataView + SharedArrayBuffer
 pub mod atomics; // §25.4  Atomics
@@ -37,6 +36,7 @@ pub mod object; // §19.1  Object (keys/values/entries, etc.)
 pub mod promise; // §27.7  Promise
 pub mod reflect; // §28.1  Reflect
 pub mod regexp; // §22.2  RegExp + String.prototype regex methods
+pub mod scheduler;
 pub mod set; // §24.2  Set
 pub mod string; // §22.1  String + String.prototype
 pub mod symbol; // §20.4  Symbol + well-knowns
@@ -50,7 +50,6 @@ pub mod builtin_types; // TypeRegistry vtables for the JS/Intl surface; run in P
 pub mod ecma_globals; // stamps shared prototypes + wires constructors; run AFTER register()
 pub mod plugin; // the ecma platform as one vybe_runtime::Plugin
 pub use plugin::Plugin;
-
 
 // ── JS-runtime helpers (not strictly ECMA-262) ───────────────────────
 pub mod fixedarray; // V8-internal fixed-length array shape
@@ -124,9 +123,18 @@ pub fn register(vm: &mut VM) {
 /// `snapshot()`) makes every prototype baseline, so script-added own-properties
 /// on them are rolled back on reset instead of leaking across runs.
 ///
-/// Complete set as of this writing — the ONLY process-global `Arc<Mutex<Object>>`
-/// statics in the host (verified host-wide). If a new shared prototype static is
-/// added, it MUST be primed here too or it will leak mutations across resets.
+/// Every process-global `Arc<Mutex<Object>>` static in the host. Re-verified
+/// host-wide: this list and the statics are in step. A new shared prototype
+/// static MUST be primed here or it will leak mutations across resets.
+///
+/// `Map` and `Set` were missing while this comment already claimed the set was
+/// complete. They were safe only incidentally — `ecma_globals::register` runs
+/// at boot and touches them on its way to wiring the `Map`/`Set` globals, so
+/// they landed pre-snapshot anyway. Priming them here makes it hold by
+/// construction: were that global ever made lazy, the first tenant would
+/// allocate `%Map.prototype%` post-snapshot, the next reset would gut it, and
+/// every later tenant would get Maps with no methods — the exact defect the
+/// lazily-built Error constructor cache had.
 pub fn prime_shared_prototypes() {
     let _ = object::shared_object_prototype();
     let _ = function::shared_function_prototype();
@@ -136,6 +144,8 @@ pub fn prime_shared_prototypes() {
     let _ = boolean::shared_boolean_prototype();
     let _ = date::shared_date_prototype();
     let _ = regexp::shared_regexp_prototype();
+    let _ = map::shared_map_prototype();
+    let _ = set::shared_set_prototype();
     let _ = intl::shared_collator_prototype();
     let _ = intl::shared_number_format_prototype();
     let _ = intl::shared_date_time_format_prototype();

@@ -42,22 +42,22 @@
 //!                          pending full Document/Element resource types.
 
 pub mod animation;
+pub mod builtin_types; // TypeRegistry vtables for the web surface; run in Plugin::finalize
 pub mod canvas;
 pub mod canvas_backend;
+pub mod console;
+pub mod crypto;
+pub mod dom_parser;
+pub mod encoding;
 pub mod engine;
 #[cfg(feature = "gui")]
 pub mod engine_widgets;
-pub mod html;
-pub mod window;
-pub mod builtin_types; // TypeRegistry vtables for the web surface; run in Plugin::finalize
-pub mod crypto;
-pub mod dom_parser;
-pub mod console;
-pub mod encoding;
 pub mod fetch;
+pub mod html;
 pub mod timers;
 pub mod ui_events;
 pub mod url;
+pub mod window;
 
 use vybe_runtime::VM;
 
@@ -80,7 +80,6 @@ pub fn register(vm: &mut VM) {
     animation::register(vm);
     html::register(vm);
     window::register(vm);
-}pub mod plugin;
+}
+pub mod plugin;
 pub use plugin::Plugin;
-
-

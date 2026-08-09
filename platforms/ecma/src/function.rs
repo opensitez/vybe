@@ -247,7 +247,8 @@ pub fn register(vm: &mut VM) {
                 let mut o = f.lock().unwrap();
                 let anonymous = match o.properties.get("name") {
                     Some(Value::String(n)) => n.is_empty() || n.starts_with("__anon_fn_"),
-                    _ => true };
+                    _ => true,
+                };
                 if anonymous {
                     let name = match &key {
                         Value::Symbol(s) => {
@@ -257,7 +258,8 @@ pub fn register(vm: &mut VM) {
                                 String::new()
                             }
                         }
-                        other => format!("{}", other) };
+                        other => format!("{}", other),
+                    };
                     o.properties
                         .insert("name".into(), Value::String(Arc::from(name.as_str())));
                 }
@@ -291,8 +293,10 @@ pub fn register(vm: &mut VM) {
             ts.properties.insert("length".into(), Value::F64(0.0));
             ts.properties
                 .insert("__vybe_method_receiver".into(), Value::Bool(true));
-            p.properties
-                .insert("toString".into(), Value::Object(vybe_runtime::heap::alloc(ts)));
+            p.properties.insert(
+                "toString".into(),
+                Value::Object(vybe_runtime::heap::alloc(ts)),
+            );
             // toString is non-enumerable on %Function.prototype%.
             if let Some(Value::Object(ne)) = p.properties.get("__nonenum") {
                 let mut a = ne.lock().unwrap();
@@ -319,7 +323,8 @@ fn function_to_string(target: &Value) -> String {
     }
     let name = match o.properties.get("name") {
         Some(Value::String(n)) => n.to_string(),
-        _ => String::new() };
+        _ => String::new(),
+    };
     if matches!(o.kind, ObjectKind::HostFunction(_)) {
         return format!("function {}() {{ [native code] }}", name);
     }
@@ -343,7 +348,8 @@ fn function_to_string(target: &Value) -> String {
         Some(Value::String(k)) if k.as_ref() == "async_generator" => {
             format!("async function* {}() {{ [native code] }}", name)
         }
-        _ => format!("function {}() {{ [native code] }}", name) }
+        _ => format!("function {}() {{ [native code] }}", name),
+    }
 }
 
 pub fn invoke_bound_callback_if_needed(
@@ -359,7 +365,8 @@ pub fn invoke_bound_callback_if_needed(
         let object = obj.lock().unwrap();
         let name = match object.properties.get("name") {
             Some(Value::String(text)) => text.to_string(),
-            _ => String::new() };
+            _ => String::new(),
+        };
         if !name.starts_with("bound ") {
             return None;
         }
@@ -372,7 +379,8 @@ pub fn invoke_bound_callback_if_needed(
                     return None;
                 }
             }
-            _ => return None }
+            _ => return None,
+        }
     };
 
     if stored_bound.len() < 3 {
@@ -407,7 +415,8 @@ pub fn try_invoke_bound_callback_if_needed(
         let object = obj.lock().unwrap();
         let name = match object.properties.get("name") {
             Some(Value::String(text)) => text.to_string(),
-            _ => String::new() };
+            _ => String::new(),
+        };
         if !name.starts_with("bound ") {
             return None;
         }
@@ -420,7 +429,8 @@ pub fn try_invoke_bound_callback_if_needed(
                     return None;
                 }
             }
-            _ => return None }
+            _ => return None,
+        }
     };
 
     if stored_bound.len() < 3 {
@@ -617,7 +627,8 @@ fn try_invoke_bound_target(
                 Ok(value) if constructor_call && !matches!(value, Value::Object(_)) => {
                     Ok(previous_this)
                 }
-                other => other }
+                other => other,
+            }
         }
         _ => {
             if host_function_uses_explicit_receiver(target) {
@@ -678,7 +689,8 @@ fn compiled_rest_fixed_arity(target: &Value) -> Option<usize> {
         Some(Value::I32(value)) if *value >= 0 => Some(*value as usize),
         Some(Value::I64(value)) if *value >= 0 => Some(*value as usize),
         Some(Value::F64(value)) if *value >= 0.0 => Some(*value as usize),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn host_function_uses_explicit_receiver(target: &Value) -> bool {
@@ -708,7 +720,8 @@ fn collect_apply_args(value: &Value) -> Vec<Value> {
         Some(Value::I64(value)) if *value > 0 => *value as usize,
         Some(Value::F64(value)) if *value > 0.0 => *value as usize,
         Some(Value::String(text)) => text.parse::<usize>().ok().unwrap_or(0),
-        _ => 0 };
+        _ => 0,
+    };
     (0..length)
         .map(|index| {
             object
@@ -735,6 +748,7 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
         target_proto,
         target_proto_link,
         target_non_ctor,
+        target_proxy_callable,
     ) = {
         let o = obj.lock().unwrap();
         let prev_bound = match o.properties.get("__bound_args") {
@@ -746,7 +760,8 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
                     Vec::new()
                 }
             }
-            _ => Vec::new() };
+            _ => Vec::new(),
+        };
         let name = match o
             .properties
             .get("name")
@@ -754,7 +769,8 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
         {
             Some(Value::String(text)) => text.to_string(),
             Some(other) => format!("{}", other),
-            None => String::new() };
+            None => String::new(),
+        };
         let length = match o.properties.get("length") {
             Some(Value::I32(value)) if *value > 0 => *value as usize,
             Some(Value::I64(value)) if *value > 0 => *value as usize,
@@ -763,7 +779,9 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
                 Some(Value::I32(value)) if *value > 0 => *value as usize,
                 Some(Value::I64(value)) if *value > 0 => *value as usize,
                 Some(Value::F64(value)) if *value > 0.0 => *value as usize,
-                _ => 0 } };
+                _ => 0,
+            },
+        };
         let prototype = o
             .properties
             .get("prototype")
@@ -771,6 +789,10 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
             .unwrap_or(Value::Undefined);
         let proto_link = o.properties.get("__proto__").cloned();
         let non_ctor = matches!(o.properties.get("__vybe_non_ctor"), Some(Value::Bool(true)));
+        let proxy_callable = matches!(
+            o.properties.get("__vybe_proxy_callable"),
+            Some(Value::Bool(true))
+        );
         (
             o.kind.clone(),
             prev_bound,
@@ -779,8 +801,46 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
             prototype,
             proto_link,
             non_ctor,
+            proxy_callable,
         )
     };
+
+    if target_proxy_callable && existing_bound.len() >= 2 {
+        let mut stored_bound = Vec::new();
+        stored_bound.push(existing_bound[0].clone());
+        stored_bound.push(bound.first().cloned().unwrap_or(Value::Undefined));
+        stored_bound.extend(bound.iter().skip(1).cloned());
+        let consumed_args = stored_bound.len().saturating_sub(2);
+
+        let mut wrapper = Object::new();
+        wrapper.kind = target_kind;
+        wrapper.properties.insert(
+            "__bound_args".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(stored_bound))),
+        );
+        wrapper
+            .properties
+            .insert("__vybe_proxy_callable".into(), Value::Bool(true));
+        wrapper.properties.insert(
+            "__proto__".into(),
+            match target_proto_link {
+                Some(link) if !matches!(link, Value::Null | Value::Undefined) => link,
+                _ => shared_function_prototype(),
+            },
+        );
+        wrapper.properties.insert(
+            "name".into(),
+            Value::String(Arc::from(format!("bound {}", target_name).as_str())),
+        );
+        wrapper.properties.insert(
+            "length".into(),
+            Value::F64(target_length.saturating_sub(consumed_args) as f64),
+        );
+        if !matches!(target_proto, Value::Null | Value::Undefined) {
+            wrapper.properties.insert("prototype".into(), target_proto);
+        }
+        return Value::Object(vybe_runtime::heap::alloc(wrapper));
+    }
 
     // Allow ordinary objects (magic fn_obj descriptors from tests) — don't bail for non-Function.
     let mut stored_bound = Vec::new();
@@ -814,7 +874,8 @@ fn bind_function_with_arity(target: &Value, bound: Vec<Value>, invoke_bound_idx:
         "__proto__".into(),
         match target_proto_link {
             Some(link) if !matches!(link, Value::Null | Value::Undefined) => link,
-            _ => shared_function_prototype() },
+            _ => shared_function_prototype(),
+        },
     );
     if target_non_ctor {
         wrapper
@@ -851,6 +912,7 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
         target_proto,
         target_proto_link,
         target_non_ctor,
+        target_proxy_callable,
     ) = {
         let o = obj.lock().unwrap();
         let prev_bound = match o.properties.get("__bound_args") {
@@ -862,7 +924,8 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
                     Vec::new()
                 }
             }
-            _ => Vec::new() };
+            _ => Vec::new(),
+        };
         let name = match o
             .properties
             .get("name")
@@ -870,7 +933,8 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
         {
             Some(Value::String(text)) => text.to_string(),
             Some(other) => format!("{}", other),
-            None => String::new() };
+            None => String::new(),
+        };
         let length = match o.properties.get("length") {
             Some(Value::I32(value)) if *value > 0 => *value as usize,
             Some(Value::I64(value)) if *value > 0 => *value as usize,
@@ -879,7 +943,9 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
                 Some(Value::I32(value)) if *value > 0 => *value as usize,
                 Some(Value::I64(value)) if *value > 0 => *value as usize,
                 Some(Value::F64(value)) if *value > 0.0 => *value as usize,
-                _ => 0 } };
+                _ => 0,
+            },
+        };
         let prototype = o
             .properties
             .get("prototype")
@@ -887,6 +953,10 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
             .unwrap_or(Value::Undefined);
         let proto_link = o.properties.get("__proto__").cloned();
         let non_ctor = matches!(o.properties.get("__vybe_non_ctor"), Some(Value::Bool(true)));
+        let proxy_callable = matches!(
+            o.properties.get("__vybe_proxy_callable"),
+            Some(Value::Bool(true))
+        );
         (
             o.kind.clone(),
             prev_bound,
@@ -895,8 +965,46 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
             prototype,
             proto_link,
             non_ctor,
+            proxy_callable,
         )
     };
+
+    if target_proxy_callable && existing_bound.len() >= 2 {
+        let mut stored_bound = Vec::new();
+        stored_bound.push(existing_bound[0].clone());
+        stored_bound.push(bound.first().cloned().unwrap_or(Value::Undefined));
+        stored_bound.extend(bound.iter().skip(1).cloned());
+        let consumed_args = stored_bound.len().saturating_sub(2);
+
+        let mut wrapper = Object::new();
+        wrapper.kind = target_kind;
+        wrapper.properties.insert(
+            "__bound_args".into(),
+            Value::Object(vybe_runtime::heap::alloc(Object::new_array(stored_bound))),
+        );
+        wrapper
+            .properties
+            .insert("__vybe_proxy_callable".into(), Value::Bool(true));
+        wrapper.properties.insert(
+            "__proto__".into(),
+            match target_proto_link {
+                Some(link) if !matches!(link, Value::Null | Value::Undefined) => link,
+                _ => shared_function_prototype(),
+            },
+        );
+        wrapper.properties.insert(
+            "name".into(),
+            Value::String(Arc::from(format!("bound {}", target_name).as_str())),
+        );
+        wrapper.properties.insert(
+            "length".into(),
+            Value::F64(target_length.saturating_sub(consumed_args) as f64),
+        );
+        if !matches!(target_proto, Value::Null | Value::Undefined) {
+            wrapper.properties.insert("prototype".into(), target_proto);
+        }
+        return Value::Object(vybe_runtime::heap::alloc(wrapper));
+    }
 
     // Allow ordinary objects (magic fn_obj descriptors from tests) — don't bail for non-Function.
     let mut stored_bound = Vec::new();
@@ -930,7 +1038,8 @@ fn bind_function(target: &Value, bound: Vec<Value>, invoke_bound_idx: usize) -> 
         "__proto__".into(),
         match target_proto_link {
             Some(link) if !matches!(link, Value::Null | Value::Undefined) => link,
-            _ => shared_function_prototype() },
+            _ => shared_function_prototype(),
+        },
     );
     if target_non_ctor {
         wrapper

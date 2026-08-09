@@ -9,8 +9,8 @@
 //! fn by registry index (via [`Framework::host_fn_index`]), so it must run
 //! after every plugin's `init` — which is exactly what `finalize` guarantees.
 
-use vybe_runtime::{Method, TypeDef};
 use vybe_runtime::Framework;
+use vybe_runtime::{Method, TypeDef};
 
 /// Register the ECMA/Intl built-in types into the VM's TypeRegistry. Called
 /// from the ecma plugin's `finalize`, after `register_globals`.
@@ -332,6 +332,8 @@ pub fn register_types(fw: &mut Framework<'_>) {
         for (method, fname) in &[
             ("format", "format"),
             ("formatToParts", "formatToParts"),
+            ("formatRange", "formatRange"),
+            ("formatRangeToParts", "formatRangeToParts"),
             ("resolvedOptions", "resolvedOptions"),
         ] {
             if let Some(idx) = fw.host_fn_index("ecma:intl/numberformat", fname) {

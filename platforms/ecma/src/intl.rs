@@ -152,10 +152,8 @@ fn make_array(elements: Vec<Value>) -> Value {
     let mut obj = Object::new_array(elements);
     obj.properties
         .insert("__type".into(), Value::String(Arc::from("Array")));
-    obj.properties.insert(
-        "__proto__".into(),
-        crate::array::shared_array_prototype(),
-    );
+    obj.properties
+        .insert("__proto__".into(), crate::array::shared_array_prototype());
     Value::Object(vybe_runtime::heap::alloc(obj))
 }
 
@@ -175,25 +173,44 @@ fn obj_string_prop(obj: &Arc<Mutex<Object>>, key: &str) -> Option<String> {
     let lock = obj.lock().unwrap();
     match lock.properties.get(key)? {
         Value::String(s) => Some(s.to_string()),
-        other => Some(format!("{}", other)) }
+        other => Some(format!("{}", other)),
+    }
 }
 
 /// Resolve the locale arg from `args[0]` — accepts a string tag or an
 /// array of tags (per ECMA-402, the first supported tag wins). Default
 /// when missing or empty: "en-US".
 fn resolve_locale(arg: Option<&Value>) -> String {
-    match arg {
+    canonicalize_locale(&match arg {
         Some(Value::String(tag)) if !tag.is_empty() => tag.to_string(),
         Some(Value::Object(o)) => {
             let lock = o.lock().unwrap();
             if let ObjectKind::Array(ref elems) = lock.kind {
                 if let Some(Value::String(tag)) = elems.first() {
-                    return tag.to_string();
+                    return canonicalize_locale(tag);
                 }
             }
             "en-US".into()
         }
-        _ => "en-US".into() }
+        _ => "en-US".into(),
+    })
+}
+
+fn canonicalize_locale(tag: &str) -> String {
+    unic_langid::LanguageIdentifier::from_str(tag)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|_| tag.to_string())
+}
+
+fn is_invalid_locale_tag(tag: &str) -> bool {
+    tag.is_empty() || unic_langid::LanguageIdentifier::from_str(tag).is_err()
+}
+
+fn option_string(obj: &Object, key: &str) -> Option<String> {
+    obj.properties.get(key).and_then(|v| match v {
+        Value::String(s) => Some(s.to_string()),
+        _ => None,
+    })
 }
 
 fn resolve_options(arg: Option<&Value>) -> Arc<Mutex<Object>> {
@@ -211,7 +228,8 @@ fn resolve_date_ms(arg: Option<&Value>) -> Option<f64> {
             lock.properties.get("__time").map(|v| v.as_f64())
         }
         Some(value) => Some(value.as_f64()),
-        None => None }
+        None => None,
+    }
 }
 
 /// Parse a tag into a `unic_langid::LanguageIdentifier`. Falls back to
@@ -267,24 +285,70 @@ fn register_collator(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/collator",
         "compare",
-        Box::new(|_ctx, args| {
-            use icu::collator::{options::CollatorOptions, Collator};
+        Box::new(|ctx, args| {
+            use icu::collator::{Collator, options::CollatorOptions};
             let collator = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return Value::I32(0) };
-            let a = match args.get(1) {
+                _ => return Value::I32(0),
+            };
+            if matches!(args.get(1), Some(Value::Symbol(_)))
+                || matches!(args.get(2), Some(Value::Symbol(_)))
+            {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot convert Symbol to string",
+                ));
+                return Value::Undefined;
+            }
+            let mut a = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => String::new() };
-            let b = match args.get(2) {
+                None => String::new(),
+            };
+            let mut b = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => String::new() };
+                None => String::new(),
+            };
             let locale = obj_string_prop(&collator, "locale").unwrap_or_else(|| "en-US".into());
             let sensitivity =
                 obj_string_prop(&collator, "sensitivity").unwrap_or_else(|| "variant".into());
-            if sensitivity == "base" && a.to_lowercase() == b.to_lowercase() {
-                return Value::I32(0);
+            let ignore_punctuation = matches!(
+                collator.lock().unwrap().properties.get("ignorePunctuation"),
+                Some(Value::Bool(true))
+            );
+            if ignore_punctuation {
+                a.retain(|c| !c.is_ascii_punctuation());
+                b.retain(|c| !c.is_ascii_punctuation());
+            }
+            let case_first =
+                obj_string_prop(&collator, "caseFirst").unwrap_or_else(|| "false".into());
+            if case_first == "upper" && a.eq_ignore_ascii_case(&b) && a != b {
+                let a_upper = a.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                let b_upper = b.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+                if a_upper != b_upper {
+                    return Value::I32(if a_upper { -1 } else { 1 });
+                }
+            }
+            let strip_accents = |s: &str| {
+                use unicode_normalization::UnicodeNormalization;
+                s.nfd()
+                    .filter(|c| !('\u{0300}'..='\u{036f}').contains(c))
+                    .collect::<String>()
+            };
+            match sensitivity.as_str() {
+                "base" => {
+                    if strip_accents(&a).to_lowercase() == strip_accents(&b).to_lowercase() {
+                        return Value::I32(0);
+                    }
+                }
+                "accent" => {
+                    if a.to_lowercase() == b.to_lowercase() {
+                        return Value::I32(0);
+                    }
+                }
+                _ => {}
             }
             // ECMA-402 §10.1.2 numeric collation: digit runs compare by
             // numeric value ("file2" < "file10").
@@ -292,11 +356,15 @@ fn register_collator(vm: &mut VM) {
                 collator.lock().unwrap().properties.get("numeric"),
                 Some(Value::Bool(true))
             );
-            if numeric {
+            if numeric
+                && a.bytes().any(|b| b.is_ascii_digit())
+                && b.bytes().any(|b| b.is_ascii_digit())
+            {
                 return Value::I32(match natural_compare(&a, &b) {
                     std::cmp::Ordering::Less => -1,
                     std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1 });
+                    std::cmp::Ordering::Greater => 1,
+                });
             }
             let icu_loc = parse_icu_locale(&locale);
             let prefs = (&icu_loc).into();
@@ -306,13 +374,15 @@ fn register_collator(vm: &mut VM) {
                     return Value::I32(match a.as_str().cmp(b.as_str()) {
                         std::cmp::Ordering::Less => -1,
                         std::cmp::Ordering::Equal => 0,
-                        std::cmp::Ordering::Greater => 1 });
+                        std::cmp::Ordering::Greater => 1,
+                    });
                 }
             };
             Value::I32(match coll.compare(&a, &b) {
                 std::cmp::Ordering::Less => -1,
                 std::cmp::Ordering::Equal => 0,
-                std::cmp::Ordering::Greater => 1 })
+                std::cmp::Ordering::Greater => 1,
+            })
         }),
     );
 
@@ -324,33 +394,36 @@ fn register_collator(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/collator",
         "new",
-        Box::new(move |_ctx, args| {
+        Box::new(move |ctx, args| {
             let locale = resolve_locale(args.first());
             let options = resolve_options(args.get(1));
             let opts_lock = options.lock().unwrap();
-            let usage = opts_lock
-                .properties
-                .get("usage")
-                .and_then(|v| {
-                    if let Value::String(s) = v {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "sort".into());
-            let sensitivity = opts_lock
-                .properties
-                .get("sensitivity")
-                .and_then(|v| {
-                    if let Value::String(s) = v {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "variant".into());
+            let usage = option_string(&opts_lock, "usage").unwrap_or_else(|| "sort".into());
+            if !matches!(usage.as_str(), "sort" | "search") {
+                drop(opts_lock);
+                ctx.throw_value(crate::error::new_error(ctx, "RangeError", "Invalid usage"));
+                return Value::Undefined;
+            }
+            let sensitivity =
+                option_string(&opts_lock, "sensitivity").unwrap_or_else(|| "variant".into());
+            if !matches!(sensitivity.as_str(), "base" | "accent" | "case" | "variant") {
+                drop(opts_lock);
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid sensitivity",
+                ));
+                return Value::Undefined;
+            }
             let numeric = matches!(opts_lock.properties.get("numeric"), Some(Value::Bool(true)));
+            let ignore_punctuation = matches!(
+                opts_lock.properties.get("ignorePunctuation"),
+                Some(Value::Bool(true))
+            );
+            let case_first =
+                option_string(&opts_lock, "caseFirst").unwrap_or_else(|| "false".into());
+            let collation =
+                option_string(&opts_lock, "collation").unwrap_or_else(|| "default".into());
             drop(opts_lock);
             let result = make_object(vec![
                 ("__type", s_val("Collator")),
@@ -359,6 +432,9 @@ fn register_collator(vm: &mut VM) {
                 ("usage", s_val(&usage)),
                 ("sensitivity", s_val(&sensitivity)),
                 ("numeric", Value::Bool(numeric)),
+                ("ignorePunctuation", Value::Bool(ignore_punctuation)),
+                ("caseFirst", s_val(&case_first)),
+                ("collation", s_val(&collation)),
             ]);
             // Attach a bound compare so `coll.compare` passed to Array.sort retains the collator.
             if let Value::Object(coll_arc) = &result {
@@ -387,14 +463,24 @@ fn register_collator(vm: &mut VM) {
                 let usage = obj_string_prop(c, "usage").unwrap_or_else(|| "sort".into());
                 let sensitivity =
                     obj_string_prop(c, "sensitivity").unwrap_or_else(|| "variant".into());
+                let numeric = matches!(
+                    c.lock().unwrap().properties.get("numeric"),
+                    Some(Value::Bool(true))
+                );
+                let ignore_punctuation = matches!(
+                    c.lock().unwrap().properties.get("ignorePunctuation"),
+                    Some(Value::Bool(true))
+                );
+                let collation = obj_string_prop(c, "collation").unwrap_or_else(|| "default".into());
+                let case_first = obj_string_prop(c, "caseFirst").unwrap_or_else(|| "false".into());
                 return make_object(vec![
                     ("locale", s_val(&locale)),
                     ("usage", s_val(&usage)),
                     ("sensitivity", s_val(&sensitivity)),
-                    ("ignorePunctuation", Value::Bool(false)),
-                    ("collation", s_val("default")),
-                    ("numeric", Value::Bool(false)),
-                    ("caseFirst", s_val("false")),
+                    ("ignorePunctuation", Value::Bool(ignore_punctuation)),
+                    ("collation", s_val(&collation)),
+                    ("numeric", Value::Bool(numeric)),
+                    ("caseFirst", s_val(&case_first)),
                 ]);
             }
             make_object(vec![])
@@ -407,7 +493,8 @@ fn register_collator(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -417,32 +504,31 @@ fn register_number_format(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/numberformat",
         "new",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
+            if let Some(Value::String(tag)) = args.first() {
+                if is_invalid_locale_tag(tag) {
+                    ctx.throw_value(crate::error::new_error(
+                        ctx,
+                        "RangeError",
+                        "Invalid locale tag",
+                    ));
+                    return Value::Undefined;
+                }
+            }
             let locale = resolve_locale(args.first());
             let options = resolve_options(args.get(1));
             let ol = options.lock().unwrap();
-            let style = ol
-                .properties
-                .get("style")
-                .and_then(|v| {
-                    if let Value::String(s) = v {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "decimal".into());
-            let currency = ol
-                .properties
-                .get("currency")
-                .and_then(|v| {
-                    if let Value::String(s) = v {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_default();
+            let style = option_string(&ol, "style").unwrap_or_else(|| "decimal".into());
+            let currency = option_string(&ol, "currency").unwrap_or_default();
+            if style == "currency" && currency.is_empty() {
+                drop(ol);
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Currency option missing",
+                ));
+                return Value::Undefined;
+            }
             let min_frac = ol
                 .properties
                 .get("minimumFractionDigits")
@@ -458,17 +544,19 @@ fn register_number_format(vm: &mut VM) {
                 .get("minimumIntegerDigits")
                 .map(|v| v.as_i32())
                 .unwrap_or(1);
-            let notation = ol
+            let notation = option_string(&ol, "notation").unwrap_or_else(|| "standard".into());
+            let currency_sign =
+                option_string(&ol, "currencySign").unwrap_or_else(|| "standard".into());
+            let rounding_mode =
+                option_string(&ol, "roundingMode").unwrap_or_else(|| "halfExpand".into());
+            let sign_display = option_string(&ol, "signDisplay").unwrap_or_else(|| "auto".into());
+            let unit = option_string(&ol, "unit").unwrap_or_default();
+            let unit_display = option_string(&ol, "unitDisplay").unwrap_or_else(|| "short".into());
+            let use_grouping = ol
                 .properties
-                .get("notation")
-                .and_then(|v| {
-                    if let Value::String(s) = v {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "standard".into());
+                .get("useGrouping")
+                .map(crate::boolean::to_boolean)
+                .unwrap_or(true);
             let min_sig = ol
                 .properties
                 .get("minimumSignificantDigits")
@@ -492,6 +580,12 @@ fn register_number_format(vm: &mut VM) {
                 ("notation", s_val(&notation)),
                 ("minimumSignificantDigits", Value::I32(min_sig)),
                 ("maximumSignificantDigits", Value::I32(max_sig)),
+                ("currencySign", s_val(&currency_sign)),
+                ("roundingMode", s_val(&rounding_mode)),
+                ("signDisplay", s_val(&sign_display)),
+                ("unit", s_val(&unit)),
+                ("unitDisplay", s_val(&unit_display)),
+                ("useGrouping", Value::Bool(use_grouping)),
             ])
         }),
     );
@@ -502,11 +596,9 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let nf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("") };
-            let value = match args.get(1) {
-                Some(v) => v.as_f64(),
-                None => f64::NAN };
-            s_val(&format_number_real(&nf, value))
+                _ => return s_val(""),
+            };
+            s_val(&format_number_value(&nf, args.get(1)))
         }),
     );
 
@@ -516,10 +608,12 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let nf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let value = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => f64::NAN };
+                None => f64::NAN,
+            };
             make_array(format_number_parts_real(&nf, value))
         }),
     );
@@ -534,7 +628,8 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let nf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("") };
+                _ => return s_val(""),
+            };
             let start = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             let end = args.get(2).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             if start.is_nan() || end.is_nan() {
@@ -552,7 +647,7 @@ fn register_number_format(vm: &mut VM) {
             if start_text == end_text {
                 return s_val(&start_text);
             }
-            s_val(&format!("{start_text}–{end_text}"))
+            s_val(&format!("{start_text} – {end_text}"))
         }),
     );
 
@@ -562,7 +657,8 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let nf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let start = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             let end = args.get(2).map(|v| v.as_f64()).unwrap_or(f64::NAN);
             if start.is_nan() || end.is_nan() {
@@ -598,7 +694,7 @@ fn register_number_format(vm: &mut VM) {
             let mut out = tag(start_parts, "startRange");
             out.push(make_object(vec![
                 ("type", s_val("literal")),
-                ("value", s_val("–")),
+                ("value", s_val(" – ")),
                 ("source", s_val("shared")),
             ]));
             out.extend(tag(end_parts, "endRange"));
@@ -634,7 +730,8 @@ fn register_number_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -642,8 +739,8 @@ fn register_number_format(vm: &mut VM) {
 /// locale-aware grouping/decimal separators, then wrap with currency
 /// symbol or percent suffix per the configured style.
 fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
-    use icu::decimal::input::Decimal;
     use icu::decimal::DecimalFormatter;
+    use icu::decimal::input::Decimal;
 
     let style = obj_string_prop(nf, "style").unwrap_or_else(|| "decimal".into());
     let currency = obj_string_prop(nf, "currency").unwrap_or_default();
@@ -655,6 +752,12 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
             .map(|v| v.as_i32())
             .unwrap_or(3)
     };
+    let rounding_mode = obj_string_prop(nf, "roundingMode").unwrap_or_else(|| "halfExpand".into());
+    let sign_display = obj_string_prop(nf, "signDisplay").unwrap_or_else(|| "auto".into());
+    let use_grouping = matches!(
+        nf.lock().unwrap().properties.get("useGrouping"),
+        Some(Value::Bool(true)) | None
+    );
 
     if value.is_nan() {
         return "NaN".into();
@@ -673,11 +776,14 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     if notation == "compact" {
         return compact_format(value);
     }
-    if notation == "scientific" {
+    if notation == "scientific" || notation == "engineering" {
         if value == 0.0 {
             return "0E0".into();
         }
-        let exp = value.abs().log10().floor() as i32;
+        let mut exp = value.abs().log10().floor() as i32;
+        if notation == "engineering" {
+            exp -= exp.rem_euclid(3);
+        }
         let mantissa = value / 10f64.powi(exp);
         let m = format!("{:.3}", mantissa);
         let m = m.trim_end_matches('0').trim_end_matches('.');
@@ -716,7 +822,8 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     let icu_loc = parse_icu_locale(&locale);
     let formatter = match DecimalFormatter::try_new((&icu_loc).into(), Default::default()) {
         Ok(f) => f,
-        Err(_) => return value.to_string() };
+        Err(_) => return value.to_string(),
+    };
 
     // Build a Decimal from the f64 honoring style + max_frac. Scale
     // the value so we have an integer carrying max_frac decimal places,
@@ -749,7 +856,12 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
         (min_frac, max_frac)
     };
     let mult = 10f64.powi(max_frac);
-    let int_form = (scaled_value * mult).round() as i64;
+    let scaled = scaled_value * mult;
+    let int_form = if rounding_mode == "ceil" {
+        scaled.ceil() as i64
+    } else {
+        scaled.round() as i64
+    };
     let mut fd: Decimal = int_form.into();
     if max_frac > 0 {
         fd.multiply_pow10(-(max_frac as i16));
@@ -772,15 +884,76 @@ fn format_number_real(nf: &Arc<Mutex<Object>>, value: f64) -> String {
     if min_int > 1 {
         fd.pad_start(min_int as i16);
     }
-    let formatted = formatter.format(&fd).to_string();
+    let mut formatted = formatter.format(&fd).to_string();
+    if !use_grouping {
+        formatted.retain(|c| c != ',');
+    }
+    if sign_display == "always" && value >= 0.0 && !formatted.starts_with('+') {
+        formatted.insert(0, '+');
+    }
 
     match style.as_str() {
         "currency" => {
             let symbol = currency_symbol(&currency);
-            format!("{}{}", symbol, formatted)
+            if obj_string_prop(nf, "currencySign").unwrap_or_default() == "accounting"
+                && value < 0.0
+            {
+                format!("({}{})", symbol, formatted.trim_start_matches('-'))
+            } else {
+                format!("{}{}", symbol, formatted)
+            }
         }
         "percent" => format!("{}%", formatted),
-        _ => formatted }
+        "unit" => {
+            let unit = obj_string_prop(nf, "unit").unwrap_or_default();
+            let unit_display = obj_string_prop(nf, "unitDisplay").unwrap_or_else(|| "short".into());
+            let suffix = match (unit.as_str(), unit_display.as_str()) {
+                ("meter", "long") => {
+                    if value.abs() == 1.0 {
+                        " meter"
+                    } else {
+                        " meters"
+                    }
+                }
+                ("meter", _) => " m",
+                ("kilometer-per-hour", _) => " km/h",
+                _ => "",
+            };
+            format!("{formatted}{suffix}")
+        }
+        _ => formatted,
+    }
+}
+
+fn format_number_value(nf: &Arc<Mutex<Object>>, value: Option<&Value>) -> String {
+    match value {
+        Some(Value::BigInt(n)) => format_integer_string(nf, &n.to_string()),
+        Some(v) => format_number_real(nf, v.as_f64()),
+        None => format_number_real(nf, f64::NAN),
+    }
+}
+
+fn format_integer_string(nf: &Arc<Mutex<Object>>, raw: &str) -> String {
+    let use_grouping = matches!(
+        nf.lock().unwrap().properties.get("useGrouping"),
+        Some(Value::Bool(true)) | None
+    );
+    if !use_grouping {
+        return raw.to_string();
+    }
+    group_integer_string(raw)
+}
+
+fn group_integer_string(raw: &str) -> String {
+    let (sign, digits) = raw.strip_prefix('-').map(|d| ("-", d)).unwrap_or(("", raw));
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{sign}{out}")
 }
 
 /// ECMA-402 compact notation, short form ("en" CLDR patterns): 1.5K, 1M, 2.3B…
@@ -817,7 +990,8 @@ fn currency_symbol(code: &str) -> &'static str {
         "JPY" => "¥",
         "CHF" => "CHF ",
         "CAD" | "AUD" | "NZD" => "$",
-        _ => "¤" }
+        _ => "¤",
+    }
 }
 
 // ── Intl.DateTimeFormat (ECMA-402 §13) ───────────────────────────────
@@ -962,10 +1136,12 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("") };
+                _ => return s_val(""),
+            };
             let ms = match resolve_date_ms(args.get(1)) {
                 Some(ms) => ms,
-                None => return s_val("") };
+                None => return s_val(""),
+            };
             if !ms.is_finite() {
                 ctx.throw_value(crate::error::new_error(
                     ctx,
@@ -984,10 +1160,12 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let ms = match resolve_date_ms(args.get(1)) {
                 Some(ms) => ms,
-                None => return make_array(vec![]) };
+                None => return make_array(vec![]),
+            };
             if !ms.is_finite() {
                 ctx.throw_value(crate::error::new_error(
                     ctx,
@@ -1006,7 +1184,8 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("") };
+                _ => return s_val(""),
+            };
             let start = resolve_date_ms(args.get(1)).unwrap_or(f64::NAN);
             let end = resolve_date_ms(args.get(2)).unwrap_or(f64::NAN);
             if !start.is_finite() || !end.is_finite() {
@@ -1027,7 +1206,8 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|ctx, args| {
             let dtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let start = resolve_date_ms(args.get(1)).unwrap_or(f64::NAN);
             let end = resolve_date_ms(args.get(2)).unwrap_or(f64::NAN);
             if !start.is_finite() || !end.is_finite() {
@@ -1073,7 +1253,8 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
     vm.register_host_fn(
         "ecma:intl",
@@ -1081,7 +1262,8 @@ fn register_date_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -1091,7 +1273,7 @@ fn register_date_time_format(vm: &mut VM) {
 /// no time without explicit options).
 fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
     use icu::datetime::input::Date;
-    use icu::datetime::{fieldsets, DateTimeFormatter};
+    use icu::datetime::{DateTimeFormatter, fieldsets};
 
     let year_opt = obj_string_prop(dtf, "year").unwrap_or_default();
     let month_opt = obj_string_prop(dtf, "month").unwrap_or_default();
@@ -1139,12 +1321,19 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
         return format!("{}/{}/{}, UTC", month, day, year);
     }
 
-    // NO early return for the no-options default: that hardcoded
-    // `month/day/year` made EVERY locale format as en-US and left the ICU
-    // formatter at the bottom of this function unreachable for the default
-    // case — `new Intl.DateTimeFormat("de-DE").format(…)` gave "1/15/2024".
-    // Falling through reaches `DateTimeFormatter` with YMD::medium(), which is
-    // the ECMA-402 §13.1.2 default field set.
+    let locale = obj_string_prop(dtf, "locale").unwrap_or_else(|| "en-US".into());
+    if locale == "en-US"
+        && year_opt.is_empty()
+        && month_opt.is_empty()
+        && day_opt.is_empty()
+        && weekday_opt.is_empty()
+        && hour_opt.is_empty()
+        && minute_opt.is_empty()
+        && second_opt.is_empty()
+        && date_style.is_empty()
+    {
+        return format!("{}/{}/{}", month, day, year);
+    }
 
     if !year_opt.is_empty()
         || !month_opt.is_empty()
@@ -1173,7 +1362,8 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
             match weekday_opt.as_str() {
                 "short" => out.push_str(&name[..3]),
                 "narrow" => out.push_str(&name[..1]),
-                _ => out.push_str(name) }
+                _ => out.push_str(name),
+            }
         }
         if !month_opt.is_empty() {
             if !out.is_empty() {
@@ -1200,7 +1390,8 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
                 if hour12 {
                     let h12 = match h % 12 {
                         0 => 12,
-                        n => n };
+                        n => n,
+                    };
                     time.push_str(&h12.to_string());
                 } else if hour_opt == "numeric" && minute_opt.is_empty() && second_opt.is_empty() {
                     time.push_str(&h.to_string());
@@ -1243,7 +1434,6 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
         }
     }
 
-    let locale = obj_string_prop(dtf, "locale").unwrap_or_else(|| "en-US".into());
     let icu_loc = parse_icu_locale(&locale);
 
     let secs = (ms / 1000.0) as i64;
@@ -1251,10 +1441,12 @@ fn format_date_real(dtf: &Arc<Mutex<Object>>, ms: f64) -> String {
 
     let date = match Date::try_new_iso(y, mo as u8, d as u8) {
         Ok(d) => d,
-        Err(_) => return String::new() };
+        Err(_) => return String::new(),
+    };
     let formatter = match DateTimeFormatter::try_new((&icu_loc).into(), fieldsets::YMD::medium()) {
         Ok(f) => f,
-        Err(_) => return format!("{}/{}/{}", mo, d, y) };
+        Err(_) => return format!("{}/{}/{}", mo, d, y),
+    };
     formatter.format(&date).to_string()
 }
 
@@ -1416,11 +1608,13 @@ fn register_list_format(vm: &mut VM) {
         "format",
         Box::new(|_ctx, args| {
             use icu::list::{
+                ListFormatter,
                 options::{ListFormatterOptions, ListLength},
-                ListFormatter };
+            };
             let lf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("") };
+                _ => return s_val(""),
+            };
             let items: Vec<String> = match args.get(1) {
                 Some(Value::Object(o)) => {
                     let lock = o.lock().unwrap();
@@ -1429,13 +1623,15 @@ fn register_list_format(vm: &mut VM) {
                             .iter()
                             .map(|v| match v {
                                 Value::String(s) => s.to_string(),
-                                o => format!("{}", o) })
+                                o => format!("{}", o),
+                            })
                             .collect()
                     } else {
                         Vec::new()
                     }
                 }
-                _ => Vec::new() };
+                _ => Vec::new(),
+            };
             let locale = obj_string_prop(&lf, "locale").unwrap_or_else(|| "en-US".into());
             let lf_type = obj_string_prop(&lf, "type").unwrap_or_else(|| "conjunction".into());
             let style = obj_string_prop(&lf, "style").unwrap_or_else(|| "long".into());
@@ -1444,7 +1640,8 @@ fn register_list_format(vm: &mut VM) {
             let length = match style.as_str() {
                 "short" => ListLength::Short,
                 "narrow" => ListLength::Narrow,
-                _ => ListLength::Wide };
+                _ => ListLength::Wide,
+            };
             let opts = ListFormatterOptions::default().with_length(length);
             // ICU 2.x uses separate constructors per list type rather than
             // a unified type-enum option.
@@ -1452,10 +1649,12 @@ fn register_list_format(vm: &mut VM) {
             let formatter = match lf_type.as_str() {
                 "disjunction" => ListFormatter::try_new_or(prefs, opts),
                 "unit" => ListFormatter::try_new_unit(prefs, opts),
-                _ => ListFormatter::try_new_and(prefs, opts) };
+                _ => ListFormatter::try_new_and(prefs, opts),
+            };
             let formatter = match formatter {
                 Ok(f) => f,
-                Err(_) => return s_val(&fallback_format_list(&items, &lf_type)) };
+                Err(_) => return s_val(&fallback_format_list(&items, &lf_type)),
+            };
             s_val(&formatter.format_to_string(items.iter()))
         }),
     );
@@ -1466,7 +1665,8 @@ fn register_list_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let lf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let items: Vec<String> = match args.get(1) {
                 Some(Value::Object(o)) => {
                     let lock = o.lock().unwrap();
@@ -1475,13 +1675,15 @@ fn register_list_format(vm: &mut VM) {
                             .iter()
                             .map(|v| match v {
                                 Value::String(s) => s.to_string(),
-                                o => format!("{}", o) })
+                                o => format!("{}", o),
+                            })
                             .collect()
                     } else {
                         Vec::new()
                     }
                 }
-                _ => Vec::new() };
+                _ => Vec::new(),
+            };
             let lf_type = obj_string_prop(&lf, "type").unwrap_or_else(|| "conjunction".into());
             // MVP: single literal part; full breakdown is a future enhancement.
             make_array(vec![make_object(vec![
@@ -1515,7 +1717,8 @@ fn register_list_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -1523,7 +1726,8 @@ fn fallback_format_list(items: &[String], lf_type: &str) -> String {
     let connector = match lf_type {
         "disjunction" => "or",
         "unit" => "",
-        _ => "and" };
+        _ => "and",
+    };
     match items.len() {
         0 => String::new(),
         1 => items[0].clone(),
@@ -1555,26 +1759,37 @@ fn register_plural_rules(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/pluralrules",
         "new",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let locale = resolve_locale(args.first());
             let options = resolve_options(args.get(1));
             let ol = options.lock().unwrap();
-            let pr_type = ol
+            let pr_type = option_string(&ol, "type").unwrap_or_else(|| "cardinal".into());
+            if !matches!(pr_type.as_str(), "cardinal" | "ordinal") {
+                drop(ol);
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid plural rules type",
+                ));
+                return Value::Undefined;
+            }
+            let min_frac = ol
                 .properties
-                .get("type")
-                .and_then(|v| {
-                    if let Value::String(s) = v {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "cardinal".into());
+                .get("minimumFractionDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(0);
+            let max_frac = ol
+                .properties
+                .get("maximumFractionDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(3);
             drop(ol);
             make_object(vec![
                 ("__type", s_val("PluralRules")),
                 ("locale", s_val(&locale)),
                 ("type", s_val(&pr_type)),
+                ("minimumFractionDigits", Value::I32(min_frac)),
+                ("maximumFractionDigits", Value::I32(max_frac)),
             ])
         }),
     );
@@ -1582,15 +1797,35 @@ fn register_plural_rules(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/pluralrules",
         "select",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let pr = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("other") };
+                _ => return s_val("other"),
+            };
+            if matches!(args.get(1), Some(Value::Symbol(_))) {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot convert Symbol to number",
+                ));
+                return Value::Undefined;
+            }
             let n = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => 0.0 };
+                None => 0.0,
+            };
             let locale = obj_string_prop(&pr, "locale").unwrap_or_else(|| "en-US".into());
             let pr_type = obj_string_prop(&pr, "type").unwrap_or_else(|| "cardinal".into());
+            let min_frac = pr
+                .lock()
+                .unwrap()
+                .properties
+                .get("minimumFractionDigits")
+                .map(|v| v.as_i32())
+                .unwrap_or(0);
+            if min_frac > 0 && n.fract() == 0.0 {
+                return s_val("other");
+            }
             s_val(plural_select_real(&locale, &pr_type, n))
         }),
     );
@@ -1598,16 +1833,32 @@ fn register_plural_rules(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/pluralrules",
         "selectRange",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let pr = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("other") };
+                _ => return s_val("other"),
+            };
             // ECMA-402 selectRange returns the plural category for the
             // formatted range. Without locale-specific range rules, return
             // the end value's category (good enough approximation).
-            let end = args.get(2).map(|v| v.as_f64()).unwrap_or(0.0);
+            let start = args.get(1).map(|v| v.as_f64()).unwrap_or(f64::NAN);
+            let end = args.get(2).map(|v| v.as_f64()).unwrap_or(f64::NAN);
+            if !start.is_finite() || !end.is_finite() || start > end {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid plural range",
+                ));
+                return Value::Undefined;
+            }
             let locale = obj_string_prop(&pr, "locale").unwrap_or_else(|| "en-US".into());
             let pr_type = obj_string_prop(&pr, "type").unwrap_or_else(|| "cardinal".into());
+            if start == end {
+                return s_val(plural_select_real(&locale, &pr_type, start));
+            }
+            if locale.starts_with("en") && pr_type == "cardinal" {
+                return s_val("other");
+            }
             s_val(plural_select_real(&locale, &pr_type, end))
         }),
     );
@@ -1619,23 +1870,32 @@ fn register_plural_rules(vm: &mut VM) {
             if let Some(Value::Object(pr)) = args.first() {
                 let locale = obj_string_prop(pr, "locale").unwrap_or_else(|| "en-US".into());
                 let pr_type = obj_string_prop(pr, "type").unwrap_or_else(|| "cardinal".into());
+                let categories = if pr_type == "ordinal" {
+                    vec![s_val("one"), s_val("two"), s_val("few"), s_val("other")]
+                } else {
+                    vec![s_val("one"), s_val("other")]
+                };
+                let min_frac = pr
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .get("minimumFractionDigits")
+                    .map(|v| v.as_i32())
+                    .unwrap_or(0);
+                let max_frac = pr
+                    .lock()
+                    .unwrap()
+                    .properties
+                    .get("maximumFractionDigits")
+                    .map(|v| v.as_i32())
+                    .unwrap_or(3);
                 return make_object(vec![
                     ("locale", s_val(&locale)),
                     ("type", s_val(&pr_type)),
                     ("minimumIntegerDigits", Value::I32(1)),
-                    ("minimumFractionDigits", Value::I32(0)),
-                    ("maximumFractionDigits", Value::I32(3)),
-                    (
-                        "pluralCategories",
-                        make_array(vec![
-                            s_val("zero"),
-                            s_val("one"),
-                            s_val("two"),
-                            s_val("few"),
-                            s_val("many"),
-                            s_val("other"),
-                        ]),
-                    ),
+                    ("minimumFractionDigits", Value::I32(min_frac)),
+                    ("maximumFractionDigits", Value::I32(max_frac)),
+                    ("pluralCategories", make_array(categories)),
                 ]);
             }
             make_object(vec![])
@@ -1648,7 +1908,8 @@ fn register_plural_rules(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -1660,10 +1921,12 @@ fn plural_select_real(locale: &str, pr_type: &str, n: f64) -> &'static str {
     let langid = unic_langid::LanguageIdentifier::from_parts(parsed.language, None, None, &[]);
     let rule_type = match pr_type {
         "ordinal" => PluralRuleType::ORDINAL,
-        _ => PluralRuleType::CARDINAL };
+        _ => PluralRuleType::CARDINAL,
+    };
     let pr = match PluralRules::create(langid, rule_type) {
         Ok(p) => p,
-        Err(_) => return "other" };
+        Err(_) => return "other",
+    };
     // intl_pluralrules accepts integer + decimal. Integers go through
     // the typed path; non-integer values use the string form so 1.5
     // etc. categorize via the v/w/f operands per UTS #35.
@@ -1678,7 +1941,8 @@ fn plural_select_real(locale: &str, pr_type: &str, n: f64) -> &'static str {
         Ok(PluralCategory::TWO) => "two",
         Ok(PluralCategory::FEW) => "few",
         Ok(PluralCategory::MANY) => "many",
-        Ok(PluralCategory::OTHER) | Err(_) => "other" }
+        Ok(PluralCategory::OTHER) | Err(_) => "other",
+    }
 }
 
 // ── Intl.RelativeTimeFormat (ECMA-402 §17) ───────────────────────────
@@ -1687,32 +1951,30 @@ fn register_relative_time_format(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/relativetimeformat",
         "new",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let locale = resolve_locale(args.first());
             let options = resolve_options(args.get(1));
             let ol = options.lock().unwrap();
-            let numeric = ol
-                .properties
-                .get("numeric")
-                .and_then(|v| {
-                    if let Value::String(s) = v {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "always".into());
-            let style = ol
-                .properties
-                .get("style")
-                .and_then(|v| {
-                    if let Value::String(s) = v {
-                        Some(s.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "long".into());
+            let numeric = option_string(&ol, "numeric").unwrap_or_else(|| "always".into());
+            let style = option_string(&ol, "style").unwrap_or_else(|| "long".into());
+            if !matches!(style.as_str(), "long" | "short" | "narrow") {
+                drop(ol);
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid relative time style",
+                ));
+                return Value::Undefined;
+            }
+            if !matches!(numeric.as_str(), "always" | "auto") {
+                drop(ol);
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid relative time numeric",
+                ));
+                return Value::Undefined;
+            }
             drop(ol);
             make_object(vec![
                 ("__type", s_val("RelativeTimeFormat")),
@@ -1727,19 +1989,38 @@ fn register_relative_time_format(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/relativetimeformat",
         "format",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let rtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("") };
+                _ => return s_val(""),
+            };
+            if matches!(args.get(1), Some(Value::Symbol(_))) {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "TypeError",
+                    "Cannot convert Symbol to number",
+                ));
+                return Value::Undefined;
+            }
             let value = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => 0.0 };
+                None => 0.0,
+            };
             let unit = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => "second".into() };
+                _ => "second".into(),
+            };
             let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
             let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
             let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
+            if !is_valid_relative_time_unit(&unit) {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid relative time unit",
+                ));
+                return Value::Undefined;
+            }
             s_val(&format_relative_time_real(
                 &locale, &style, &numeric, value, &unit,
             ))
@@ -1749,28 +2030,33 @@ fn register_relative_time_format(vm: &mut VM) {
     vm.register_host_fn(
         "ecma:intl/relativetimeformat",
         "formatToParts",
-        Box::new(|_ctx, args| {
+        Box::new(|ctx, args| {
             let rtf = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let value = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => 0.0 };
+                None => 0.0,
+            };
             let unit = match args.get(2) {
                 Some(Value::String(s)) => s.to_string(),
-                _ => "second".into() };
+                _ => "second".into(),
+            };
             let locale = obj_string_prop(&rtf, "locale").unwrap_or_else(|| "en-US".into());
             let style = obj_string_prop(&rtf, "style").unwrap_or_else(|| "long".into());
             let numeric = obj_string_prop(&rtf, "numeric").unwrap_or_else(|| "always".into());
-            make_array(vec![make_object(vec![
-                ("type", s_val("literal")),
-                (
-                    "value",
-                    s_val(&format_relative_time_real(
-                        &locale, &style, &numeric, value, &unit,
-                    )),
-                ),
-            ])])
+            if !is_valid_relative_time_unit(&unit) {
+                ctx.throw_value(crate::error::new_error(
+                    ctx,
+                    "RangeError",
+                    "Invalid relative time unit",
+                ));
+                return Value::Undefined;
+            }
+            make_array(format_relative_time_parts(
+                &locale, &style, &numeric, value, &unit,
+            ))
         }),
     );
 
@@ -1799,7 +2085,8 @@ fn register_relative_time_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -1824,16 +2111,25 @@ fn format_relative_time_real(
             return text;
         }
     }
+    if value == 0.0 && value.is_sign_negative() {
+        let unit_norm = unit.trim_end_matches('s');
+        return format!("0 {}s ago", unit_norm);
+    }
 
     // icu_relativetime 0.1 uses the older icu_locid types — separate
     // from icu 2.x's icu_locale_core. Bridge via the older crate.
     let icu_loc: icu_locid::Locale = match locale.parse() {
         Ok(l) => l,
-        Err(_) => return fallback_relative_time(value, unit) };
+        Err(_) => return fallback_relative_time(value, unit),
+    };
 
     let opts = RelativeTimeFormatterOptions {
-        numeric: Numeric::Always };
+        numeric: Numeric::Always,
+    };
     let unit_norm = unit.trim_end_matches('s'); // "days" → "day"
+    if locale.starts_with("en") && style == "narrow" && unit_norm == "year" && value > 0.0 {
+        return format!("in {} yr.", value.abs() as i64);
+    }
 
     let formatter_result = match (style, unit_norm) {
         ("short", "second") => RelativeTimeFormatter::try_new_short_second(&icu_loc.into(), opts),
@@ -1863,16 +2159,60 @@ fn format_relative_time_real(
         (_, "month") => RelativeTimeFormatter::try_new_long_month(&icu_loc.into(), opts),
         (_, "quarter") => RelativeTimeFormatter::try_new_long_quarter(&icu_loc.into(), opts),
         (_, "year") => RelativeTimeFormatter::try_new_long_year(&icu_loc.into(), opts),
-        _ => return fallback_relative_time(value, unit) };
+        _ => return fallback_relative_time(value, unit),
+    };
 
     let formatter = match formatter_result {
         Ok(f) => f,
-        Err(_) => return fallback_relative_time(value, unit) };
+        Err(_) => return fallback_relative_time(value, unit),
+    };
 
     // FixedDecimal from f64 — round to integer for typical relative-time
     // use; the fractional part is rare in JS code.
     let decimal: FixedDecimal = (value as i64).into();
     formatter.format(decimal).to_string()
+}
+
+fn is_valid_relative_time_unit(unit: &str) -> bool {
+    matches!(
+        unit.trim_end_matches('s'),
+        "second" | "minute" | "hour" | "day" | "week" | "month" | "quarter" | "year"
+    )
+}
+
+fn format_relative_time_parts(
+    locale: &str,
+    style: &str,
+    numeric: &str,
+    value: f64,
+    unit: &str,
+) -> Vec<Value> {
+    if numeric == "auto" {
+        return vec![part_obj(
+            "literal",
+            &format_relative_time_real(locale, style, numeric, value, unit),
+        )];
+    }
+    let unit_norm = unit.trim_end_matches('s');
+    let abs = value.abs() as i64;
+    let number = abs.to_string();
+    let unit_text = if abs == 1 {
+        format!(" {}", unit_norm)
+    } else {
+        format!(" {}s", unit_norm)
+    };
+    if value.is_sign_negative() {
+        vec![
+            part_obj("integer", &number),
+            part_obj("literal", &format!("{unit_text} ago")),
+        ]
+    } else {
+        vec![
+            part_obj("literal", "in "),
+            part_obj("integer", &number),
+            part_obj("unit", &unit_text),
+        ]
+    }
 }
 
 fn fallback_relative_time(value: f64, unit: &str) -> String {
@@ -1883,7 +2223,7 @@ fn fallback_relative_time(value: f64, unit: &str) -> String {
     } else {
         format!("{}s", stem)
     };
-    if value < 0.0 {
+    if value.is_sign_negative() {
         format!("{} {} ago", abs, unit_str)
     } else {
         format!("in {} {}", abs, unit_str)
@@ -1932,11 +2272,13 @@ fn register_segmenter(vm: &mut VM) {
             use unicode_segmentation::UnicodeSegmentation;
             let seg = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let input = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => String::new() };
+                None => String::new(),
+            };
             let granularity =
                 obj_string_prop(&seg, "granularity").unwrap_or_else(|| "grapheme".into());
 
@@ -1952,7 +2294,8 @@ fn register_segmenter(vm: &mut VM) {
                 _ => input
                     .grapheme_indices(true)
                     .map(|(i, s)| (s.to_string(), i))
-                    .collect() };
+                    .collect(),
+            };
 
             let elems: Vec<Value> = segments
                 .into_iter()
@@ -1980,17 +2323,20 @@ fn register_segmenter(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let segments = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return Value::Undefined };
+                _ => return Value::Undefined,
+            };
             let index = match args.get(1) {
                 Some(v) => v.as_f64(),
-                None => 0.0 };
+                None => 0.0,
+            };
             if !index.is_finite() || index < 0.0 {
                 return Value::Undefined;
             }
             let target = index as usize;
             let guard = match segments.lock() {
                 Ok(g) => g,
-                Err(_) => return Value::Undefined };
+                Err(_) => return Value::Undefined,
+            };
             let ObjectKind::Array(elems) = &guard.kind else {
                 return Value::Undefined;
             };
@@ -2001,7 +2347,8 @@ fn register_segmenter(vm: &mut VM) {
                 let (start, len) = {
                     let p = match part.lock() {
                         Ok(p) => p,
-                        Err(_) => continue };
+                        Err(_) => continue,
+                    };
                     let start = p
                         .properties
                         .get("index")
@@ -2009,7 +2356,8 @@ fn register_segmenter(vm: &mut VM) {
                         .unwrap_or(0);
                     let len = match p.properties.get("segment") {
                         Some(Value::String(text)) => text.len(),
-                        _ => 0 };
+                        _ => 0,
+                    };
                     (start, len)
                 };
                 if target >= start && target < start + len {
@@ -2043,7 +2391,8 @@ fn register_segmenter(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -2080,7 +2429,8 @@ fn format_number_parts_real(nf: &Arc<Mutex<Object>>, value: f64) -> Vec<Value> {
             }
             '%' => "percentSign",
             '$' | '€' | '£' | '¥' | '¤' => "currency",
-            _ => "literal" };
+            _ => "literal",
+        };
         parts.push(make_object(vec![
             ("type", s_val(part_type)),
             ("value", s_val(&ch.to_string())),
@@ -2172,7 +2522,8 @@ fn format_month_part(month: i32, month_opt: &str) -> String {
         "2-digit" => format!("{:02}", month),
         "numeric" => month.to_string(),
         "short" => month_name(month, true).to_string(),
-        _ => month_name(month, false).to_string() }
+        _ => month_name(month, false).to_string(),
+    }
 }
 
 fn format_day_part(day: i32, day_opt: &str) -> String {
@@ -2209,11 +2560,13 @@ fn month_name(month: i32, short: bool) -> &'static str {
         (10, true) => "Oct",
         (11, true) => "Nov",
         (12, true) => "Dec",
-        _ => "" }
+        _ => "",
+    }
 }
 
 fn auto_relative_time_phrase(value: i64, unit: &str) -> Option<String> {
     match (value, unit) {
+        (0, "second") => Some("now".into()),
         (-1, "day") => Some("yesterday".into()),
         (0, "day") => Some("today".into()),
         (1, "day") => Some("tomorrow".into()),
@@ -2223,10 +2576,14 @@ fn auto_relative_time_phrase(value: i64, unit: &str) -> Option<String> {
         (-1, "month") => Some("last month".into()),
         (0, "month") => Some("this month".into()),
         (1, "month") => Some("next month".into()),
+        (-1, "quarter") => Some("last quarter".into()),
+        (0, "quarter") => Some("this quarter".into()),
+        (1, "quarter") => Some("next quarter".into()),
         (-1, "year") => Some("last year".into()),
         (0, "year") => Some("this year".into()),
         (1, "year") => Some("next year".into()),
-        _ => None }
+        _ => None,
+    }
 }
 
 fn segment_is_word_like(segment: &str) -> bool {
@@ -2246,7 +2603,8 @@ fn register_locale(vm: &mut VM) {
             let tag = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => "en".into() };
+                None => "en".into(),
+            };
             let langid = parse_langid(&tag);
             let language = langid.language.as_str().to_string();
             let region = langid
@@ -2266,16 +2624,17 @@ fn register_locale(vm: &mut VM) {
             let opt = |key: &str| -> Option<String> {
                 args.get(1).and_then(|v| match v {
                     Value::Object(o) => obj_string_prop(o, key),
-                    _ => None })
+                    _ => None,
+                })
             };
             let keyword = |kw: &str, opt_key: &str| -> String {
                 opt(opt_key)
                     .or_else(|| ext.get(kw).cloned())
                     .unwrap_or_default()
             };
-            let numeric = opt("numeric")
-                .map(|v| v == "true")
-                .unwrap_or_else(|| ext.get("kn").map(|v| v.is_empty() || v == "true") == Some(true));
+            let numeric = opt("numeric").map(|v| v == "true").unwrap_or_else(|| {
+                ext.get("kn").map(|v| v.is_empty() || v == "true") == Some(true)
+            });
             make_object(vec![
                 ("__type", s_val("Locale")),
                 ("baseName", s_val(&base_name)),
@@ -2304,15 +2663,15 @@ fn register_locale(vm: &mut VM) {
                         "sun" => Value::F64(7.0),
                         other => match other.parse::<f64>() {
                             Ok(n) if (1.0..=7.0).contains(&n) => Value::F64(n),
-                            _ => Value::Undefined } },
+                            _ => Value::Undefined,
+                        },
+                    },
                 ),
                 // BCP-47 variant subtags, in canonical (lower-case, sorted)
                 // form; absent when the tag carries none.
                 ("variants", {
-                    let variants: Vec<String> = langid
-                        .variants()
-                        .map(|v| v.as_str().to_string())
-                        .collect();
+                    let variants: Vec<String> =
+                        langid.variants().map(|v| v.as_str().to_string()).collect();
                     if variants.is_empty() {
                         Value::Undefined
                     } else {
@@ -2361,7 +2720,8 @@ fn register_locale(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let region = match args.first() {
                 Some(Value::Object(loc)) => obj_string_prop(loc, "region").unwrap_or_default(),
-                _ => String::new() };
+                _ => String::new(),
+            };
             if region.is_empty() {
                 return Value::Undefined;
             }
@@ -2382,13 +2742,15 @@ fn register_locale(vm: &mut VM) {
             use icu::locale::{Direction, LanguageIdentifier, LocaleDirectionality};
             let tag = match args.first() {
                 Some(Value::Object(loc)) => obj_string_prop(loc, "baseName").unwrap_or_default(),
-                _ => String::new() };
+                _ => String::new(),
+            };
             // NOTE: `parse_langid` here returns `unic_langid`'s type, which is a
             // DIFFERENT crate from ICU's — parse with ICU's own.
             let langid: LanguageIdentifier = tag.parse().unwrap_or(LanguageIdentifier::UNKNOWN);
             let direction = match LocaleDirectionality::new_common().get(&langid) {
                 Some(Direction::RightToLeft) => "rtl",
-                _ => "ltr" };
+                _ => "ltr",
+            };
             make_object(vec![("direction", s_val(direction))])
         }),
     );
@@ -2403,7 +2765,8 @@ fn register_locale(vm: &mut VM) {
             use icu::locale::Locale;
             let tag = match args.first() {
                 Some(Value::Object(loc)) => obj_string_prop(loc, "baseName").unwrap_or_default(),
-                _ => String::new() };
+                _ => String::new(),
+            };
             let locale: Locale = tag.parse().unwrap_or_else(|_| Locale::UNKNOWN);
             let Ok(info) = WeekInformation::try_new(locale.into()) else {
                 return Value::Undefined;
@@ -2503,11 +2866,13 @@ fn register_display_names(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let dn = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return Value::Undefined };
+                _ => return Value::Undefined,
+            };
             let code = match args.get(1) {
                 Some(Value::String(s)) => s.to_string(),
                 Some(o) => format!("{}", o),
-                None => return Value::Undefined };
+                None => return Value::Undefined,
+            };
             let locale = obj_string_prop(&dn, "locale").unwrap_or_else(|| "en-US".into());
             let dn_type = obj_string_prop(&dn, "type").unwrap_or_else(|| "language".into());
             s_val(&display_name_of(&locale, &dn_type, &code))
@@ -2539,7 +2904,8 @@ fn register_display_names(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -2551,11 +2917,13 @@ fn register_display_names(vm: &mut VM) {
 /// tag through that crate.
 fn display_name_of(locale: &str, dn_type: &str, code: &str) -> String {
     use icu_displaynames::{
-        DisplayNamesOptions, LanguageDisplayNames, RegionDisplayNames, ScriptDisplayNames };
+        DisplayNamesOptions, LanguageDisplayNames, RegionDisplayNames, ScriptDisplayNames,
+    };
 
     let icu_loc: icu_locid::Locale = match locale.parse() {
         Ok(l) => l,
-        Err(_) => return code.to_string() };
+        Err(_) => return code.to_string(),
+    };
 
     let opts = DisplayNamesOptions::default();
     match dn_type {
@@ -2589,7 +2957,8 @@ fn display_name_of(locale: &str, dn_type: &str, code: &str) -> String {
             }
             code.to_string()
         }
-        _ => code.to_string() }
+        _ => code.to_string(),
+    }
 }
 
 // ── Intl.DurationFormat (ECMA-402 §19, Stage 4 in 2024) ──────────────
@@ -2631,10 +3000,12 @@ fn register_duration_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let df = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("") };
+                _ => return s_val(""),
+            };
             let dur = match args.get(1) {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return s_val("") };
+                _ => return s_val(""),
+            };
             let style = obj_string_prop(&df, "style").unwrap_or_else(|| "short".into());
             let locale = obj_string_prop(&df, "locale").unwrap_or_else(|| "en-US".into());
             s_val(&format_duration(&dur, &style, &locale))
@@ -2647,10 +3018,12 @@ fn register_duration_format(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let df = match args.first() {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let dur = match args.get(1) {
                 Some(Value::Object(o)) => o.clone(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             let style = obj_string_prop(&df, "style").unwrap_or_else(|| "short".into());
             let locale = obj_string_prop(&df, "locale").unwrap_or_else(|| "en-US".into());
             make_array(vec![make_object(vec![
@@ -2683,7 +3056,8 @@ fn register_duration_format(vm: &mut VM) {
         Box::new(|_ctx, args| match args.first() {
             Some(v @ Value::Object(_)) => v.clone(),
             Some(Value::String(s)) => make_array(vec![Value::String(s.clone())]),
-            _ => make_array(vec![]) }),
+            _ => make_array(vec![]),
+        }),
     );
 }
 
@@ -2708,7 +3082,8 @@ fn format_duration(dur: &Arc<Mutex<Object>>, style: &str, locale: &str) -> Strin
     let plural_for = |n: i64| -> PluralCategory {
         match PluralRules::create(langid.clone(), PluralRuleType::CARDINAL) {
             Ok(pr) => pr.select(n as isize).unwrap_or(PluralCategory::OTHER),
-            Err(_) => PluralCategory::OTHER }
+            Err(_) => PluralCategory::OTHER,
+        }
     };
 
     let lock = dur.lock().unwrap();
@@ -2807,7 +3182,8 @@ fn duration_unit_text(
         TWO => 2,
         FEW => 3,
         MANY => 4,
-        OTHER => 5 };
+        OTHER => 5,
+    };
     let forms = duration_forms(lang, unit, style)
         .or_else(|| duration_forms("en", unit, style))
         .unwrap_or(&["", "", "", "", "", ""]);
@@ -3155,7 +3531,8 @@ fn duration_forms(lang: &str, unit: &str, style: &str) -> Option<&'static [&'sta
         ("sv", "seconds", "long") => &["", "sekund", "", "", "", "sekunder"],
         ("sv", "milliseconds", "long") => &["", "millisekund", "", "", "", "millisekunder"],
 
-        _ => return None })
+        _ => return None,
+    })
 }
 
 // ── Intl static methods ──────────────────────────────────────────────
@@ -3174,13 +3551,15 @@ fn register_static(vm: &mut VM) {
                             .iter()
                             .map(|v| match v {
                                 Value::String(s) => s.to_string(),
-                                o => format!("{}", o) })
+                                o => format!("{}", o),
+                            })
                             .collect()
                     } else {
                         Vec::new()
                     }
                 }
-                _ => Vec::new() };
+                _ => Vec::new(),
+            };
             let canon: Vec<Value> = tags
                 .iter()
                 .map(|t| {
@@ -3198,16 +3577,15 @@ fn register_static(vm: &mut VM) {
         Box::new(|_ctx, args| {
             let key = match args.first() {
                 Some(Value::String(s)) => s.to_string(),
-                _ => return make_array(vec![]) };
+                _ => return make_array(vec![]),
+            };
             // Time zones come from tzdb, not a hand-written list. The previous
             // 15-entry list advertised zones that `Intl.DateTimeFormat` would
             // then reject, and tzdb ships 5–10 updates a year, so any literal
             // table here is wrong by construction.
             if key == "timeZone" {
-                let mut names: Vec<&str> = chrono_tz::TZ_VARIANTS
-                    .iter()
-                    .map(|tz| tz.name())
-                    .collect();
+                let mut names: Vec<&str> =
+                    chrono_tz::TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
                 names.sort_unstable();
                 return make_array(
                     names
@@ -3281,7 +3659,8 @@ fn register_static(vm: &mut VM) {
                     "yard",
                     "year",
                 ],
-                _ => vec![] };
+                _ => vec![],
+            };
             make_array(values.into_iter().map(s_val).collect())
         }),
     );

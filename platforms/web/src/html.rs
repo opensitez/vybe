@@ -35,19 +35,38 @@
 //! no business knowing about.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use vybe_runtime::value::Object;
 use vybe_runtime::{HostContext, VM, Value};
 
-use crate::engine::{apply, DocumentId, DomOp, DomValue, NodeId, DOCUMENT};
+use crate::engine::{DOCUMENT, DocumentId, DomOp, DomValue, NodeId, apply};
 
 /// `(document, node, event type)` → listeners, in registration order.
 type ListenerKey = (DocumentId, NodeId, String);
 
-fn listeners() -> &'static Mutex<HashMap<ListenerKey, Vec<Value>>> {
-    static L: OnceLock<Mutex<HashMap<ListenerKey, Vec<Value>>>> = OnceLock::new();
-    L.get_or_init(|| Mutex::new(HashMap::new()))
+/// A named type, not a bare `HashMap`: [`vybe_runtime::resources`] keys by
+/// `TypeId`, so two plugins storing the same std type would share one cell.
+#[derive(Default)]
+struct Listeners(HashMap<ListenerKey, Vec<Value>>);
+
+impl std::ops::Deref for Listeners {
+    type Target = HashMap<ListenerKey, Vec<Value>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for Listeners {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Every DOM event listener the running program registered — guest `Value`s,
+/// so a listener surviving a reset leaves one program's handlers wired for the
+/// next. VM-owned ([`vybe_runtime::resources`]): dropped on `reset_to`.
+fn listeners() -> &'static Mutex<Listeners> {
+    vybe_runtime::resources::get::<Listeners>()
 }
 
 /// Every `(node, type, callback)` registered on a document, for a host that
@@ -118,8 +137,10 @@ pub fn pending_dispatches(document: DocumentId) -> Vec<(Value, Value)> {
 /// The object a listener receives — a real `Event`, not loose arguments.
 pub fn event_object(kind: &str, target: NodeId) -> Value {
     let mut o = Object::new();
-    o.properties.insert("type".into(), Value::String(kind.into()));
-    o.properties.insert("target".into(), Value::F64(target as f64));
+    o.properties
+        .insert("type".into(), Value::String(kind.into()));
+    o.properties
+        .insert("target".into(), Value::F64(target as f64));
     o.properties
         .insert("currentTarget".into(), Value::F64(target as f64));
     o.properties.insert("bubbles".into(), Value::Bool(true));
@@ -140,30 +161,29 @@ pub fn event_object(kind: &str, target: NodeId) -> Value {
 /// `window.open` still creates additional documents and hands back their
 /// handles explicitly — this is the ambient one, not the only one.
 pub fn active_document() -> DocumentId {
-    ACTIVE_DOCUMENT.with(|active| match active.get() {
+    let slot = active_document_slot();
+    let mut slot = slot.lock().unwrap();
+    match slot.0 {
         Some(id) => id,
         None => {
             let id = crate::engine::new_document("");
-            active.set(Some(id));
+            slot.0 = Some(id);
             id
         }
-    })
+    }
 }
 
-thread_local! {
-    static ACTIVE_DOCUMENT: std::cell::Cell<Option<DocumentId>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// Drop this agent's ambient document, so the next `active_document()` opens a
-/// fresh one.
+/// This browsing context's ambient document.
 ///
-/// Navigating away is what a browsing context does; a `OnceLock` could not
-/// express it, and one that never resets is how a test on a reused thread
-/// inherited the previous test's controls — a 2-test wobble between identical
-/// runs before this existed.
-pub fn reset_active_document() {
-    ACTIVE_DOCUMENT.with(|active| active.set(None));
+/// VM-owned ([`vybe_runtime::resources`]) so `reset_to` drops it: navigating
+/// away is what a browsing context does, and a slot that never resets is how a
+/// test on a reused thread inherited the previous test's controls — a 2-test
+/// wobble between identical runs before this was resettable at all.
+#[derive(Default)]
+struct ActiveDocument(Option<DocumentId>);
+
+fn active_document_slot() -> &'static std::sync::Mutex<ActiveDocument> {
+    vybe_runtime::resources::get::<ActiveDocument>()
 }
 
 // ── argument decoding ───────────────────────────────────────────────────
@@ -192,13 +212,15 @@ fn node_arg(args: &[Value], idx: usize) -> NodeId {
             .map(|v| v.as_f64() as NodeId)
             .unwrap_or(DOCUMENT),
         Some(v) => v.as_f64() as NodeId,
-        None => DOCUMENT }
+        None => DOCUMENT,
+    }
 }
 
 /// Wrap a node as the element object guest code holds.
 fn element(node: NodeId) -> Value {
     let mut o = Object::new();
-    o.properties.insert("__node".into(), Value::F64(node as f64));
+    o.properties
+        .insert("__node".into(), Value::F64(node as f64));
     Value::Object(vybe_runtime::heap::alloc(o))
 }
 
@@ -224,7 +246,8 @@ fn truthy(v: Option<&Value>) -> bool {
         Some(Value::F64(f)) => *f != 0.0 && !f.is_nan(),
         Some(Value::String(s)) => !s.is_empty() && s.as_ref() != "false",
         Some(Value::Null) | Some(Value::Undefined) | None => false,
-        Some(_) => true }
+        Some(_) => true,
+    }
 }
 
 // ── result encoding ─────────────────────────────────────────────────────
@@ -232,13 +255,15 @@ fn truthy(v: Option<&Value>) -> bool {
 fn as_node(v: DomValue) -> Value {
     match v {
         DomValue::Node(n) => element(n),
-        _ => Value::Null }
+        _ => Value::Null,
+    }
 }
 
 fn as_text(v: DomValue) -> Value {
     match v {
         DomValue::Text(s) => Value::String(s.into()),
-        _ => Value::String("".into()) }
+        _ => Value::String("".into()),
+    }
 }
 
 fn as_bool(v: DomValue) -> Value {
@@ -255,7 +280,8 @@ pub fn register(vm: &mut VM) {
                 doc_arg(args, 0),
                 DomOp::CreateElement {
                     tag: str_arg(args, 1),
-                    input_type: str_arg(args, 2) },
+                    input_type: str_arg(args, 2),
+                },
             ))
         }),
     );
@@ -278,7 +304,8 @@ pub fn register(vm: &mut VM) {
                     let items: Vec<Value> = ns.into_iter().map(element).collect();
                     Value::Object(vybe_runtime::heap::alloc(Object::new_array(items)))
                 }
-                _ => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))) }
+                _ => Value::Object(vybe_runtime::heap::alloc(Object::new_array(Vec::new()))),
+            }
         }),
     );
     // `document` — the active document of the current browsing context.
@@ -327,7 +354,8 @@ pub fn register(vm: &mut VM) {
                 doc_arg(args, 0),
                 DomOp::AppendChild {
                     parent: node_arg(args, 1),
-                    child: node_arg(args, 2) },
+                    child: node_arg(args, 2),
+                },
             );
             // `appendChild` returns the appended child.
             args.get(2).cloned().unwrap_or(Value::Null)
@@ -341,7 +369,8 @@ pub fn register(vm: &mut VM) {
                 doc_arg(args, 0),
                 DomOp::RemoveChild {
                     parent: node_arg(args, 1),
-                    child: node_arg(args, 2) },
+                    child: node_arg(args, 2),
+                },
             );
             args.get(2).cloned().unwrap_or(Value::Null)
         }),
@@ -400,7 +429,8 @@ pub fn register(vm: &mut VM) {
                 DomOp::GetAttribute(node_arg(args, 1), str_arg(args, 2)),
             ) {
                 DomValue::Text(s) => Value::String(s.into()),
-                _ => Value::Null }
+                _ => Value::Null,
+            }
         }),
     );
     // `element.toggleAttribute(qualifiedName, force)` — DOM Standard.

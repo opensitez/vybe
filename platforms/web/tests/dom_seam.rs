@@ -5,18 +5,20 @@
 //! test is the surface's contract with the engine — the part a browser
 //! backend would have to satisfy too.
 
-use vybe_platform_web::engine::{apply, new_document, DomOp, DomValue, DOCUMENT};
+use vybe_platform_web::engine::{DOCUMENT, DomOp, DomValue, apply, new_document};
 
 fn node(v: DomValue) -> u64 {
     match v {
         DomValue::Node(n) => n,
-        other => panic!("expected a node, got {:?}", other) }
+        other => panic!("expected a node, got {:?}", other),
+    }
 }
 
 fn text(v: DomValue) -> String {
     match v {
         DomValue::Text(s) => s,
-        other => panic!("expected text, got {:?}", other) }
+        other => panic!("expected text, got {:?}", other),
+    }
 }
 
 fn create(doc: u64, tag: &str, input_type: &str) -> u64 {
@@ -24,7 +26,8 @@ fn create(doc: u64, tag: &str, input_type: &str) -> u64 {
         doc,
         DomOp::CreateElement {
             tag: tag.into(),
-            input_type: input_type.into() },
+            input_type: input_type.into(),
+        },
     ))
 }
 
@@ -45,7 +48,8 @@ fn a_created_element_is_not_in_the_document() {
         doc,
         DomOp::AppendChild {
             parent: DOCUMENT,
-            child: cb },
+            child: cb,
+        },
     );
     assert!(matches!(
         apply(doc, DomOp::IsConnected(cb)),
@@ -58,10 +62,16 @@ fn an_absent_attribute_is_null_not_empty_string() {
     let doc = setup();
     let b = create(doc, "button", "");
     assert!(
-        matches!(apply(doc, DomOp::GetAttribute(b, "class".into())), DomValue::Null),
+        matches!(
+            apply(doc, DomOp::GetAttribute(b, "class".into())),
+            DomValue::Null
+        ),
         "absent attribute must be null"
     );
-    apply(doc, DomOp::SetAttribute(b, "class".into(), "primary".into()));
+    apply(
+        doc,
+        DomOp::SetAttribute(b, "class".into(), "primary".into()),
+    );
     assert_eq!(
         text(apply(doc, DomOp::GetAttribute(b, "class".into()))),
         "primary"
@@ -76,7 +86,8 @@ fn checked_is_a_boolean_and_value_a_string() {
         doc,
         DomOp::AppendChild {
             parent: DOCUMENT,
-            child: cb },
+            child: cb,
+        },
     );
     assert!(matches!(
         apply(doc, DomOp::Checked(cb)),
@@ -102,7 +113,8 @@ fn a_range_input_reports_its_number_as_value() {
         doc,
         DomOp::AppendChild {
             parent: DOCUMENT,
-            child: r },
+            child: r,
+        },
     );
     apply(doc, DomOp::SetValue(r, "30".into()));
     // An integer `value` carries no `.0` — IDL value is a DOMString.
@@ -117,7 +129,8 @@ fn select_options_are_the_elements_content() {
         doc,
         DomOp::AppendChild {
             parent: DOCUMENT,
-            child: s },
+            child: s,
+        },
     );
     apply(doc, DomOp::AddItem(s, "one".into()));
     apply(doc, DomOp::AddItem(s, "two".into()));
@@ -133,15 +146,22 @@ fn style_uses_css_units() {
         doc,
         DomOp::AppendChild {
             parent: DOCUMENT,
-            child: b },
+            child: b,
+        },
     );
     apply(
         doc,
         DomOp::SetStyleProperty(b, "left".into(), "40px".into()),
     );
     apply(doc, DomOp::SetStyleProperty(b, "top".into(), "1em".into()));
-    assert_eq!(text(apply(doc, DomOp::GetStyleProperty(b, "left".into()))), "40px");
-    assert_eq!(text(apply(doc, DomOp::GetStyleProperty(b, "top".into()))), "16px");
+    assert_eq!(
+        text(apply(doc, DomOp::GetStyleProperty(b, "left".into()))),
+        "40px"
+    );
+    assert_eq!(
+        text(apply(doc, DomOp::GetStyleProperty(b, "top".into()))),
+        "16px"
+    );
 }
 
 #[test]
@@ -173,7 +193,8 @@ fn a_click_comes_back_as_a_dom_event() {
         doc,
         DomOp::AppendChild {
             parent: DOCUMENT,
-            child: b },
+            child: b,
+        },
     );
     assert_eq!(node(apply(doc, DomOp::GetElementById("go".into()))), b);
 
@@ -183,7 +204,8 @@ fn a_click_comes_back_as_a_dom_event() {
         y: 10.0,
         cmd: false,
         shift: false,
-        alt: false };
+        alt: false,
+    };
     with_document(doc, |d| {
         let form = d.form_mut();
         form.handle_mouse(&press);
@@ -205,5 +227,9 @@ fn a_click_comes_back_as_a_dom_event() {
     let DomValue::Events(again) = apply(doc, DomOp::DrainEvents) else {
         panic!()
     };
-    assert!(again.is_empty(), "events must not be redelivered: {:?}", again);
+    assert!(
+        again.is_empty(),
+        "events must not be redelivered: {:?}",
+        again
+    );
 }
