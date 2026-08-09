@@ -5,11 +5,12 @@
 //! `common::*` helper exists.
 
 use std::sync::Arc;
-use vybe_runtime::opcode::Op;
-use vybe_runtime::{Chunk, Value};
 use vybe_compiler::primitives::instructions::{core_wasm, host};
 use vybe_compiler::primitives::{
-    collections, errors, functions, generators, loops, reflection, strings };
+    collections, errors, functions, generators, loops, reflection, strings,
+};
+use vybe_runtime::opcode::Op;
+use vybe_runtime::{Chunk, Value};
 
 const SB_BUFFER_KEY: &str = "__dart_string_buffer";
 const SB_MARKER_KEY: &str = "__dart_string_buffer_marker";
@@ -132,20 +133,58 @@ fn emit_dart_sb_append_value(chunks: &mut [Chunk], current: usize, value_slot: u
     chunk.emit_op_u16(Op::LOCAL_GET, sb_slot, line);
 }
 
-/// Dart `s.isEmpty` — true iff length == 0. Stack: [s] → [bool].
+/// Dart `s.isEmpty`. Stack: [s] → [bool].
+///
+/// **Emptiness is its OWN slot, not `len == 0`.** `ProtocolSlot::IsEmpty`
+/// exists and a class that spells `bool get isEmpty` publishes it — dart's
+/// `protocol.rs` maps the name, and `normalize_class.rs` lets a GETTER fill a
+/// slot — but this emitter went straight to the length comparison, so the
+/// published slot had no reader. That is the missing-slot half of the same bug
+/// `emit_dart_length` already fixed for `Len`: the ROLE is the resolution, and
+/// a receiver that answers emptiness directly must be asked directly.
+///
+/// It matters beyond tidiness: a lazy sequence knows it is non-empty without
+/// counting, so routing through `Len` forces a materialisation the receiver
+/// never needed. `len == 0` stays as the FALLBACK, which is the right answer
+/// for every receiver carrying no slot — string, array, map alike, since
+/// `emit_dart_length` probes `Len` and then its own five-way shape probe.
 pub fn emit_dart_is_empty(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_dart_length(chunks, current, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+    emit_dart_emptiness(chunks, current, line, false);
 }
 
-/// Dart `s.isNotEmpty` — true iff length != 0. Stack: [s] → [bool].
+/// Dart `s.isNotEmpty`. Stack: [s] → [bool].
+///
+/// The same slot as `isEmpty`, negated — `IsEmpty` is the question the
+/// receiver answers, and `isNotEmpty` is its complement, not a second role.
 pub fn emit_dart_is_not_empty(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_dart_length(chunks, current, line);
-    core_wasm::i32_const(&mut chunks[current], line, 0);
-    vybe_compiler::primitives::ops::emit_dyn_ne(&mut chunks[current], line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+    emit_dart_emptiness(chunks, current, line, true);
+}
+
+/// Ask the receiver's `IsEmpty` slot; fall back to `length == 0`.
+///
+/// `negate` flips the sense AFTER the answer, so both spellings resolve one
+/// slot rather than each carrying its own probe.
+fn emit_dart_emptiness(chunks: &mut [Chunk], current: usize, line: u32, negate: bool) {
+    let receiver_slot = reserve_slot(&mut chunks[current]);
+    chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
+    emit_slot_or(
+        chunks,
+        current,
+        receiver_slot,
+        vybe_ast::ProtocolSlot::IsEmpty,
+        line,
+        |chunks, current, line| {
+            chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
+            emit_dart_length(chunks, current, line);
+            core_wasm::i32_const(&mut chunks[current], line, 0);
+            vybe_compiler::primitives::ops::emit_dyn_eq(&mut chunks[current], line);
+            vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+        },
+    );
+    if negate {
+        vybe_compiler::primitives::ops::emit_dyn_not(&mut chunks[current], line);
+        vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+    }
 }
 
 /// Dart `n.isEven` — true iff `n % 2 == 0`. Stack: [n] → [bool].
@@ -357,64 +396,12 @@ pub fn emit_dart_regexp_group(chunks: &mut [Chunk], current: usize, line: u32) {
     collections::emit_get(chunks, current, line);
 }
 
-pub fn emit_dart_exception(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_dart_exception_new(chunks, current, argc, "Exception", &["Exception"], line);
-}
-
-pub fn emit_dart_format_exception(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_dart_exception_new(
-        chunks,
-        current,
-        argc,
-        "FormatException",
-        &["FormatException", "Exception"],
-        line,
-    );
-}
-
-pub fn emit_dart_range_error(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_dart_exception_new(
-        chunks,
-        current,
-        argc,
-        "RangeError",
-        &["RangeError", "Error"],
-        line,
-    );
-}
-
-pub fn emit_dart_state_error(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_dart_exception_new(
-        chunks,
-        current,
-        argc,
-        "StateError",
-        &["StateError", "Error"],
-        line,
-    );
-}
-
-pub fn emit_dart_argument_error(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_dart_exception_new(
-        chunks,
-        current,
-        argc,
-        "ArgumentError",
-        &["ArgumentError", "Error"],
-        line,
-    );
-}
-
-pub fn emit_dart_unimplemented_error(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
-    emit_dart_exception_new(
-        chunks,
-        current,
-        argc,
-        "UnimplementedError",
-        &["UnimplementedError", "Error"],
-        line,
-    );
-}
+// The six `emit_dart_*_error` / `_exception` wrappers are GONE. Each built an
+// anonymous struct and stamped an ancestry chain by hand; the types are real
+// `ClassDecl`s now (`core_classes/exceptions.rs`) and `compile_class` stamps
+// the same chain from the MRO. `emit_dart_exception_new` above STAYS — the io
+// adapter still constructs a `FileSystemException` through it, and that type
+// has no class yet.
 
 pub fn emit_dart_stack_trace(chunks: &mut [Chunk], current: usize, line: u32) {
     let chunk = &mut chunks[current];
@@ -2009,16 +1996,9 @@ pub fn emit_dart_add_general(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunks[current].emit_op_u16(Op::LOCAL_SET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
     emit_throw_if_frozen(chunks, current, receiver_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let type_key = string_key(&mut chunks[current], reflection::FIELD_TYPE);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
-    chunks[current].emit_string_const("DateTime", line);
-    chunks[current].emit_op(Op::EQ, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
-    crate::emitter::core_adapter::emit_dart_add(chunks, current, line);
-    chunks[current].emit_else(line);
+    // The `__type == "DateTime"` arm is gone — `DateTime.add` is a method on
+    // the class. What remains is the real split: a SET adds only what it does
+    // not already hold, a LIST always appends.
     emit_slot_is_set(&mut chunks[current], receiver_slot, line);
     chunks[current].emit_if(line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
@@ -2049,7 +2029,11 @@ pub fn emit_dart_add_general(chunks: &mut [Chunk], current: usize, argc: u8, lin
     chunks[current].emit_op(Op::DROP, line);
     emit_restore_cached_hash_if_any(chunks, current, receiver_slot, cached_hash_slot, line);
     chunks[current].emit_bool_const(true, line);
-    chunks[current].emit_end(line);
+    // ONE `emit_end`, closing the set-vs-list IF. Removing the outer
+    // `__type == "DateTime"` branch removed a frame, and the second `emit_end`
+    // that used to close it then closed the CALLER's frame instead — measured
+    // as `[for (var i = 0; i < 3; i++) i]` yielding one element, because the
+    // comprehension's own loop was what got closed.
     chunks[current].emit_end(line);
 }
 
@@ -2638,16 +2622,9 @@ pub fn emit_dart_difference(chunks: &mut [Chunk], current: usize, line: u32) {
     let receiver_slot = reserve_slot(&mut chunks[current]);
     chunks[current].emit_op_u16(Op::LOCAL_SET, other_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, receiver_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    let type_key = string_key(&mut chunks[current], reflection::FIELD_TYPE);
-    chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, type_key, line);
-    chunks[current].emit_string_const("DateTime", line);
-    chunks[current].emit_op(Op::EQ, line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver_slot, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, other_slot, line);
-    crate::emitter::core_adapter::emit_datetime_difference(chunks, current, line);
-    chunks[current].emit_else(line);
+    // SET difference, and nothing else. The `__type == "DateTime"` arm that
+    // used to open this is gone with the wrapper: `DateTime.difference` is a
+    // method on the class and returns a real `Duration`.
     emit_set_filter_against_slot(
         chunks,
         current,
@@ -2657,7 +2634,6 @@ pub fn emit_dart_difference(chunks: &mut [Chunk], current: usize, line: u32) {
         false,
         line,
     );
-    chunks[current].emit_end(line);
 }
 
 pub fn emit_dart_set_contains_all(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -2996,7 +2972,11 @@ fn emit_dart_identity_hash(chunks: &mut [Chunk], current: usize, value_slot: u16
     chunks[current].emit_op_u16(Op::LOCAL_GET, existing_slot, line);
     chunks[current].emit_else(line);
 
-    vybe_compiler::primitives::globals::emit_read(&mut chunks[current], "__dart_identity_hash_next", line);
+    vybe_compiler::primitives::globals::emit_read(
+        &mut chunks[current],
+        "__dart_identity_hash_next",
+        line,
+    );
     emit_undefined_to_null(&mut chunks[current], line);
     chunks[current].emit_op_u16(Op::LOCAL_SET, next_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
@@ -3009,7 +2989,11 @@ fn emit_dart_identity_hash(chunks: &mut [Chunk], current: usize, value_slot: u16
     chunks[current].emit_op(Op::I32_ADD, line);
     chunks[current].emit_end(line);
     chunks[current].emit_op_u16(Op::LOCAL_TEE, next_slot, line);
-    vybe_compiler::primitives::globals::emit_write(&mut chunks[current], "__dart_identity_hash_next", line);
+    vybe_compiler::primitives::globals::emit_write(
+        &mut chunks[current],
+        "__dart_identity_hash_next",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, value_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, next_slot, line);
     let field_key = string_key(&mut chunks[current], "__dart_identity_hash");

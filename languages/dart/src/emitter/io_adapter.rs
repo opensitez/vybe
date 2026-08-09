@@ -31,7 +31,12 @@ fn string_key(chunk: &mut Chunk, key: &str) -> u16 {
 /// top), then pop the receiver and leave its `path` in a slot.
 ///
 /// Returns `(path_slot, arg_slots)` with `arg_slots` in SOURCE order.
-fn take_receiver_path(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) -> (u16, Vec<u16>) {
+fn take_receiver_path(
+    chunks: &mut [Chunk],
+    current: usize,
+    argc: u8,
+    line: u32,
+) -> (u16, Vec<u16>) {
     let mut arg_slots = Vec::new();
     for _ in 1..argc {
         let s = slot(&mut chunks[current]);
@@ -118,7 +123,14 @@ fn emit_filesystem_throw(
 /// `file.readAsStringSync()`
 pub fn emit_read_as_string_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (path_slot, _) = take_receiver_path(chunks, current, argc, line);
-    throw_if_not(chunks, current, path_slot, "isFile", "Cannot open file, path = ", line);
+    throw_if_not(
+        chunks,
+        current,
+        path_slot,
+        "isFile",
+        "Cannot open file, path = ",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_fs(chunks, current, "readFile", 1, line);
 }
@@ -126,7 +138,14 @@ pub fn emit_read_as_string_sync(chunks: &mut [Chunk], current: usize, argc: u8, 
 /// `file.readAsBytesSync()`
 pub fn emit_read_as_bytes_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (path_slot, _) = take_receiver_path(chunks, current, argc, line);
-    throw_if_not(chunks, current, path_slot, "isFile", "Cannot open file, path = ", line);
+    throw_if_not(
+        chunks,
+        current,
+        path_slot,
+        "isFile",
+        "Cannot open file, path = ",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_fs(chunks, current, "readFileBytes", 1, line);
 }
@@ -137,7 +156,14 @@ pub fn emit_read_as_bytes_sync(chunks: &mut [Chunk], current: usize, argc: u8, l
 /// lines at the end of the file.
 pub fn emit_read_as_lines_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (path_slot, _) = take_receiver_path(chunks, current, argc, line);
-    throw_if_not(chunks, current, path_slot, "isFile", "Cannot open file, path = ", line);
+    throw_if_not(
+        chunks,
+        current,
+        path_slot,
+        "isFile",
+        "Cannot open file, path = ",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_fs(chunks, current, "readFile", 1, line);
 
@@ -176,12 +202,19 @@ fn emit_write_via(chunks: &mut [Chunk], current: usize, argc: u8, host_fn: &str,
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     match args.first() {
         Some(data) => chunks[current].emit_op_u16(Op::LOCAL_GET, *data, line),
-        None => chunks[current].emit_string_const("", line) }
+        None => chunks[current].emit_string_const("", line),
+    }
     call_fs(chunks, current, host_fn, 2, line);
     ops::emit_dyn_to_bool(&mut chunks[current], line);
     chunks[current].emit_op(Op::I32_EQZ, line);
     chunks[current].emit_if(line);
-    emit_filesystem_throw(chunks, current, path_slot, "Cannot open file, path = ", line);
+    emit_filesystem_throw(
+        chunks,
+        current,
+        path_slot,
+        "Cannot open file, path = ",
+        line,
+    );
     chunks[current].emit_end(line);
     chunks[current].emit_ref_null(vybe_runtime::opcode::heaptype::HT_EXTERN, line);
 }
@@ -232,7 +265,14 @@ pub fn emit_exists_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 /// `handle.deleteSync()` — `remove` covers both a file and a directory.
 pub fn emit_delete_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (path_slot, _) = take_receiver_path(chunks, current, argc, line);
-    throw_if_not(chunks, current, path_slot, "exists", "Deletion failed, path = ", line);
+    throw_if_not(
+        chunks,
+        current,
+        path_slot,
+        "exists",
+        "Deletion failed, path = ",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_fs(chunks, current, "remove", 1, line);
 }
@@ -240,7 +280,14 @@ pub fn emit_delete_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u3
 /// `file.lengthSync()`
 pub fn emit_length_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (path_slot, _) = take_receiver_path(chunks, current, argc, line);
-    throw_if_not(chunks, current, path_slot, "isFile", "Cannot retrieve length, path = ", line);
+    throw_if_not(
+        chunks,
+        current,
+        path_slot,
+        "isFile",
+        "Cannot retrieve length, path = ",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_fs(chunks, current, "fileSize", 1, line);
 }
@@ -307,7 +354,8 @@ fn emit_relocate(chunks: &mut [Chunk], current: usize, argc: u8, host_fn: &str, 
     chunks[current].emit_struct_field_op(Op::STRUCT_GET, 0, path_key, line);
     match arg_slots.first() {
         Some(dest) => chunks[current].emit_op_u16(Op::LOCAL_GET, *dest, line),
-        None => chunks[current].emit_string_const("", line) }
+        None => chunks[current].emit_string_const("", line),
+    }
     call_fs(chunks, current, host_fn, 2, line);
     chunks[current].emit_op(Op::DROP, line);
 
@@ -322,7 +370,8 @@ fn emit_relocate(chunks: &mut [Chunk], current: usize, argc: u8, host_fn: &str, 
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     match arg_slots.first() {
         Some(dest) => chunks[current].emit_op_u16(Op::LOCAL_GET, *dest, line),
-        None => chunks[current].emit_string_const("", line) }
+        None => chunks[current].emit_string_const("", line),
+    }
     chunks[current].emit_struct_field_op(Op::STRUCT_SET, 0, path_key, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, out_slot, line);
     chunks[current].emit_op_u16(Op::LOCAL_GET, recv_slot, line);
@@ -344,7 +393,14 @@ pub fn emit_copy_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32)
 /// asking the filesystem what the entry actually is.
 pub fn emit_list_sync(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     let (path_slot, _) = take_receiver_path(chunks, current, argc, line);
-    throw_if_not(chunks, current, path_slot, "isDir", "Directory listing failed, path = ", line);
+    throw_if_not(
+        chunks,
+        current,
+        path_slot,
+        "isDir",
+        "Directory listing failed, path = ",
+        line,
+    );
     chunks[current].emit_op_u16(Op::LOCAL_GET, path_slot, line);
     call_fs(chunks, current, "listDir", 1, line);
 }

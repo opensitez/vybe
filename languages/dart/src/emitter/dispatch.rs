@@ -1,6 +1,7 @@
 //! Auto-extracted `dart.*` dispatch (language-specific routing lives in the
 //! language module; the common dispatcher delegates here).
 
+use vybe_compiler::primitives::url::UrlField;
 use vybe_runtime::Chunk;
 
 pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, line: u32) -> bool {
@@ -8,23 +9,46 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // Structural equality for composite built-ins — Dart records/tuples
         // compare by VALUE. Reached as `[builtin_slots.array] eq`; used to be
         // the `LanguageHooks::value_eq` callback, keyed by language name.
-        "dart.value_eq" => vybe_compiler::primitives::tuples::emit_tuple_value_eq(
-            &mut chunks[current],
-            line,
-        ),
+        "dart.value_eq" => {
+            vybe_compiler::primitives::tuples::emit_tuple_value_eq(&mut chunks[current], line)
+        }
         // dart:io filesystem — see emitter/io_adapter.rs
-        "dart.io_read_as_string_sync" => crate::emitter::io_adapter::emit_read_as_string_sync(chunks, current, argc, line),
-        "dart.io_read_as_bytes_sync" => crate::emitter::io_adapter::emit_read_as_bytes_sync(chunks, current, argc, line),
-        "dart.io_read_as_lines_sync" => crate::emitter::io_adapter::emit_read_as_lines_sync(chunks, current, argc, line),
-        "dart.io_write_as_string_sync" => crate::emitter::io_adapter::emit_write_as_string_sync(chunks, current, argc, line),
-        "dart.io_append_as_string_sync" => crate::emitter::io_adapter::emit_append_as_string_sync(chunks, current, argc, line),
-        "dart.io_exists_sync" => crate::emitter::io_adapter::emit_exists_sync(chunks, current, argc, line),
-        "dart.io_delete_sync" => crate::emitter::io_adapter::emit_delete_sync(chunks, current, argc, line),
-        "dart.io_length_sync" => crate::emitter::io_adapter::emit_length_sync(chunks, current, argc, line),
-        "dart.io_create_sync" => crate::emitter::io_adapter::emit_create_sync(chunks, current, argc, line),
-        "dart.io_rename_sync" => crate::emitter::io_adapter::emit_rename_sync(chunks, current, argc, line),
-        "dart.io_copy_sync" => crate::emitter::io_adapter::emit_copy_sync(chunks, current, argc, line),
-        "dart.io_list_sync" => crate::emitter::io_adapter::emit_list_sync(chunks, current, argc, line),
+        "dart.io_read_as_string_sync" => {
+            crate::emitter::io_adapter::emit_read_as_string_sync(chunks, current, argc, line)
+        }
+        "dart.io_read_as_bytes_sync" => {
+            crate::emitter::io_adapter::emit_read_as_bytes_sync(chunks, current, argc, line)
+        }
+        "dart.io_read_as_lines_sync" => {
+            crate::emitter::io_adapter::emit_read_as_lines_sync(chunks, current, argc, line)
+        }
+        "dart.io_write_as_string_sync" => {
+            crate::emitter::io_adapter::emit_write_as_string_sync(chunks, current, argc, line)
+        }
+        "dart.io_append_as_string_sync" => {
+            crate::emitter::io_adapter::emit_append_as_string_sync(chunks, current, argc, line)
+        }
+        "dart.io_exists_sync" => {
+            crate::emitter::io_adapter::emit_exists_sync(chunks, current, argc, line)
+        }
+        "dart.io_delete_sync" => {
+            crate::emitter::io_adapter::emit_delete_sync(chunks, current, argc, line)
+        }
+        "dart.io_length_sync" => {
+            crate::emitter::io_adapter::emit_length_sync(chunks, current, argc, line)
+        }
+        "dart.io_create_sync" => {
+            crate::emitter::io_adapter::emit_create_sync(chunks, current, argc, line)
+        }
+        "dart.io_rename_sync" => {
+            crate::emitter::io_adapter::emit_rename_sync(chunks, current, argc, line)
+        }
+        "dart.io_copy_sync" => {
+            crate::emitter::io_adapter::emit_copy_sync(chunks, current, argc, line)
+        }
+        "dart.io_list_sync" => {
+            crate::emitter::io_adapter::emit_list_sync(chunks, current, argc, line)
+        }
         "dart.is_empty" => {
             crate::emitter::string_adapter::emit_dart_is_empty(chunks, current, line)
         }
@@ -78,26 +102,10 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.regexp_group" => {
             crate::emitter::string_adapter::emit_dart_regexp_group(chunks, current, line)
         }
-        "dart.exception" => {
-            crate::emitter::string_adapter::emit_dart_exception(chunks, current, argc, line)
-        }
-        "dart.format_exception" => {
-            crate::emitter::string_adapter::emit_dart_format_exception(chunks, current, argc, line)
-        }
-        "dart.range_error" => {
-            crate::emitter::string_adapter::emit_dart_range_error(chunks, current, argc, line)
-        }
-        "dart.state_error" => {
-            crate::emitter::string_adapter::emit_dart_state_error(chunks, current, argc, line)
-        }
-        "dart.argument_error" => {
-            crate::emitter::string_adapter::emit_dart_argument_error(chunks, current, argc, line)
-        }
-        "dart.unimplemented_error" => {
-            crate::emitter::string_adapter::emit_dart_unimplemented_error(
-                chunks, current, argc, line,
-            )
-        }
+        // `dart.exception` / `.format_exception` / `.range_error` /
+        // `.state_error` / `.argument_error` / `.unimplemented_error` are GONE —
+        // those six types are `dart:core` classes now
+        // (`core_classes/exceptions.rs`), constructed through `ExprKind::New`.
         "dart.stack_trace" => {
             crate::emitter::string_adapter::emit_dart_stack_trace(chunks, current, line)
         }
@@ -153,11 +161,12 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.duration_negate" => {
             crate::emitter::core_adapter::emit_duration_negate(chunks, current, line)
         }
-        "dart.datetime_new" => {
-            crate::emitter::core_adapter::emit_datetime_new(chunks, current, argc, false, line)
-        }
-        "dart.datetime_utc" => {
-            crate::emitter::core_adapter::emit_datetime_new(chunks, current, argc, true, line)
+        // The `dart.datetime_*` family is GONE — `DateTime` is a class
+        // (`core_classes/datetime.rs`) and every member is spelled in Dart.
+        // What is left of the domain is two CONVENTIONS the AST names.
+        "dart.date_month" => crate::emitter::core_adapter::emit_date_month(chunks, current, line),
+        "dart.date_weekday" => {
+            crate::emitter::core_adapter::emit_date_weekday(chunks, current, line)
         }
         "dart.add_general" => {
             crate::emitter::string_adapter::emit_dart_add_general(chunks, current, argc, line)
@@ -168,41 +177,41 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         "dart.difference" => {
             crate::emitter::string_adapter::emit_dart_difference(chunks, current, line)
         }
-        "dart.datetime_add" => {
-            crate::emitter::core_adapter::emit_datetime_add(chunks, current, line)
-        }
-        "dart.datetime_subtract" => {
-            crate::emitter::core_adapter::emit_datetime_subtract(chunks, current, line)
-        }
-        "dart.datetime_difference" => {
-            crate::emitter::core_adapter::emit_datetime_difference(chunks, current, line)
-        }
-        "dart.datetime_is_before" => {
-            crate::emitter::core_adapter::emit_datetime_is_before(chunks, current, line)
-        }
-        "dart.datetime_is_after" => {
-            crate::emitter::core_adapter::emit_datetime_is_after(chunks, current, line)
-        }
-        "dart.datetime_same_moment" => {
-            crate::emitter::core_adapter::emit_datetime_same_moment(chunks, current, line)
-        }
         "dart.compare_to" => crate::emitter::core_adapter::emit_compare_to(chunks, current, line),
-        "dart.uri_parse" => crate::emitter::core_adapter::emit_uri_parse(chunks, current, line),
-        "dart.uri_http" => {
-            crate::emitter::core_adapter::emit_uri_http(chunks, current, argc, false, line)
+        // The `dart.uri_*` family is GONE. `Uri` is a class
+        // (`core_classes/uri.rs`) and every member below is spelled in Dart in
+        // its body, so `normalizePath`/`replace`/`resolve` are real code rather
+        // than the empty `{}` emitters two of them used to be. What remains is
+        // the parse and the component reads, which `primitives::url` owns.
+        "dart.url_parse" => crate::emitter::core_adapter::emit_url_parse(chunks, current, line),
+        "dart.url_scheme" => {
+            crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::Scheme, line)
         }
-        "dart.uri_https" => {
-            crate::emitter::core_adapter::emit_uri_http(chunks, current, argc, true, line)
+        "dart.url_host" => {
+            crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::Host, line)
         }
-        "dart.uri_file" => crate::emitter::core_adapter::emit_uri_file(chunks, current, line),
-        "dart.uri_normalize_path" => {
-            crate::emitter::core_adapter::emit_uri_normalize_path(chunks, current, line)
+        "dart.url_port" => {
+            crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::Port, line)
         }
-        "dart.uri_replace" => crate::emitter::core_adapter::emit_uri_replace(chunks, current, line),
-        "dart.uri_resolve" => crate::emitter::core_adapter::emit_uri_resolve(chunks, current, line),
-        "dart.uri_resolve_uri" => {
-            crate::emitter::core_adapter::emit_uri_resolve_uri(chunks, current, line)
+        "dart.url_path" => {
+            crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::Path, line)
         }
+        "dart.url_query" => {
+            crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::Query, line)
+        }
+        "dart.url_fragment" => crate::emitter::core_adapter::emit_url_component(
+            chunks,
+            current,
+            UrlField::Fragment,
+            line,
+        ),
+        "dart.url_user" => {
+            crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::User, line)
+        }
+        "dart.url_pass" => {
+            crate::emitter::core_adapter::emit_url_component(chunks, current, UrlField::Pass, line)
+        }
+        "dart.url_decode" => crate::emitter::core_adapter::emit_url_decode(chunks, current, line),
         "dart.list_filled" => crate::emitter::core_adapter::emit_list_filled(chunks, current, line),
         "dart.list_generate" => {
             crate::emitter::string_adapter::emit_dart_list_generate(chunks, current, argc, line)
@@ -526,6 +535,7 @@ pub fn dispatch(name: &str, chunks: &mut Vec<Chunk>, current: usize, argc: u8, l
         // `argc` includes receiver: `argc == N + 1`. Inline emit chains
         // ARRAY_GET (polymorphic over Map / Object / Array) with
         // null-short-circuit at every step.
-        _ => return false }
+        _ => return false,
+    }
     true
 }

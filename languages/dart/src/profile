@@ -28,7 +28,14 @@ uses_normalize_class = true
 # `this` is supplied by member-call dispatch rather than as a source-visible
 # positional parameter. Reuse the common prototype emitter path used by JS.
 class_method_dispatch = "prototype"
-ambient_this_binding = true
+# NOT `ecma_new_dispatch`. Tried and MEASURED 2026-08-09: declaring it changed
+# neither the ctor-in-a-method aliasing nor the static-field aliasing, so the
+# missing `[[Construct]]` protocol is not what makes a dart constructor reuse
+# the ambient receiver. The selection at `expressions.rs:4361` is — a `New`
+# emit prefers the RAW `<Class>$arityN` global whenever it is already in
+# `defined_globals` and the bare `<Class>` arity DISPATCHER otherwise, and only
+# the dispatcher allocates. Inside the class's own method the `$arityN` global
+# is always defined.
 # namespaceplan.md: namespace-shaped entry points resolve through the
 # common resolver (compiler::resolver) instead of the legacy hardcoded
 # arms — same flip as JS/VB/C#/PHP/C, driven by the esm_default data below.
@@ -95,18 +102,13 @@ MapEntry            = { emit = "common:dart.map_entry",          min_args = 2, m
 "Set.identity"      = { emit = "common:dart.set_new",            min_args = 0, max_args = 0 }
 SplayTreeSet        = { emit = "common:dart.set_new",            min_args = 0, max_args = 0 }
 "Queue.from"        = { emit = "common:dart.list_from",          min_args = 1, max_args = 1 }
-Exception           = { emit = "common:dart.exception",          min_args = 0, max_args = 1 }
-FormatException     = { emit = "common:dart.format_exception",   min_args = 0, max_args = 1 }
-RangeError          = { emit = "common:dart.range_error",        min_args = 0, max_args = 1 }
-StateError          = { emit = "common:dart.state_error",        min_args = 0, max_args = 1 }
-ArgumentError       = { emit = "common:dart.argument_error",     min_args = 0, max_args = 1 }
-UnimplementedError  = { emit = "common:dart.unimplemented_error", min_args = 0, max_args = 1 }
-__dart_exception    = { emit = "common:dart.exception",          min_args = 0, max_args = 1 }
-__dart_format_exception = { emit = "common:dart.format_exception", min_args = 0, max_args = 1 }
-__dart_range_error  = { emit = "common:dart.range_error",        min_args = 0, max_args = 1 }
-__dart_state_error  = { emit = "common:dart.state_error",        min_args = 0, max_args = 1 }
-__dart_argument_error = { emit = "common:dart.argument_error",   min_args = 0, max_args = 1 }
-__dart_unimplemented_error = { emit = "common:dart.unimplemented_error", min_args = 0, max_args = 1 }
+# The twelve exception rows are GONE — six public names and their six
+# `__dart_*` walker aliases. `Exception`, `FormatException`, `Error`,
+# `StateError`, `ArgumentError`, `RangeError` and `UnimplementedError` are
+# `dart:core` CLASSES (`core_classes/exceptions.rs`), so construction takes the
+# ordinary `ExprKind::New` path and identity comes from a real rtt plus the
+# `__types` chain `compile_class` stamps — not from an anonymous struct with a
+# canonicalized `__type` string.
 __dart_stack_trace  = { emit = "common:dart.stack_trace",        min_args = 1, max_args = 1 }
 # builtinslotplan.md step 5 — `dart.index_get` probes `wasm:js-string.test`
 # before every index. A statically-typed receiver skips the probe.
@@ -122,21 +124,32 @@ __dart_runtime_type = { emit = "common:dart.runtime_type",       min_args = 1, m
 __dart_type_to_string = { emit = "common:dart.type_to_string",   min_args = 1, max_args = 1 }
 __dart_is_list_of_int = { emit = "common:dart.is_list_of_int",   min_args = 1, max_args = 1 }
 __dart_double_to_string = { emit = "common:dart.double_to_string", min_args = 1, max_args = 1 }
-# `Duration` is not here: it is a `dart.core` CLASS (`core_classes.rs`), so
+# `Duration` is not here: it is a `dart.core` CLASS (`core_classes/duration.rs`), so
 # `Duration(...)` is an ordinary construction and its members dispatch on the
 # receiver. The wrapper this replaces was an anonymous struct with a `__type`
 # STRING, which is why `d1 + d2` had no `+` to find.
-DateTime            = { emit = "common:dart.datetime_new",       min_args = 3, max_args = 6 }
-# NOTE — `a.difference(b)` still produces the LEGACY Duration wrapper, not a
-# class instance. `difference` is a receiver-BLIND `[value_methods]` entry that
-# serves DateTime and Set alike and picks between them by sniffing a `__type`
-# STRING at runtime, so the walker cannot rewrite the spelling to a
-# construction without breaking `Set.difference`, and an emit cannot allocate a
-# declared class (it has no type index). The wrapper still answers `.inDays`
-# and friends because the class deliberately keeps the same FIELD names, but
-# two Duration shapes coexist until value-method dispatch becomes
-# receiver-typed. `emit_datetime_diff_ms` is already factored out for that day.
-"DateTime.utc"      = { emit = "common:dart.datetime_utc",       min_args = 3, max_args = 6 }
+# `DateTime` is not here either — it is a CLASS (`core_classes/datetime.rs`).
+# `DateTime(y, m, d, …)`, `DateTime.utc(…)` and `DateTime.now()` are all
+# rewritten by the walker into a construction of it, so the two Duration shapes
+# the note here used to describe are gone: `a.difference(b)` is a method on the
+# class and returns a real `Duration`.
+#
+# The epoch→calendar reads below are BARE host getters — no adapter code. The
+# two that are not bare are the two CONVENTIONS: Dart numbers months from 1 and
+# weekdays Monday=1, which `vybe_ast::datetime` owns as `MonthIndexing` and
+# `WeekdayBase` and `primitives::datetime` applies. Spelling either as
+# arithmetic in the class body would be a fourth copy of a rule the AST already
+# states.
+__dart_date_utc     = { emit = "host:ecma:date:UTC",             min_args = 6, max_args = 6 }
+__dart_date_now     = { emit = "host:ecma:date:now",             min_args = 0, max_args = 0 }
+__dart_date_year    = { emit = "host:ecma:date:getUTCFullYear",  min_args = 1, max_args = 1 }
+__dart_date_day     = { emit = "host:ecma:date:getUTCDate",      min_args = 1, max_args = 1 }
+__dart_date_hour    = { emit = "host:ecma:date:getUTCHours",     min_args = 1, max_args = 1 }
+__dart_date_minute  = { emit = "host:ecma:date:getUTCMinutes",   min_args = 1, max_args = 1 }
+__dart_date_second  = { emit = "host:ecma:date:getUTCSeconds",   min_args = 1, max_args = 1 }
+__dart_date_millisecond = { emit = "host:ecma:date:getUTCMilliseconds", min_args = 1, max_args = 1 }
+__dart_date_month   = { emit = "common:dart.date_month",         min_args = 1, max_args = 1 }
+__dart_date_weekday = { emit = "common:dart.date_weekday",       min_args = 1, max_args = 1 }
 "Future.value"      = { emit = "host:ecma:promise:resolve",       min_args = 1, max_args = 1 }
 "Future.error"      = { emit = "host:ecma:promise:reject",        min_args = 1, max_args = 1 }
 "Future.sync"       = { emit = "common:dart.future_call0",        min_args = 1, max_args = 1 }
@@ -161,10 +174,32 @@ DateTime            = { emit = "common:dart.datetime_new",       min_args = 3, m
 # from — `dart.core.Uri.parse` walks the tree today. They cannot simply be
 # deleted: this table is that namespace's source. What retires is the flat
 # table's role as a RESOLUTION path (namespaceplan Phase 6), not the data.
-"Uri.parse"         = { emit = "common:dart.uri_parse",          min_args = 1, max_args = 1 }
-"Uri.http"          = { emit = "common:dart.uri_http",           min_args = 2, max_args = 4 }
-"Uri.https"         = { emit = "common:dart.uri_https",          min_args = 2, max_args = 4 }
-"Uri.file"          = { emit = "common:dart.uri_file",           min_args = 1, max_args = 1 }
+# `Uri` is a CLASS (`core_classes/uri.rs`). Its four named constructors keep
+# their keys here — the tree is built FROM them, so deleting the rows would
+# delete `dart.core.Uri.parse` from the namespace — but the walker rewrites each
+# SPELLING into a `Uri(...)` construction before the emit is reached, exactly as
+# `Duration.zero` above does. The emits therefore never fire.
+"Uri.parse"         = { emit = "common:dart.url_parse",          min_args = 1, max_args = 1 }
+"Uri.http"          = { emit = "common:dart.url_parse",          min_args = 2, max_args = 4 }
+"Uri.https"         = { emit = "common:dart.url_parse",          min_args = 2, max_args = 4 }
+"Uri.file"          = { emit = "common:dart.url_parse",          min_args = 1, max_args = 1 }
+
+# The URL domain, through the shared codec `primitives::url` — one parse, one
+# component model. `Uri`'s constructor calls these; nothing else does.
+__dart_url_parse    = { emit = "common:dart.url_parse",          min_args = 1, max_args = 1 }
+__dart_url_scheme   = { emit = "common:dart.url_scheme",         min_args = 1, max_args = 1 }
+__dart_url_host     = { emit = "common:dart.url_host",           min_args = 1, max_args = 1 }
+__dart_url_port     = { emit = "common:dart.url_port",           min_args = 1, max_args = 1 }
+__dart_url_path     = { emit = "common:dart.url_path",           min_args = 1, max_args = 1 }
+__dart_url_query    = { emit = "common:dart.url_query",          min_args = 1, max_args = 1 }
+__dart_url_fragment = { emit = "common:dart.url_fragment",       min_args = 1, max_args = 1 }
+__dart_url_user     = { emit = "common:dart.url_user",           min_args = 1, max_args = 1 }
+__dart_url_pass     = { emit = "common:dart.url_pass",           min_args = 1, max_args = 1 }
+__dart_url_decode   = { emit = "common:dart.url_decode",         min_args = 1, max_args = 1 }
+# No `__dart_url_encode`. Nothing calls it: the class reassembles a URI from
+# components that were decoded on the way in and are written back verbatim, so
+# there is no encode side. A row with no caller is exactly what this conversion
+# is removing — it goes back when a member needs it.
 "List.filled"       = { emit = "common:dart.list_filled",        min_args = 2, max_args = 2 }
 "List.generate"     = { emit = "common:dart.list_generate",      min_args = 2, max_args = 3 }
 "List.from"         = { emit = "common:dart.list_from",          min_args = 1, max_args = 2 }
@@ -231,6 +266,10 @@ jsonDecode          = { emit = "host:ecma:json:parse",            min_args = 1, 
 
 # ── Date / Time ─────────────────────────────────────────────────────────────
 
+# Kept so `dart.core.DateTime.now` stays in the namespace tree — the tree is
+# built FROM these dotted keys — but the emit never fires: the walker rewrites
+# the SPELLING to `DateTime(__dart_date_now())`, a construction of the class,
+# exactly as it does for `Duration.zero` and the four `Uri.*` constructors.
 "DateTime.now"      = { emit = "host:ecma:date:now",    min_args = 0, max_args = 0 }
 
 # ── File I/O (dart:io) ──────────────────────────────────────────────────────
@@ -297,6 +336,23 @@ toString      = { emit = "common:dart.to_string",      min_args = 0, max_args = 
 # where Dart specifies 233.
 codeUnitAt    = { emit = "host:ecma:string:charCodeAt", min_args = 1, max_args = 1 }
 codeUnits     = { emit = "common:dart.string_code_units", min_args = 0, max_args = 0 }
+# NOTE — `length` deliberately has NO row here, and that is a COMPROMISE, not a
+# design. `.length` should be a ROLE read off `ProtocolSlot::Len`; what actually
+# answers an untyped `nums.length` today is the native JS `.length` property on
+# arrays and strings, so anything JS does not know (a user class with a `length`
+# getter) silently gets `undefined`.
+#
+# Restoring the row + the force-call was MEASURED and reverted: it strands dart
+# SETS. A set literal lowers to `__dart_set_from(Array([…]))` — a CALL, which
+# `infer_expr_type_hint` cannot classify — so `receiver_is_known_builtin_value`
+# is false, and the flat class-less `defined_class_methods` set then claims
+# `length` because `StringBuffer` declares it (`calls.rs:6017`). The call skips
+# `[value_methods]`, takes the dynamic path, reads `.length` (3) and CALLS it:
+# `f64 is not callable (type: 3)`, `collections_advanced/set_length`.
+#
+# That flat set is already condemned in shared — *"actively wrong … delete it
+# outright once receiver typing covers those, flexclassplan.md §3a"*. This row
+# goes back in when it does. Do not re-attempt before then.
 isEmpty       = { emit = "common:dart.is_empty",       min_args = 0, max_args = 0 }
 isNotEmpty    = { emit = "common:dart.is_not_empty",   min_args = 0, max_args = 0 }
 isEven        = { emit = "common:dart.is_even",        min_args = 0, max_args = 0 }
@@ -304,10 +360,16 @@ isOdd         = { emit = "common:dart.is_odd",         min_args = 0, max_args = 
 compareTo     = { emit = "common:dart.compare_to",     min_args = 1, max_args = 1 }
 replaceFirst  = { emit = "host:ecma:string:replace",   min_args = 2, max_args = 2 }
 runes         = { emit = "common:dart.string_runes",   min_args = 0, max_args = 0 }
-write         = { emit = "common:dart.sb_write",       min_args = 1, max_args = 1 }
-writeln       = { emit = "common:dart.sb_writeln",     min_args = 0, max_args = 1 }
-writeAll      = { emit = "common:dart.sb_write_all",   min_args = 1, max_args = 2 }
-writeCharCode = { emit = "common:dart.sb_write_char_code", min_args = 1, max_args = 1 }
+# `write`/`writeln`/`writeAll`/`writeCharCode` are GONE. Their emits were
+# `dart.sb_*` — StringBuffer-only implementations sitting in a
+# receiver-agnostic table, competing with the real methods the class declares
+# (`core_classes/string_buffer.rs`). A typed StringBuffer receiver already resolves to the
+# class through `user_typed_receiver_shadow`, so the rows only ever won where
+# the receiver was NOT a StringBuffer, which they could not serve anyway.
+#
+# `clear` STAYS: `dart.clear` is generic (List and Map clear through it too),
+# so it is not a StringBuffer duplicate. It goes when those receivers have
+# their own answer.
 clear         = { emit = "common:dart.clear",          min_args = 0, max_args = 0 }
 start         = { emit = "common:dart.stopwatch_start", min_args = 0, max_args = 0 }
 stop          = { emit = "common:dart.stopwatch_stop", min_args = 0, max_args = 0 }
@@ -337,15 +399,20 @@ sign          = { emit = "common:dart.num_sign",       min_args = 0, max_args = 
 negate        = { emit = "common:dart.duration_negate", min_args = 0, max_args = 0 }
 add           = { emit = "common:dart.add_general",    min_args = 1, max_args = 2 }
 __dart_sorted_add = { emit = "common:dart.sorted_set_add", min_args = 1, max_args = 1 }
-subtract      = { emit = "common:dart.datetime_subtract", min_args = 1, max_args = 1 }
+# `subtract` / `isBefore` / `isAfter` / `isAtSameMomentAs` are GONE — all four
+# were DateTime-only implementations in a receiver-blind table, and DateTime is
+# a CLASS now (`core_classes/datetime.rs`).
+#
+# `add` above and `difference` below STAY, because each also serves a receiver
+# that is NOT a class: `add` is List/Set's, and `difference` is Set's. Their
+# emits used to branch on a `__type == "DateTime"` string; that arm is deleted,
+# so each now does the one job its remaining receiver needs.
 difference    = { emit = "common:dart.difference",     min_args = 1, max_args = 1 }
-isBefore      = { emit = "common:dart.datetime_is_before", min_args = 1, max_args = 1 }
-isAfter       = { emit = "common:dart.datetime_is_after", min_args = 1, max_args = 1 }
-isAtSameMomentAs = { emit = "common:dart.datetime_same_moment", min_args = 1, max_args = 1 }
-normalizePath = { emit = "common:dart.uri_normalize_path", min_args = 0, max_args = 0 }
-replace       = { emit = "common:dart.uri_replace",    min_args = 0, max_args = 1 }
-resolve       = { emit = "common:dart.uri_resolve",    min_args = 1, max_args = 1 }
-resolveUri    = { emit = "common:dart.uri_resolve_uri", min_args = 1, max_args = 1 }
+# `normalizePath` / `replace` / `resolve` / `resolveUri` are GONE from this
+# receiver-agnostic table. They are real methods on the `Uri` CLASS now. Two of
+# the four emits they pointed at were literally `pub fn …(_,_,_) {}` — empty
+# bodies that consumed nothing and returned nothing; the 53/55 came from the
+# walker folding literal URLs at compile time, not from these rows.
 
 # List/Iterable property-style accessors (zero-arg getters).
 first         = { emit = "common:dart.list_first",     min_args = 0, max_args = 0 }
@@ -357,15 +424,18 @@ keys          = { emit = "common:dart.map_keys",       min_args = 0, max_args = 
 values        = { emit = "common:dart.map_values",     min_args = 0, max_args = 0 }
 entries       = { emit = "common:dart.map_entries",    min_args = 0, max_args = 0 }
 last          = { emit = "common:dart.list_last",      min_args = 0, max_args = 0 }
-# builtinslotplan.md step 5 — the first live slot binding.
-# `slot = "len"` says Dart's `length` fills the shared Len slot. When the
-# receiver's type is statically known, the binding replaces `dart.length` with
-# the direct call for that type; otherwise `dart.length` still runs, and it
-# stays the answer for every dynamically-typed receiver.
-# `dart.length` is a FIVE-way runtime probe (string → array → generator →
-# StringBuilder → user `.length` getter), so a statically-typed receiver was
-# paying for four tests it could never need.
-length        = { emit = "common:dart.length",         min_args = 0, max_args = 0, slot = "len" }
+# `length` is NOT a value method. It is a PROPERTY, and it is declared as a
+# `Property` leaf on `dart.core.StringBuffer` in `tree_register.rs` — the
+# namespaceplan.md §"Leaves" shape, which the shared member read consumes via
+# `lookup_type_property_target`. A row here would be the duplicate mechanism:
+# it needs the walker to force `sb.length` into `sb.length()`, and that call
+# is then shadowed by `user_typed_receiver_shadow` (`calls.rs:5993`) the
+# moment the receiver's class is known — the member get fires the getter,
+# yields the correct number, and the synthesised call calls the number
+# ("f64 is not callable (type: 9)").
+#
+# Builtin receivers need no row either: `"abcd".length`, `[1,2,3].length` and
+# `{"a":1}.length` all answer on the plain member read (measured 4, 3, 1).
 
 # Array/List instance methods
 removeLast    = { emit = "common:dart.list_remove_last", min_args = 0, max_args = 0 }
@@ -584,13 +654,12 @@ module = "web:encoding"
 # ────────────────────────────────────────────────────────────────────────────
 
 [known_types]
-# `StringBuffer` and `Duration` are not here: they are `dart.core` CLASSES, and
-# `[known_types]` is the pre-tree mechanism this table is being migrated off.
-# `DateTime` keeps its entry below until it moves too.
+# `StringBuffer`, `Duration`, `DateTime`, `Uri` and the seven exception types
+# are not here: they are `dart.core` CLASSES, and `[known_types]` is the
+# pre-tree mechanism this table is being migrated off. Three names left.
 Random          = ["wasi:random/insecure", "get-insecure-random-u64"]
 Stopwatch       = ["common", "dart.stopwatch_new"]
 RegExp          = ["common", "dart.regexp_new"]
-DateTime        = ["common", "dart.datetime_new"]
 
 # ────────────────────────────────────────────────────────────────────────────
 # NAMESPACES

@@ -48,19 +48,87 @@ fn module_tree_path(module: &str) -> String {
 ///
 /// The tree declares the NAME — that is what makes `dart.core.StringBuffer`
 /// reachable through the common resolver from any language, the same way
-/// `flutter.*` and `dotnet.*` are. It deliberately carries **no `ctor_call`
-/// and no `methods`**: the class itself is an ordinary `ClassDecl`
-/// (`core_classes.rs`) that normalises and compiles like any user class, so
-/// construction and member dispatch are already answered by `compile_class`'s
-/// rtt, vtable and prototype. A `ctor_call` here would intercept construction
-/// and put back the anonymous `struct.new 0` this migration removes; a
-/// `methods` entry would win over the class's own member.
+/// `flutter.*` and `dotnet.*` are. It deliberately carries **no `ctor_call`**:
+/// the class itself is an ordinary `ClassDecl` (`core_classes/`) that
+/// normalises and compiles like any user class, so construction is already
+/// answered by `compile_class`'s rtt and vtable, and a `ctor_call` here would
+/// intercept it and put back the anonymous `struct.new 0` this migration
+/// removes.
+///
+/// `methods` carries the PROPERTY leaves (`core_properties`). A type node with
+/// no leaves is incomplete — namespaceplan.md §"Leaves" — and a `Property`
+/// leaf is read by the member-read path, not by receiver dispatch, so it does
+/// not shadow the compiled class's own methods.
 ///
 /// `member_returns` stays, because a declared return type is knowledge the
 /// tree owns and the class body does not restate.
 ///
 /// The name list comes from `core_classes::CORE_CLASSES`, so the tree cannot
 /// declare a type the AST does not build, or miss one it does.
+/// The instance PROPERTY leaves of a core type.
+///
+/// namespaceplan.md §"Leaves": *"a package or type node alone is incomplete …
+/// property getters/setters live under the type's `methods`"*, and the leaf
+/// kind for a member read and written as a VALUE is `Property { get, set }` —
+/// whose own doc names `sb_length` / `sb_set_length` as the motivating case
+/// (`vybe_runtime::namespaces`). This is that declaration.
+///
+/// The shared member read consumes it directly (`expressions.rs:3081`): with
+/// `type_scopes` non-empty and the receiver's static type hint naming a
+/// registered type, `lookup_type_property_target` answers and the leaf's emit
+/// runs. So a declared property needs NO `[value_methods]` row and no walker
+/// force-call — those are the duplicate mechanism this replaces.
+///
+/// `get` points at `dart.length`, which is `emit_dart_length` — the consumer
+/// that reads `ProtocolSlot::Len` off the receiver before probing its runtime
+/// shape. Routing through the tree keeps the ROLE as the resolution; it only
+/// changes what carries the read there.
+///
+/// Keys are lowercase: `lookup_type_instance_member` folds the member name.
+fn core_properties(name: &str) -> Subtree {
+    let getters: &[(&str, &str)] = match name {
+        "StringBuffer" => &[
+            ("length", "dart.length"),
+            // Emptiness is its OWN slot. The class spells `bool get isEmpty`,
+            // which `protocol.rs` maps to `ProtocolSlot::IsEmpty` and
+            // `normalize_class.rs` publishes from the GETTER; `dart.is_empty`
+            // is now the consumer that asks for it before falling back to
+            // `length == 0`. Declaring the leaf is what lets the member READ
+            // reach that consumer without the walker forging a call — the
+            // forged call is what produced `bool is not callable (type: true)`.
+            ("isempty", "dart.is_empty"),
+            ("isnotempty", "dart.is_not_empty"),
+        ],
+        _ => &[],
+    };
+    getters
+        .iter()
+        .map(|(member, emit)| {
+            (
+                member.to_string(),
+                NamespaceNode::Property {
+                    get: Some(Box::new(NamespaceNode::CommonEmit(emit.to_string()))),
+                    set: None,
+                },
+            )
+        })
+        .collect()
+}
+
+/// A type node is only reachable for a receiver whose STATIC TYPE NAMES it.
+///
+/// That is what splits the two carriers, and it is not a limitation to route
+/// around. `var buf = StringBuffer()` infers through `ExprKind::New` to the
+/// class name, which normalises to `stringbuffer` and finds this node — so a
+/// NAMED type belongs here. `var nums = [9, 9, 9]` infers to the array-shape
+/// spelling `int()`, which names no type and never will; a built-in receiver
+/// is CLASSIFIED (`builtin_type_of` → `BuiltinType`), not named, and its
+/// declared carrier is `[builtin_slots.<type>]` in the profile.
+///
+/// Registering `string`/`list`/`map`/`set` as type nodes here was measured
+/// inert for exactly that reason, and it was a second mechanism for a job the
+/// profile already answers. Add a type node when the type has a NAME the
+/// inference can produce; declare a builtin slot otherwise.
 fn core_types() -> Subtree {
     let mut core = Subtree::new();
     for (name, _) in crate::core_classes::CORE_CLASSES {
@@ -72,18 +140,20 @@ fn core_types() -> Subtree {
                 ("isnotempty", "bool"),
             ]
             .as_slice(),
-            _ => &[] };
+            _ => &[],
+        };
         core.insert(
             name.to_lowercase(),
             NamespaceNode::Type {
                 ctor: None,
                 ctor_call: None,
                 statics: Subtree::new(),
-                methods: Subtree::new(),
+                methods: core_properties(name),
                 member_returns: member_returns
                     .iter()
                     .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect() },
+                    .collect(),
+            },
         );
     }
     core
@@ -107,7 +177,8 @@ fn library_of(owner: &str) -> &'static str {
         "Future" | "Stream" | "Promise" => "async",
         "Queue" => "collection",
         "Platform" => "io",
-        _ => "core" }
+        _ => "core",
+    }
 }
 
 /// Insert `member` into `owner`'s `statics`, creating the type node if the
@@ -126,7 +197,8 @@ fn insert_static(libraries: &mut Subtree, owner: &str, member: &str, node: Names
             ctor_call: None,
             statics: Subtree::new(),
             methods: Subtree::new(),
-            member_returns: BTreeMap::new() });
+            member_returns: BTreeMap::new(),
+        });
     let NamespaceNode::Type { statics, .. } = entry else {
         return;
     };
@@ -184,7 +256,8 @@ pub fn register_namespace_tree() {
             let node = match &def.emit {
                 BuiltinEmit::Common(op) => NamespaceNode::CommonEmit(op.clone()),
                 BuiltinEmit::HostCall(module, func) => namespaces::host_fn(module, func),
-                _ => continue };
+                _ => continue,
+            };
             insert_static(&mut libraries, owner, member, node);
         }
         for (library, types) in libraries {

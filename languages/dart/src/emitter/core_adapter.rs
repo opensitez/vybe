@@ -1,10 +1,10 @@
 //! Dart core library adapters for Duration, DateTime, and Uri.
 
 use std::sync::Arc;
+use vybe_compiler::primitives::instructions::{core_wasm, host};
+use vybe_compiler::primitives::{collections, reflection, url};
 use vybe_runtime::opcode::Op;
 use vybe_runtime::{Chunk, Value};
-use vybe_compiler::primitives::instructions::{core_wasm, host};
-use vybe_compiler::primitives::{collections, reflection};
 
 fn key(chunk: &mut Chunk, name: &str) -> u16 {
     chunk.add_constant(Value::String(Arc::from(name)))
@@ -297,49 +297,12 @@ fn utc_from_stack(chunks: &mut [Chunk], current: usize, argc: u8, line: u32) {
     host::emit(&mut chunks[current], "ecma:date", "UTC", 6, line);
 }
 
-fn wrap_datetime_ms(chunks: &mut [Chunk], current: usize, is_utc: bool, line: u32) {
-    let ms = chunks[current].alloc_scratch(2);
-    let dow = ms + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, ms, line);
-    obj_new(&mut chunks[current], line);
-    stamp_runtime_type(
-        &mut chunks[current],
-        "DateTime",
-        reflection::ReflectKind::Object,
-        line,
-    );
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, ms, line);
-    set_field(&mut chunks[current], "millisecondsSinceEpoch", line);
-    for (field, getter, add_one) in [
-        ("year", "getUTCFullYear", false),
-        ("month", "getUTCMonth", true),
-        ("day", "getUTCDate", false),
-        ("hour", "getUTCHours", false),
-        ("minute", "getUTCMinutes", false),
-        ("second", "getUTCSeconds", false),
-    ] {
-        core_wasm::dup(&mut chunks[current], line);
-        date_get(chunks, current, ms, getter, line);
-        if add_one {
-            chunks[current].emit_f64_const(1.0, line);
-            chunks[current].emit_op(Op::F64_ADD, line);
-        }
-        set_field(&mut chunks[current], field, line);
-    }
-    date_get(chunks, current, ms, "getUTCDay", line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, dow, line);
-    core_wasm::dup(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, dow, line);
-    vybe_compiler::primitives::ops::emit_dyn_to_bool(&mut chunks[current], line);
-    chunks[current].emit_if(line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, dow, line);
-    chunks[current].emit_else(line);
-    chunks[current].emit_f64_const(7.0, line);
-    chunks[current].emit_end(line);
-    set_field(&mut chunks[current], "weekday", line);
-    set_bool(&mut chunks[current], "isUtc", is_utc, line);
-}
+// `wrap_datetime_ms` is GONE. It built an anonymous `ecma:object`, stamped a
+// `__type` STRING of "DateTime" on it, and eagerly filled seven calendar parts
+// with `ecma:date` getters. `DateTime` is a CLASS now
+// (`core_classes/datetime.rs`): the same seven parts are fields filled in its
+// constructor, and the type is an rtt rather than a string two other emits had
+// to read to find out what they were holding.
 
 fn datetime_ms_from_obj(chunk: &mut Chunk, slot: u16, line: u32) {
     chunk.emit_op_u16(Op::LOCAL_GET, slot, line);
@@ -385,99 +348,49 @@ fn emit_compare_slots(chunk: &mut Chunk, left: u16, right: u16, line: u32) {
     chunk.emit_end(line);
 }
 
-pub fn emit_datetime_new(chunks: &mut [Chunk], current: usize, argc: u8, is_utc: bool, line: u32) {
-    utc_from_stack(chunks, current, argc, line);
-    wrap_datetime_ms(chunks, current, is_utc, line);
-}
-
-pub fn emit_datetime_add(chunks: &mut [Chunk], current: usize, line: u32) {
-    let dur = chunks[current].alloc_scratch(2);
-    let dt = dur + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, dur, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, dt, line);
-    datetime_ms_from_obj(&mut chunks[current], dt, line);
-    duration_ms_from_obj(&mut chunks[current], dur, line);
-    chunks[current].emit_op(Op::F64_ADD, line);
-    wrap_datetime_ms(chunks, current, false, line);
-}
-
-pub fn emit_dart_add(chunks: &mut [Chunk], current: usize, line: u32) {
-    let value = chunks[current].alloc_scratch(2);
-    let receiver = value + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, value, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, receiver, line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver, line);
-    get_field(&mut chunks[current], reflection::FIELD_TYPE, line);
-    chunks[current].emit_string_const("DateTime", line);
-    chunks[current].emit_op(Op::EQ, line);
-    chunks[current].emit_if(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    emit_datetime_add(chunks, current, line);
-
-    chunks[current].emit_else(line);
-
-    chunks[current].emit_op_u16(Op::LOCAL_GET, receiver, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, value, line);
-    collections::emit_push(chunks, current, line);
-
-    chunks[current].emit_end(line);
-}
-
-pub fn emit_datetime_subtract(chunks: &mut [Chunk], current: usize, line: u32) {
-    let dur = chunks[current].alloc_scratch(2);
-    let dt = dur + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, dur, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, dt, line);
-    datetime_ms_from_obj(&mut chunks[current], dt, line);
-    duration_ms_from_obj(&mut chunks[current], dur, line);
-    chunks[current].emit_op(Op::F64_SUB, line);
-    wrap_datetime_ms(chunks, current, false, line);
-}
-
-pub fn emit_datetime_difference(chunks: &mut [Chunk], current: usize, line: u32) {
-    emit_datetime_diff_ms(chunks, current, line);
-    wrap_duration_ms(&mut chunks[current], line);
-}
-
-/// The signed millisecond span between two DateTimes. Stack: [a, b] → [ms].
+/// `__dart_date_month(ms)` — the UTC month in Dart's ONE-BASED numbering.
 ///
-/// The number alone, because a `Duration` is now a declared CLASS and an emit
-/// has no type index with which to allocate one. The walker hands this result
-/// to `Duration(...)`, so the construction happens where classes are built.
-pub fn emit_datetime_diff_ms(chunks: &mut [Chunk], current: usize, line: u32) {
-    let right = chunks[current].alloc_scratch(2);
-    let left = right + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, right, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, left, line);
-    datetime_ms_from_obj(&mut chunks[current], left, line);
-    datetime_ms_from_obj(&mut chunks[current], right, line);
-    chunks[current].emit_op(Op::F64_SUB, line);
+/// `MonthIndexing` is `vybe_ast::datetime` vocabulary, not arithmetic to
+/// respell: the host getter is zero-based and the +1 is the convention.
+pub fn emit_date_month(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:date", "getUTCMonth", 1, line);
+    // The host getter is `MonthIndexing::ZeroBased`; Dart is `OneBased`.
+    if DART_MONTHS != vybe_ast::datetime::MonthIndexing::ZeroBased {
+        chunks[current].emit_f64_const(1.0, line);
+        chunks[current].emit_op(Op::F64_ADD, line);
+    }
 }
 
-fn compare_ms(chunks: &mut [Chunk], current: usize, line: u32, op: Op) {
-    let right = chunks[current].alloc_scratch(2);
-    let left = right + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, right, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, left, line);
-    datetime_ms_from_obj(&mut chunks[current], left, line);
-    datetime_ms_from_obj(&mut chunks[current], right, line);
-    chunks[current].emit_op(op, line);
-    vybe_compiler::primitives::ops::emit_i32_to_bool(&mut chunks[current], line);
+/// Dart numbers months 1–12.
+const DART_MONTHS: vybe_ast::datetime::MonthIndexing = vybe_ast::datetime::MonthIndexing::OneBased;
+
+/// `__dart_date_weekday(ms)` — the UTC weekday with Monday = 1.
+///
+/// Straight through `primitives::datetime::emit_weekday_in_base`, which owns
+/// the three bases every language picks from. The emitter this replaces spelled
+/// the Sunday-zero fixup as an inline `if dow != 0 { dow } else { 7 }`.
+pub fn emit_date_weekday(chunks: &mut [Chunk], current: usize, line: u32) {
+    host::emit(&mut chunks[current], "ecma:date", "getUTCDay", 1, line);
+    vybe_compiler::primitives::datetime::emit_weekday_in_base(
+        &mut chunks[current],
+        vybe_ast::datetime::WeekdayBase::MondayOne,
+        line,
+    );
 }
 
-pub fn emit_datetime_is_before(chunks: &mut [Chunk], current: usize, line: u32) {
-    compare_ms(chunks, current, line, Op::F64_LT);
-}
+// `emit_datetime_new` / `_add` / `_subtract` / `_difference` / `_diff_ms` /
+// `_is_before` / `_is_after` / `_same_moment` are GONE — every one of them is a
+// member on the `DateTime` CLASS now, spelled in Dart.
 
-pub fn emit_datetime_is_after(chunks: &mut [Chunk], current: usize, line: u32) {
-    compare_ms(chunks, current, line, Op::F64_GT);
-}
-
-pub fn emit_datetime_same_moment(chunks: &mut [Chunk], current: usize, line: u32) {
-    compare_ms(chunks, current, line, Op::F64_EQ);
+/// `[value_methods] add` — the LIST push, and nothing else.
+///
+/// This used to open by reading `__type` off the receiver and comparing it to
+/// the string `"DateTime"`, branching between advancing a moment and appending
+/// to a list. That test is what a wrapper forces on every shared entry point
+/// that might receive one. `DateTime` declares its own `add` now, so a moment
+/// never reaches here.
+pub fn emit_dart_add(chunks: &mut [Chunk], current: usize, line: u32) {
+    collections::emit_push(chunks, current, line);
 }
 
 pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
@@ -542,118 +455,50 @@ pub fn emit_compare_to(chunks: &mut [Chunk], current: usize, line: u32) {
     chunks[current].emit_end(line);
 }
 
-fn get_url_prop(chunk: &mut Chunk, url_slot: u16, prop: &str, line: u32) {
-    chunk.emit_op_u16(Op::LOCAL_GET, url_slot, line);
-    get_field(chunk, prop, line);
+// `Uri` is a CLASS (`core_classes/uri.rs`). What used to live here — a
+// `wrap_url` that read WHATWG properties and stripped `:` / `?` / `#` by hand
+// with `ecma:string.replace` — was `primitives::url`'s `Trim::TrailingColon`
+// and `Trim::LeadingChar` written a second time. These readers are the whole
+// Dart surface onto that primitive now: one parse, one component model.
+//
+// The shape is java's (`__j_url_parse` + `__j_url_*` getters, `platforms/jvm`),
+// which `emit_component_of` was written for: *"a PROFILE builtin instead
+// receives its argument on the stack."*
+//
+// `ParseMode::Syntactic` with `lowercase_scheme`, not WHATWG. Dart's
+// `Uri.parse` is an RFC 3986 SPLIT: it accepts a relative reference
+// (`Uri.parse('/a/b').host` is `''`), where WHATWG `new URL` throws, and it
+// does not fold host case or drop ports. `emit_parse_syntactic` re-attaches
+// the punctuation WHATWG carries, so the same component readers serve both.
+fn dart_parse_options() -> url::ParseOptions {
+    url::ParseOptions {
+        mode: url::ParseMode::Syntactic,
+        lowercase_scheme: true }
 }
 
-fn wrap_url(chunks: &mut [Chunk], current: usize, line: u32) {
-    let url = chunks[current].alloc_scratch(1);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, url, line);
-    obj_new(&mut chunks[current], line);
-    stamp_runtime_type(
-        &mut chunks[current],
-        "Uri",
-        reflection::ReflectKind::Object,
-        line,
-    );
-    set_bool(&mut chunks[current], "__dart_uri_marker", true, line);
-    core_wasm::dup(&mut chunks[current], line);
-    get_url_prop(&mut chunks[current], url, "protocol", line);
-    chunks[current].emit_string_const(":", line);
-    chunks[current].emit_string_const("", line);
-    host::emit(&mut chunks[current], "ecma:string", "replace", 3, line);
-    set_field(&mut chunks[current], "scheme", line);
-    for (dart, web) in [
-        ("host", "hostname"),
-        ("authority", "host"),
-        ("path", "pathname"),
-        ("queryParameters", "searchParams"),
-        ("origin", "origin"),
-    ] {
-        core_wasm::dup(&mut chunks[current], line);
-        get_url_prop(&mut chunks[current], url, web, line);
-        set_field(&mut chunks[current], dart, line);
-    }
-    core_wasm::dup(&mut chunks[current], line);
-    get_url_prop(&mut chunks[current], url, "port", line);
-    set_field(&mut chunks[current], "port", line);
-    core_wasm::dup(&mut chunks[current], line);
-    get_url_prop(&mut chunks[current], url, "search", line);
-    chunks[current].emit_string_const("?", line);
-    chunks[current].emit_string_const("", line);
-    host::emit(&mut chunks[current], "ecma:string", "replace", 3, line);
-    set_field(&mut chunks[current], "query", line);
-    core_wasm::dup(&mut chunks[current], line);
-    get_url_prop(&mut chunks[current], url, "hash", line);
-    chunks[current].emit_string_const("#", line);
-    chunks[current].emit_string_const("", line);
-    host::emit(&mut chunks[current], "ecma:string", "replace", 3, line);
-    set_field(&mut chunks[current], "fragment", line);
-    core_wasm::dup(&mut chunks[current], line);
-    get_url_prop(&mut chunks[current], url, "href", line);
-    set_field(&mut chunks[current], "href", line);
-    set_bool(&mut chunks[current], "hasScheme", true, line);
-    set_bool(&mut chunks[current], "hasAuthority", true, line);
-    set_bool(&mut chunks[current], "isAbsolute", true, line);
+/// `__dart_url_parse(s)` — the ONE parse. Every component read below takes the
+/// object this returns.
+pub fn emit_url_parse(chunks: &mut [Chunk], current: usize, line: u32) {
+    url::emit_parse(chunks, current, dart_parse_options(), line);
 }
 
-pub fn emit_uri_parse(chunks: &mut [Chunk], current: usize, line: u32) {
-    host::emit(&mut chunks[current], "web:url", "parse", 1, line);
-    wrap_url(chunks, current, line);
+/// `__dart_url_<field>(parsed)` — one canonical component, trimmed by the
+/// shared reader.
+pub fn emit_url_component(
+    chunks: &mut [Chunk],
+    current: usize,
+    field: url::UrlField,
+    line: u32,
+) {
+    url::emit_component_of(chunks, current, field, line);
 }
 
-pub fn emit_uri_http(chunks: &mut [Chunk], current: usize, argc: u8, https: bool, line: u32) {
-    if argc > 2 {
-        chunks[current].emit_op(Op::DROP, line);
-    }
-    if argc > 3 {
-        chunks[current].emit_op(Op::DROP, line);
-    }
-    let path = chunks[current].alloc_scratch(2);
-    let host_slot = path + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, path, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, host_slot, line);
-    chunks[current].emit_string_const(if https { "https://" } else { "http://" }, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, host_slot, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, path, line);
-    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-    emit_uri_parse(chunks, current, line);
-}
-
-pub fn emit_uri_file(chunks: &mut [Chunk], current: usize, line: u32) {
-    chunks[current].emit_string_const("file://", line);
-    vybe_compiler::primitives::ops::emit_dyn_add(&mut chunks[current], line);
-    emit_uri_parse(chunks, current, line);
-}
-
-pub fn emit_uri_normalize_path(_chunks: &mut [Chunk], _current: usize, _line: u32) {}
-pub fn emit_uri_replace(_chunks: &mut [Chunk], _current: usize, _line: u32) {}
-
-pub fn emit_uri_resolve(chunks: &mut [Chunk], current: usize, line: u32) {
-    let rel = chunks[current].alloc_scratch(2);
-    let base = rel + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, rel, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, base, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, rel, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
-    get_field(&mut chunks[current], "href", line);
-    host::emit(&mut chunks[current], "web:url", "parse", 2, line);
-    wrap_url(chunks, current, line);
-}
-
-pub fn emit_uri_resolve_uri(chunks: &mut [Chunk], current: usize, line: u32) {
-    let rel = chunks[current].alloc_scratch(2);
-    let base = rel + 1;
-    chunks[current].emit_op_u16(Op::LOCAL_SET, rel, line);
-    chunks[current].emit_op_u16(Op::LOCAL_SET, base, line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, rel, line);
-    get_field(&mut chunks[current], "href", line);
-    chunks[current].emit_op_u16(Op::LOCAL_GET, base, line);
-    get_field(&mut chunks[current], "href", line);
-    host::emit(&mut chunks[current], "web:url", "parse", 2, line);
-    wrap_url(chunks, current, line);
+/// `__dart_url_decode(s)` — RFC 3986 percent-decoding.
+///
+/// The walker fold this replaces spelled it `text.replace("%20", " ")`, which
+/// decoded exactly one sequence. Every other escape came through verbatim.
+pub fn emit_url_decode(chunks: &mut [Chunk], current: usize, line: u32) {
+    url::emit_percent_decode(chunks, current, url::PercentOptions::rfc3986(), line);
 }
 
 pub fn emit_list_filled(chunks: &mut [Chunk], current: usize, line: u32) {
