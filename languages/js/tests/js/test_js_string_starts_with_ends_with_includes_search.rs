@@ -233,4 +233,3 @@ console.log("abc".startsWith("a", NaN));
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

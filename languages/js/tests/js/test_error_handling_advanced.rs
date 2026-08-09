@@ -264,4 +264,3 @@ console.log(g.next().done);
         vec!["1", "closed", "true"]
     );
 }
-

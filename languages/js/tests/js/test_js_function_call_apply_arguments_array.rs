@@ -253,4 +253,3 @@ console.log(fn({ a: 5 }));
 "#;
     assert_eq!(run_js(src), vec!["5"]);
 }
-

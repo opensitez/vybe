@@ -204,4 +204,3 @@ console.log([-"42", -true, -null, -undefined].join("|"));
         vec!["-42|-1|0|NaN"]
     );
 }
-

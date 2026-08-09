@@ -577,4 +577,3 @@ crate::js_cases! {
         ["true"]
     };
 }
-

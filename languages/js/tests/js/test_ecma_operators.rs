@@ -847,7 +847,7 @@ fn delete_literal_expression_is_true() {
         r#"
 console.log(delete 123);
 console.log(delete "x");
-"#
+"#,
     );
     assert_eq!(out, vec!["true", "true"]);
 }
@@ -894,4 +894,3 @@ console.log(sideEffect);
     );
     assert_eq!(out, vec!["initial", "false"]);
 }
-

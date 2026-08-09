@@ -249,4 +249,3 @@ console.log(f("XYZ"));
 "#;
     assert_eq!(run_js(src), vec!["X-Y-Z"]);
 }
-

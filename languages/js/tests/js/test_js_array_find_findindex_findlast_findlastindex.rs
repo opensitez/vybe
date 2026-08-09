@@ -241,4 +241,3 @@ console.log(nums.findLast(function(x) { return x < this.cap; }, ctx));
 "#;
     assert_eq!(run_js(src), vec!["25"]);
 }
-

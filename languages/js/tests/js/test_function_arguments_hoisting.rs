@@ -209,4 +209,3 @@ console.log(f(null));
         vec!["default", "null"]
     );
 }
-

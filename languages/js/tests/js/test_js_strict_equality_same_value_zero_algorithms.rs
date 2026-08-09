@@ -325,4 +325,3 @@ console.log(`${floats.includes(-0)}:${floats.includes(NaN)}`);
 "#;
     assert_eq!(run_js(src), vec!["true:true"]);
 }
-

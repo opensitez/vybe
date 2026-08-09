@@ -352,4 +352,3 @@ fn test_js_async_finally_throw_overrides_resolve() {
 "#;
     assert_eq!(run_js(src), vec!["async_finally_err"]);
 }
-

@@ -228,4 +228,3 @@ console.log(res.join(","));
 "#;
     assert_eq!(run_js(src), vec!["15,20"]);
 }
-

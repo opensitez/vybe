@@ -213,4 +213,3 @@ console.log(x.toString());
 "#;
     assert_eq!(run_js(src), vec!["16", "4"]);
 }
-

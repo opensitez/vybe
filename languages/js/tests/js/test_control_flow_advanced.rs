@@ -59,7 +59,7 @@ outer: for (let i = 0; i < 3; i++) {
     }
 }
 console.log(log.join("|"));
-"#
+"#,
     );
     assert_eq!(out, vec!["body-0|finally-0|finally-1|body-2|finally-2"]);
 }
@@ -368,7 +368,7 @@ for (const i in arr) {
     }
 }
 console.log(indices.join("|"));
-"# 
+"#
         ),
         vec!["string:0|string:1|string:2"]
     );
@@ -1091,7 +1091,6 @@ console.log(out.join("|"));
     );
 }
 
-
 #[test]
 fn test_js_control_flow_switch_body_shared_lexical_scope_redeclaration_error() {
     let src = r#"
@@ -1128,4 +1127,3 @@ console.log(count);
 "#;
     assert_eq!(run_js(src), vec!["1"]);
 }
-

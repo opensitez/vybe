@@ -166,4 +166,3 @@ err().catch(e => console.log(e));
     );
     assert_eq!(out, vec!["boom"]);
 }
-

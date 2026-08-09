@@ -158,4 +158,3 @@ console.log(typeof fmt.formatToParts === "function");
         vec!["true"]
     );
 }
-

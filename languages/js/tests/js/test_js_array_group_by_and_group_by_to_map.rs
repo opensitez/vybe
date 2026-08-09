@@ -237,4 +237,3 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["Map.groupBy Non-Iterable TypeError"]);
 }
-

@@ -244,4 +244,3 @@ console.log(new Derived().res);
 "#;
     assert_eq!(run_js(src), vec!["10"]);
 }
-

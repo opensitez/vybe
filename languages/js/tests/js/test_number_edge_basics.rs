@@ -183,4 +183,3 @@ console.log(Number.isNaN(parseInt("")) + "|" + Number.isNaN(parseFloat("")));
         ["true|true"]
     };
 }
-

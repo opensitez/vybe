@@ -289,4 +289,3 @@ console.log(`${r.value}:${r.done}:${g.next().done}`);
 "#;
     assert_eq!(run_js(src), vec!["early:true:true"]);
 }
-

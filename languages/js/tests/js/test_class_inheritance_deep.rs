@@ -463,4 +463,3 @@ console.log(Derived.getName());
         vec!["DerivedSuffix"]
     );
 }
-

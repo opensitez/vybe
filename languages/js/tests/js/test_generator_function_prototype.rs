@@ -566,4 +566,3 @@ crate::js_cases! {
         ["GeneratorFunction"]
     };
 }
-

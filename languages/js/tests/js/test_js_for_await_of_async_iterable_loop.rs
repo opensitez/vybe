@@ -441,5 +441,3 @@ const dual = {
 "#;
     assert_eq!(run_js(src), vec!["async"]);
 }
-
-

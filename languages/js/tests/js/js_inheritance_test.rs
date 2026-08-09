@@ -530,4 +530,3 @@ fn test_derived_constructor_missing_super_call_throws_referenceerror() {
     "#;
     assert_eq!(run_js_one(code), "ReferenceError");
 }
-

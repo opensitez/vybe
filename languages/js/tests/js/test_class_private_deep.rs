@@ -194,4 +194,3 @@ console.log(Secret.secret);
         vec!["staticSecret"]
     );
 }
-

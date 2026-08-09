@@ -224,4 +224,3 @@ console.log(`${desc.writable}:${desc.enumerable}:${desc.configurable}`);
 "#;
     assert_eq!(run_js(src), vec!["false:false:true"]);
 }
-

@@ -72,4 +72,3 @@ console.log(Number.isNaN("foo"));
         ["true", "false"]
     };
 }
-

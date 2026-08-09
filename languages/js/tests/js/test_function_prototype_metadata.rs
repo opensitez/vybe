@@ -309,4 +309,3 @@ console.log(new Sentinel() instanceof Sentinel);
         ["get prop|set prop"]
     };
 }
-

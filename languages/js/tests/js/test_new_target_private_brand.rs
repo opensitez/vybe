@@ -111,4 +111,3 @@ Reflect.construct(Base, [], Sub);
         ["true"]
     };
 }
-

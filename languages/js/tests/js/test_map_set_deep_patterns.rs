@@ -236,4 +236,3 @@ console.log(s.clear() === undefined);
         vec!["true"]
     );
 }
-

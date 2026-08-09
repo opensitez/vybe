@@ -299,4 +299,3 @@ console.log(Object.hasOwn(err, "cause"));
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

@@ -250,4 +250,3 @@ console.log(String.raw`` === "");
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

@@ -275,4 +275,3 @@ console.log("foo" - 1);
 "#;
     assert_eq!(run_js(src), vec!["NaN"]);
 }
-

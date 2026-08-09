@@ -376,4 +376,3 @@ console.log([Math.LN2 > 0, Math.LN10 > 0, Math.SQRT2 > 1, Math.SQRT1_2 < 1].ever
         vec!["true"]
     );
 }
-

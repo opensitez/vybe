@@ -161,7 +161,7 @@ console.log(chars[2]);
 fn spread_string_adds_indexed_properties() {
     assert_eq!(
         run_js(
-        r#"
+            r#"
 const chars = { ..."hello" };
 console.log(chars[0]);
 console.log(chars[1]);

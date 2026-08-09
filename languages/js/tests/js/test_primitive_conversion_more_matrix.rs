@@ -129,4 +129,3 @@ console.log(Number(Object(true).valueOf()));
     };
     string_bigint_binary_literal_parses => { r#"console.log(BigInt("0b1010").toString());"#, ["10"] };
 }
-

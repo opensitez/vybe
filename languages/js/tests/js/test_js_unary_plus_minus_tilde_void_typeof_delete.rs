@@ -265,4 +265,3 @@ console.log((-0n === 0n) + "|" + Object.is(-0n, 0n));
 "#;
     assert_eq!(run_js(src), vec!["true|true"]);
 }
-

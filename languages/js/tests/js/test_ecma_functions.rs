@@ -446,4 +446,3 @@ console.log(f.length);
     );
     assert_eq!(out, vec!["0"]);
 }
-

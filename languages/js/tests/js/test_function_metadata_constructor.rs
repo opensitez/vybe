@@ -185,4 +185,3 @@ console.log(target.bind(null).name);
         ["bound target"]
     };
 }
-

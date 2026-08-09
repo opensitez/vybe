@@ -408,4 +408,3 @@ fn test_string_code_point_at() {
     let out = run_js(r#"console.log("A".codePointAt(0));"#);
     assert_eq!(out, vec!["65"]);
 }
-

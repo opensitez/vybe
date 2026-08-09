@@ -348,4 +348,3 @@ fn().catch(e => console.log(e));
 "#;
     assert_eq!(run_js(src), vec!["fin_rej"]);
 }
-

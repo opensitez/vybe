@@ -330,4 +330,3 @@ console.log(Secret.exposed);
 "#;
     assert_eq!(run_js(src), vec!["abc"]);
 }
-

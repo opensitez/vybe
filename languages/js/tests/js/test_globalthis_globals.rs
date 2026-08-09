@@ -171,4 +171,3 @@ console.log(desc.writable);
         vec!["false"]
     );
 }
-

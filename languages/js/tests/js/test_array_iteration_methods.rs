@@ -146,7 +146,7 @@ const value = arr.find((value, index) => {
 console.log(value);
 console.log(seen.join(","));
 "#
-    ),
+        ),
         vec!["3", "0,1,2,3"]
     );
 }
@@ -315,4 +315,3 @@ console.log(res.join(","));
         vec!["1,undefined,3"]
     );
 }
-

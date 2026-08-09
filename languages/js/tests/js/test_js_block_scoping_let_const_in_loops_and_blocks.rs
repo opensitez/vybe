@@ -281,4 +281,3 @@ console.log(globalThis.globalVarProp === "myVar");
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

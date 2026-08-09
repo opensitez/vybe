@@ -224,5 +224,3 @@ console.log(`${(0n ** 0n).toString()}:${(5n ** 0n).toString()}:${(2n ** 64n).toS
 "#;
     assert_eq!(run_js(src), vec!["1:1:18446744073709551616"]);
 }
-
-

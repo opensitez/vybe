@@ -216,4 +216,3 @@ console.log(~(-0));
 "#;
     assert_eq!(run_js(src), vec!["-1"]);
 }
-

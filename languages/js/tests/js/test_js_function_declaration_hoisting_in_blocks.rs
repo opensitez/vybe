@@ -259,4 +259,3 @@ console.log(f);
 "#;
     assert_eq!(run_js(src), vec!["inner", "outer"]);
 }
-

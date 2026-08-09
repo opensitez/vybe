@@ -611,7 +611,10 @@ do {
 } while (i < 4);
 console.log(log.join("|"));
 "#;
-    assert_eq!(run_js(src), vec!["body0|finally1|body1|finally2|body2|finally3|body3|finally4"]);
+    assert_eq!(
+        run_js(src),
+        vec!["body0|finally1|body1|finally2|body2|finally3|body3|finally4"]
+    );
 }
 
 #[test]
@@ -675,7 +678,7 @@ while ((checks++, i < 3)) {
 }
 console.log(i + "|" + checks);
 "#;
-assert_eq!(run_js(src), vec!["3|4"]);
+    assert_eq!(run_js(src), vec!["3|4"]);
 }
 
 #[test]
@@ -725,4 +728,3 @@ console.log(out.join(","));
 "#;
     assert_eq!(run_js(src), vec!["k1=v1"]);
 }
-

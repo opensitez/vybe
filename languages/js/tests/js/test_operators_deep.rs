@@ -555,8 +555,8 @@ console.log(`${nullCheck}:${undefinedCheck}`);
 #[test]
 fn instanceof_rhs_coercion_with_non_function_is_false() {
     assert_eq!(
-    run_js(
-        r#"
+        run_js(
+            r#"
 console.log(3 instanceof Number);
 console.log(3 instanceof 123);
 console.log({} instanceof Number);
@@ -709,10 +709,7 @@ console.log(1 + 2 + "3");
 console.log("1" - 2);
 console.log("1" * "2");
 "#;
-    assert_eq!(
-        run_js(src),
-        vec!["123", "123", "15", "33", "-1", "2"]
-    );
+    assert_eq!(run_js(src), vec!["123", "123", "15", "33", "-1", "2"]);
 }
 
 #[test]
@@ -734,4 +731,3 @@ console.log(`${100n < Infinity}:${-100n > -Infinity}:${100n > -Infinity}`);
 "#;
     assert_eq!(run_js(src), vec!["true:true:true"]);
 }
-

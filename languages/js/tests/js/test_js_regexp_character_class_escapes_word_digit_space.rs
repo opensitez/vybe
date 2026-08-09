@@ -195,4 +195,3 @@ console.log(re.test("123"));
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

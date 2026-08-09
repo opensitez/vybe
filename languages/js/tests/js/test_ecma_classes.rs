@@ -400,7 +400,7 @@ console.log(Config.label);
 console.log(Config.next());
 Config.label = "override";
 console.log(Config.next());
-"#
+"#,
     );
     assert_eq!(out, vec!["base", "base-next", "override-next"]);
 }
@@ -417,7 +417,7 @@ class Box {
 const b = new Box();
 b.value = 5;
 console.log(b.value);
-"#
+"#,
     );
     assert_eq!(out, vec!["5"]);
 }
@@ -470,7 +470,7 @@ class API {
     }
 }
 new API().fetchData().then(console.log);
-"#
+"#,
     );
     assert_eq!(out, vec!["asyncData"]);
 }

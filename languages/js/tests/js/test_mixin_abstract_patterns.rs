@@ -193,5 +193,3 @@ console.log(AppLogger.log("Ready"));
         vec!["[STATIC] Ready"]
     );
 }
-
-

@@ -230,4 +230,3 @@ console.log(Symbol.keyFor(s) === "");
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

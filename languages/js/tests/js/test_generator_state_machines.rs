@@ -190,4 +190,3 @@ for (const s of stateMachine()) {
         vec!["state1", "cleaned_up"]
     );
 }
-

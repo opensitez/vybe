@@ -586,4 +586,3 @@ const obj = {
         vec!["async_val"]
     );
 }
-

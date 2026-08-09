@@ -382,4 +382,3 @@ async function* outer() {
 "#;
     assert_eq!(run_js(src), vec!["1,caught:inner_err"]);
 }
-

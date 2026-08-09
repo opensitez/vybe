@@ -235,4 +235,3 @@ console.log(Object.getPrototypeOf(Error.prototype) === Object.prototype);
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

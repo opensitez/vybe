@@ -109,4 +109,3 @@ console.log((await asyncIter.next()).value + "|" + (await asyncIter.next()).valu
         ["10|20"]
     };
 }
-

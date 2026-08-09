@@ -287,4 +287,3 @@ fn test_class_constructor_call_without_new_throws_typeerror() {
     "#;
     assert_eq!(run_js_one(code), "TypeError");
 }
-

@@ -216,7 +216,7 @@ try {
 }
             "#
         ),
-            vec!["false"]
+        vec!["false"]
     );
 }
 
@@ -293,4 +293,3 @@ console.log((void fn() === undefined) + "|Side=" + side);
         vec!["true|Side=42"]
     );
 }
-

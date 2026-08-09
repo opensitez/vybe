@@ -180,4 +180,3 @@ console.log(Infinity / Infinity);
         vec!["NaN"]
     );
 }
-

@@ -304,8 +304,5 @@ console.log(Object.getOwnPropertySymbols(obj)[0] === token);
 console.log(token in obj);
 console.log(obj[token]);
 "#;
-    assert_eq!(
-        run_js(src),
-        vec!["1", "true", "true", "own"]
-    );
+    assert_eq!(run_js(src), vec!["1", "true", "true", "own"]);
 }

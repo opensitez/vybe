@@ -330,7 +330,10 @@ const invalid = {
     }
 })();
 "#;
-    assert_eq!(run_js(src), vec!["Symbol.asyncIterator Not Callable TypeError"]);
+    assert_eq!(
+        run_js(src),
+        vec!["Symbol.asyncIterator Not Callable TypeError"]
+    );
 }
 
 #[test]

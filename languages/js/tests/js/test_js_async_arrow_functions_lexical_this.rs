@@ -254,4 +254,3 @@ console.log(fn.length);
 "#;
     assert_eq!(run_js(src), vec!["1"]);
 }
-

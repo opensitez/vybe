@@ -313,4 +313,3 @@ try {
     );
     assert_eq!(out, vec!["true"]);
 }
-

@@ -228,4 +228,3 @@ console.log(rev.join(",") + "|isCustom=" + (rev instanceof CustomArray));
 "#;
     assert_eq!(run_js(src), vec!["3,2,1|isCustom=false"]);
 }
-

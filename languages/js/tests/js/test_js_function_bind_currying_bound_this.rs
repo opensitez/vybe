@@ -252,4 +252,3 @@ console.log(getter());
 "#;
     assert_eq!(run_js(src), vec!["42"]);
 }
-

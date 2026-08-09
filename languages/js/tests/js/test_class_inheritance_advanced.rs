@@ -514,7 +514,13 @@ console.log(Child.fullLabel);
 console.log(Child.label); // method name, not executed
 "#
         ),
-        vec!["child", "child:base", "child", "base|child|static:child", "static:child"]
+        vec![
+            "child",
+            "child:base",
+            "child",
+            "base|child|static:child",
+            "static:child"
+        ]
     );
 }
 
@@ -605,10 +611,7 @@ const c = new Child();
 console.log(c.label);
 console.log(c.readLabel());
 "#;
-    assert_eq!(
-        run_js(src),
-        vec!["base", "base"]
-    );
+    assert_eq!(run_js(src), vec!["base", "base"]);
 }
 
 #[test]
@@ -644,4 +647,3 @@ console.log(Child.greet("world"));
 "#;
     assert_eq!(run_js(src), vec!["Hello WORLD"]);
 }
-

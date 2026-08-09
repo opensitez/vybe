@@ -236,4 +236,3 @@ Promise.reject(undefined).catch(reason => console.log(reason === undefined));
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

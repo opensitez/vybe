@@ -356,4 +356,3 @@ fn map_key_negative_zero_same_as_positive_zero() {
         "zero true"
     );
 }
-

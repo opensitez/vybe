@@ -204,4 +204,3 @@ console.log("\u0041\u030A".normalize(formObj) === "Å");
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

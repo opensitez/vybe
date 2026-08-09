@@ -306,4 +306,3 @@ console.log(Number.parseFloat("Infinity"));
         vec!["Infinity"]
     );
 }
-

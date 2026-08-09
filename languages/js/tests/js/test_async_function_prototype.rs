@@ -338,4 +338,3 @@ crate::js_cases! {
         ["AsyncFunction"]
     };
 }
-

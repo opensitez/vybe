@@ -309,4 +309,3 @@ console.log(`${Math.atanh(1)}:${Math.atanh(-1)}`);
         vec!["Infinity:-Infinity"]
     );
 }
-

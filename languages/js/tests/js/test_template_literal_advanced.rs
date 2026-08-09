@@ -334,7 +334,7 @@ function inspect(strings, value) {
 }
 inspect`a\n${"B"}\t`;
 "#
-    ),
+        ),
         vec!["2", "2", "3", "B"]
     );
 }

@@ -282,4 +282,3 @@ console.log(Number.isNaN(+obj));
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

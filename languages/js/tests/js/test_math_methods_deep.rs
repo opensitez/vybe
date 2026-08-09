@@ -200,4 +200,3 @@ console.log(Math.pow(0, -1));
         vec!["Infinity"]
     );
 }
-

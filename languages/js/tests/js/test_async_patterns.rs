@@ -349,4 +349,3 @@ Promise.any([Promise.reject("e1"), Promise.reject("e2")]).catch(err => {
         &["e1,e2"]
     );
 }
-

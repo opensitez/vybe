@@ -216,4 +216,3 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["RangeError"]);
 }
-

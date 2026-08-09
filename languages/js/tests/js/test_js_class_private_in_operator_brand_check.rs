@@ -313,4 +313,3 @@ console.log(User.hasSetter(new User()) + "|" + User.hasSetter({}));
 "#;
     assert_eq!(run_js(src), vec!["true|false"]);
 }
-

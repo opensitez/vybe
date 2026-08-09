@@ -194,4 +194,3 @@ console.log(m.size + "|" + m.get(NaN));
         vec!["1|val2"]
     );
 }
-

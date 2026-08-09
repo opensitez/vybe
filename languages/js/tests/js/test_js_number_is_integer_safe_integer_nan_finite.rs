@@ -172,4 +172,3 @@ console.log(Number.isSafeInteger(100n));
 "#;
     assert_eq!(run_js(src), vec!["false"]);
 }
-

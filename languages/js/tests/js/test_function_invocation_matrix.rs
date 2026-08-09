@@ -991,4 +991,3 @@ console.log(Function.prototype.apply.call(f, null, [10, 20]));
         ["30"]
     );
 }
-

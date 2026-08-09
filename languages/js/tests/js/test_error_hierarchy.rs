@@ -308,4 +308,3 @@ console.log(e.constructor === Error);
         vec!["true"]
     );
 }
-

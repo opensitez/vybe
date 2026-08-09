@@ -264,4 +264,3 @@ main();
         vec!["rejected_return"]
     );
 }
-

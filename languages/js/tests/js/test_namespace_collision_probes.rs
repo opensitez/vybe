@@ -59,4 +59,3 @@ console.log([...arr[0]()].length);"#,
         ["42"]
     };
 }
-

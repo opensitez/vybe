@@ -220,4 +220,3 @@ fn variadic_args_with_default_parameter_survives_method_call() {
     );
     assert_eq!(out, "HELLO 2 X");
 }
-

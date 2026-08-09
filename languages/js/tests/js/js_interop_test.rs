@@ -820,10 +820,7 @@ fn test_e51_invoke_after_class_definition() {
     let result = vm
         .invoke(
             &func,
-            &[
-                vybe_runtime::Value::F64(6.0),
-                vybe_runtime::Value::F64(7.0),
-            ],
+            &[vybe_runtime::Value::F64(6.0), vybe_runtime::Value::F64(7.0)],
         )
         .expect("invoke failed");
     assert_eq!(format!("{}", result), "42");

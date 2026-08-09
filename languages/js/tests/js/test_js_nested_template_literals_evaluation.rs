@@ -233,4 +233,3 @@ console.log((() => `IIFE_${`Value_${123}`}`)());
 "#;
     assert_eq!(run_js(src), vec!["IIFE_Value_123"]);
 }
-

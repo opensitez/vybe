@@ -339,4 +339,3 @@ f().then(v => console.log(v));
         vec!["500"]
     );
 }
-

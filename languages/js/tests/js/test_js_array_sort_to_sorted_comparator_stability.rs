@@ -236,4 +236,3 @@ console.log(nums.join(","));
 "#;
     assert_eq!(run_js(src), vec!["1,2,3"]);
 }
-

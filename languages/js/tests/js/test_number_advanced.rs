@@ -249,4 +249,3 @@ console.log(Object.is(Math.sign(-0), -0));
         vec!["true"]
     );
 }
-

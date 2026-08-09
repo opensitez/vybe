@@ -219,4 +219,3 @@ crate::js_cases! {
         ["[object MyCustomClass]"]
     };
 }
-

@@ -359,4 +359,3 @@ console.log(System.update(42));
 "#;
     assert_eq!(run_js(src), vec!["42"]);
 }
-

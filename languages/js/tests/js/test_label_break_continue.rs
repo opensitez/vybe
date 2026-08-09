@@ -245,4 +245,3 @@ console.log(res);
 "#;
     assert_eq!(run_js(src), vec!["inner"]);
 }
-

@@ -269,4 +269,3 @@ console.log(fns.map(f => f()).join(","));
         vec!["a,b"]
     );
 }
-

@@ -297,7 +297,7 @@ obj.value &&= "updated";
 
 console.log(`${obj.value}|${getCount}|${setCount}`);
 "#;
-assert_eq!(run_js(src), vec!["updated|4|3"]);
+    assert_eq!(run_js(src), vec!["updated|4|3"]);
 }
 
 #[test]
@@ -321,10 +321,7 @@ console.log(obj.value);
 console.log(keyEval);
 "#;
 
-    assert_eq!(
-        run_js(src),
-        vec!["final", "6"]
-    );
+    assert_eq!(run_js(src), vec!["final", "6"]);
 }
 
 #[test]
@@ -350,4 +347,3 @@ console.log(`${x}:${y}`);
 "#;
     assert_eq!(run_js(src), vec!["10:2"]);
 }
-

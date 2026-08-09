@@ -267,4 +267,3 @@ console.log(test());
 "#;
     assert_eq!(run_js(src), vec!["GlobalReflect"]);
 }
-

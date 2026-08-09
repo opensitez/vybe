@@ -355,4 +355,3 @@ async function* gen() { yield 1; }
 "#;
     assert_eq!(run_js(src), vec!["post_done_throw"]);
 }
-

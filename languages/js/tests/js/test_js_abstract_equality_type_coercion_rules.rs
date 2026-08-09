@@ -436,4 +436,3 @@ console.log(`${s1 == s2}:${s1 === s2}`);
 "#;
     assert_eq!(run_js(src), vec!["false:false"]);
 }
-

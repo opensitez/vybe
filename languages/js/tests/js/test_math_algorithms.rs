@@ -279,4 +279,3 @@ console.log(norm(3, 4).join(","));
         vec!["0.6,0.8"]
     );
 }
-

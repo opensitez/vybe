@@ -334,4 +334,3 @@ console.log(Parent.isParent(Parent) + "|" + Parent.isParent(Child));
 "#;
     assert_eq!(run_js(src), vec!["true|false"]);
 }
-

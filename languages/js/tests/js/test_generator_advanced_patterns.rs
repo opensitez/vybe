@@ -218,4 +218,3 @@ console.log(r.value + "|" + r.done);
         vec!["finally", "done|true"]
     );
 }
-

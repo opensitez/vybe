@@ -219,4 +219,3 @@ console.log(spliced.join(",") + "|isCustom=" + (spliced instanceof CustomArray))
 "#;
     assert_eq!(run_js(src), vec!["2,3|isCustom=false"]);
 }
-

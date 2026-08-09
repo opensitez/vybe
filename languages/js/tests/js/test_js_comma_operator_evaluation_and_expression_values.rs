@@ -221,4 +221,3 @@ try {
 "#;
     assert_eq!(run_js(src), vec!["abort|step=1"]);
 }
-

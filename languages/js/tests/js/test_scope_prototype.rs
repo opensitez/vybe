@@ -503,14 +503,7 @@ console.log(Object.getPrototypeOf(obj) === null);
 console.log("mode" in obj);
 "#
         ),
-        &[
-            "true",
-            "A",
-            "true",
-            "B",
-            "true",
-            "false",
-        ]
+        &["true", "A", "true", "B", "true", "false",]
     );
 }
 
@@ -536,12 +529,7 @@ console.log(base._baseValue);
 console.log(obj.hasOwnProperty("value"));
 "#
         ),
-        &[
-            "9",
-            "undefined",
-            "undefined",
-            "false",
-        ]
+        &["9", "undefined", "undefined", "false",]
     );
 }
 
@@ -822,4 +810,3 @@ console.log(keys.length + "|" + (keys[1] === sym));
         &["2|true"]
     );
 }
-

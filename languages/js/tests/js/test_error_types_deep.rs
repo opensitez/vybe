@@ -210,4 +210,3 @@ console.log(Array.isArray(agg.errors));
         vec!["true"]
     );
 }
-

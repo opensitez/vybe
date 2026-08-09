@@ -401,4 +401,3 @@ console.log(new Sub().msg);
 "#;
     assert_eq!(run_js(src), vec!["hi"]);
 }
-

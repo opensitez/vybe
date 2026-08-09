@@ -204,4 +204,3 @@ console.log(formatter.format(12345).includes("E"));
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

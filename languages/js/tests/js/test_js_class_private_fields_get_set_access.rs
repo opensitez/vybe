@@ -339,4 +339,3 @@ console.log(new Counter().inc());
 "#;
     assert_eq!(run_js(src), vec!["11:11:12"]);
 }
-

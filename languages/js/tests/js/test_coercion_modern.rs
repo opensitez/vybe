@@ -615,4 +615,3 @@ console.log(Boolean(new Boolean(false)) + "|" + Boolean(new Number(0)) + "|" + B
         &["true|true|true"]
     );
 }
-

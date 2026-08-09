@@ -267,4 +267,3 @@ console.log(tag`A${1}B${2}C`);
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

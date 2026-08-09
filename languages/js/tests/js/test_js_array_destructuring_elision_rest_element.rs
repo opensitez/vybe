@@ -222,4 +222,3 @@ console.log(a + "|" + b + "|" + subRest.join(","));
 "#;
     assert_eq!(run_js(src), vec!["1|2|3,4"]);
 }
-

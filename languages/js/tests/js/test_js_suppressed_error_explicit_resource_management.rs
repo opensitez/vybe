@@ -255,4 +255,3 @@ console.log(Object.getPrototypeOf(SuppressedError.prototype) === Error.prototype
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

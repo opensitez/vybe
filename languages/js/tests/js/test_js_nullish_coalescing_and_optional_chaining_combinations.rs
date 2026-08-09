@@ -241,4 +241,3 @@ console.log(obj?.getVal());
 "#;
     assert_eq!(run_js(src), vec!["42"]);
 }
-

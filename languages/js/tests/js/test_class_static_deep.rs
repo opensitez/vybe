@@ -202,4 +202,3 @@ console.log(log.join(","));
         vec!["fieldA,block1,fieldB,block2"]
     );
 }
-

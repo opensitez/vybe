@@ -280,4 +280,3 @@ console.log(f());
         vec!["typeerror"]
     );
 }
-

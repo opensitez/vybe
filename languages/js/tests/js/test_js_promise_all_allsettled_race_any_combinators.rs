@@ -221,4 +221,3 @@ CustomPromise.all([CustomPromise.resolve(1)]).then(res => console.log(Array.isAr
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

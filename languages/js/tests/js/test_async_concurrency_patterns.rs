@@ -254,4 +254,3 @@ promise.then(v => console.log(v));
         vec!["99"]
     );
 }
-

@@ -125,10 +125,7 @@ fn test_js_template_literal_backslash_before_dollar_does_not_escape_interpolatio
 const value = 99;
 console.log(`literal: \${value} | computed: ${value}`);
 "#;
-    assert_eq!(
-        run_js(src),
-        vec!["literal: \\99 | computed: 99"]
-    );
+    assert_eq!(run_js(src), vec!["literal: \\99 | computed: 99"]);
 }
 
 #[test]
@@ -347,10 +344,7 @@ function capture(strings, value) {
 }
 console.log(capture`a\nb${41 + 1}c`);
 "#;
-    assert_eq!(
-        run_js(src),
-        vec!["2", "true", "true", "42"]
-    );
+    assert_eq!(run_js(src), vec!["2", "true", "true", "42"]);
 }
 
 #[test]
@@ -395,10 +389,7 @@ function capture(strings) {
 
 capture`a\nb${1}x${2}y`;
 "#;
-    assert_eq!(
-        run_js(src),
-        vec!["3", "3", "a\nb", "x", "y", "true"]
-    );
+    assert_eq!(run_js(src), vec!["3", "3", "a\nb", "x", "y", "true"]);
 }
 
 #[test]

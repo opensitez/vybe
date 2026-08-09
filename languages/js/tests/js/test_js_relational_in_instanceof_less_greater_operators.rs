@@ -379,4 +379,3 @@ console.log(`${"secret" in p}:${"other" in p}`);
 "#;
     assert_eq!(run_js(src), vec!["true:false"]);
 }
-

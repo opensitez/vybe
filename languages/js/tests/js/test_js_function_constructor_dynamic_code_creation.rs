@@ -211,4 +211,3 @@ console.log(Object.getPrototypeOf(Function.prototype) === Object.prototype);
 "#;
     assert_eq!(run_js(src), vec!["true"]);
 }
-

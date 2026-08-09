@@ -278,4 +278,3 @@ with (getObj()) {
 "#;
     assert_eq!(run_js(src), vec!["2"]);
 }
-
