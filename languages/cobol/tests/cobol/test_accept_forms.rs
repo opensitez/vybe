@@ -9,10 +9,7 @@ fn p(data: &str, body: &str) -> String {
 
 #[test]
 fn accept_from_date_compiles() {
-    compile_ok(&p(
-        "01 TODAY PIC 9(6).",
-        "    ACCEPT TODAY FROM DATE.",
-    ));
+    compile_ok(&p("01 TODAY PIC 9(6).", "    ACCEPT TODAY FROM DATE."));
 }
 
 #[test]
@@ -25,10 +22,7 @@ fn accept_from_date_yyyymmdd_compiles() {
 
 #[test]
 fn accept_from_time_compiles() {
-    compile_ok(&p(
-        "01 NOW PIC 9(8).",
-        "    ACCEPT NOW FROM TIME.",
-    ));
+    compile_ok(&p("01 NOW PIC 9(8).", "    ACCEPT NOW FROM TIME."));
 }
 
 #[test]
@@ -41,34 +35,22 @@ fn accept_from_day_compiles() {
 
 #[test]
 fn accept_from_day_of_week_compiles() {
-    compile_ok(&p(
-        "01 DOW PIC 9.",
-        "    ACCEPT DOW FROM DAY-OF-WEEK.",
-    ));
+    compile_ok(&p("01 DOW PIC 9.", "    ACCEPT DOW FROM DAY-OF-WEEK."));
 }
 
 #[test]
 fn accept_from_day_yyyyddd_compiles() {
-    compile_ok(&p(
-        "01 D PIC 9(7).",
-        "    ACCEPT D FROM DAY YYYYDDD.",
-    ));
+    compile_ok(&p("01 D PIC 9(7).", "    ACCEPT D FROM DAY YYYYDDD."));
 }
 
 #[test]
 fn accept_from_console_compiles() {
-    compile_ok(&p(
-        "01 S PIC X(20).",
-        "    ACCEPT S FROM CONSOLE.",
-    ));
+    compile_ok(&p("01 S PIC X(20).", "    ACCEPT S FROM CONSOLE."));
 }
 
 #[test]
 fn accept_from_command_line_compiles() {
-    compile_ok(&p(
-        "01 ARG PIC X(80).",
-        "    ACCEPT ARG FROM COMMAND-LINE.",
-    ));
+    compile_ok(&p("01 ARG PIC X(80).", "    ACCEPT ARG FROM COMMAND-LINE."));
 }
 
 #[test]
@@ -81,17 +63,12 @@ fn accept_multiple_fields_from_date() {
 
 #[test]
 fn accept_default_from_stdin_compiles() {
-    compile_ok(&p(
-        "01 INPUT-LINE PIC X(80).",
-        "    ACCEPT INPUT-LINE.",
-    ));
+    compile_ok(&p("01 INPUT-LINE PIC X(80).", "    ACCEPT INPUT-LINE."));
 }
 
 #[test]
 fn stop_run_terminates_program() {
-    compile_ok(
-        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    STOP RUN.",
-    );
+    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    STOP RUN.");
 }
 
 #[test]
@@ -105,24 +82,17 @@ fn stop_run_after_display() {
 
 #[test]
 fn stop_literal_compiles() {
-    compile_ok(&p(
-        "",
-        "    STOP \"PAUSE MESSAGE\".",
-    ));
+    compile_ok(&p("", "    STOP \"PAUSE MESSAGE\"."));
 }
 
 #[test]
 fn exit_program_compiles() {
-    compile_ok(
-        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    EXIT PROGRAM.",
-    );
+    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    EXIT PROGRAM.");
 }
 
 #[test]
 fn goback_compiles() {
-    compile_ok(
-        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    GOBACK.",
-    );
+    compile_ok("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    GOBACK.");
 }
 
 #[test]

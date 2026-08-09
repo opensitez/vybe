@@ -90,26 +90,17 @@ fn binary_comp3_with_decimal() {
 
 #[test]
 fn binary_comp5_basic_value() {
-    compile_ok(&p(
-        "01 N PIC 9(9) COMP-5 VALUE 0.",
-        "    ADD 42 TO N.",
-    ));
+    compile_ok(&p("01 N PIC 9(9) COMP-5 VALUE 0.", "    ADD 42 TO N."));
 }
 
 #[test]
 fn binary_comp1_float_compiles() {
-    compile_ok(&p(
-        "01 F COMP-1 VALUE 3.14.",
-        "    COMPUTE F = F * 2.",
-    ));
+    compile_ok(&p("01 F COMP-1 VALUE 3.14.", "    COMPUTE F = F * 2."));
 }
 
 #[test]
 fn binary_comp2_double_compiles() {
-    compile_ok(&p(
-        "01 D COMP-2 VALUE 3.14159.",
-        "    COMPUTE D = D + 1.",
-    ));
+    compile_ok(&p("01 D COMP-2 VALUE 3.14159.", "    COMPUTE D = D + 1."));
 }
 
 #[test]
@@ -122,18 +113,12 @@ fn binary_packed_decimal_synonymous_with_comp3() {
 
 #[test]
 fn binary_synonymous_with_comp() {
-    compile_ok(&p(
-        "01 N PIC 9(8) BINARY VALUE 0.",
-        "    ADD 1 TO N.",
-    ));
+    compile_ok(&p("01 N PIC 9(8) BINARY VALUE 0.", "    ADD 1 TO N."));
 }
 
 #[test]
 fn binary_comp_zero_init() {
-    let out = run_prints(&p(
-        "01 N PIC 9(5) COMP VALUE 0.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(5) COMP VALUE 0.", "    DISPLAY N."));
     assert_eq!(out, vec!["0"]);
 }
 
@@ -148,10 +133,7 @@ fn binary_comp3_zero_result_after_subtract() {
 
 #[test]
 fn binary_comp_signed_negative() {
-    let out = run_prints(&p(
-        "01 N PIC S9(5) COMP VALUE -500.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC S9(5) COMP VALUE -500.", "    DISPLAY N."));
     assert_eq!(out, vec!["-500"]);
 }
 

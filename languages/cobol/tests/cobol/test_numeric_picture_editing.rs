@@ -9,99 +9,66 @@ fn p(data: &str, body: &str) -> String {
 
 #[test]
 fn pic_9_basic_display() {
-    let out = run_prints(&p(
-        "01 N PIC 9 VALUE 7.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9 VALUE 7.", "    DISPLAY N."));
     assert_eq!(out, vec!["7"]);
 }
 
 #[test]
 fn pic_99_two_digits() {
-    let out = run_prints(&p(
-        "01 N PIC 99 VALUE 42.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 99 VALUE 42.", "    DISPLAY N."));
     assert_eq!(out, vec!["42"]);
 }
 
 #[test]
 fn pic_9_parenthetic_notation() {
-    let out = run_prints(&p(
-        "01 N PIC 9(4) VALUE 1234.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(4) VALUE 1234.", "    DISPLAY N."));
     assert_eq!(out, vec!["1234"]);
 }
 
 #[test]
 fn pic_x_single_char() {
-    let out = run_prints(&p(
-        "01 C PIC X VALUE \"A\".",
-        "    DISPLAY C.",
-    ));
+    let out = run_prints(&p("01 C PIC X VALUE \"A\".", "    DISPLAY C."));
     assert_eq!(out, vec!["A"]);
 }
 
 #[test]
 fn pic_x_parenthetic_fills() {
-    let out = run_prints(&p(
-        "01 S PIC X(6) VALUE \"COBOL\".",
-        "    DISPLAY S.",
-    ));
+    let out = run_prints(&p("01 S PIC X(6) VALUE \"COBOL\".", "    DISPLAY S."));
     assert_eq!(out, vec!["COBOL "]);
 }
 
 #[test]
 fn pic_a_alphabetic() {
-    compile_ok(&p(
-        "01 S PIC A(5) VALUE \"HELLO\".",
-        "    DISPLAY S.",
-    ));
+    compile_ok(&p("01 S PIC A(5) VALUE \"HELLO\".", "    DISPLAY S."));
 }
 
 #[test]
 fn pic_9_v_99_decimal() {
-    let out = run_prints(&p(
-        "01 D PIC 9V99 VALUE 3.14.",
-        "    DISPLAY D.",
-    ));
+    let out = run_prints(&p("01 D PIC 9V99 VALUE 3.14.", "    DISPLAY D."));
     assert_eq!(out, vec!["314"]);
 }
 
 #[test]
 fn pic_99_v_9999_decimal_leading_zero() {
-    let out = run_prints(&p(
-        "01 D PIC 99V9999 VALUE 01.2345.",
-        "    DISPLAY D.",
-    ));
+    let out = run_prints(&p("01 D PIC 99V9999 VALUE 01.2345.", "    DISPLAY D."));
     assert_eq!(out, vec!["012345"]);
 }
 
 #[test]
 fn pic_s9_signed_positive() {
-    let out = run_prints(&p(
-        "01 N PIC S9(4) VALUE +123.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC S9(4) VALUE +123.", "    DISPLAY N."));
     assert_eq!(out, vec!["+0123"]);
 }
 
 #[test]
 fn pic_s9_signed_negative() {
-    let out = run_prints(&p(
-        "01 N PIC S9(4) VALUE -123.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC S9(4) VALUE -123.", "    DISPLAY N."));
     assert_eq!(out, vec!["-0123"]);
 }
 
 #[test]
 fn pic_9_fills_leading_zeros() {
-    let out = run_prints(&p(
-        "01 N PIC 9(6) VALUE 42.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(6) VALUE 42.", "    DISPLAY N."));
     assert_eq!(out, vec!["000042"]);
 }
 
@@ -170,10 +137,7 @@ fn pic_s9_positive_becomes_positive_when_moved() {
 
 #[test]
 fn pic_9_comp3_value_roundtrip() {
-    let out = run_prints(&p(
-        "01 N PIC 9(7) COMP-3 VALUE 1234567.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(7) COMP-3 VALUE 1234567.", "    DISPLAY N."));
     assert_eq!(out, vec!["1234567"]);
 }
 
@@ -188,55 +152,37 @@ fn pic_x_longer_string_truncated() {
 
 #[test]
 fn pic_9_literal_all_nines() {
-    let out = run_prints(&p(
-        "01 N PIC 9(5) VALUE 99999.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(5) VALUE 99999.", "    DISPLAY N."));
     assert_eq!(out, vec!["99999"]);
 }
 
 #[test]
 fn pic_x_value_spaces() {
-    let out = run_prints(&p(
-        "01 S PIC X(5) VALUE SPACES.",
-        "    DISPLAY S.",
-    ));
+    let out = run_prints(&p("01 S PIC X(5) VALUE SPACES.", "    DISPLAY S."));
     assert_eq!(out, vec!["     "]);
 }
 
 #[test]
 fn pic_9_value_zeros() {
-    let out = run_prints(&p(
-        "01 N PIC 9(5) VALUE ZEROS.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(5) VALUE ZEROS.", "    DISPLAY N."));
     assert_eq!(out, vec!["00000"]);
 }
 
 #[test]
 fn pic_s9v99_negative_with_decimal() {
-    let out = run_prints(&p(
-        "01 N PIC S9(3)V99 VALUE -100.50.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC S9(3)V99 VALUE -100.50.", "    DISPLAY N."));
     assert_eq!(out, vec!["-10050"]);
 }
 
 #[test]
 fn pic_x_overlong_pic_truncation_at_definition_size() {
-    let out = run_prints(&p(
-        "01 S PIC X(3) VALUE \"AB\".",
-        "    DISPLAY S.",
-    ));
+    let out = run_prints(&p("01 S PIC X(3) VALUE \"AB\".", "    DISPLAY S."));
     assert_eq!(out, vec!["AB "]);
 }
 
 #[test]
 fn pic_9_level77() {
-    let out = run_prints(&p(
-        "77 N PIC 9(4) VALUE 2025.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("77 N PIC 9(4) VALUE 2025.", "    DISPLAY N."));
     assert_eq!(out, vec!["2025"]);
 }
 
@@ -269,9 +215,6 @@ fn pic_9_arithmetic_then_display() {
 
 #[test]
 fn pic_99_value_zero_padded() {
-    let out = run_prints(&p(
-        "01 N PIC 99 VALUE 7.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 99 VALUE 7.", "    DISPLAY N."));
     assert_eq!(out, vec!["07"]);
 }

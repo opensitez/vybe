@@ -312,24 +312,36 @@ fn cmp_case_10() {
 
 #[test]
 fn add_case_runtime_giving() {
-    let out = run_prints(&p("01 A PIC 99 VALUE 12.\n01 B PIC 99 VALUE 8.\n01 R PIC 99.", "    ADD A TO B GIVING R.\n    DISPLAY R."));
+    let out = run_prints(&p(
+        "01 A PIC 99 VALUE 12.\n01 B PIC 99 VALUE 8.\n01 R PIC 99.",
+        "    ADD A TO B GIVING R.\n    DISPLAY R.",
+    ));
     assert_eq!(out, vec!["20"]);
 }
 
 #[test]
 fn mul_case_runtime_not_on_size_error_path() {
-    let out = run_prints(&p("01 A PIC 9 VALUE 3.\n01 B PIC 9 VALUE 2.", "    MULTIPLY A BY B NOT ON SIZE ERROR DISPLAY \"OK\" END-MULTIPLY."));
+    let out = run_prints(&p(
+        "01 A PIC 9 VALUE 3.\n01 B PIC 9 VALUE 2.",
+        "    MULTIPLY A BY B NOT ON SIZE ERROR DISPLAY \"OK\" END-MULTIPLY.",
+    ));
     assert_eq!(out, vec!["OK"]);
 }
 
 #[test]
 fn div_case_runtime_quotient_remainder() {
-    let out = run_prints(&p("01 A PIC 99 VALUE 20.\n01 B PIC 9 VALUE 3.\n01 Q PIC 99.\n01 M PIC 9.", "    DIVIDE B INTO A GIVING Q REMAINDER M.\n    DISPLAY Q.\n    DISPLAY M."));
+    let out = run_prints(&p(
+        "01 A PIC 99 VALUE 20.\n01 B PIC 9 VALUE 3.\n01 Q PIC 99.\n01 M PIC 9.",
+        "    DIVIDE B INTO A GIVING Q REMAINDER M.\n    DISPLAY Q.\n    DISPLAY M.",
+    ));
     assert_eq!(out, vec!["6", "2"]);
 }
 
 #[test]
 fn compare_case_runtime_expression() {
-    let out = run_prints(&p("01 R PIC 999 VALUE 0.", "    COMPUTE R = (5 - 2) * (8 / 4).\n    DISPLAY R."));
+    let out = run_prints(&p(
+        "01 R PIC 999 VALUE 0.",
+        "    COMPUTE R = (5 - 2) * (8 / 4).\n    DISPLAY R.",
+    ));
     assert_eq!(out, vec!["6"]);
 }

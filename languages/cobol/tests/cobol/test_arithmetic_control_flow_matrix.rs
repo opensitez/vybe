@@ -588,18 +588,18 @@ fn source_and_object_computer_with_program_compiles() {
 
 #[test]
 fn stop_literal_runtime_still_terminates() {
-    let out = run_prints("IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    STOP \"DONE\". ");
+    let out = run_prints(
+        "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nPROCEDURE DIVISION.\n    STOP \"DONE\". ",
+    );
     assert_eq!(out.len(), 0);
 }
 
 #[test]
 fn condition_name_set_runtime_true_false() {
-    let out = run_prints(
-        &p(
-            "01 ST PIC X VALUE \"N\".\n   88 ACTIVE VALUE \"Y\".\n   88 INACTIVE VALUE \"N\".",
-            "    SET ACTIVE TO TRUE\n    IF ACTIVE\n        DISPLAY \"ON\"\n    END-IF\n    SET INACTIVE TO TRUE\n    IF NOT ACTIVE\n        DISPLAY \"OFF\"\n    END-IF",
-        ),
-    );
+    let out = run_prints(&p(
+        "01 ST PIC X VALUE \"N\".\n   88 ACTIVE VALUE \"Y\".\n   88 INACTIVE VALUE \"N\".",
+        "    SET ACTIVE TO TRUE\n    IF ACTIVE\n        DISPLAY \"ON\"\n    END-IF\n    SET INACTIVE TO TRUE\n    IF NOT ACTIVE\n        DISPLAY \"OFF\"\n    END-IF",
+    ));
     assert_eq!(out, vec!["ON", "OFF"]);
 }
 

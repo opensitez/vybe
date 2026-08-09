@@ -86,23 +86,23 @@ fn compile_edit_picture_v_significant_zeros() {
 fn compile_edit_currency_symbol_and_comma() {
     helpers::compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 X PIC $$,$$$.99.\n01 Y PIC 9999V99 VALUE 123456.\nPROCEDURE DIVISION.\n    MOVE Y TO X.\n    STOP RUN.",
-        );
+    );
 }
 #[test]
 fn compile_edit_alphanumeric_editing_clauses() {
     helpers::compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 X PIC X(10).\n01 Y PIC 9(4) VALUE 100.\nPROCEDURE DIVISION.\n    MOVE Y TO X.\n    STOP RUN.",
-        );
+    );
 }
 #[test]
 fn compile_edit_redefines_with_edit_pictures() {
     helpers::compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01  RAW PIC 9(4) VALUE 1234.\n01 OUT REDEFINES RAW PIC ZZ,ZZ.\nPROCEDURE DIVISION.\n    DISPLAY OUT.\n    STOP RUN.",
-        );
+    );
 }
 #[test]
 fn compile_edit_trailing_sign_with_currency() {
     helpers::compile_ok(
         "IDENTIFICATION DIVISION.\nPROGRAM-ID. T.\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 X PIC ZZ9CR.\n01 Y PIC S999 VALUE -12.\nPROCEDURE DIVISION.\n    MOVE Y TO X.\n    STOP RUN.",
-        );
+    );
 }

@@ -15,19 +15,13 @@ fn display_single_string_literal() {
 
 #[test]
 fn display_numeric_variable() {
-    let out = run_prints(&p(
-        "01 N PIC 9(4) VALUE 2024.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(4) VALUE 2024.", "    DISPLAY N."));
     assert_eq!(out, vec!["2024"]);
 }
 
 #[test]
 fn display_two_literals_sequential() {
-    let out = run_prints(&p(
-        "",
-        "    DISPLAY \"LINE1\".\n    DISPLAY \"LINE2\".",
-    ));
+    let out = run_prints(&p("", "    DISPLAY \"LINE1\".\n    DISPLAY \"LINE2\"."));
     assert_eq!(out, vec!["LINE1", "LINE2"]);
 }
 
@@ -51,37 +45,25 @@ fn display_numeric_after_compute() {
 
 #[test]
 fn display_alphanumeric_right_padded_pic() {
-    let out = run_prints(&p(
-        "01 S PIC X(8) VALUE \"COBOL\".",
-        "    DISPLAY S.",
-    ));
+    let out = run_prints(&p("01 S PIC X(8) VALUE \"COBOL\".", "    DISPLAY S."));
     assert_eq!(out, vec!["COBOL   "]);
 }
 
 #[test]
 fn display_zero_value_numeric() {
-    let out = run_prints(&p(
-        "01 N PIC 9(4) VALUE ZERO.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(4) VALUE ZERO.", "    DISPLAY N."));
     assert_eq!(out, vec!["0000"]);
 }
 
 #[test]
 fn display_spaces_figurative() {
-    let out = run_prints(&p(
-        "01 S PIC X(4) VALUE SPACES.",
-        "    DISPLAY S.",
-    ));
+    let out = run_prints(&p("01 S PIC X(4) VALUE SPACES.", "    DISPLAY S."));
     assert_eq!(out, vec!["    "]);
 }
 
 #[test]
 fn display_concatenated_string_and_number() {
-    let out = run_prints(&p(
-        "01 N PIC 9(3) VALUE 42.",
-        "    DISPLAY \"VALUE: \" N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(3) VALUE 42.", "    DISPLAY \"VALUE: \" N."));
     assert_eq!(out, vec!["VALUE: 042"]);
 }
 
@@ -105,19 +87,13 @@ fn display_three_numeric_fields() {
 
 #[test]
 fn display_signed_negative_value() {
-    let out = run_prints(&p(
-        "01 N PIC S9(4) VALUE -42.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC S9(4) VALUE -42.", "    DISPLAY N."));
     assert_eq!(out, vec!["-0042"]);
 }
 
 #[test]
 fn display_decimal_field() {
-    let out = run_prints(&p(
-        "01 D PIC 9(3)V99 VALUE 123.45.",
-        "    DISPLAY D.",
-    ));
+    let out = run_prints(&p("01 D PIC 9(3)V99 VALUE 123.45.", "    DISPLAY D."));
     assert_eq!(out, vec!["12345"]);
 }
 
@@ -186,35 +162,23 @@ fn display_inside_if_false_branch() {
 
 #[test]
 fn display_alphanumeric_value_all_literal() {
-    let out = run_prints(&p(
-        "01 S PIC X(6) VALUE ALL \"XY\".",
-        "    DISPLAY S.",
-    ));
+    let out = run_prints(&p("01 S PIC X(6) VALUE ALL \"XY\".", "    DISPLAY S."));
     assert_eq!(out, vec!["XYXYXY"]);
 }
 
 #[test]
 fn display_upon_console_compiles() {
-    compile_ok(&p(
-        "",
-        "    DISPLAY \"OUTPUT\" UPON CONSOLE.",
-    ));
+    compile_ok(&p("", "    DISPLAY \"OUTPUT\" UPON CONSOLE."));
 }
 
 #[test]
 fn display_with_no_advancing_compiles() {
-    compile_ok(&p(
-        "",
-        "    DISPLAY \"PROMPT\" WITH NO ADVANCING.",
-    ));
+    compile_ok(&p("", "    DISPLAY \"PROMPT\" WITH NO ADVANCING."));
 }
 
 #[test]
 fn display_multiple_literals_space_separated() {
-    let out = run_prints(&p(
-        "",
-        "    DISPLAY \"A\" \"B\" \"C\".",
-    ));
+    let out = run_prints(&p("", "    DISPLAY \"A\" \"B\" \"C\"."));
     assert_eq!(out, vec!["ABC"]);
 }
 
@@ -228,10 +192,7 @@ fn display_high_value_field_compiles() {
 
 #[test]
 fn display_numeric_leading_zero_preserved() {
-    let out = run_prints(&p(
-        "01 N PIC 9(5) VALUE 7.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC 9(5) VALUE 7.", "    DISPLAY N."));
     assert_eq!(out, vec!["00007"]);
 }
 
@@ -255,19 +216,13 @@ fn display_two_different_types() {
 
 #[test]
 fn display_empty_literal() {
-    let out = run_prints(&p(
-        "",
-        "    DISPLAY \"\".",
-    ));
+    let out = run_prints(&p("", "    DISPLAY \"\"."));
     assert_eq!(out, vec![""]);
 }
 
 #[test]
 fn display_long_literal() {
-    let out = run_prints(&p(
-        "",
-        "    DISPLAY \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\".",
-    ));
+    let out = run_prints(&p("", "    DISPLAY \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\"."));
     assert_eq!(out, vec!["ABCDEFGHIJKLMNOPQRSTUVWXYZ"]);
 }
 

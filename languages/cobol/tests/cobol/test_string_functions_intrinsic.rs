@@ -9,10 +9,7 @@ fn p(data: &str, body: &str) -> String {
 
 #[test]
 fn intrinsic_char_from_ord() {
-    compile_ok(&p(
-        "01 C PIC X.",
-        "    MOVE FUNCTION CHAR(65) TO C.",
-    ));
+    compile_ok(&p("01 C PIC X.", "    MOVE FUNCTION CHAR(65) TO C."));
 }
 
 #[test]

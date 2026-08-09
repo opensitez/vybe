@@ -5,7 +5,8 @@ macro_rules! cobol_test {
         #[test]
         fn $name() {
             let out = crate::helpers::run_prints($src);
-            let expected: Vec<String> = $expected.into_iter().map(|s: &str| s.to_string()).collect();
+            let expected: Vec<String> =
+                $expected.into_iter().map(|s: &str| s.to_string()).collect();
             assert_eq!(out, expected);
         }
     };

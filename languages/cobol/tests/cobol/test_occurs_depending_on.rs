@@ -140,7 +140,10 @@ fn test_odo_shrink_then_expand() {
     END-PERFORM.
 "#,
     ));
-    assert_eq!(output, vec!["10", "20", "30", "40", "10", "20", "10", "20", "55"]);
+    assert_eq!(
+        output,
+        vec!["10", "20", "30", "40", "10", "20", "10", "20", "55"]
+    );
 }
 
 #[test]

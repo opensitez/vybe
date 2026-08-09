@@ -25,11 +25,11 @@
 //! through this same intercept without further changes.
 
 use std::collections::BTreeSet;
-use vybe_runtime::VM;
 use vybe_compiler::ast::{
     Argument, BindingPattern, ExprKind, Expression, Literal, Statement, StmtKind, VarDeclKind,
     VarDeclarator,
 };
+use vybe_runtime::VM;
 
 use super::helpers;
 

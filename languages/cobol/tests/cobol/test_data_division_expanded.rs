@@ -108,19 +108,13 @@ fn redefines_group_item_compiles() {
 
 #[test]
 fn value_clause_string_compiles() {
-    let out = run_prints(&p(
-        "01 WS-TXT PIC X(5) VALUE \"A\".",
-        "    DISPLAY WS-TXT.",
-    ));
+    let out = run_prints(&p("01 WS-TXT PIC X(5) VALUE \"A\".", "    DISPLAY WS-TXT."));
     assert_eq!(out, vec!["A"]);
 }
 
 #[test]
 fn value_clause_numeric_compiles() {
-    let out = run_prints(&p(
-        "01 WS-NUM PIC 9(3) VALUE 100.",
-        "    DISPLAY WS-NUM.",
-    ));
+    let out = run_prints(&p("01 WS-NUM PIC 9(3) VALUE 100.", "    DISPLAY WS-NUM."));
     assert_eq!(out, vec!["100"]);
 }
 

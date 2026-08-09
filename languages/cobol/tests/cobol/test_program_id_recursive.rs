@@ -21,10 +21,7 @@ fn program_id_is_recursive_compiles() {
 
 #[test]
 fn program_id_recursive_with_ws() {
-    compile_ok(&prog(
-        "01 N PIC 9(4) VALUE 0.",
-        "    ADD 1 TO N.",
-    ));
+    compile_ok(&prog("01 N PIC 9(4) VALUE 0.", "    ADD 1 TO N."));
 }
 
 #[test]
@@ -80,18 +77,12 @@ fn program_id_recursive_with_table() {
 
 #[test]
 fn program_id_recursive_with_comp_field() {
-    compile_ok(&prog(
-        "01 N PIC 9(8) COMP VALUE 0.",
-        "    ADD 1 TO N.",
-    ));
+    compile_ok(&prog("01 N PIC 9(8) COMP VALUE 0.", "    ADD 1 TO N."));
 }
 
 #[test]
 fn program_id_recursive_with_signed_field() {
-    compile_ok(&prog(
-        "01 N PIC S9(5) VALUE -100.",
-        "    ADD 200 TO N.",
-    ));
+    compile_ok(&prog("01 N PIC S9(5) VALUE -100.", "    ADD 200 TO N."));
 }
 
 #[test]
@@ -205,10 +196,7 @@ fn program_id_recursive_with_perform_varying() {
 
 #[test]
 fn program_id_recursive_with_accept_from_date() {
-    compile_ok(&prog(
-        "01 TODAY PIC 9(6).",
-        "    ACCEPT TODAY FROM DATE.",
-    ));
+    compile_ok(&prog("01 TODAY PIC 9(6).", "    ACCEPT TODAY FROM DATE."));
 }
 
 #[test]

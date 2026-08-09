@@ -124,7 +124,9 @@ fn compute_mul() {
 }
 #[test]
 fn compute_div() {
-    let out = run_prints(&p("    MOVE 20 TO WS-A.\n    MOVE 5 TO WS-B.\n    COMPUTE WS-C = WS-A / WS-B.\n    DISPLAY WS-C."));
+    let out = run_prints(&p(
+        "    MOVE 20 TO WS-A.\n    MOVE 5 TO WS-B.\n    COMPUTE WS-C = WS-A / WS-B.\n    DISPLAY WS-C.",
+    ));
     assert_eq!(out, vec!["4"]);
 }
 #[test]

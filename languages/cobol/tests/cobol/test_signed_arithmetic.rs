@@ -54,10 +54,7 @@ fn signed_compute_chain_with_negatives() {
 
 #[test]
 fn signed_value_negative_literal() {
-    let out = run_prints(&p(
-        "01 N PIC S9(3) VALUE -99.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC S9(3) VALUE -99.", "    DISPLAY N."));
     assert_eq!(out, vec!["-099"]);
 }
 
@@ -108,10 +105,7 @@ fn signed_divide_positive_by_negative() {
 
 #[test]
 fn signed_s9_pic_zero_shows_plus() {
-    let out = run_prints(&p(
-        "01 N PIC S9(3) VALUE 0.",
-        "    DISPLAY N.",
-    ));
+    let out = run_prints(&p("01 N PIC S9(3) VALUE 0.", "    DISPLAY N."));
     assert_eq!(out, vec!["+000"]);
 }
 
@@ -235,10 +229,7 @@ fn signed_field_in_if_after_loop() {
 
 #[test]
 fn signed_s9_comp_compiles() {
-    compile_ok(&p(
-        "01 N PIC S9(8) COMP VALUE 0.",
-        "    ADD 1 TO N.",
-    ));
+    compile_ok(&p("01 N PIC S9(8) COMP VALUE 0.", "    ADD 1 TO N."));
 }
 
 #[test]

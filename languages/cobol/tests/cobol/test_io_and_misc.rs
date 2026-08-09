@@ -125,7 +125,10 @@ fn call_no_args() {
 }
 #[test]
 fn call_with_returning_local() {
-    compile_ok(&p("01 RET PIC 9(3).", "    CALL \"SUBPROG\" RETURNING RET."));
+    compile_ok(&p(
+        "01 RET PIC 9(3).",
+        "    CALL \"SUBPROG\" RETURNING RET.",
+    ));
 }
 
 // ── RAISE ──────────────────────────────────────────────────
@@ -185,7 +188,10 @@ fn sort_and_merge_program() {
 
 #[test]
 fn close_and_reopen_file_sequence() {
-    compile_ok(&p("", "    OPEN OUTPUT WS-FILE.\n    CLOSE WS-FILE.\n    OPEN INPUT WS-FILE.\n    CLOSE WS-FILE."));
+    compile_ok(&p(
+        "",
+        "    OPEN OUTPUT WS-FILE.\n    CLOSE WS-FILE.\n    OPEN INPUT WS-FILE.\n    CLOSE WS-FILE.",
+    ));
 }
 
 // ── SORT ───────────────────────────────────────────────────

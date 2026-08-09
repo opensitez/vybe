@@ -43,10 +43,7 @@ fn special_return_code_used_in_if() {
 
 #[test]
 fn tally_special_register_compiles() {
-    compile_ok(&p(
-        "",
-        "    MOVE 0 TO TALLY.",
-    ));
+    compile_ok(&p("", "    MOVE 0 TO TALLY."));
 }
 
 #[test]
@@ -59,10 +56,7 @@ fn tally_after_inspect_compiles() {
 
 #[test]
 fn tally_initial_value_zero_compiles() {
-    compile_ok(&p(
-        "",
-        "    DISPLAY TALLY.",
-    ));
+    compile_ok(&p("", "    DISPLAY TALLY."));
 }
 
 #[test]
@@ -99,10 +93,7 @@ fn pointer_null_comparison_compiles() {
 
 #[test]
 fn pointer_set_to_null() {
-    compile_ok(&p(
-        "01 P USAGE POINTER.",
-        "    SET P TO NULL.",
-    ));
+    compile_ok(&p("01 P USAGE POINTER.", "    SET P TO NULL."));
 }
 
 #[test]

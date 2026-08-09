@@ -182,10 +182,7 @@ fn set_condition_name_then_test() {
 
 #[test]
 fn set_pointer_to_null() {
-    compile_ok(&p(
-        "01 PTR USAGE POINTER.",
-        "    SET PTR TO NULL.",
-    ));
+    compile_ok(&p("01 PTR USAGE POINTER.", "    SET PTR TO NULL."));
 }
 
 #[test]

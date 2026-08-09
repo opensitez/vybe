@@ -35,10 +35,7 @@ fn scope_end_evaluate_compiles() {
 
 #[test]
 fn scope_end_add_not_size_error() {
-    compile_ok(&p(
-        "01 A PIC 9(3) VALUE 0.",
-        "    ADD 1 TO A\n    END-ADD.",
-    ));
+    compile_ok(&p("01 A PIC 9(3) VALUE 0.", "    ADD 1 TO A\n    END-ADD."));
 }
 
 #[test]

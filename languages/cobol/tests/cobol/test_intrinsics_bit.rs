@@ -54,15 +54,14 @@ fn test_intrinsics_module_info() {
 
 #[test]
 fn test_intrinsics_bit_runtime_values() {
-    let output = run_prints(
-        &p(
-            r#"
+    let output = run_prints(&p(
+        r#"
 01 WS-BIT1 PIC X(8) VALUE "11110000".
 01 WS-BIT2 PIC X(8) VALUE "11001100".
 01 WS-RES PIC X(8).
 01 WS-CHAR PIC X.
 "#,
-            r#"
+        r#"
     MOVE FUNCTION BIT-AND(WS-BIT1 WS-BIT2) TO WS-RES.
     DISPLAY WS-RES.
     MOVE FUNCTION BIT-OR(WS-BIT1 WS-BIT2) TO WS-RES.
@@ -72,8 +71,7 @@ fn test_intrinsics_bit_runtime_values() {
     MOVE FUNCTION HEX-TO-CHAR("41") TO WS-CHAR.
     DISPLAY WS-CHAR.
 "#,
-        ),
-    );
+    ));
     assert_eq!(output.len(), 4);
     assert!(!output[0].trim().is_empty());
     assert!(!output[1].trim().is_empty());

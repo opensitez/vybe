@@ -61,10 +61,9 @@ fn test_call_exception_handling() {
 
 #[test]
 fn test_call_exception_runtime() {
-    let out = run_prints(
-        &p(
-            "",
-            r#"
+    let out = run_prints(&p(
+        "",
+        r#"
     CALL "NONEXIST"
         ON EXCEPTION
             DISPLAY "ERR"
@@ -72,17 +71,15 @@ fn test_call_exception_runtime() {
             DISPLAY "OK"
     END-CALL.
 "#,
-        ),
-    );
+    ));
     assert_eq!(out, vec!["ERR"]);
 }
 
 #[test]
 fn test_call_with_reference_semantics_runtime() {
-    let out = run_prints(
-        &p(
-            "01 WS-A PIC 9(3) VALUE 1.",
-            r#"
+    let out = run_prints(&p(
+        "01 WS-A PIC 9(3) VALUE 1.",
+        r#"
     CALL "SUBPROG" USING BY VALUE WS-A
         ON EXCEPTION
             DISPLAY WS-A
@@ -90,17 +87,15 @@ fn test_call_with_reference_semantics_runtime() {
             DISPLAY "OK"
     END-CALL.
 "#,
-        ),
-    );
+    ));
     assert_eq!(out, vec!["1"]);
 }
 
 #[test]
 fn test_call_with_mixed_modes_and_on_exception() {
-    let out = run_prints(
-        &p(
-            "01 WS-ARG PIC X(5) VALUE \"HELLO\".\n01 WS-NUM PIC 9(3) VALUE 123.\n01 WS-PROG PIC X(20) VALUE \"SUBPROG\".",
-            r#"
+    let out = run_prints(&p(
+        "01 WS-ARG PIC X(5) VALUE \"HELLO\".\n01 WS-NUM PIC 9(3) VALUE 123.\n01 WS-PROG PIC X(20) VALUE \"SUBPROG\".",
+        r#"
     CALL WS-PROG
         USING BY REFERENCE WS-ARG
         ON EXCEPTION
@@ -109,8 +104,7 @@ fn test_call_with_mixed_modes_and_on_exception() {
             DISPLAY "OK"
         END-CALL.
 "#,
-        ),
-    );
+    ));
     assert_eq!(out, vec!["ERR"]);
 }
 
@@ -129,10 +123,9 @@ fn test_call_uses_dynamic_name() {
 
 #[test]
 fn test_call_with_mixed_passing_modes() {
-    let out = run_prints(
-        &p(
-            "01 WS-ARG PIC 9(3) VALUE 10.\n01 WS-TEXT PIC X(4) VALUE \"ABCD\".",
-            r#"
+    let out = run_prints(&p(
+        "01 WS-ARG PIC 9(3) VALUE 10.\n01 WS-TEXT PIC X(4) VALUE \"ABCD\".",
+        r#"
     CALL "SUBPROG"
         USING BY VALUE WS-ARG
         BY REFERENCE WS-TEXT
@@ -142,33 +135,29 @@ fn test_call_with_mixed_passing_modes() {
             DISPLAY "OK"
     END-CALL.
 "#,
-        ),
-    );
+    ));
     assert_eq!(out, vec!["ERR"]);
 }
 
 #[test]
 fn test_call_with_reference_only_on_exception() {
-    let out = run_prints(
-        &p(
-            "01 WS-TEXT PIC X(5) VALUE \"HELLO\".",
-            r#"
+    let out = run_prints(&p(
+        "01 WS-TEXT PIC X(5) VALUE \"HELLO\".",
+        r#"
     CALL "MISSING-PROG" USING BY REFERENCE WS-TEXT
         ON EXCEPTION
             DISPLAY "EX"
     END-CALL.
 "#,
-        ),
-    );
+    ));
     assert_eq!(out, vec!["EX"]);
 }
 
 #[test]
 fn test_call_with_explicit_returning_and_exception() {
-    let out = run_prints(
-        &p(
-            "01 WS-RET PIC 9(3) VALUE 0.\n01 WS-ARG PIC 9(3) VALUE 55.",
-            r#"
+    let out = run_prints(&p(
+        "01 WS-RET PIC 9(3) VALUE 0.\n01 WS-ARG PIC 9(3) VALUE 55.",
+        r#"
     CALL "SUBPROG" RETURNING WS-RET
         USING WS-ARG
         ON EXCEPTION
@@ -178,8 +167,7 @@ fn test_call_with_explicit_returning_and_exception() {
             DISPLAY "OK"
     END-CALL.
 "#,
-        ),
-    );
+    ));
     assert_eq!(out, vec!["55", "0"]);
 }
 

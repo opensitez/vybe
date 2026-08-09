@@ -88,7 +88,7 @@ P4.
     DISPLAY "PARA4".
 "#,
     ));
-assert_eq!(output, vec!["PARA1", "PARA2", "PARA3", "PARA4"]);
+    assert_eq!(output, vec!["PARA1", "PARA2", "PARA3", "PARA4"]);
 }
 
 #[test]
